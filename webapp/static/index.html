@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVLEMPYR — качалка глав</title>
+<style>
+  :root{
+    --bg:#07060a;
+    --panel:rgba(255,255,255,.045);
+    --stroke:rgba(178,110,255,.28);
+    --stroke-soft:rgba(255,255,255,.09);
+    --text:#f3f1f8;
+    --muted:#8f8aa3;
+    --neon:#b06cff;
+    --neon-dim:#7a3fd0;
+    --radius:18px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    min-height:100vh;
+    padding:48px 20px 80px;
+    background-image:
+      radial-gradient(680px 420px at 50% -12%, rgba(176,108,255,.16), transparent 70%),
+      radial-gradient(420px 300px at 88% 100%, rgba(122,63,208,.10), transparent 70%);
+    background-attachment:fixed;
+  }
+  .wrap{max-width:660px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+  h1{
+    font-size:22px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+    text-align:center;color:#fff;
+    text-shadow:0 0 18px rgba(176,108,255,.65), 0 0 44px rgba(176,108,255,.3);
+  }
+  .sub{text-align:center;color:var(--muted);font-size:13px;margin-top:-10px}
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--stroke-soft);
+    border-radius:var(--radius);
+    padding:20px;
+    backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);
+  }
+  .card.lit{border-color:var(--stroke);box-shadow:0 0 34px rgba(176,108,255,.13)}
+  .card[hidden]{display:none}
+
+  label{display:block;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+
+  input[type=text],input[type=number]{
+    width:100%;padding:12px 14px;
+    background:rgba(255,255,255,.04);
+    border:1px solid var(--stroke-soft);
+    border-radius:14px;color:var(--text);font:inherit;outline:none;
+    transition:border-color .18s, box-shadow .18s;
+  }
+  input:focus{border-color:var(--neon);box-shadow:0 0 0 3px rgba(176,108,255,.16)}
+  input::placeholder{color:#5d5872}
+
+  button{
+    padding:12px 20px;
+    background:rgba(255,255,255,.06);
+    border:1px solid var(--stroke);
+    border-radius:14px;
+    color:var(--text);font:inherit;font-weight:500;cursor:pointer;
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    transition:background .18s, box-shadow .18s, border-color .18s, transform .1s;
+  }
+  button:hover:not(:disabled){
+    background:rgba(176,108,255,.16);
+    box-shadow:0 0 22px rgba(176,108,255,.35);
+    border-color:var(--neon);
+  }
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.ghost{border-color:var(--stroke-soft);font-weight:400}
+  button.primary{background:rgba(176,108,255,.16);box-shadow:0 0 20px rgba(176,108,255,.22)}
+
+  .row{display:flex;gap:10px}
+  .row > input{flex:1}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+  .book-name{font-size:18px;font-weight:600;color:#fff}
+  .meta{color:var(--muted);font-size:13px;margin-top:4px}
+
+  .crumb{
+    display:flex;align-items:center;gap:8px;margin-bottom:10px;
+    font-size:12px;color:var(--muted);word-break:break-all;
+  }
+  .crumb code{
+    background:rgba(255,255,255,.05);padding:5px 10px;border-radius:10px;
+    color:#cdb9ff;font-size:12px;flex:1;
+  }
+  .dirs{
+    max-height:190px;overflow-y:auto;border:1px solid var(--stroke-soft);
+    border-radius:14px;padding:6px;display:flex;flex-direction:column;gap:2px;
+  }
+  .dirs button{
+    width:100%;text-align:left;padding:8px 12px;background:none;border:none;
+    border-radius:10px;font-size:14px;color:var(--text);font-weight:400;box-shadow:none;
+  }
+  .dirs button:hover{background:rgba(176,108,255,.12);box-shadow:none}
+  .dirs .up{color:var(--neon)}
+  .empty{color:var(--muted);font-size:13px;padding:10px 12px}
+
+  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden;margin:14px 0 10px}
+  .bar > i{
+    display:block;height:100%;width:0;border-radius:99px;
+    background:linear-gradient(90deg,var(--neon-dim),var(--neon));
+    box-shadow:0 0 16px rgba(176,108,255,.7);
+    transition:width .3s ease;
+  }
+  .stats{display:flex;gap:18px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+  .stats b{color:#fff;font-weight:600}
+  .status{font-size:13px;color:var(--muted);min-height:20px}
+
+  .err{
+    border-color:rgba(255,90,120,.4);
+    color:#ff9db0;font-size:13px;
+  }
+  .ok{color:#9cffc4}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px}
+  .spin{display:inline-block;width:11px;height:11px;border-radius:50%;
+    border:2px solid rgba(176,108,255,.25);border-top-color:var(--neon);
+    animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MVLEMPYR</h1>
+  <p class="sub">качалка глав в .txt</p>
+
+  <!-- 1. Поиск книги -->
+  <div class="card lit">
+    <label for="q">Ссылка на книгу, слаг или код</label>
+    <div class="row">
+      <input id="q" type="text" placeholder="insect-tamers-ascension" autocomplete="off">
+      <button id="find" class="primary">Найти</button>
+    </div>
+    <p class="hint">Можно вставить ссылку с сайта, слаг или числовой код книги.</p>
+  </div>
+
+  <div class="card err" id="error" hidden></div>
+
+  <!-- 2. Книга найдена -->
+  <div class="card lit" id="book" hidden>
+    <div class="book-name" id="bookName"></div>
+    <div class="meta" id="bookMeta"></div>
+  </div>
+
+  <!-- 3. Куда сохранять -->
+  <div class="card" id="place" hidden>
+    <label>Где создать папку</label>
+    <div class="crumb">
+      <button class="ghost" id="home" style="padding:5px 12px;font-size:12px">Домой</button>
+      <code id="curPath">…</code>
+    </div>
+    <div class="dirs" id="dirs"></div>
+
+    <div style="margin-top:16px">
+      <label for="folder">Имя папки</label>
+      <input id="folder" type="text" placeholder="Название книги" autocomplete="off">
+    </div>
+
+    <div class="split" style="margin-top:16px">
+      <div>
+        <label for="first">С главы</label>
+        <input id="first" type="number" min="1" value="1">
+      </div>
+      <div>
+        <label for="last">По главу</label>
+        <input id="last" type="number" min="1">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="start" class="primary" style="flex:1">Скачать</button>
+    </div>
+    <p class="hint" id="finalPath"></p>
+  </div>
+
+  <!-- 4. Прогресс -->
+  <div class="card lit" id="progress" hidden>
+    <div class="status" id="status"></div>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="stats">
+      <span>скачано <b id="sDone">0</b></span>
+      <span>пропущено <b id="sSkip">0</b></span>
+      <span>ошибок <b id="sFail">0</b></span>
+      <span id="sPct"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="stop" class="ghost">Остановить</button>
+      <button id="again" class="ghost" hidden>Новая книга</button>
+    </div>
+    <p class="hint" id="summary"></p>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let novel = null, basePath = null, jobId = null, poll = null;
+
+function showError(msg){
+  const box = $('error');
+  if(!msg){ box.hidden = true; return; }
+  box.hidden = false;
+  box.textContent = msg;
+}
+
+async function call(url, body){
+  const opts = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({error:'Сервер вернул не JSON'}));
+  if(!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+  return data;
+}
+
+/* ---- поиск книги ---- */
+async function find(){
+  const query = $('q').value.trim();
+  if(!query) return;
+  showError('');
+  $('find').disabled = true;
+  $('find').textContent = 'Ищем…';
+  try{
+    const data = await call('/api/find', {query});
+    novel = data.novel;
+    $('bookName').textContent = novel.name;
+    $('bookMeta').textContent = [
+      `${novel.total_chapters} глав`,
+      novel.author && `автор: ${novel.author}`,
+      novel.status,
+      `код ${novel.code}`
+    ].filter(Boolean).join('  ·  ');
+    $('book').hidden = false;
+    $('place').hidden = false;
+    $('folder').value = novel.name;
+    $('last').value = novel.total_chapters;
+    $('last').max = novel.total_chapters;
+    $('first').max = novel.total_chapters;
+    if(basePath === null) browse();
+    updateFinalPath();
+  }catch(err){
+    showError(err.message);
+    $('book').hidden = true;
+    $('place').hidden = true;
+  }finally{
+    $('find').disabled = false;
+    $('find').textContent = 'Найти';
+  }
+}
+
+/* ---- выбор папки ---- */
+async function browse(path){
+  try{
+    const data = await call('/api/browse' + (path ? '?path=' + encodeURIComponent(path) : ''));
+    basePath = data.path;
+    $('curPath').textContent = data.path + (data.writable ? '' : '  (нет прав на запись)');
+    const list = $('dirs');
+    list.innerHTML = '';
+
+    if(data.parent){
+      const up = document.createElement('button');
+      up.className = 'up';
+      up.textContent = '↑  ..';
+      up.onclick = () => browse(data.parent);
+      list.appendChild(up);
+    }
+    if(!data.dirs.length && !data.parent){
+      list.innerHTML = '<div class="empty">Вложенных папок нет</div>';
+    }
+    for(const dir of data.dirs){
+      const btn = document.createElement('button');
+      btn.textContent = '📁  ' + dir.name;
+      btn.onclick = () => browse(dir.path);
+      list.appendChild(btn);
+    }
+    updateFinalPath();
+  }catch(err){ showError(err.message); }
+}
+
+function updateFinalPath(){
+  const name = $('folder').value.trim() || (novel ? novel.name : '');
+  $('finalPath').textContent = basePath && name ? `Главы лягут в: ${basePath}/${name}` : '';
+}
+
+/* ---- запуск ---- */
+async function start(){
+  showError('');
+  $('start').disabled = true;
+  try{
+    const data = await call('/api/start', {
+      novel,
+      base: basePath,
+      folder: $('folder').value.trim(),
+      first: Number($('first').value) || 1,
+      last: Number($('last').value) || novel.total_chapters
+    });
+    jobId = data.job.id;
+    $('place').hidden = true;
+    $('progress').hidden = false;
+    $('again').hidden = true;
+    $('stop').hidden = false;
+    $('summary').textContent = 'Папка: ' + data.job.output_dir;
+    poll = setInterval(tick, 700);
+    tick();
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('start').disabled = false;
+  }
+}
+
+const STAGES = {
+  queued:'Запускаем', search:'Ищем книгу', toc:'Собираем оглавление',
+  probe:'Проверяем источник текста', download:'Качаем главы',
+  done:'Готово', error:'Ошибка', cancelled:'Остановлено'
+};
+
+async function tick(){
+  try{
+    const {job} = await call('/api/job/' + jobId);
+    const p = job.progress || {};
+    const busy = !['done','error','cancelled'].includes(p.stage);
+
+    $('status').innerHTML = (busy ? '<span class="spin"></span>' : '') +
+      (STAGES[p.stage] || p.stage || '') + (p.message ? ' — ' + p.message : '');
+
+    const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
+    $('fill').style.width = pct + '%';
+    $('sPct').textContent = p.total ? pct + '%' : '';
+    $('sDone').textContent = p.downloaded || 0;
+    $('sSkip').textContent = p.skipped || 0;
+    $('sFail').textContent = p.failed || 0;
+
+    if(!busy){
+      clearInterval(poll);
+      $('stop').hidden = true;
+      $('again').hidden = false;
+      if(p.stage === 'done'){
+        $('status').classList.add('ok');
+        $('fill').style.width = '100%';
+      }
+      if(job.report){
+        const r = job.report;
+        let text = `Папка: ${r.output_dir}\nИсточник текста: ${r.mode === 'rest' ? 'JSON' : 'HTML'}`;
+        if(r.failed_chapters?.length) text += `\nНе удалось: ${r.failed_chapters.join(', ')} — см. errors.log`;
+        if(r.missing_in_toc?.length) text += `\nНет в оглавлении: ${r.missing_in_toc.length} глав`;
+        $('summary').style.whiteSpace = 'pre-line';
+        $('summary').textContent = text;
+      }
+      if(job.error) showError(job.error);
+    }
+  }catch(err){
+    clearInterval(poll);
+    showError(err.message);
+  }
+}
+
+async function stop(){
+  $('stop').disabled = true;
+  try{ await call('/api/job/' + jobId + '/cancel', {}); }
+  catch(err){ showError(err.message); }
+  finally{ $('stop').disabled = false; }
+}
+
+function reset(){
+  clearInterval(poll);
+  jobId = null;
+  $('progress').hidden = true;
+  $('place').hidden = false;
+  $('status').classList.remove('ok');
+  $('summary').textContent = '';
+  showError('');
+}
+
+$('find').onclick = find;
+$('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
+$('folder').addEventListener('input', updateFinalPath);
+$('home').onclick = () => browse();
+$('start').onclick = start;
+$('stop').onclick = stop;
+$('again').onclick = reset;
+</script>
+</body>
+</html>
