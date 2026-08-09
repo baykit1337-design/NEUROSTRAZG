@@ -1,8 +1,11 @@
-"""HTTP-клиент для chap.heliosarchive.online.
+"""HTTP-клиенты для двух хостов.
 
-Только HTTP-запросы: никаких headless-браузеров. Используется curl_cffi с
-отпечатком Chrome; если пакет не установлен, откатываемся на requests/urllib
-(работать будет, но TLS-отпечаток другой).
+- `chap.heliosarchive.online` — REST API: каталог и оглавление. Открыт.
+- `www.mvlempyr.io` — витрина: единственный источник текста глав.
+  Путь `/chapter/*` на бэкенд-хосте закрыт правилом WAF, тексты берём здесь.
+
+Только HTTP-запросы: никаких headless-браузеров. Нужен curl_cffi с отпечатком
+Chrome — обычный requests Cloudflare отсекает по TLS-отпечатку.
 """
 
 from __future__ import annotations
@@ -15,10 +18,13 @@ from typing import Any
 
 BASE = "https://chap.heliosarchive.online"
 API = f"{BASE}/wp-json/wp/v2"
+SITE = "https://www.mvlempyr.io"
 
 # Вежливость к серверу — значения из ТЗ, поднимать не нужно.
 MAX_CONCURRENCY = 5
 PAUSE_RANGE = (1.0, 2.0)
+# Витрина: строго один поток, пауза 2-4 секунды с джиттером.
+SITE_PAUSE_RANGE = (2.0, 4.0)
 MAX_ATTEMPTS = 3
 TIMEOUT = 30
 
@@ -31,6 +37,14 @@ class HttpError(Exception):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class Blocked(HttpError):
+    """Cloudflare закрыл доступ (403/429).
+
+    Ретраить бессмысленно и вредно: повторы только усугубят блокировку.
+    Прогон останавливается целиком.
+    """
 
 
 def _make_session():
@@ -115,9 +129,18 @@ class Client:
     рассчитаны на параллельное использование из нескольких потоков.
     """
 
-    def __init__(self, max_attempts: int = MAX_ATTEMPTS, timeout: int = TIMEOUT):
+    #: Статусы, по которым прогон останавливается сразу, без ретраев.
+    block_statuses: frozenset[int] = frozenset()
+
+    def __init__(
+        self,
+        max_attempts: int = MAX_ATTEMPTS,
+        timeout: int = TIMEOUT,
+        headers: dict[str, str] | None = None,
+    ):
         self.max_attempts = max_attempts
         self.timeout = timeout
+        self.headers = dict(headers or {})
         self._local = threading.local()
         self._sessions: list[Any] = []
         self._lock = threading.Lock()
@@ -133,10 +156,11 @@ class Client:
                 self._sessions.append(session)
         return session
 
-    def get(self, url: str, params=None) -> Any:
+    def get(self, url: str, params=None, headers: dict[str, str] | None = None) -> Any:
         """GET с ретраями. Возвращает объект ответа; кидает HttpError."""
         last_error = "unknown"
         last_status: int | None = None
+        request_headers = {**self.headers, **(headers or {})}
 
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -144,11 +168,17 @@ class Client:
                     full_url = f"{url}?{encode_params(params)}"
                 else:
                     full_url = url
-                resp = self._session().get(full_url, timeout=self.timeout)
+                resp = self._session().get(
+                    full_url, timeout=self.timeout, headers=request_headers or None
+                )
                 status = resp.status_code
 
                 if status == 200:
                     return resp
+                if status in self.block_statuses:
+                    raise Blocked(
+                        f"HTTP {status} — доступ закрыт (Cloudflare): {url}", status=status
+                    )
                 if status == 404:
                     # Ретраить бессмысленно — главы просто нет.
                     raise HttpError(f"HTTP 404 {url}", status=404)
@@ -177,8 +207,8 @@ class Client:
         except Exception as exc:
             raise HttpError(f"Невалидный JSON от {url}: {exc}") from exc
 
-    def get_text(self, url: str, params=None) -> str:
-        return self.get(url, params).text
+    def get_text(self, url: str, params=None, headers: dict[str, str] | None = None) -> str:
+        return self.get(url, params, headers=headers).text
 
     def close(self):
         with self._lock:
@@ -190,6 +220,56 @@ class Client:
             self._sessions.clear()
 
 
+# Заголовки настоящего браузера: Cloudflare смотрит не только на TLS.
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+    "image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+class SiteClient(Client):
+    """Клиент витрины www.mvlempyr.io.
+
+    Одна сессия на весь прогон: Cloudflare выдаёт куку доступа, её нужно
+    переиспользовать между главами. Строго однопоточный — сессия одна, и
+    параллелить запросы к витрине нельзя.
+
+    403 и 429 не ретраятся: один блок означает остановку прогона.
+    """
+
+    block_statuses = frozenset({403, 429})
+
+    def __init__(self, referer: str | None = None, **kwargs):
+        headers = dict(BROWSER_HEADERS)
+        if referer:
+            headers["Referer"] = referer
+        kwargs.setdefault("max_attempts", 2)  # сетевой сбой пережить, блок — нет
+        super().__init__(headers=headers, **kwargs)
+
+    def set_referer(self, referer: str) -> None:
+        self.headers["Referer"] = referer
+
+
+def chapter_url(novel_code: int, number: int) -> str:
+    """Страница главы на витрине — единственный доступный источник текста."""
+    return f"{SITE}/chapter/{novel_code}-{number}"
+
+
+def novel_url(slug: str) -> str:
+    return f"{SITE}/novel/{slug}"
+
+
 def polite_pause():
-    """Пауза между пачками запросов."""
+    """Пауза между пачками запросов к API."""
     time.sleep(random.uniform(*PAUSE_RANGE))
+
+
+def site_pause():
+    """Пауза между главами на витрине: 2-4 секунды со случайным джиттером."""
+    time.sleep(random.uniform(*SITE_PAUSE_RANGE))

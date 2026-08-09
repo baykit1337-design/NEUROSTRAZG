@@ -179,8 +179,10 @@
 
     <div class="row" style="margin-top:18px">
       <button id="start" class="primary" style="flex:1">Скачать</button>
+      <button id="links" class="ghost" title="Список ссылок для WebToEpub">Ссылки</button>
     </div>
     <p class="hint" id="finalPath"></p>
+    <p class="hint" id="estimate"></p>
   </div>
 
   <!-- 4. Прогресс -->
@@ -287,6 +289,39 @@ async function browse(path){
 function updateFinalPath(){
   const name = $('folder').value.trim() || (novel ? novel.name : '');
   $('finalPath').textContent = basePath && name ? `Главы лягут в: ${basePath}/${name}` : '';
+
+  if(novel){
+    const first = Number($('first').value) || 1;
+    const last = Number($('last').value) || novel.total_chapters;
+    const count = Math.max(0, last - first + 1);
+    // Один поток и пауза 3 с в среднем — иначе сайт закроет доступ.
+    $('estimate').textContent =
+      `${count} глав в один поток — примерно ${Math.round(count * 3 / 60)} мин.`;
+  }
+}
+
+/* ---- запасной план: список ссылок для WebToEpub ---- */
+async function exportLinks(){
+  showError('');
+  $('links').disabled = true;
+  $('links').textContent = 'Собираем…';
+  try{
+    const data = await call('/api/links', {
+      novel,
+      first: Number($('first').value) || 1,
+      last: Number($('last').value) || novel.total_chapters
+    });
+    const blob = new Blob([data.links.join('\n') + '\n'], {type:'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${novel.slug || novel.code}-links.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }catch(err){ showError(err.message); }
+  finally{
+    $('links').disabled = false;
+    $('links').textContent = 'Ссылки';
+  }
 }
 
 /* ---- запуск ---- */
@@ -318,15 +353,16 @@ async function start(){
 
 const STAGES = {
   queued:'Запускаем', search:'Ищем книгу', toc:'Собираем оглавление',
-  probe:'Проверяем источник текста', download:'Качаем главы',
-  done:'Готово', error:'Ошибка', cancelled:'Остановлено'
+  download:'Качаем главы', done:'Готово', error:'Ошибка',
+  cancelled:'Остановлено', blocked:'Доступ закрыт'
 };
+const TERMINAL = ['done','error','cancelled','blocked'];
 
 async function tick(){
   try{
     const {job} = await call('/api/job/' + jobId);
     const p = job.progress || {};
-    const busy = !['done','error','cancelled'].includes(p.stage);
+    const busy = !TERMINAL.includes(p.stage);
 
     $('status').innerHTML = (busy ? '<span class="spin"></span>' : '') +
       (STAGES[p.stage] || p.stage || '') + (p.message ? ' — ' + p.message : '');
@@ -348,7 +384,11 @@ async function tick(){
       }
       if(job.report){
         const r = job.report;
-        let text = `Папка: ${r.output_dir}\nИсточник текста: ${r.mode === 'rest' ? 'JSON' : 'HTML'}`;
+        let text = `Папка: ${r.output_dir}`;
+        if(r.blocked_at != null){
+          text += `\nСайт закрыл доступ на главе ${r.blocked_at}. Повторять сразу не стоит —`
+                + `\nподождите и нажмите «Скачать» снова, продолжит с этого места.`;
+        }
         if(r.failed_chapters?.length) text += `\nНе удалось: ${r.failed_chapters.join(', ')} — см. errors.log`;
         if(r.missing_in_toc?.length) text += `\nНет в оглавлении: ${r.missing_in_toc.length} глав`;
         $('summary').style.whiteSpace = 'pre-line';
@@ -382,8 +422,11 @@ function reset(){
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
 $('folder').addEventListener('input', updateFinalPath);
+$('first').addEventListener('input', updateFinalPath);
+$('last').addEventListener('input', updateFinalPath);
 $('home').onclick = () => browse();
 $('start').onclick = start;
+$('links').onclick = exportLinks;
 $('stop').onclick = stop;
 $('again').onclick = reset;
 </script>

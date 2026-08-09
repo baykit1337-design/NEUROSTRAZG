@@ -6,6 +6,7 @@
     python cli.py insect-tamers-ascension --from 100 --to 200
     python cli.py --search "insect tamer"
     python cli.py --verify ~/Books/Insect Tamer
+    python cli.py 6615 --links links.txt   # запасной план: список для WebToEpub
 """
 
 from __future__ import annotations
@@ -30,11 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", "-n", help="имя папки (по умолчанию — название книги)")
     parser.add_argument("--from", dest="first", type=int, default=1, help="с какой главы")
     parser.add_argument("--to", dest="last", type=int, help="по какую главу")
-    parser.add_argument("--jobs", "-j", type=int, default=5, help="параллельных запросов, максимум 5")
+    parser.add_argument(
+        "--links",
+        metavar="ФАЙЛ",
+        help="не качать, а выгрузить список ссылок на главы (для WebToEpub)",
+    )
     parser.add_argument("--search", help="найти книгу в каталоге и выйти")
     parser.add_argument("--verify", help="проверить целостность уже скачанной папки")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser
+
+
+TERMINAL_STAGES = ("done", "error", "cancelled", "blocked")
 
 
 def _progress_printer():
@@ -50,7 +58,7 @@ def _progress_printer():
         if tqdm is None:
             sys.stdout.write(f"\r[{progress.stage}] {progress.done}/{progress.total} {progress.message[:60]:<60}")
             sys.stdout.flush()
-            if progress.stage in ("done", "error", "cancelled"):
+            if progress.stage in TERMINAL_STAGES:
                 sys.stdout.write("\n")
             return
 
@@ -70,7 +78,7 @@ def _progress_printer():
             bar.n = progress.done
             bar.set_postfix_str(f"ошибок {progress.failed}")
             bar.refresh()
-            if progress.stage in ("done", "error", "cancelled"):
+            if progress.stage in TERMINAL_STAGES:
                 bar.close()
                 state["bar"] = None
 
@@ -107,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().print_help()
         return 2
 
-    downloader = Downloader(client=client, concurrency=args.jobs, on_progress=_progress_printer())
+    downloader = Downloader(client=client, on_progress=_progress_printer())
 
     try:
         novel = downloader.find(args.book)
@@ -116,6 +124,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"\n{novel.name} — {novel.total_chapters} глав, код {novel.code}")
+
+    if args.links:
+        toc = api.fetch_toc(client, novel, first=args.first, last=args.last)
+        links = api.chapter_links(novel, toc.chapters)
+        Path(args.links).expanduser().write_text("\n".join(links) + "\n", encoding="utf-8")
+        client.close()
+        print(f"Ссылок выгружено: {len(links)} → {args.links}")
+        if toc.missing:
+            print(f"Нет в оглавлении: {len(toc.missing)} глав")
+        return 0
 
     output_dir = prepare_output_dir(args.out, args.name or novel.name)
     print(f"Папка: {output_dir}\n")
@@ -138,6 +156,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Не удалось: {report.failed_chapters} (подробности в errors.log)")
     if report.missing_in_toc:
         print(f"Нет в оглавлении: {report.missing_in_toc}")
+
+    if report.blocked_at is not None:
+        print(
+            f"\nСайт закрыл доступ на главе {report.blocked_at} — прогон остановлен.\n"
+            f"Ретраить не стали: повторы только усугубят блокировку.\n"
+            f"Подождите и запустите ту же команду снова — продолжит с этого места.\n"
+            f"Если блок повторяется — запасной план: python cli.py {novel.code} --links links.txt"
+        )
+        return 2
     return 0 if report.failed == 0 else 1
 
 

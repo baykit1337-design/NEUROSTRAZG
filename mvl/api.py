@@ -7,12 +7,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .client import API, BASE, Client, HttpError
+from .client import API, BASE, SITE, Client, HttpError, chapter_url, novel_url
 
 log = logging.getLogger(__name__)
 
-NOVEL_FIELDS = "name,slug,novel-code,total-chapters,read-link,author-name,status,language"
-TOC_BATCH = 100  # per_page для posts, максимум по ТЗ — 500
+# ВАЖНО: на эндпоинте mvl-novels нельзя использовать _fields. Кастомные поля
+# (novel-code, total-chapters, name, slug) не зарегистрированы в схеме WP REST,
+# и _fields молча их выбрасывает — ответ приходит как [[]], то есть массив
+# пустых объектов. Запрашиваем без обрезки полей.
+TOC_BATCH = 100  # per_page для posts, максимум — 500, но по 100 безопаснее
 CATALOG_PER_PAGE = 15000
 
 # Рекламные блоки прячутся за обфусцированными классами: ke400008d2, rb9bdb230d.
@@ -31,7 +34,12 @@ class Novel:
 
     @property
     def read_link(self) -> str:
-        return f"{BASE}/chapter/{self.code}-1"
+        return chapter_url(self.code, 1)
+
+    @property
+    def page_url(self) -> str:
+        """Страница книги на витрине — она же Referer для запросов глав."""
+        return novel_url(self.slug) if self.slug else SITE
 
     def to_dict(self) -> dict:
         return {
@@ -123,25 +131,50 @@ def _novel_from_json(item: dict) -> Novel | None:
     )
 
 
-def search_novels(client: Client, query: str, limit: int = 20) -> list[Novel]:
-    """Поиск по каталогу через ?search=."""
-    data = client.get_json(
-        "/mvl-novels",
-        {"search": query, "per_page": min(limit, 100), "_fields": NOVEL_FIELDS},
-    )
-    if not isinstance(data, list):
+class StrippedResponse(LookupError):
+    """Каталог вернул массив пустых объектов.
+
+    Признак того, что в запросе остался _fields: WP REST молча выбрасывает
+    незарегистрированные кастомные поля. Это не «книга не найдена».
+    """
+
+
+def _novels_from_response(data) -> list[Novel]:
+    """Разбирает ответ каталога, отличая пустой результат от испорченного."""
+    if not isinstance(data, list) or not data:
         return []
-    novels = [n for n in (_novel_from_json(i) for i in data) if n]
-    return novels[:limit]
+
+    novels = [n for n in (_novel_from_json(i) for i in data if isinstance(i, dict)) if n]
+    if novels:
+        return novels
+
+    # [[]] или [{}] — поля срезаны, а не «ничего не найдено».
+    if all(not item for item in data):
+        raise StrippedResponse(
+            "Каталог вернул пустые объекты. Так бывает, когда в запросе есть "
+            "_fields: кастомные поля книги не зарегистрированы в схеме WP REST "
+            "и молча выбрасываются. Запрос к mvl-novels должен идти без _fields."
+        )
+    return []
+
+
+def search_novels(client: Client, query: str, limit: int = 20) -> list[Novel]:
+    """Поиск по каталогу через ?search=. Без _fields — см. комментарий выше."""
+    data = client.get_json("/mvl-novels", {"search": query, "per_page": min(limit, 100)})
+    return _novels_from_response(data)[:limit]
+
+
+def get_novel_by_slug(client: Client, slug: str) -> Novel | None:
+    """Резолв книги по слагу витрины — основной путь."""
+    novels = _novels_from_response(client.get_json("/mvl-novels", {"slug": slug}))
+    for novel in novels:
+        if novel.slug == slug:
+            return novel
+    return novels[0] if novels else None
 
 
 def find_novel(client: Client, raw_input: str) -> Novel:
-    """Находит книгу по ссылке, слагу или коду.
-
-    Параметр ?slug= на этом эндпоинте не работает (внутренний WP-слаг не
-    совпадает с вебфлоу-слагом), поэтому ищем через ?search= и сверяем
-    слагифицированное название.
-    """
+    """Находит книгу по ссылке, слагу или коду."""
     kind, value = parse_input(raw_input)
 
     if kind == "code":
@@ -150,39 +183,40 @@ def find_novel(client: Client, raw_input: str) -> Novel:
             return novel
         raise LookupError(f"Книга с кодом {value} не найдена в каталоге")
 
+    novel = get_novel_by_slug(client, value)
+    if novel:
+        return novel
+
+    # Слаг не подошёл — пробуем поиск по словам из него.
     words = value.replace("-", " ").strip()
     candidates = search_novels(client, words, limit=50)
 
     target = slugify(value)
-    for novel in candidates:
-        if slugify(novel.name) == target or novel.slug == value:
-            return novel
-
-    # Иногда слаг витрины короче названия — берём лучшее частичное совпадение.
-    for novel in candidates:
-        name_slug = slugify(novel.name)
+    for candidate in candidates:
+        if candidate.slug == value or slugify(candidate.name) == target:
+            return candidate
+    for candidate in candidates:
+        name_slug = slugify(candidate.name)
         if target in name_slug or name_slug in target:
-            return novel
+            return candidate
 
     if candidates:
         raise LookupError(
             f"Точного совпадения для '{value}' нет. Похожие: "
             + ", ".join(f"{n.name} ({n.code})" for n in candidates[:5])
         )
-    raise LookupError(f"По запросу '{words}' в каталоге ничего не найдено")
+    raise LookupError(f"Книга '{value}' в каталоге не найдена")
 
 
 def get_novel_by_code(client: Client, code: int) -> Novel | None:
     """Ищет книгу по числовому коду. Поиск по коду в ?search= работает не
     всегда, поэтому при промахе выкачиваем каталог целиком."""
-    data = client.get_json(
-        "/mvl-novels", {"search": str(code), "per_page": 100, "_fields": NOVEL_FIELDS}
-    )
-    if isinstance(data, list):
-        for item in data:
-            novel = _novel_from_json(item)
-            if novel and novel.code == code:
+    try:
+        for novel in search_novels(client, str(code), limit=100):
+            if novel.code == code:
                 return novel
+    except StrippedResponse:
+        raise
 
     for novel in fetch_catalog(client):
         if novel.code == code:
@@ -191,11 +225,8 @@ def get_novel_by_code(client: Client, code: int) -> Novel | None:
 
 
 def fetch_catalog(client: Client, per_page: int = CATALOG_PER_PAGE) -> list[Novel]:
-    """Весь каталог одним запросом (поля обрезаны, чтобы не тянуть синопсисы)."""
-    data = client.get_json("/mvl-novels", {"per_page": per_page, "_fields": NOVEL_FIELDS})
-    if not isinstance(data, list):
-        return []
-    return [n for n in (_novel_from_json(i) for i in data) if n]
+    """Весь каталог одним запросом."""
+    return _novels_from_response(client.get_json("/mvl-novels", {"per_page": per_page}))
 
 
 # ------------------------------------------------------------------ оглавление
@@ -222,9 +253,7 @@ def fetch_toc(
     for index, batch in enumerate(batches):
         slugs = [f"{novel.code}-{n}" for n in batch]
         data = client.get_json(
-            "/posts",
-            [("slug[]", s) for s in slugs]
-            + [("per_page", TOC_BATCH), ("_fields", "id,link,slug,acf")],
+            "/posts", [("slug[]", s) for s in slugs] + [("per_page", TOC_BATCH)]
         )
         for item in data if isinstance(data, list) else []:
             chapter = _chapter_from_post(item, novel.code)
@@ -261,51 +290,57 @@ def _chapter_from_post(item: dict, novel_code: int) -> Chapter | None:
         number=number,
         post_id=item.get("id"),
         ch_name=str(acf.get("ch_name") or "").strip(),
-        link=item.get("link") or f"{BASE}/chapter/{novel_code}-{number}",
+        # Ссылка из ответа ведёт на бэкенд-хост, где /chapter/* закрыт WAF.
+        # Текст берём только с витрины.
+        link=chapter_url(novel_code, number),
     )
 
 
 # ---------------------------------------------------------------- текст главы
 
-MODE_REST = "rest"
-MODE_HTML = "html"
+# Текст главы отдаёт только витрина: в REST полей title/content нет, а путь
+# /chapter/* на бэкенд-хосте закрыт правилом WAF.
+SOURCE_SITE = "site"
 
 
-def probe_content_mode(client: Client, chapter: Chapter) -> str:
-    """Проверяет, отдаёт ли REST тело главы.
+def fetch_chapter(client: Client, chapter: Chapter) -> tuple[str, str]:
+    """Возвращает (заголовок, текст) одной главы со страницы витрины.
 
-    Если content.rendered непустой — берём текст из JSON (самый дешёвый путь
-    по трафику). Иначе парсим HTML страницы главы.
+    Заголовок берём из ch_name (он пришёл готовым из API), с разметки — только
+    текст.
     """
-    if not chapter.post_id:
-        return MODE_HTML
-    try:
-        data = client.get_json(f"/posts/{chapter.post_id}", {"_fields": "content,title"})
-    except HttpError as exc:
-        log.debug("Проба REST не удалась (%s), переключаемся на HTML", exc)
-        return MODE_HTML
+    html = client.get_text(chapter.link or chapter_url(0, chapter.number))
+    if looks_like_cloudflare(html):
+        from .client import Blocked
 
-    rendered = ((data or {}).get("content") or {}).get("rendered") or ""
-    if extract_paragraphs(rendered):
-        return MODE_REST
-    return MODE_HTML
+        raise Blocked(
+            f"Вместо главы {chapter.number} пришла заглушка Cloudflare", status=403
+        )
+
+    title, text = parse_chapter_page(html, fallback_title=chapter.title)
+    return chapter.ch_name or title, text
 
 
-def fetch_chapter(client: Client, chapter: Chapter, mode: str) -> tuple[str, str]:
-    """Возвращает (заголовок, текст) одной главы."""
-    if mode == MODE_REST and chapter.post_id:
-        data = client.get_json(f"/posts/{chapter.post_id}", {"_fields": "content,title"})
-        rendered = ((data or {}).get("content") or {}).get("rendered") or ""
-        paragraphs = extract_paragraphs(rendered)
-        if paragraphs:
-            title = chapter.ch_name or _html_to_text(
-                ((data or {}).get("title") or {}).get("rendered") or ""
-            )
-            return title or chapter.title, "\n\n".join(paragraphs)
-        log.debug("Глава %s: REST отдал пусто, пробуем HTML", chapter.number)
+CLOUDFLARE_MARKERS = (
+    "you have been blocked",
+    "attention required!",
+    "cf-error-details",
+    "cf-browser-verification",
+    "checking your browser before accessing",
+    "__cf_chl_",
+    "ray id:",
+)
 
-    html = client.get_text(chapter.link or f"{BASE}/chapter/{chapter.number}")
-    return parse_chapter_page(html, fallback_title=chapter.title)
+
+def looks_like_cloudflare(html: str) -> bool:
+    """Заглушка Cloudflare, а не страница главы.
+
+    Нужно, чтобы не сохранить страницу блокировки как текст главы.
+    """
+    if not html:
+        return False
+    head = html[:6000].lower()
+    return any(marker in head for marker in CLOUDFLARE_MARKERS)
 
 
 # ------------------------------------------------------------------- парсинг
@@ -432,26 +467,36 @@ def batched(items: Iterable[Any], size: int) -> Iterable[list[Any]]:
         yield batch
 
 
+def chapter_links(novel: Novel, chapters: list[Chapter]) -> list[str]:
+    """Ссылки на главы для запасного плана (WebToEpub)."""
+    return [chapter_url(novel.code, ch.number) for ch in chapters]
+
+
 __all__ = [
     "API",
     "BASE",
+    "SITE",
+    "SOURCE_SITE",
     "Chapter",
     "Novel",
+    "StrippedResponse",
     "Toc",
-    "MODE_HTML",
-    "MODE_REST",
     "batched",
+    "chapter_links",
     "chapter_number_from_link",
+    "chapter_url",
     "extract_paragraphs",
     "fetch_catalog",
     "fetch_chapter",
     "fetch_toc",
     "find_novel",
     "get_novel_by_code",
+    "get_novel_by_slug",
+    "looks_like_cloudflare",
+    "novel_url",
     "parse_chapter_page",
     "parse_input",
     "parse_nav_links",
-    "probe_content_mode",
     "search_novels",
     "slugify",
 ]

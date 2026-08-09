@@ -5,14 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import api
-from .client import MAX_CONCURRENCY, Client, HttpError, polite_pause
+from .client import (
+    SITE_PAUSE_RANGE,
+    Blocked,
+    Client,
+    HttpError,
+    SiteClient,
+    site_pause,
+)
 from .paths import chapter_filename, write_chapter
 
 log = logging.getLogger(__name__)
@@ -24,7 +29,8 @@ STATE_VERSION = 1
 
 @dataclass
 class Progress:
-    stage: str = "idle"  # idle | search | toc | probe | download | done | error
+    # idle | search | toc | download | done | blocked | cancelled | error
+    stage: str = "idle"
     message: str = ""
     done: int = 0
     total: int = 0
@@ -47,6 +53,8 @@ class Report:
     failed: int = 0
     failed_chapters: list[int] = field(default_factory=list)
     missing_in_toc: list[int] = field(default_factory=list)
+    #: Номер главы, на которой сайт закрыл доступ и прогон остановился.
+    blocked_at: int | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -109,19 +117,24 @@ class State:
 class Downloader:
     """Скачивает главы книги в отдельные .txt.
 
+    Оглавление берётся из REST API, текст — со страниц витрины: строго один
+    поток, одна сессия на прогон, пауза 2-4 секунды между главами.
+
     Прерывание в любой момент безопасно: прогресс лежит в state.json, при
-    следующем запуске готовые главы пропускаются.
+    следующем запуске готовые главы пропускаются. При блокировке (403/429)
+    прогон останавливается целиком — ретраить бессмысленно.
     """
 
     def __init__(
         self,
         client: Client | None = None,
-        concurrency: int = MAX_CONCURRENCY,
+        site_client: Client | None = None,
         on_progress=None,
         cancel_event: threading.Event | None = None,
     ):
         self.client = client or Client()
-        self.concurrency = max(1, min(concurrency, MAX_CONCURRENCY))
+        # Если сессию витрины передали снаружи, закрывать её мы не должны.
+        self.site_client = site_client
         self.on_progress = on_progress
         self.cancel = cancel_event or threading.Event()
         self.progress = Progress()
@@ -187,85 +200,102 @@ class Downloader:
         # Уже готовые главы не перекачиваем.
         pending = [ch for ch in toc.chapters if not state.is_done(ch.number, output_dir)]
         skipped = len(toc.chapters) - len(pending)
+        state.data["mode"] = api.SOURCE_SITE
+        state.save()
 
+        minutes = int(len(pending) * sum(SITE_PAUSE_RANGE) / 2 / 60)
         self._emit(
-            stage="probe",
-            message="Проверяем, отдаёт ли REST текст глав…",
+            stage="download",
+            message=(
+                f"Качаем {len(pending)} глав с витрины, один поток. "
+                f"Это примерно {minutes} мин."
+            ),
             done=0,
             total=len(pending),
             skipped=skipped,
         )
 
-        mode = state.data.get("mode") or ""
-        if not mode or not pending:
-            probe_target = pending[0] if pending else (toc.chapters[0] if toc.chapters else None)
-            mode = api.probe_content_mode(self.client, probe_target) if probe_target else api.MODE_HTML
-            state.data["mode"] = mode
-        state.save()
-
-        mode_label = "JSON (без парсинга HTML)" if mode == api.MODE_REST else "HTML-страницы"
-        self._emit(
-            stage="download",
-            message=f"Качаем {len(pending)} глав, источник текста: {mode_label}",
-        )
-
+        # Одна сессия на весь прогон: Cloudflare выдаёт куку доступа, её нужно
+        # переиспользовать между главами.
+        site = self.site_client or SiteClient(referer=novel.page_url)
         downloaded = 0
         failed: list[int] = []
+        blocked_at: int | None = None
 
         try:
-            with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-                batches = list(api.batched(pending, self.concurrency))
-                for index, batch in enumerate(batches):
-                    self._check_cancel()
-                    results = list(
-                        pool.map(
-                            lambda ch: self._one(ch, novel, output_dir, mode, state), batch
-                        )
-                    )
-                    for chapter, ok in zip(batch, results):
-                        if ok:
-                            downloaded += 1
-                        else:
-                            failed.append(chapter.number)
+            for index, chapter in enumerate(pending):
+                self._check_cancel()
+                try:
+                    self._one(chapter, novel, output_dir, site, state)
+                    downloaded += 1
+                except Blocked as exc:
+                    # Один блок — остановка прогона. Ретраи только усугубят.
+                    blocked_at = chapter.number
+                    self._log_error(output_dir, chapter.number, f"БЛОКИРОВКА: {exc}")
+                    state.mark_failed(chapter.number, str(exc))
+                    break
+                except (HttpError, ValueError, OSError) as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                    log.warning("Глава %s не скачана: %s", chapter.number, reason)
+                    state.mark_failed(chapter.number, reason)
+                    self._log_error(output_dir, chapter.number, reason)
+                    failed.append(chapter.number)
 
-                    self._emit(
-                        done=downloaded + len(failed),
-                        downloaded=downloaded,
-                        failed=len(failed),
-                        message=f"Глава {batch[-1].number} из {last}",
-                    )
-                    state.save()
+                self._emit(
+                    done=downloaded + len(failed),
+                    downloaded=downloaded,
+                    failed=len(failed),
+                    message=f"Глава {chapter.number} из {last}",
+                )
+                state.save()
 
-                    if index < len(batches) - 1:
-                        polite_pause()  # пауза между пачками
+                if index < len(pending) - 1:
+                    site_pause()  # 2-4 секунды между главами
         except Cancelled:
             state.save()
             self._emit(stage="cancelled", message="Остановлено. Прогресс сохранён — можно продолжить.")
             raise
         finally:
             state.save()
+            if self.site_client is None:
+                site.close()
 
         report = Report(
             novel=novel.to_dict(),
             output_dir=str(output_dir),
-            mode=mode,
+            mode=api.SOURCE_SITE,
             requested=len(toc.chapters) + len(toc.missing),
             downloaded=downloaded,
             skipped=skipped,
             failed=len(failed),
             failed_chapters=sorted(failed),
             missing_in_toc=toc.missing,
+            blocked_at=blocked_at,
         )
-        self._emit(
-            stage="done",
-            message=(
-                f"Готово. Скачано {downloaded}, пропущено (уже было) {skipped}, "
-                f"ошибок {len(failed)}."
-            ),
-            downloaded=downloaded,
-            skipped=skipped,
-            failed=len(failed),
-        )
+
+        if blocked_at is not None:
+            self._emit(
+                stage="blocked",
+                message=(
+                    f"Сайт закрыл доступ на главе {blocked_at}. Прогон остановлен, "
+                    f"скачано {downloaded}. Подождите и запустите снова — "
+                    f"продолжит с этого места."
+                ),
+                downloaded=downloaded,
+                skipped=skipped,
+                failed=len(failed),
+            )
+        else:
+            self._emit(
+                stage="done",
+                message=(
+                    f"Готово. Скачано {downloaded}, пропущено (уже было) {skipped}, "
+                    f"ошибок {len(failed)}."
+                ),
+                downloaded=downloaded,
+                skipped=skipped,
+                failed=len(failed),
+            )
         return report
 
     def _one(
@@ -273,27 +303,17 @@ class Downloader:
         chapter: api.Chapter,
         novel: api.Novel,
         output_dir: Path,
-        mode: str,
+        site: Client,
         state: State,
-    ) -> bool:
-        """Скачивает и сохраняет одну главу. True — успех."""
-        if self.cancel.is_set():
-            return False
-        try:
-            title, text = api.fetch_chapter(self.client, chapter, mode)
-            if not text.strip():
-                raise ValueError("пустой текст главы")
+    ) -> None:
+        """Скачивает и сохраняет одну главу. Ошибки пробрасывает наверх."""
+        title, text = api.fetch_chapter(site, chapter)
+        if not text.strip():
+            raise ValueError("пустой текст главы")
 
-            filename = chapter_filename(chapter.number, title or chapter.title)
-            write_chapter(output_dir / filename, novel.name, title or chapter.title, chapter.number, text)
-            state.mark_done(chapter.number, filename)
-            return True
-        except (HttpError, ValueError, OSError) as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            log.warning("Глава %s не скачана: %s", chapter.number, reason)
-            state.mark_failed(chapter.number, reason)
-            self._log_error(output_dir, chapter.number, reason)
-            return False
+        filename = chapter_filename(chapter.number, title or chapter.title)
+        write_chapter(output_dir / filename, novel.name, title or chapter.title, chapter.number, text)
+        state.mark_done(chapter.number, filename)
 
 
 class Cancelled(Exception):

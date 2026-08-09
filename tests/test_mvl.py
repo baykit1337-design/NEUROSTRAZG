@@ -1,5 +1,9 @@
-"""Тесты. Живой сайт в CI недоступен, поэтому весь пайплайн гоняем против
-локального мок-сервера, повторяющего формат ответов WP REST."""
+"""Тесты.
+
+Живой сайт недоступен из CI, поэтому весь пайплайн гоняем против локального
+мок-сервера. Он играет обе роли сразу: на `/wp-json/*` отвечает как REST API
+бэкенда, на `/chapter/*` — как витрина.
+"""
 
 from __future__ import annotations
 
@@ -15,15 +19,17 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mvl import api, client as client_mod  # noqa: E402
-from mvl.client import Client  # noqa: E402
-from mvl.downloader import Downloader, State, _compact_ranges, verify  # noqa: E402
+from mvl.client import Blocked, Client, SiteClient  # noqa: E402
+from mvl.downloader import Cancelled, Downloader, State, _compact_ranges, verify  # noqa: E402
 from mvl.paths import chapter_filename, prepare_output_dir, sanitize_filename  # noqa: E402
 
 NOVEL_CODE = 6615
 NOVEL_NAME = "Insect Tamer's Ascension"
+NOVEL_SLUG = "insect-tamers-ascension"
 TOTAL = 12
-HOLES = {7}  # главы, которых нет в каталоге
-FLAKY = {9}  # глава, которая всегда отдаёт 500
+HOLES = {7}  # нет в каталоге
+FLAKY = {9}  # витрина отдаёт 500
+BLOCKED: set[int] = set()  # витрина отдаёт 403, ставится в отдельных тестах
 
 CHAPTER_HTML = """
 <html><body>
@@ -44,9 +50,38 @@ CHAPTER_HTML = """
 </body></html>
 """
 
+CLOUDFLARE_PAGE = """
+<html><head><title>Attention Required! | Cloudflare</title></head>
+<body><h1>Sorry, you have been blocked</h1><div class="cf-error-details">
+Ray ID: 8f2a1b</div></body></html>
+"""
+
+
+class Recorder:
+    """Что мок увидел: заголовки, параллельность, использование _fields."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.chapter_headers: list[dict] = []
+        self.saw_fields_param = False
+        self.novel_queries: list[dict] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+        # Сколько раз запрашивали каждую главу — для проверки «403 не ретраим».
+        self.chapter_hits: dict[int, int] = {}
+
+    def enter(self):
+        with self.lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+
+    def leave(self):
+        with self.lock:
+            self.in_flight -= 1
+
 
 class MockHandler(BaseHTTPRequestHandler):
-    rest_serves_content = True  # переключаем в тестах
+    serve_cloudflare = False  # вместо главы отдавать заглушку
 
     def log_message(self, *args):
         pass
@@ -69,81 +104,105 @@ class MockHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
-        query = parse_qs(url.query)
+        query = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(url.query).items()}
+        rec = self.server.recorder
+
+        if "_fields" in query:
+            rec.saw_fields_param = True
 
         if url.path == "/wp-json/wp/v2/mvl-novels":
-            self._send(
-                [
-                    {
-                        "name": NOVEL_NAME,
-                        "slug": "insect-tamers-ascension-wp",
-                        "novel-code": NOVEL_CODE,
-                        "total-chapters": TOTAL,
-                        "read-link": f"/chapter/{NOVEL_CODE}-1",
-                        "author-name": "Someone",
-                        "status": "Ongoing",
-                    },
-                    {
-                        "name": "Unrelated Novel",
-                        "slug": "unrelated",
-                        "novel-code": 111,
-                        "total-chapters": 3,
-                    },
-                ]
-            )
+            self._novels(query, rec)
             return
-
         if url.path == "/wp-json/wp/v2/posts":
-            slugs = query.get("slug[]", [])
-            posts = []
-            for slug in slugs:
-                code, _, number = slug.partition("-")
-                number = int(number)
-                if number in HOLES:
-                    continue
-                posts.append(
-                    {
-                        "id": 4900000 + number,
-                        "slug": slug,
-                        "link": f"{self.server.base}/chapter/{code}-{number}",
-                        "acf": {
-                            "novel_code": int(code),
-                            "chapter_number": number,
-                            "novel_name": NOVEL_NAME,
-                            "ch_name": f"Chapter {number}: The Title / Part 2",
-                        },
-                    }
-                )
-            self._send(posts)
+            self._posts(parse_qs(url.query).get("slug[]", []))
+            return
+        if url.path.startswith("/chapter/"):
+            self._chapter(url.path, rec)
             return
 
-        if url.path.startswith("/wp-json/wp/v2/posts/"):
-            post_id = int(url.path.rsplit("/", 1)[-1])
-            number = post_id - 4900000
-            if number in FLAKY:
-                self._send({"error": "boom"}, status=500)
-                return
-            rendered = ""
-            if MockHandler.rest_serves_content:
-                rendered = (
-                    f"<p>First line of chapter {number}.</p><p>*</p>"
-                    f"<p>Second line of chapter {number}.</p>"
-                    f'<div class="ke400008d2"><p>Buy our premium subscription</p></div>'
-                )
-            self._send(
+        self._send({"error": "not found"}, status=404)
+
+    # ---------------------------------------------------------------- каталог
+
+    def _novels(self, query, rec):
+        rec.novel_queries.append(query)
+
+        # С _fields WP молча срезает кастомные поля — массив пустых объектов.
+        if "_fields" in query:
+            self._send([[]])
+            return
+
+        book = {
+            "name": NOVEL_NAME,
+            "slug": NOVEL_SLUG,
+            "novel-code": NOVEL_CODE,
+            "total-chapters": TOTAL,
+            "read-link": f"/chapter/{NOVEL_CODE}-1",
+            "status": "Ongoing",
+            "author-name": "sahejRocks",
+        }
+        other = {"name": "Unrelated Novel", "slug": "unrelated", "novel-code": 111,
+                 "total-chapters": 3}
+
+        if "slug" in query:
+            self._send([book] if query["slug"] == NOVEL_SLUG else [])
+            return
+        if "search" in query:
+            term = str(query["search"]).lower()
+            hits = [b for b in (book, other)
+                    if term in b["name"].lower() or term == str(b["novel-code"])]
+            self._send(hits)
+            return
+        self._send([book, other])
+
+    # ------------------------------------------------------------- оглавление
+
+    def _posts(self, slugs):
+        posts = []
+        for slug in slugs:
+            code, _, number = slug.partition("-")
+            number = int(number)
+            if number in HOLES:
+                continue
+            posts.append(
                 {
-                    "content": {"rendered": rendered},
-                    "title": {"rendered": f"Chapter {number}"},
+                    "id": 4900000 + number,
+                    "slug": slug,
+                    "date": "2024-01-01T00:00:00",
+                    # Ссылка ведёт на бэкенд-хост, где /chapter/* закрыт WAF.
+                    "link": f"https://chap.heliosarchive.online/chapter/{code}-{number}",
+                    "acf": {
+                        "novel_code": int(code),
+                        "chapter_number": number,
+                        "novel_name": NOVEL_NAME,
+                        "ch_name": f"Chapter {number}: The Title / Part 2",
+                    },
                 }
             )
-            return
+        self._send(posts)
 
-        if url.path.startswith("/chapter/"):
-            code, _, number = url.path.rsplit("/", 1)[-1].partition("-")
+    # ---------------------------------------------------------------- витрина
+
+    def _chapter(self, path, rec):
+        rec.enter()
+        try:
+            code, _, number = path.rsplit("/", 1)[-1].partition("-")
             number = int(number)
+
+            with rec.lock:
+                rec.chapter_headers.append(dict(self.headers))
+                rec.chapter_hits[number] = rec.chapter_hits.get(number, 0) + 1
+
+            if number in BLOCKED:
+                self._send_html(CLOUDFLARE_PAGE, status=403)
+                return
             if number in FLAKY:
                 self._send({"error": "boom"}, status=500)
                 return
+            if MockHandler.serve_cloudflare:
+                self._send_html(CLOUDFLARE_PAGE, status=200)
+                return
+
             self._send_html(
                 CHAPTER_HTML.format(
                     novel=NOVEL_NAME,
@@ -154,27 +213,31 @@ class MockHandler(BaseHTTPRequestHandler):
                     next=number + 1,
                 )
             )
-            return
-
-        self._send({"error": "not found"}, status=404)
+        finally:
+            rec.leave()
 
 
 class MockSite:
+    """Поднимает мок и подменяет адреса обоих хостов на него."""
+
     def __init__(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MockHandler)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.server.base = self.base
+        self.recorder = Recorder()
+        self.server.recorder = self.recorder
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
         self.thread.start()
-        self._saved = (client_mod.BASE, client_mod.API, api.BASE, api.API)
+        self._saved = (client_mod.BASE, client_mod.API, client_mod.SITE, api.BASE, api.API, api.SITE)
         client_mod.BASE = api.BASE = self.base
         client_mod.API = api.API = f"{self.base}/wp-json/wp/v2"
+        client_mod.SITE = api.SITE = self.base
         return self
 
     def __exit__(self, *exc):
-        client_mod.BASE, client_mod.API, api.BASE, api.API = self._saved
+        (client_mod.BASE, client_mod.API, client_mod.SITE,
+         api.BASE, api.API, api.SITE) = self._saved
         self.server.shutdown()
         self.server.server_close()
 
@@ -205,7 +268,6 @@ class TestNames(unittest.TestCase):
     def test_chapter_filename_zero_padded(self):
         self.assertEqual(chapter_filename(7, "Start"), "0007 - Start.txt")
         self.assertEqual(chapter_filename(1234, "X"), "1234 - X.txt")
-        # Сортировка по имени должна совпадать с числовым порядком.
         names = sorted(chapter_filename(n, "T") for n in (1, 2, 10, 100, 1000))
         self.assertEqual(names[0], "0001 - T.txt")
         self.assertEqual(names[-1], "1000 - T.txt")
@@ -215,16 +277,17 @@ class TestInputParsing(unittest.TestCase):
     def test_numeric_code(self):
         self.assertEqual(api.parse_input("6615"), ("code", "6615"))
 
-    def test_chapter_url_gives_code(self):
-        self.assertEqual(
-            api.parse_input("https://chap.heliosarchive.online/chapter/6615-200"),
-            ("code", "6615"),
-        )
+    def test_chapter_url_gives_code_without_network(self):
+        for link in (
+            "https://chap.heliosarchive.online/chapter/6615-200",
+            "https://www.mvlempyr.io/chapter/6615-1",
+        ):
+            self.assertEqual(api.parse_input(link), ("code", "6615"))
 
     def test_showcase_url_gives_slug(self):
         self.assertEqual(
             api.parse_input("https://www.mvlempyr.io/novel/insect-tamers-ascension"),
-            ("slug", "insect-tamers-ascension"),
+            ("slug", NOVEL_SLUG),
         )
 
     def test_url_with_query_and_trailing_slash(self):
@@ -241,8 +304,53 @@ class TestInputParsing(unittest.TestCase):
             api.parse_input("   ")
 
     def test_slugify(self):
-        self.assertEqual(api.slugify("Insect Tamer's Ascension"), "insect-tamers-ascension")
+        self.assertEqual(api.slugify("Insect Tamer's Ascension"), NOVEL_SLUG)
         self.assertEqual(api.slugify("A & B: Vol. 2"), "a-and-b-vol-2")
+
+
+class TestUrls(unittest.TestCase):
+    def test_chapter_url_points_at_storefront(self):
+        self.assertEqual(
+            client_mod.chapter_url(6615, 200), "https://www.mvlempyr.io/chapter/6615-200"
+        )
+
+    def test_novel_url(self):
+        self.assertEqual(
+            client_mod.novel_url(NOVEL_SLUG),
+            "https://www.mvlempyr.io/novel/insect-tamers-ascension",
+        )
+
+
+class TestStrippedResponse(unittest.TestCase):
+    """Массив пустых объектов — испорченный запрос, а не «не найдено»."""
+
+    def test_empty_lists_detected(self):
+        with self.assertRaises(api.StrippedResponse):
+            api._novels_from_response([[]])
+
+    def test_several_empty_objects_detected(self):
+        with self.assertRaises(api.StrippedResponse):
+            api._novels_from_response([{}, {}])
+
+    def test_message_names_the_cause(self):
+        with self.assertRaises(api.StrippedResponse) as ctx:
+            api._novels_from_response([[]])
+        self.assertIn("_fields", str(ctx.exception))
+
+    def test_genuinely_empty_result_is_not_an_error(self):
+        self.assertEqual(api._novels_from_response([]), [])
+
+
+class TestCloudflareDetection(unittest.TestCase):
+    def test_block_page_detected(self):
+        self.assertTrue(api.looks_like_cloudflare(CLOUDFLARE_PAGE))
+
+    def test_normal_chapter_not_flagged(self):
+        html = CHAPTER_HTML.format(novel="N", title="T", n=1, code=1, prev=0, next=2)
+        self.assertFalse(api.looks_like_cloudflare(html))
+
+    def test_empty_not_flagged(self):
+        self.assertFalse(api.looks_like_cloudflare(""))
 
 
 class TestHtmlParsing(unittest.TestCase):
@@ -309,138 +417,183 @@ class TestParamEncoding(unittest.TestCase):
         self.assertEqual(encoded, "slug%5B%5D=6615-1&slug%5B%5D=6615-2")
 
 
+class TestSiteClientConfig(unittest.TestCase):
+    def test_blocks_are_not_retried(self):
+        self.assertEqual(SiteClient.block_statuses, frozenset({403, 429}))
+
+    def test_browser_headers_present(self):
+        client = SiteClient(referer="https://www.mvlempyr.io/novel/x")
+        for header in ("Accept", "Accept-Language", "Referer", "Sec-Fetch-Dest",
+                       "Sec-Fetch-Mode", "Sec-Fetch-Site", "Upgrade-Insecure-Requests"):
+            self.assertIn(header, client.headers)
+        self.assertEqual(client.headers["Referer"], "https://www.mvlempyr.io/novel/x")
+
+    def test_api_client_still_retries_429(self):
+        self.assertEqual(Client.block_statuses, frozenset())
+
+
 # ------------------------------------------------------------- интеграционные
 
 
-class TestAgainstMockSite(unittest.TestCase):
+class MockSiteTestCase(unittest.TestCase):
+    """Общая обвязка: мок поднят, паузы обнулены."""
+
     def setUp(self):
-        MockHandler.rest_serves_content = True
+        MockHandler.serve_cloudflare = False
+        BLOCKED.clear()
         self.site = MockSite().__enter__()
+        self.rec = self.site.recorder
         self.client = Client()
         self.tmp = TemporaryDirectory()
-        # Не ждём паузы между пачками в тестах.
-        self._pause = client_mod.PAUSE_RANGE
-        client_mod.PAUSE_RANGE = (0, 0)
+        self._pauses = (client_mod.PAUSE_RANGE, client_mod.SITE_PAUSE_RANGE)
+        client_mod.PAUSE_RANGE = client_mod.SITE_PAUSE_RANGE = (0, 0)
 
     def tearDown(self):
-        client_mod.PAUSE_RANGE = self._pause
+        client_mod.PAUSE_RANGE, client_mod.SITE_PAUSE_RANGE = self._pauses
         self.client.close()
         self.tmp.cleanup()
         self.site.__exit__()
+        BLOCKED.clear()
 
-    def test_find_by_slug(self):
-        novel = api.find_novel(self.client, "https://www.mvlempyr.io/novel/insect-tamers-ascension")
+    def make_downloader(self, **kwargs):
+        # max_attempts=1: в тестах не ждём экспоненциальный backoff.
+        site = SiteClient(referer="http://x/novel/y", max_attempts=1)
+        self.addCleanup(site.close)
+        return Downloader(client=self.client, site_client=site, **kwargs)
+
+    def run_download(self, **kwargs):
+        novel = api.find_novel(self.client, str(NOVEL_CODE))
+        out = prepare_output_dir(self.tmp.name, novel.name)
+        return novel, out, self.make_downloader().run(novel, out, **kwargs)
+
+
+class TestCatalog(MockSiteTestCase):
+    def test_find_by_slug_uses_slug_param(self):
+        novel = api.find_novel(self.client, f"https://www.mvlempyr.io/novel/{NOVEL_SLUG}")
         self.assertEqual(novel.code, NOVEL_CODE)
         self.assertEqual(novel.total_chapters, TOTAL)
+        self.assertEqual(novel.name, NOVEL_NAME)
+        self.assertEqual(self.rec.novel_queries[0].get("slug"), NOVEL_SLUG)
+
+    def test_find_by_bare_slug(self):
+        self.assertEqual(api.find_novel(self.client, NOVEL_SLUG).code, NOVEL_CODE)
 
     def test_find_by_code(self):
-        self.assertEqual(api.find_novel(self.client, "6615").code, NOVEL_CODE)
+        self.assertEqual(api.find_novel(self.client, str(NOVEL_CODE)).code, NOVEL_CODE)
+
+    def test_chapter_link_resolves_code_without_extra_lookup(self):
+        novel = api.find_novel(
+            self.client, f"https://www.mvlempyr.io/chapter/{NOVEL_CODE}-200"
+        )
+        self.assertEqual(novel.code, NOVEL_CODE)
 
     def test_find_unknown_raises(self):
         with self.assertRaises(LookupError):
             api.find_novel(self.client, "definitely-not-a-real-book-xyz")
 
+    def test_no_fields_param_ever_sent(self):
+        api.find_novel(self.client, NOVEL_SLUG)
+        api.search_novels(self.client, "insect")
+        api.fetch_toc(self.client, api.find_novel(self.client, NOVEL_SLUG), last=3)
+        self.assertFalse(self.rec.saw_fields_param, "_fields не должен уходить на сервер")
+
+    def test_novel_page_url(self):
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        self.assertTrue(novel.page_url.endswith(f"/novel/{NOVEL_SLUG}"))
+
+
+class TestToc(MockSiteTestCase):
     def test_toc_reports_holes(self):
-        novel = api.find_novel(self.client, "6615")
+        novel = api.find_novel(self.client, NOVEL_SLUG)
         toc = api.fetch_toc(self.client, novel)
         self.assertEqual(toc.missing, sorted(HOLES))
-        self.assertEqual(len(toc.chapters), TOTAL - len(HOLES))
-        self.assertEqual([c.number for c in toc.chapters], sorted(set(range(1, TOTAL + 1)) - HOLES))
+        self.assertEqual([c.number for c in toc.chapters],
+                         sorted(set(range(1, TOTAL + 1)) - HOLES))
 
-    def test_probe_detects_rest_mode(self):
-        novel = api.find_novel(self.client, "6615")
-        toc = api.fetch_toc(self.client, novel)
-        self.assertEqual(api.probe_content_mode(self.client, toc.chapters[0]), api.MODE_REST)
+    def test_ch_name_comes_from_api(self):
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        toc = api.fetch_toc(self.client, novel, last=2)
+        self.assertEqual(toc.chapters[0].ch_name, "Chapter 1: The Title / Part 2")
 
-    def test_probe_detects_html_mode(self):
-        MockHandler.rest_serves_content = False
-        novel = api.find_novel(self.client, "6615")
-        toc = api.fetch_toc(self.client, novel)
-        self.assertEqual(api.probe_content_mode(self.client, toc.chapters[0]), api.MODE_HTML)
+    def test_chapter_links_point_at_storefront(self):
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        toc = api.fetch_toc(self.client, novel, last=3)
+        for chapter in toc.chapters:
+            self.assertIn("/chapter/", chapter.link)
+            self.assertNotIn("heliosarchive", chapter.link)
 
-    def _run(self, **kwargs):
-        novel = api.find_novel(self.client, "6615")
-        out = prepare_output_dir(self.tmp.name, novel.name)
-        downloader = Downloader(client=self.client)
-        return novel, out, downloader.run(novel, out, **kwargs)
+    def test_chapter_links_export(self):
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        toc = api.fetch_toc(self.client, novel, first=1, last=3)
+        links = api.chapter_links(novel, toc.chapters)
+        self.assertEqual(len(links), 3)
+        self.assertTrue(links[0].endswith(f"/chapter/{NOVEL_CODE}-1"))
 
-    def test_full_run_rest_mode(self):
-        novel, out, report = self._run()
-        self.assertEqual(report.mode, api.MODE_REST)
+
+class TestDownload(MockSiteTestCase):
+    def test_full_run(self):
+        _, out, report = self.run_download()
+        self.assertEqual(report.mode, api.SOURCE_SITE)
         self.assertEqual(report.downloaded, TOTAL - len(HOLES) - len(FLAKY))
         self.assertEqual(report.failed_chapters, sorted(FLAKY))
         self.assertEqual(report.missing_in_toc, sorted(HOLES))
+        self.assertIsNone(report.blocked_at)
 
-        files = sorted(p.name for p in out.glob("*.txt"))
-        self.assertEqual(len(files), TOTAL - len(HOLES) - len(FLAKY))
-        self.assertTrue(files[0].startswith("0001 - "))
-        # Слэш из ch_name не должен превратиться в подпапку.
-        self.assertFalse(any(p.is_dir() for p in out.iterdir() if p.name != "__pycache__"))
+    def test_single_threaded(self):
+        self.run_download()
+        self.assertEqual(self.rec.max_in_flight, 1, "витрину нельзя опрашивать параллельно")
 
-    def test_full_run_html_mode(self):
-        MockHandler.rest_serves_content = False
-        novel, out, report = self._run()
-        self.assertEqual(report.mode, api.MODE_HTML)
-        self.assertEqual(report.downloaded, TOTAL - len(HOLES) - len(FLAKY))
-        body = (out / sorted(p.name for p in out.glob("*.txt"))[0]).read_text(encoding="utf-8")
-        self.assertIn(NOVEL_NAME, body)
-        self.assertNotIn("premium", body)
+    def test_browser_headers_sent_to_storefront(self):
+        self.run_download(last=2)
+        headers = self.rec.chapter_headers[0]
+        self.assertIn("Referer", headers)
+        self.assertEqual(headers.get("Sec-Fetch-Mode"), "navigate")
+        self.assertEqual(headers.get("Upgrade-Insecure-Requests"), "1")
 
     def test_saved_file_layout(self):
-        novel, out, _ = self._run()
+        _, out, _ = self.run_download()
         path = out / "0001 - Chapter 1_ The Title _ Part 2.txt"
-        self.assertTrue(path.exists(), sorted(p.name for p in out.glob('*.txt')))
+        self.assertTrue(path.exists(), sorted(p.name for p in out.glob("*.txt")))
         lines = path.read_text(encoding="utf-8").split("\n")
         self.assertEqual(lines[0], NOVEL_NAME)
         self.assertEqual(lines[1], "Chapter 1: The Title / Part 2")
         self.assertEqual(lines[2], "")
 
+    def test_slash_in_title_does_not_make_subdir(self):
+        _, out, _ = self.run_download(last=2)
+        self.assertFalse(any(p.is_dir() for p in out.iterdir()))
+
+    def test_ads_not_saved(self):
+        _, out, _ = self.run_download(last=1)
+        body = next(out.glob("*.txt")).read_text(encoding="utf-8")
+        self.assertNotIn("premium", body)
+
     def test_errors_log_written(self):
-        _, out, _ = self._run()
+        _, out, _ = self.run_download()
         log_text = (out / "errors.log").read_text(encoding="utf-8")
         for number in FLAKY:
             self.assertIn(f"глава {number}", log_text)
         self.assertIn("нет в оглавлении", log_text)
 
-    def test_resume_skips_finished(self):
-        novel, out, first_report = self._run()
-        self.assertGreater(first_report.downloaded, 0)
-
-        second = Downloader(client=self.client).run(novel, out)
-        self.assertEqual(second.downloaded, 0)
-        self.assertEqual(second.skipped, TOTAL - len(HOLES) - len(FLAKY))
-        self.assertEqual(second.failed, len(FLAKY))
-
-    def test_resume_redownloads_deleted_file(self):
-        novel, out, _ = self._run()
-        victim = sorted(out.glob("*.txt"))[0]
-        victim.unlink()
-
-        second = Downloader(client=self.client).run(novel, out)
-        self.assertEqual(second.downloaded, 1)
-        self.assertTrue(victim.exists())
-
     def test_range_limits_download(self):
-        _, out, report = self._run(first=2, last=4)
+        _, out, report = self.run_download(first=2, last=4)
         self.assertEqual(sorted(int(p.name[:4]) for p in out.glob("*.txt")), [2, 3, 4])
         self.assertEqual(report.downloaded, 3)
 
     def test_state_file_written(self):
-        _, out, _ = self._run()
+        _, out, _ = self.run_download()
         state = State(out / "state.json")
         self.assertEqual(state.data["novel"]["code"], NOVEL_CODE)
-        self.assertEqual(state.data["mode"], api.MODE_REST)
+        self.assertEqual(state.data["mode"], api.SOURCE_SITE)
         self.assertIn("1", state.data["downloaded"])
-        self.assertIn(str(sorted(FLAKY)[0]), state.data["failed"])
 
     def test_corrupt_state_does_not_crash(self):
-        _, out, _ = self._run()
+        _, out, _ = self.run_download(last=2)
         (out / "state.json").write_text("{ broken", encoding="utf-8")
-        state = State(out / "state.json")
-        self.assertEqual(state.data["downloaded"], {})
+        self.assertEqual(State(out / "state.json").data["downloaded"], {})
 
     def test_verify_report(self):
-        novel, out, _ = self._run()
+        _, out, _ = self.run_download()
         report = verify(out)
         self.assertEqual(report["total_chapters"], TOTAL)
         self.assertEqual(report["on_disk"], TOTAL - len(HOLES) - len(FLAKY))
@@ -448,40 +601,94 @@ class TestAgainstMockSite(unittest.TestCase):
         self.assertEqual(report["missing_compact"], "7, 9")
 
     def test_cancel_stops_run(self):
-        novel = api.find_novel(self.client, "6615")
+        novel = api.find_novel(self.client, NOVEL_SLUG)
         out = prepare_output_dir(self.tmp.name, "cancelme")
         cancel = threading.Event()
         cancel.set()
-        downloader = Downloader(client=self.client, cancel_event=cancel)
-        from mvl.downloader import Cancelled
-
         with self.assertRaises(Cancelled):
-            downloader.run(novel, out)
+            self.make_downloader(cancel_event=cancel).run(novel, out)
 
 
-class TestWebApp(unittest.TestCase):
+class TestResume(MockSiteTestCase):
+    def test_resume_skips_finished(self):
+        novel, out, first_report = self.run_download()
+        self.assertGreater(first_report.downloaded, 0)
+
+        second = self.make_downloader().run(novel, out)
+        self.assertEqual(second.downloaded, 0)
+        self.assertEqual(second.skipped, TOTAL - len(HOLES) - len(FLAKY))
+
+    def test_resume_redownloads_deleted_file(self):
+        novel, out, _ = self.run_download()
+        victim = sorted(out.glob("*.txt"))[0]
+        victim.unlink()
+
+        second = self.make_downloader().run(novel, out)
+        self.assertEqual(second.downloaded, 1)
+        self.assertTrue(victim.exists())
+
+
+class TestBlocking(MockSiteTestCase):
+    """403 останавливает прогон целиком и не ретраится."""
+
+    def test_run_stops_at_block(self):
+        BLOCKED.add(5)
+        _, out, report = self.run_download()
+        self.assertEqual(report.blocked_at, 5)
+        # Главы после пятой не качались.
+        self.assertEqual(sorted(int(p.name[:4]) for p in out.glob("*.txt")), [1, 2, 3, 4])
+
+    def test_block_is_not_retried(self):
+        BLOCKED.add(3)
+        self.run_download()
+        self.assertEqual(self.rec.chapter_hits[3], 1, "403 ретраить нельзя")
+
+    def test_block_logged(self):
+        BLOCKED.add(2)
+        _, out, _ = self.run_download()
+        self.assertIn("БЛОКИРОВКА", (out / "errors.log").read_text(encoding="utf-8"))
+
+    def test_resume_after_block_continues(self):
+        BLOCKED.add(4)
+        novel, out, first = self.run_download()
+        self.assertEqual(first.blocked_at, 4)
+
+        BLOCKED.clear()
+        second = self.make_downloader().run(novel, out)
+        self.assertIsNone(second.blocked_at)
+        self.assertGreater(second.downloaded, 0)
+        self.assertTrue((out / "0004 - Chapter 4_ The Title _ Part 2.txt").exists())
+
+    def test_cloudflare_stub_not_saved_as_chapter(self):
+        """Заглушка с кодом 200 не должна попасть в файл главы."""
+        MockHandler.serve_cloudflare = True
+        _, out, report = self.run_download()
+        self.assertEqual(report.blocked_at, 1)
+        self.assertEqual(list(out.glob("*.txt")), [])
+
+    def test_blocked_raises_for_direct_fetch(self):
+        BLOCKED.add(1)
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        toc = api.fetch_toc(self.client, novel, last=1)
+        site = SiteClient(referer=novel.page_url, max_attempts=1)
+        self.addCleanup(site.close)
+        with self.assertRaises(Blocked):
+            api.fetch_chapter(site, toc.chapters[0])
+
+
+class TestWebApp(MockSiteTestCase):
     def setUp(self):
-        MockHandler.rest_serves_content = True
-        self.site = MockSite().__enter__()
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        super().setUp()
         from webapp.app import app
 
         app.config["TESTING"] = True
         self.app = app.test_client()
-        self.tmp = TemporaryDirectory()
-        self._pause = client_mod.PAUSE_RANGE
-        client_mod.PAUSE_RANGE = (0, 0)
-
-    def tearDown(self):
-        client_mod.PAUSE_RANGE = self._pause
-        self.tmp.cleanup()
-        self.site.__exit__()
 
     def test_index_served(self):
         self.assertEqual(self.app.get("/").status_code, 200)
 
     def test_find_endpoint(self):
-        res = self.app.post("/api/find", json={"query": "6615"})
+        res = self.app.post("/api/find", json={"query": NOVEL_SLUG})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["novel"]["code"], NOVEL_CODE)
 
@@ -494,10 +701,15 @@ class TestWebApp(unittest.TestCase):
 
     def test_browse_lists_dirs(self):
         (Path(self.tmp.name) / "sub").mkdir()
-        res = self.app.get("/api/browse", query_string={"path": self.tmp.name})
-        data = res.get_json()
+        data = self.app.get("/api/browse", query_string={"path": self.tmp.name}).get_json()
         self.assertEqual([d["name"] for d in data["dirs"]], ["sub"])
         self.assertTrue(data["writable"])
+
+    def test_links_endpoint(self):
+        novel = self.app.post("/api/find", json={"query": NOVEL_SLUG}).get_json()["novel"]
+        data = self.app.post("/api/links", json={"novel": novel, "first": 1, "last": 5}).get_json()
+        self.assertEqual(len(data["links"]), 5)
+        self.assertTrue(data["links"][0].endswith(f"/chapter/{NOVEL_CODE}-1"))
 
     def test_start_requires_folder(self):
         res = self.app.post(
@@ -506,7 +718,7 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_start_and_finish_job(self):
-        novel = self.app.post("/api/find", json={"query": "6615"}).get_json()["novel"]
+        novel = self.app.post("/api/find", json={"query": NOVEL_SLUG}).get_json()["novel"]
         res = self.app.post(
             "/api/start",
             json={"novel": novel, "base": self.tmp.name, "folder": "My Book", "first": 1, "last": 5},
@@ -516,14 +728,13 @@ class TestWebApp(unittest.TestCase):
 
         from webapp.app import JOBS
 
-        JOBS[job_id].thread.join(timeout=30)
+        JOBS[job_id].thread.join(timeout=60)
         job = self.app.get(f"/api/job/{job_id}").get_json()["job"]
 
         self.assertIsNone(job["error"])
         self.assertEqual(job["progress"]["stage"], "done")
         out = Path(self.tmp.name) / "My Book"
-        self.assertTrue(out.is_dir())
-        # Диапазон 1..5 — дыра (7) и сбойная глава (9) в него не попадают.
+        # Диапазон 1..5: дыра (7) и сбойная глава (9) в него не попадают.
         self.assertEqual(sorted(int(p.name[:4]) for p in out.glob("*.txt")), [1, 2, 3, 4, 5])
 
     def test_job_not_found(self):

@@ -56,6 +56,17 @@ JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 
 
+def _novel_from_payload(data: dict) -> api.Novel:
+    """Книга из тела запроса — её уже нашли через /api/find."""
+    return api.Novel(
+        code=int(data["code"]),
+        name=data.get("name") or f"novel-{data['code']}",
+        slug=data.get("slug", ""),
+        total_chapters=int(data.get("total_chapters") or 0),
+        author=data.get("author", ""),
+    )
+
+
 # ---------------------------------------------------------------- страницы
 
 
@@ -77,6 +88,9 @@ def api_find():
     try:
         novel = api.find_novel(client, query)
         return jsonify(novel=novel.to_dict())
+    except api.StrippedResponse as exc:
+        # Не «не найдено», а испорченный запрос — сообщаем отдельно.
+        return jsonify(error=str(exc)), 502
     except (LookupError, ValueError) as exc:
         return jsonify(error=str(exc)), 404
     except HttpError as exc:
@@ -95,6 +109,30 @@ def api_search():
     try:
         novels = api.search_novels(client, query, limit=20)
         return jsonify(novels=[n.to_dict() for n in novels])
+    except HttpError as exc:
+        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    finally:
+        client.close()
+
+
+@app.post("/api/links")
+def api_links():
+    """Список ссылок на главы — для запасного плана через WebToEpub."""
+    payload = request.json or {}
+    novel_data = payload.get("novel") or {}
+    if not novel_data.get("code"):
+        return jsonify(error="Сначала найдите книгу"), 400
+
+    novel = _novel_from_payload(novel_data)
+    client = Client()
+    try:
+        toc = api.fetch_toc(
+            client,
+            novel,
+            first=max(1, int(payload.get("first") or 1)),
+            last=int(payload.get("last") or novel.total_chapters) or novel.total_chapters,
+        )
+        return jsonify(links=api.chapter_links(novel, toc.chapters), missing=toc.missing)
     except HttpError as exc:
         return jsonify(error=f"Сайт недоступен: {exc}"), 502
     finally:
@@ -124,13 +162,7 @@ def api_start():
     if not folder:
         return jsonify(error="Введите имя папки"), 400
 
-    novel = api.Novel(
-        code=int(novel_data["code"]),
-        name=novel_data.get("name") or f"novel-{novel_data['code']}",
-        slug=novel_data.get("slug", ""),
-        total_chapters=int(novel_data.get("total_chapters") or 0),
-        author=novel_data.get("author", ""),
-    )
+    novel = _novel_from_payload(novel_data)
 
     try:
         output_dir = prepare_output_dir(base, folder)
@@ -150,7 +182,6 @@ def api_start():
         client = Client()
         downloader = Downloader(
             client=client,
-            concurrency=5,
             on_progress=lambda p: job.progress.update(p.as_dict()),
             cancel_event=job.cancel,
         )
