@@ -40,19 +40,34 @@ class HttpError(Exception):
 
 
 class Blocked(HttpError):
-    """Cloudflare закрыл доступ (403/429).
+    """Доступ закрыт (403) или пришла заглушка Cloudflare.
 
-    Ретраить бессмысленно и вредно: повторы только усугубят блокировку.
-    Прогон останавливается целиком.
+    Этот выходной узел до сайта не пропускают — пробуем другую географию.
+    Ретраить на том же адресе бессмысленно.
     """
 
 
-def _make_session():
+class RateLimited(HttpError):
+    """HTTP 429 — «слишком часто», а не «тебе сюда нельзя».
+
+    Прокси менять нельзя: смена адреса только расширит проблему на весь
+    диапазон. Правильная реакция — увеличить паузу и подождать.
+    """
+
+
+class NetworkError(HttpError):
+    """Таймаут, connection reset/refused, DNS, ошибка авторизации на прокси."""
+
+
+def _make_session(proxy_url: str | None = None):
     """Сессия curl_cffi, либо requests, либо тонкая обёртка над urllib."""
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
     try:
         from curl_cffi import requests as curl_requests
 
-        return curl_requests.Session(impersonate="chrome"), "curl_cffi"
+        session = curl_requests.Session(impersonate="chrome", proxies=proxies)
+        return session, "curl_cffi"
     except ImportError:
         pass
 
@@ -61,8 +76,12 @@ def _make_session():
 
         session = requests.Session()
         session.headers.update({"User-Agent": _FALLBACK_UA})
+        if proxies:
+            session.proxies.update(proxies)
         return session, "requests"
     except ImportError:
+        if proxies:
+            raise RuntimeError("Для работы через прокси нужен curl_cffi") from None
         return _UrllibSession(), "urllib"
 
 
@@ -107,6 +126,13 @@ class _UrllibSession:
         pass
 
 
+def _scrub(text) -> str:
+    """Убирает пароли прокси из строки перед логированием."""
+    from .proxies import scrub
+
+    return scrub(text)
+
+
 def encode_params(params) -> str:
     """Кодирует параметры, сохраняя повторяющиеся ключи вида slug[]."""
     from urllib.parse import quote
@@ -129,18 +155,22 @@ class Client:
     рассчитаны на параллельное использование из нескольких потоков.
     """
 
-    #: Статусы, по которым прогон останавливается сразу, без ретраев.
+    #: Статусы, по которым сразу отдаём Blocked — без ретраев.
     block_statuses: frozenset[int] = frozenset()
+    #: Отдавать ли RateLimited на 429 вместо ретрая с backoff.
+    raise_on_rate_limit: bool = False
 
     def __init__(
         self,
         max_attempts: int = MAX_ATTEMPTS,
         timeout: int = TIMEOUT,
         headers: dict[str, str] | None = None,
+        proxy_url: str | None = None,
     ):
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.headers = dict(headers or {})
+        self.proxy_url = proxy_url
         self._local = threading.local()
         self._sessions: list[Any] = []
         self._lock = threading.Lock()
@@ -149,7 +179,7 @@ class Client:
     def _session(self):
         session = getattr(self._local, "session", None)
         if session is None:
-            session, backend = _make_session()
+            session, backend = _make_session(self.proxy_url)
             self._local.session = session
             self.backend = backend
             with self._lock:
@@ -160,6 +190,7 @@ class Client:
         """GET с ретраями. Возвращает объект ответа; кидает HttpError."""
         last_error = "unknown"
         last_status: int | None = None
+        network_failure = False
         request_headers = {**self.headers, **(headers or {})}
 
         for attempt in range(1, self.max_attempts + 1):
@@ -172,13 +203,17 @@ class Client:
                     full_url, timeout=self.timeout, headers=request_headers or None
                 )
                 status = resp.status_code
+                network_failure = False
 
                 if status == 200:
                     return resp
                 if status in self.block_statuses:
-                    raise Blocked(
-                        f"HTTP {status} — доступ закрыт (Cloudflare): {url}", status=status
-                    )
+                    raise Blocked(f"HTTP {status} — доступ закрыт: {url}", status=status)
+                if status in (407, 502, 503) and self.proxy_url:
+                    # Прокси не пропустил запрос — дело в нём, а не в сайте.
+                    raise NetworkError(f"прокси ответил HTTP {status}", status=status)
+                if status == 429 and self.raise_on_rate_limit:
+                    raise RateLimited(f"HTTP 429 — слишком часто: {url}", status=429)
                 if status == 404:
                     # Ретраить бессмысленно — главы просто нет.
                     raise HttpError(f"HTTP 404 {url}", status=404)
@@ -189,15 +224,19 @@ class Client:
                     raise HttpError(f"HTTP {status} {url}", status=status)
             except HttpError:
                 raise
-            except Exception as exc:  # сетевые сбои, таймауты, TLS
-                last_error = f"{type(exc).__name__}: {exc}"
+            except Exception as exc:  # сетевые сбои, таймауты, TLS, прокси
+                network_failure = True
+                last_error = _scrub(f"{type(exc).__name__}: {exc}")
 
             if attempt < self.max_attempts:
                 delay = (2**attempt) + random.uniform(0, 0.5)
                 log.debug("retry %s/%s in %.1fs (%s)", attempt, self.max_attempts, delay, last_error)
                 time.sleep(delay)
 
-        raise HttpError(f"{last_error} после {self.max_attempts} попыток: {url}", status=last_status)
+        message = f"{last_error} после {self.max_attempts} попыток: {url}"
+        if network_failure:
+            raise NetworkError(message, status=last_status)
+        raise HttpError(message, status=last_status)
 
     def get_json(self, path: str, params=None) -> Any:
         url = path if path.startswith("http") else f"{API}{path}"
@@ -236,14 +275,16 @@ BROWSER_HEADERS = {
 class SiteClient(Client):
     """Клиент витрины www.mvlempyr.io.
 
-    Одна сессия на весь прогон: Cloudflare выдаёт куку доступа, её нужно
-    переиспользовать между главами. Строго однопоточный — сессия одна, и
-    параллелить запросы к витрине нельзя.
+    Одна сессия на весь прогон и на один прокси: кука Cloudflare привязана к
+    IP, поэтому при смене прокси нужна новая сессия. Строго однопоточный —
+    параллелить запросы к витрине нельзя, даже через прокси.
 
-    403 и 429 не ретраятся: один блок означает остановку прогона.
+    403 отдаётся как Blocked (меняем прокси), 429 — как RateLimited
+    (прокси не меняем, ждём).
     """
 
-    block_statuses = frozenset({403, 429})
+    block_statuses = frozenset({403})
+    raise_on_rate_limit = True
 
     def __init__(self, referer: str | None = None, **kwargs):
         headers = dict(BROWSER_HEADERS)

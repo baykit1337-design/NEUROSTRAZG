@@ -7,6 +7,7 @@
     python cli.py --search "insect tamer"
     python cli.py --verify ~/Books/Insect Tamer
     python cli.py 6615 --links links.txt   # запасной план: список для WebToEpub
+    python cli.py --check-proxies          # проверить список прокси
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import sys
 from pathlib import Path
 
 from mvl import api
-from mvl.client import Client
+from mvl.client import SITE, Client
 from mvl.downloader import Cancelled, Downloader, verify
 from mvl.paths import prepare_output_dir
+from mvl.proxies import PROXY_FILE, Proxy, ProxyPool
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,8 +40,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--search", help="найти книгу в каталоге и выйти")
     parser.add_argument("--verify", help="проверить целостность уже скачанной папки")
+    parser.add_argument(
+        "--proxies",
+        metavar="ФАЙЛ",
+        default=PROXY_FILE,
+        help=f"список прокси, ip:port:user:pass построчно (по умолчанию: {PROXY_FILE})",
+    )
+    parser.add_argument(
+        "--proxy",
+        metavar="IP:PORT:USER:PASS",
+        help="один прокси вручную, вместо файла",
+    )
+    parser.add_argument(
+        "--no-proxy", action="store_true", help="идти напрямую, без прокси"
+    )
+    parser.add_argument(
+        "--check-proxies", action="store_true", help="проверить список прокси и выйти"
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser
+
+
+def build_pool(args) -> ProxyPool | None:
+    """Готовит пул прокси: один вручную, файл или ничего."""
+    if args.no_proxy:
+        return None
+
+    if args.proxy:
+        proxy = Proxy.parse(args.proxy)
+        if proxy is None:
+            raise ValueError(f"Не разобрал прокси: {args.proxy}")
+        return ProxyPool([proxy], source="--proxy")
+
+    path = Path(args.proxies).expanduser()
+    if not path.exists():
+        # Файла нет и вручную ничего не задали — работаем напрямую.
+        return None
+    return ProxyPool.from_file(path)
+
+
+def prepare_pool(pool: ProxyPool) -> bool:
+    """Проверяет список и печатает таблицу. False — пригодных нет."""
+    print(f"Проверяем {len(pool)} прокси на {SITE}…")
+    pool.check_all(
+        on_progress=lambda done, total: print(f"\r  {done}/{total}", end="", flush=True)
+    )
+    print("\r" + " " * 24 + "\r", end="", flush=True)
+    print(pool.table())
+    print()
+
+    if pool.usable_count == 0:
+        print(
+            "Ни один прокси не пропускает до сайта.\n"
+            "Напрямую не идём — этот путь заблокирован.\n"
+            "Обновите proxies.txt и попробуйте снова.",
+            file=sys.stderr,
+        )
+        return False
+
+    print(f"Пригодных: {pool.usable_count} из {len(pool)}. Работаем через {pool.current().label}\n")
+    return True
 
 
 TERMINAL_STAGES = ("done", "error", "cancelled", "blocked")
@@ -104,6 +164,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"С ошибками: {sorted(report['failed'])}")
         return 0
 
+    try:
+        pool = build_pool(args)
+    except (OSError, ValueError) as exc:
+        print(f"Список прокси: {exc}", file=sys.stderr)
+        return 1
+
+    if args.check_proxies:
+        if pool is None:
+            print("Список прокси не задан. Укажите --proxies или --proxy.", file=sys.stderr)
+            return 1
+        return 0 if prepare_pool(pool) else 1
+
     client = Client()
 
     if args.search:
@@ -115,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().print_help()
         return 2
 
-    downloader = Downloader(client=client, on_progress=_progress_printer())
+    downloader = Downloader(client=client, pool=pool, on_progress=_progress_printer())
 
     try:
         novel = downloader.find(args.book)
@@ -134,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
         if toc.missing:
             print(f"Нет в оглавлении: {len(toc.missing)} глав")
         return 0
+
+    # Скачивание идёт через прокси: домен витрины режется провайдером.
+    if pool is not None and not prepare_pool(pool):
+        client.close()
+        return 1
 
     output_dir = prepare_output_dir(args.out, args.name or novel.name)
     print(f"Папка: {output_dir}\n")
@@ -156,11 +233,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Не удалось: {report.failed_chapters} (подробности в errors.log)")
     if report.missing_in_toc:
         print(f"Нет в оглавлении: {report.missing_in_toc}")
+    if report.proxy_switches:
+        print(f"Переключений прокси: {report.proxy_switches}, последний — {report.proxy}")
 
+    if report.stopped_reason:
+        print(f"\nПрогон остановлен: {report.stopped_reason}")
+        print("Запустите ту же команду снова — продолжит с места остановки.")
+        return 2
     if report.blocked_at is not None:
         print(
             f"\nСайт закрыл доступ на главе {report.blocked_at} — прогон остановлен.\n"
-            f"Ретраить не стали: повторы только усугубят блокировку.\n"
             f"Подождите и запустите ту же команду снова — продолжит с этого места.\n"
             f"Если блок повторяется — запасной план: python cli.py {novel.code} --links links.txt"
         )

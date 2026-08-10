@@ -123,6 +123,22 @@
   }
   .ok{color:#9cffc4}
   .hint{font-size:12px;color:var(--muted);margin-top:8px}
+  .hint code{background:rgba(255,255,255,.06);padding:2px 6px;border-radius:6px;color:#cdb9ff}
+
+  .ptable{margin-top:14px;max-height:210px;overflow-y:auto;font-size:13px}
+  .ptable table{width:100%;border-collapse:collapse}
+  .ptable th{
+    text-align:left;font-weight:400;font-size:11px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--muted);padding:6px 8px;
+    position:sticky;top:0;background:#0d0b12;
+  }
+  .ptable td{padding:6px 8px;border-top:1px solid rgba(255,255,255,.05)}
+  .ptable tr.dead td{color:#6f6a82}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px}
+  .dot.ok{background:#7dffb0;box-shadow:0 0 8px rgba(125,255,176,.8)}
+  .dot.warn{background:#ffc86b;box-shadow:0 0 8px rgba(255,200,107,.7)}
+  .dot.bad{background:#5a5468}
+  .pnow{color:var(--neon);font-size:12px;margin-top:10px}
   .spin{display:inline-block;width:11px;height:11px;border-radius:50%;
     border:2px solid rgba(176,108,255,.25);border-top-color:var(--neon);
     animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
@@ -133,6 +149,18 @@
 <div class="wrap">
   <h1>MVLEMPYR</h1>
   <p class="sub">качалка глав в .txt</p>
+
+  <!-- 0. Прокси -->
+  <div class="card" id="proxyCard">
+    <label for="proxyPath">Прокси для витрины</label>
+    <div class="row">
+      <input id="proxyPath" type="text" placeholder="proxies.txt" autocomplete="off">
+      <button id="checkProxies">Проверить</button>
+      <button id="reloadProxies" class="ghost" title="Перечитать файл">↻</button>
+    </div>
+    <p class="hint">Формат строки: <code>ip:port:username:password</code>. Пароли никуда не показываются.</p>
+    <div id="proxyTable"></div>
+  </div>
 
   <!-- 1. Поиск книги -->
   <div class="card lit">
@@ -195,6 +223,7 @@
       <span>ошибок <b id="sFail">0</b></span>
       <span id="sPct"></span>
     </div>
+    <div class="pnow" id="sProxy"></div>
     <div class="row" style="margin-top:16px">
       <button id="stop" class="ghost">Остановить</button>
       <button id="again" class="ghost" hidden>Новая книга</button>
@@ -220,6 +249,63 @@ async function call(url, body){
   const data = await res.json().catch(() => ({error:'Сервер вернул не JSON'}));
   if(!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
   return data;
+}
+
+/* ---- прокси ---- */
+let pool = null;
+
+function renderPool(data, warning){
+  pool = data;
+  const box = $('proxyTable');
+  if(!data){ box.innerHTML = ''; return; }
+
+  const rows = data.proxies.map(p => {
+    let dot = 'bad', status;
+    if(p.usable){ dot = 'ok'; status = 'OK'; }
+    else if(p.disabled){ status = p.disabled_reason || 'отключён'; }
+    else if(p.alive && p.status === 403){ dot = 'warn'; status = '403, не проходит'; }
+    else if(p.alive){ dot = 'warn'; status = 'HTTP ' + p.status; }
+    else { status = p.error || 'не отвечает'; }
+
+    return `<tr class="${p.usable ? '' : 'dead'}">
+      <td><span class="dot ${dot}"></span>${p.label}</td>
+      <td>${p.country || '—'}</td>
+      <td>${p.elapsed != null ? p.elapsed.toFixed(2) + ' с' : '—'}</td>
+      <td>${status}</td></tr>`;
+  }).join('');
+
+  box.innerHTML = `<div class="ptable"><table>
+      <tr><th>адрес</th><th>страна</th><th>отклик</th><th>статус</th></tr>
+      ${rows}</table></div>`
+    + (data.checked
+        ? `<p class="pnow">Пригодных: ${data.usable} из ${data.total}`
+          + (data.current ? ` · работаем через ${data.current}` : '') + '</p>'
+        : `<p class="hint">${data.total} адресов загружено, проверка не запускалась.</p>`);
+
+  if(warning) showError(warning);
+}
+
+async function loadProxyState(){
+  try{
+    const data = await call('/api/proxies');
+    if(!$('proxyPath').value) $('proxyPath').value = data.default_path;
+    renderPool(data.pool);
+  }catch(err){ /* прокси не обязательны, молчим */ }
+}
+
+async function proxyAction(url, button, busyText){
+  showError('');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = busyText;
+  try{
+    const data = await call(url, {path: $('proxyPath').value.trim()});
+    renderPool(data.pool, data.pool && data.pool.warning);
+  }catch(err){ showError(err.message); }
+  finally{
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 /* ---- поиск книги ---- */
@@ -373,6 +459,9 @@ async function tick(){
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
     $('sFail').textContent = p.failed || 0;
+    $('sProxy').textContent = p.proxy
+      ? `через ${p.proxy}` + (p.switches ? ` · переключений: ${p.switches}` : '')
+      : '';
 
     if(!busy){
       clearInterval(poll);
@@ -427,6 +516,9 @@ $('last').addEventListener('input', updateFinalPath);
 $('home').onclick = () => browse();
 $('start').onclick = start;
 $('links').onclick = exportLinks;
+$('checkProxies').onclick = () => proxyAction('/api/proxies/check', $('checkProxies'), 'Проверяем…');
+$('reloadProxies').onclick = () => proxyAction('/api/proxies/reload', $('reloadProxies'), '…');
+loadProxyState();
 $('stop').onclick = stop;
 $('again').onclick = reset;
 </script>

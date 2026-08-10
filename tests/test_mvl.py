@@ -18,8 +18,8 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api, client as client_mod  # noqa: E402
-from mvl.client import Blocked, Client, SiteClient  # noqa: E402
+from mvl import api, client as client_mod, downloader as downloader_mod, proxies  # noqa: E402
+from mvl.client import Blocked, Client, NetworkError, RateLimited, SiteClient  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, State, _compact_ranges, verify  # noqa: E402
 from mvl.paths import chapter_filename, prepare_output_dir, sanitize_filename  # noqa: E402
 
@@ -418,8 +418,11 @@ class TestParamEncoding(unittest.TestCase):
 
 
 class TestSiteClientConfig(unittest.TestCase):
-    def test_blocks_are_not_retried(self):
-        self.assertEqual(SiteClient.block_statuses, frozenset({403, 429}))
+    def test_403_blocks_but_429_does_not(self):
+        # 403 — «тебе сюда нельзя», меняем прокси. 429 — «слишком часто»,
+        # прокси оставляем и ждём, поэтому в block_statuses его быть не должно.
+        self.assertEqual(SiteClient.block_statuses, frozenset({403}))
+        self.assertTrue(SiteClient.raise_on_rate_limit)
 
     def test_browser_headers_present(self):
         client = SiteClient(referer="https://www.mvlempyr.io/novel/x")
@@ -739,6 +742,350 @@ class TestWebApp(MockSiteTestCase):
 
     def test_job_not_found(self):
         self.assertEqual(self.app.get("/api/job/nope").status_code, 404)
+
+
+class TestProxyParsing(unittest.TestCase):
+    def test_full_line(self):
+        proxy = proxies.Proxy.parse("203.0.113.10:8000:bob:hunter2")
+        self.assertEqual(proxy.host, "203.0.113.10")
+        self.assertEqual(proxy.port, 8000)
+        self.assertEqual(proxy.username, "bob")
+        self.assertEqual(proxy.url, "http://bob:hunter2@203.0.113.10:8000")
+
+    def test_without_credentials(self):
+        proxy = proxies.Proxy.parse("192.0.2.1:3128")
+        self.assertEqual(proxy.url, "http://192.0.2.1:3128")
+
+    def test_comments_and_blanks_skipped(self):
+        self.assertIsNone(proxies.Proxy.parse("   "))
+        self.assertIsNone(proxies.Proxy.parse("# комментарий"))
+
+    def test_malformed_rejected(self):
+        for line in ("no-port", "1.2.3.4:abc", "1:2:3"):
+            with self.assertRaises(ValueError, msg=line):
+                proxies.Proxy.parse(line)
+
+    def test_load_from_file(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "proxies.txt"
+            path.write_text(
+                "# список\n\n1.1.1.1:80:u:p\n2.2.2.2:81\nмусор\n", encoding="utf-8"
+            )
+            loaded = proxies.load_proxies(path)
+        self.assertEqual([p.label for p in loaded], ["1.1.1.1:80", "2.2.2.2:81"])
+
+    def test_empty_file_rejected(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "proxies.txt"
+            path.write_text("# только комментарий\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                proxies.load_proxies(path)
+
+    def test_missing_file_rejected(self):
+        with self.assertRaises(FileNotFoundError):
+            proxies.load_proxies("/nonexistent/proxies.txt")
+
+
+class TestPasswordMasking(unittest.TestCase):
+    """Пароли не должны попадать ни в лог, ни в отчёты, ни в ошибки."""
+
+    def setUp(self):
+        self.proxy = proxies.Proxy.parse("198.51.100.9:8080:alice:s3cr3t-pass")
+
+    def test_safe_url_masks_password(self):
+        self.assertEqual(self.proxy.safe_url, "http://alice:***@198.51.100.9:8080")
+        self.assertNotIn("s3cr3t-pass", self.proxy.safe_url)
+
+    def test_str_is_masked(self):
+        self.assertNotIn("s3cr3t-pass", str(self.proxy))
+
+    def test_label_has_no_credentials(self):
+        self.assertEqual(self.proxy.label, "198.51.100.9:8080")
+
+    def test_to_dict_carries_no_password(self):
+        self.assertNotIn("s3cr3t-pass", json.dumps(self.proxy.to_dict()))
+
+    def test_scrub_removes_known_password_anywhere(self):
+        text = "ConnectionError через http://alice:s3cr3t-pass@198.51.100.9:8080"
+        cleaned = proxies.scrub(text)
+        self.assertNotIn("s3cr3t-pass", cleaned)
+        self.assertIn("***", cleaned)
+
+    def test_scrub_masks_unknown_credentials_by_pattern(self):
+        cleaned = proxies.scrub("http://someone:never-seen-before@10.0.0.1:9")
+        self.assertNotIn("never-seen-before", cleaned)
+
+    def test_short_password_does_not_mangle_unrelated_text(self):
+        """Однобуквенный пароль не должен вырезать эту букву из всего лога."""
+        proxies.Proxy.parse("10.0.0.9:80:u:p")
+        self.assertEqual(proxies.scrub("HttpError: chapter 5"), "HttpError: chapter 5")
+
+    def test_short_password_still_masked_inside_url(self):
+        proxies.Proxy.parse("10.0.0.9:80:u:pw1")
+        self.assertNotIn("pw1", proxies.scrub("http://u:pw1@10.0.0.9:80 отвалился"))
+
+    def test_failure_report_has_no_password(self):
+        pool = proxies.ProxyPool([self.proxy])
+        self.proxy.disabled = True
+        self.proxy.disabled_reason = "http://alice:s3cr3t-pass@198.51.100.9:8080 отвалился"
+        self.assertNotIn("s3cr3t-pass", pool.failure_report())
+
+    def test_table_has_no_password(self):
+        pool = proxies.ProxyPool([self.proxy])
+        self.assertNotIn("s3cr3t-pass", pool.table())
+
+
+class TestProxyRanking(unittest.TestCase):
+    def make(self, label, status, elapsed):
+        proxy = proxies.Proxy.parse(label)
+        proxy.alive = status is not None
+        proxy.status = status
+        proxy.elapsed = elapsed
+        return proxy
+
+    def setUp(self):
+        self.slow = self.make("1.1.1.1:80", 200, 2.0)
+        self.fast = self.make("2.2.2.2:80", 200, 0.4)
+        self.forbidden = self.make("3.3.3.3:80", 403, 0.1)
+        self.dead = self.make("4.4.4.4:80", None, None)
+        self.pool = proxies.ProxyPool([self.slow, self.fast, self.forbidden, self.dead])
+        self.pool._rank()
+
+    def test_usable_sorted_by_speed(self):
+        self.assertEqual(self.pool.current().label, "2.2.2.2:80")
+
+    def test_403_kept_as_last_resort(self):
+        # 403 «не проходит», но из списка не выбрасывается.
+        self.assertFalse(self.forbidden.usable)
+        self.assertTrue(self.forbidden.reachable)
+
+    def test_dead_excluded_from_rotation(self):
+        order = [p.label for p in self.pool._order]
+        self.assertNotIn("4.4.4.4:80", order)
+        self.assertEqual(order, ["2.2.2.2:80", "1.1.1.1:80", "3.3.3.3:80"])
+
+    def test_usable_count(self):
+        self.assertEqual(self.pool.usable_count, 2)
+
+    def test_switch_moves_to_next_fastest(self):
+        self.assertEqual(self.pool.current().label, "2.2.2.2:80")
+        following = self.pool.switch("403")
+        self.assertEqual(following.label, "1.1.1.1:80")
+        self.assertTrue(self.fast.disabled)
+
+    def test_switch_records_event(self):
+        self.pool.switch("таймаут")
+        self.assertEqual(len(self.pool.switches), 1)
+        self.assertEqual(self.pool.switches[0].from_label, "2.2.2.2:80")
+        self.assertEqual(self.pool.switches[0].reason, "таймаут")
+
+    def test_exhausting_the_list_raises(self):
+        self.pool.switch("a")
+        self.pool.switch("b")
+        with self.assertRaises(proxies.NoProxiesLeft):
+            self.pool.switch("c")
+
+    def test_failure_report_lists_addresses_and_reasons(self):
+        self.pool.switch("таймаут")
+        report = self.pool.failure_report()
+        self.assertIn("2.2.2.2:80", report)
+        self.assertIn("таймаут", report)
+        self.assertIn("напрямую", report.lower())
+
+
+class FakeSite:
+    """Подменяет SiteClient: отдаёт заранее расписанные исходы по главам."""
+
+    def __init__(self, script: dict[int, list]):
+        self.script = script
+        self.closed = False
+
+    def get_text(self, url, params=None, headers=None):
+        number = int(url.rsplit("-", 1)[-1])
+        outcomes = self.script.get(number)
+        outcome = outcomes.pop(0) if outcomes else "ok"
+        if isinstance(outcome, Exception):
+            raise outcome
+        return CHAPTER_HTML.format(
+            novel=NOVEL_NAME, title=f"Chapter {number}", n=number,
+            code=NOVEL_CODE, prev=number - 1, next=number + 1,
+        )
+
+    def close(self):
+        self.closed = True
+
+
+class TestProxySwitching(MockSiteTestCase):
+    """Логика переключения: что меняет прокси, а что нет."""
+
+    def setUp(self):
+        super().setUp()
+        self._cooldown = downloader_mod.RATE_LIMIT_COOLDOWN
+        downloader_mod.RATE_LIMIT_COOLDOWN = 0  # не ждём минуту в тестах
+        HOLES.clear()
+        FLAKY.clear()
+
+    def tearDown(self):
+        downloader_mod.RATE_LIMIT_COOLDOWN = self._cooldown
+        HOLES.add(7)
+        FLAKY.add(9)
+        super().tearDown()
+
+    def make_pool(self, count=3):
+        return proxies.ProxyPool(
+            [proxies.Proxy.parse(f"10.0.0.{i}:8000:user:pw{i}") for i in range(1, count + 1)]
+        )
+
+    def run_with(self, script, pool=None, last=4):
+        """Прогон с подменённой сессией витрины."""
+        pool = pool or self.make_pool()
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        out = prepare_output_dir(self.tmp.name, "proxy-run")
+        worker = Downloader(client=self.client, pool=pool)
+        self.sessions = []
+
+        def new_session(_novel):
+            site = FakeSite(script)
+            self.sessions.append(site)
+            return site
+
+        worker._new_session = new_session
+        return pool, out, worker.run(novel, out, last=last)
+
+    def test_403_switches_proxy_and_retries_same_chapter(self):
+        script = {3: [Blocked("HTTP 403 — доступ закрыт", status=403)]}
+        pool, out, report = self.run_with(script)
+
+        self.assertEqual(report.proxy_switches, 1)
+        self.assertEqual(pool.switches[0].to_label, "10.0.0.2:8000")
+        # Глава, на которой сменили прокси, всё равно скачана.
+        self.assertEqual(sorted(int(p.name[:4]) for p in out.glob("*.txt")), [1, 2, 3, 4])
+        self.assertEqual(report.downloaded, 4)
+
+    def test_network_error_switches_proxy(self):
+        script = {2: [NetworkError("таймаут")]}
+        pool, out, report = self.run_with(script)
+        self.assertEqual(report.proxy_switches, 1)
+        self.assertEqual(report.downloaded, 4)
+
+    def test_new_session_per_proxy(self):
+        script = {2: [Blocked("403", status=403)]}
+        self.run_with(script)
+        # Одна сессия на старте, вторая после переключения.
+        self.assertEqual(len(self.sessions), 2)
+        self.assertTrue(self.sessions[0].closed, "старая сессия должна закрываться")
+
+    def test_cloudflare_stub_switches_proxy(self):
+        # Заглушка приходит с кодом 200 — её ловит fetch_chapter.
+        original = api.parse_chapter_page
+
+        script = {1: [Blocked("заглушка Cloudflare", status=403)]}
+        pool, out, report = self.run_with(script)
+        self.assertEqual(report.proxy_switches, 1)
+        self.assertIs(api.parse_chapter_page, original)
+
+    def test_run_stops_when_proxies_run_out(self):
+        # Каждая попытка падает — переключения съедят весь список.
+        script = {n: [NetworkError("таймаут")] * 10 for n in range(1, 5)}
+        pool, out, report = self.run_with(script, pool=self.make_pool(2))
+
+        self.assertIn("Рабочих прокси не осталось", report.stopped_reason)
+        self.assertEqual(report.downloaded, 0)
+        self.assertIsNotNone(report.blocked_at)
+
+    def test_failure_report_names_every_address(self):
+        script = {n: [NetworkError("таймаут")] * 10 for n in range(1, 5)}
+        _, _, report = self.run_with(script, pool=self.make_pool(2))
+        self.assertIn("10.0.0.1:8000", report.stopped_reason)
+        self.assertIn("10.0.0.2:8000", report.stopped_reason)
+
+    def test_no_password_in_stopped_reason(self):
+        script = {n: [NetworkError("http://user:pw1@10.0.0.1:8000 умер")] * 10
+                  for n in range(1, 5)}
+        _, out, report = self.run_with(script, pool=self.make_pool(2))
+        self.assertNotIn("pw1", report.stopped_reason)
+        self.assertNotIn("pw1", (out / "errors.log").read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------------- 429
+
+    def test_429_does_not_switch_proxy(self):
+        script = {2: [RateLimited("HTTP 429", status=429)]}
+        pool, out, report = self.run_with(script)
+
+        self.assertEqual(report.proxy_switches, 0, "429 — не повод менять прокси")
+        self.assertEqual(len(self.sessions), 1, "сессия остаётся прежней")
+        self.assertEqual(report.downloaded, 4)
+
+    def test_429_doubles_the_pause(self):
+        script = {2: [RateLimited("HTTP 429", status=429)]}
+        pool = self.make_pool()
+        novel = api.find_novel(self.client, NOVEL_SLUG)
+        out = prepare_output_dir(self.tmp.name, "pause-run")
+        worker = Downloader(client=self.client, pool=pool)
+        worker._new_session = lambda _n: FakeSite(script)
+
+        worker.run(novel, out, last=3)
+        self.assertEqual(worker.pause_multiplier, 2)
+
+    def test_three_429_in_a_row_stops_the_run(self):
+        script = {2: [RateLimited("HTTP 429", status=429)] * 5}
+        pool, out, report = self.run_with(script)
+
+        self.assertIn("429", report.stopped_reason)
+        self.assertEqual(report.proxy_switches, 0)
+        # Первая глава успела скачаться, дальше прогон встал.
+        self.assertEqual(sorted(int(p.name[:4]) for p in out.glob("*.txt")), [1])
+
+
+class TestProxyWebApi(MockSiteTestCase):
+    def setUp(self):
+        super().setUp()
+        from webapp.app import app
+        import webapp.app as webapp_module
+
+        app.config["TESTING"] = True
+        self.app = app.test_client()
+        self.webapp = webapp_module
+        self.addCleanup(setattr, webapp_module, "POOL", None)
+
+        self.path = Path(self.tmp.name) / "proxies.txt"
+        self.path.write_text("10.0.0.1:8000:user:topsecret\n", encoding="utf-8")
+
+    def test_reload_reads_file_without_restart(self):
+        res = self.app.post("/api/proxies/reload", json={"path": str(self.path)})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["pool"]["total"], 1)
+
+        self.path.write_text(
+            "10.0.0.1:8000:user:topsecret\n10.0.0.2:8000:user:topsecret\n", encoding="utf-8"
+        )
+        res = self.app.post("/api/proxies/reload", json={"path": str(self.path)})
+        self.assertEqual(res.get_json()["pool"]["total"], 2)
+
+    def test_reload_missing_file_reports_error(self):
+        res = self.app.post("/api/proxies/reload", json={"path": "/nope/proxies.txt"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_state_endpoint_masks_passwords(self):
+        self.app.post("/api/proxies/reload", json={"path": str(self.path)})
+        body = self.app.get("/api/proxies").get_data(as_text=True)
+        self.assertNotIn("topsecret", body)
+        self.assertIn("***", body)
+
+    def test_start_refused_when_no_usable_proxies(self):
+        self.app.post("/api/proxies/reload", json={"path": str(self.path)})
+        with self.webapp.POOL_LOCK:
+            self.webapp.POOL.checked = True
+            for proxy in self.webapp.POOL.proxies:
+                proxy.alive = False
+
+        novel = self.app.post("/api/find", json={"query": NOVEL_SLUG}).get_json()["novel"]
+        res = self.app.post(
+            "/api/start",
+            json={"novel": novel, "base": self.tmp.name, "folder": "X", "first": 1, "last": 2},
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Напрямую не идём", res.get_json()["error"])
 
 
 if __name__ == "__main__":

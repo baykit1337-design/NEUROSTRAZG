@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,16 +17,23 @@ from .client import (
     Blocked,
     Client,
     HttpError,
+    NetworkError,
+    RateLimited,
     SiteClient,
     site_pause,
 )
 from .paths import chapter_filename, write_chapter
+from .proxies import NoProxiesLeft, ProxyPool, scrub
 
 log = logging.getLogger(__name__)
 
 STATE_FILE = "state.json"
 ERROR_LOG = "errors.log"
 STATE_VERSION = 1
+
+# 429 — «слишком часто»: ждём столько секунд и повторяем на том же прокси.
+RATE_LIMIT_COOLDOWN = 60
+MAX_RATE_LIMIT_STREAK = 3
 
 
 @dataclass
@@ -37,6 +46,9 @@ class Progress:
     downloaded: int = 0
     skipped: int = 0
     failed: int = 0
+    #: Через какой прокси идёт работа и сколько было переключений.
+    proxy: str = ""
+    switches: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -55,6 +67,10 @@ class Report:
     missing_in_toc: list[int] = field(default_factory=list)
     #: Номер главы, на которой сайт закрыл доступ и прогон остановился.
     blocked_at: int | None = None
+    #: Почему прогон остановился досрочно (кончились прокси, серия 429).
+    stopped_reason: str = ""
+    proxy: str = ""
+    proxy_switches: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -129,15 +145,19 @@ class Downloader:
         self,
         client: Client | None = None,
         site_client: Client | None = None,
+        pool: ProxyPool | None = None,
         on_progress=None,
         cancel_event: threading.Event | None = None,
     ):
         self.client = client or Client()
         # Если сессию витрины передали снаружи, закрывать её мы не должны.
         self.site_client = site_client
+        self.pool = pool
         self.on_progress = on_progress
         self.cancel = cancel_event or threading.Event()
         self.progress = Progress()
+        #: Множитель паузы, растёт после каждого 429.
+        self.pause_multiplier = 1.0
 
     # ------------------------------------------------------------- служебное
 
@@ -215,31 +235,100 @@ class Downloader:
             skipped=skipped,
         )
 
-        # Одна сессия на весь прогон: Cloudflare выдаёт куку доступа, её нужно
-        # переиспользовать между главами.
-        site = self.site_client or SiteClient(referer=novel.page_url)
+        # Одна сессия на весь прогон и на один прокси: кука Cloudflare
+        # привязана к IP, при смене адреса нужна новая сессия.
+        site = self.site_client or self._new_session(novel)
+        self._emit(proxy=self._proxy_label(), switches=self._switch_count())
+
         downloaded = 0
         failed: list[int] = []
         blocked_at: int | None = None
+        stopped_reason = ""
+        rate_limit_streak = 0
 
         try:
             for index, chapter in enumerate(pending):
                 self._check_cancel()
-                try:
-                    self._one(chapter, novel, output_dir, site, state)
-                    downloaded += 1
-                except Blocked as exc:
-                    # Один блок — остановка прогона. Ретраи только усугубят.
-                    blocked_at = chapter.number
-                    self._log_error(output_dir, chapter.number, f"БЛОКИРОВКА: {exc}")
-                    state.mark_failed(chapter.number, str(exc))
-                    break
-                except (HttpError, ValueError, OSError) as exc:
-                    reason = f"{type(exc).__name__}: {exc}"
-                    log.warning("Глава %s не скачана: %s", chapter.number, reason)
-                    state.mark_failed(chapter.number, reason)
-                    self._log_error(output_dir, chapter.number, reason)
-                    failed.append(chapter.number)
+                outcome = "ok"
+
+                # Одну и ту же главу повторяем при смене прокси и при 429.
+                while True:
+                    try:
+                        self._one(chapter, novel, output_dir, site, state)
+                        downloaded += 1
+                        rate_limit_streak = 0
+                        break
+
+                    except RateLimited as exc:
+                        # Прокси НЕ меняем: 429 — это «слишком часто», смена
+                        # адреса только расширит проблему на весь диапазон.
+                        rate_limit_streak += 1
+                        if rate_limit_streak >= MAX_RATE_LIMIT_STREAK:
+                            stopped_reason = (
+                                f"три ответа 429 подряд на главе {chapter.number} — "
+                                f"сайт просит притормозить, прогон остановлен"
+                            )
+                            self._log_error(output_dir, chapter.number, stopped_reason)
+                            outcome = "stop"
+                            break
+
+                        self.pause_multiplier *= 2
+                        self._emit(
+                            message=(
+                                f"429 на главе {chapter.number}: ждём "
+                                f"{RATE_LIMIT_COOLDOWN} с, паузу увеличили "
+                                f"до x{self.pause_multiplier:g}"
+                            )
+                        )
+                        self._log_error(output_dir, chapter.number, f"429, ждём: {exc}")
+                        if self.cancel.wait(RATE_LIMIT_COOLDOWN):
+                            raise Cancelled() from exc
+                        continue
+
+                    except (Blocked, NetworkError) as exc:
+                        reason = scrub(str(exc))
+                        if self.pool is None:
+                            # Без прокси менять нечего — останавливаемся.
+                            blocked_at = chapter.number
+                            self._log_error(output_dir, chapter.number, f"БЛОКИРОВКА: {reason}")
+                            state.mark_failed(chapter.number, reason)
+                            outcome = "stop"
+                            break
+
+                        try:
+                            new_proxy = self.pool.switch(reason)
+                        except NoProxiesLeft as exhausted:
+                            blocked_at = chapter.number
+                            stopped_reason = scrub(str(exhausted))
+                            self._log_error(output_dir, chapter.number, stopped_reason)
+                            outcome = "stop"
+                            break
+
+                        self._log_error(
+                            output_dir,
+                            chapter.number,
+                            f"смена прокси: {reason} → {new_proxy.label}",
+                        )
+                        if site is not self.site_client:
+                            site.close()
+                        site = self._new_session(novel)
+                        self._emit(
+                            proxy=self._proxy_label(),
+                            switches=self._switch_count(),
+                            message=(
+                                f"Прокси сменён на {new_proxy.label}, "
+                                f"повторяем главу {chapter.number}"
+                            ),
+                        )
+                        continue  # ту же главу заново
+
+                    except (HttpError, ValueError, OSError) as exc:
+                        reason = scrub(f"{type(exc).__name__}: {exc}")
+                        log.warning("Глава %s не скачана: %s", chapter.number, reason)
+                        state.mark_failed(chapter.number, reason)
+                        self._log_error(output_dir, chapter.number, reason)
+                        failed.append(chapter.number)
+                        break
 
                 self._emit(
                     done=downloaded + len(failed),
@@ -249,15 +338,17 @@ class Downloader:
                 )
                 state.save()
 
+                if outcome == "stop":
+                    break
                 if index < len(pending) - 1:
-                    site_pause()  # 2-4 секунды между главами
+                    self._pause()
         except Cancelled:
             state.save()
             self._emit(stage="cancelled", message="Остановлено. Прогресс сохранён — можно продолжить.")
             raise
         finally:
             state.save()
-            if self.site_client is None:
+            if site is not self.site_client:
                 site.close()
 
         report = Report(
@@ -271,12 +362,16 @@ class Downloader:
             failed_chapters=sorted(failed),
             missing_in_toc=toc.missing,
             blocked_at=blocked_at,
+            stopped_reason=stopped_reason,
+            proxy=self._proxy_label(),
+            proxy_switches=self._switch_count(),
         )
 
-        if blocked_at is not None:
+        if blocked_at is not None or stopped_reason:
             self._emit(
                 stage="blocked",
-                message=(
+                message=stopped_reason
+                or (
                     f"Сайт закрыл доступ на главе {blocked_at}. Прогон остановлен, "
                     f"скачано {downloaded}. Подождите и запустите снова — "
                     f"продолжит с этого места."
@@ -297,6 +392,36 @@ class Downloader:
                 failed=len(failed),
             )
         return report
+
+    # ------------------------------------------------------------ вспомогательное
+
+    def _new_session(self, novel: api.Novel) -> SiteClient:
+        """Новая сессия на текущий прокси."""
+        proxy = self.pool.current() if self.pool else None
+        if proxy is not None:
+            log.info("Работаем через прокси %s", proxy.label)
+        return SiteClient(
+            referer=novel.page_url, proxy_url=proxy.url if proxy else None
+        )
+
+    def _proxy_label(self) -> str:
+        if self.pool is None:
+            return ""
+        try:
+            return self.pool.current().label
+        except NoProxiesLeft:
+            return ""
+
+    def _switch_count(self) -> int:
+        return len(self.pool.switches) if self.pool else 0
+
+    def _pause(self) -> None:
+        """Пауза между главами, с учётом накопленного множителя после 429."""
+        if self.pause_multiplier <= 1:
+            site_pause()
+            return
+        low, high = SITE_PAUSE_RANGE
+        time.sleep(random.uniform(low, high) * self.pause_multiplier)
 
     def _one(
         self,

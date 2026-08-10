@@ -22,6 +22,7 @@ from mvl import api  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
+from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,20 @@ class Job:
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+
+#: Текущий пул прокси. Список меняется часто, поэтому перезагружается по
+#: кнопке — перезапуск программы для этого не нужен.
+POOL: ProxyPool | None = None
+POOL_LOCK = threading.Lock()
+
+
+def load_pool(path: str) -> ProxyPool:
+    """Перечитывает файл со списком и заменяет текущий пул."""
+    global POOL
+    pool = ProxyPool.from_file(path)
+    with POOL_LOCK:
+        POOL = pool
+    return pool
 
 
 def _novel_from_payload(data: dict) -> api.Novel:
@@ -115,6 +130,46 @@ def api_search():
         client.close()
 
 
+@app.get("/api/proxies")
+def api_proxies_state():
+    """Текущее состояние пула, без повторной проверки."""
+    with POOL_LOCK:
+        pool = POOL
+    if pool is None:
+        return jsonify(pool=None, default_path=PROXY_FILE)
+    return jsonify(pool=pool.to_dict(), default_path=PROXY_FILE)
+
+
+@app.post("/api/proxies/reload")
+def api_proxies_reload():
+    """Перечитать файл со списком. Перезапуск программы не нужен."""
+    path = (request.json or {}).get("path", "").strip() or PROXY_FILE
+    try:
+        pool = load_pool(path)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=scrub(str(exc))), 400
+    return jsonify(pool=pool.to_dict(), default_path=PROXY_FILE)
+
+
+@app.post("/api/proxies/check")
+def api_proxies_check():
+    """Проверка живости всего списка. Пароли в ответ не попадают."""
+    path = (request.json or {}).get("path", "").strip() or PROXY_FILE
+    try:
+        pool = load_pool(path)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=scrub(str(exc))), 400
+
+    pool.check_all()
+    payload = pool.to_dict()
+    if pool.usable_count == 0:
+        payload["warning"] = (
+            "Ни один прокси не пропускает до сайта. Напрямую не идём — "
+            "этот путь заблокирован. Обновите список и проверьте снова."
+        )
+    return jsonify(pool=payload, default_path=PROXY_FILE)
+
+
 @app.post("/api/links")
 def api_links():
     """Список ссылок на главы — для запасного плана через WebToEpub."""
@@ -174,14 +229,25 @@ def api_start():
     if last < first:
         return jsonify(error="Конечная глава меньше начальной"), 400
 
+    with POOL_LOCK:
+        pool = POOL
+    if pool is not None and pool.checked and pool.usable_count == 0:
+        return jsonify(
+            error="Ни один прокси не пропускает до сайта. Напрямую не идём — "
+            "этот путь заблокирован. Обновите список и проверьте снова."
+        ), 400
+
     job = Job(id=uuid.uuid4().hex[:12], novel=novel.to_dict(), output_dir=str(output_dir))
     job.progress = {"stage": "queued", "message": "Запускаем…", "done": 0, "total": last - first + 1,
-                    "downloaded": 0, "skipped": 0, "failed": 0}
+                    "downloaded": 0, "skipped": 0, "failed": 0,
+                    "proxy": pool.current().label if pool and pool.usable_count else "",
+                    "switches": 0}
 
     def worker():
         client = Client()
         downloader = Downloader(
             client=client,
+            pool=pool,
             on_progress=lambda p: job.progress.update(p.as_dict()),
             cancel_event=job.cancel,
         )
@@ -243,9 +309,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1", help="менять не рекомендуется")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--proxies", default=PROXY_FILE, help="файл со списком прокси")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    try:
+        pool = load_pool(args.proxies)
+        print(f"  Список прокси: {args.proxies}, адресов — {len(pool)}")
+    except (OSError, ValueError) as exc:
+        print(f"  Прокси не загружены ({scrub(str(exc))}). Укажите файл в интерфейсе.")
+
     url = f"http://{args.host}:{args.port}"
     print(f"\n  MVLEMPYR downloader → {url}\n  Ctrl+C чтобы остановить\n")
 
