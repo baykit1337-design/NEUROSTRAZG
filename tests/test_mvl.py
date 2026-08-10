@@ -752,9 +752,56 @@ class TestProxyParsing(unittest.TestCase):
         self.assertEqual(proxy.username, "bob")
         self.assertEqual(proxy.url, "http://bob:hunter2@203.0.113.10:8000")
 
-    def test_without_credentials(self):
+    def test_open_proxy_without_credentials(self):
         proxy = proxies.Proxy.parse("192.0.2.1:3128")
         self.assertEqual(proxy.url, "http://192.0.2.1:3128")
+        self.assertTrue(proxy.open_proxy)
+        self.assertEqual(proxy.kind, "открытый")
+
+    def test_open_proxy_with_empty_fields(self):
+        proxy = proxies.Proxy.parse("192.0.2.1:3128::")
+        self.assertTrue(proxy.open_proxy)
+        self.assertEqual(proxy.url, "http://192.0.2.1:3128")
+
+    def test_credentials_before_at_sign(self):
+        proxy = proxies.Proxy.parse("bob:hunter2@203.0.113.10:8000")
+        self.assertEqual(proxy.url, "http://bob:hunter2@203.0.113.10:8000")
+        self.assertFalse(proxy.open_proxy)
+
+    def test_scheme_prefix_ignored(self):
+        self.assertEqual(proxies.Proxy.parse("http://192.0.2.1:3128").label, "192.0.2.1:3128")
+        self.assertEqual(
+            proxies.Proxy.parse("socks5://u:p@192.0.2.1:1080").label, "192.0.2.1:1080"
+        )
+
+    def test_trailing_comment_ignored(self):
+        proxy = proxies.Proxy.parse("192.0.2.1:3128   # общий, Германия")
+        self.assertEqual(proxy.label, "192.0.2.1:3128")
+
+    def test_authenticated_proxy_kind(self):
+        self.assertEqual(proxies.Proxy.parse("1.1.1.1:80:u:passw").kind, "с ключом")
+
+    def test_mixed_list_loads(self):
+        """Платные и открытые адреса уживаются в одном файле."""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "proxies.txt"
+            path.write_text(
+                "# с ключом\n1.1.1.1:80:user:passw\n"
+                "u2:passw2@2.2.2.2:81\n\n"
+                "# открытые\n3.3.3.3:3128\nhttp://4.4.4.4:8080\n",
+                encoding="utf-8",
+            )
+            loaded = proxies.load_proxies(path)
+
+        self.assertEqual(
+            [(p.label, p.open_proxy) for p in loaded],
+            [("1.1.1.1:80", False), ("2.2.2.2:81", False),
+             ("3.3.3.3:3128", True), ("4.4.4.4:8080", True)],
+        )
+
+    def test_login_without_password_rejected(self):
+        with self.assertRaises(ValueError):
+            proxies.Proxy.parse("1.1.1.1:80:onlyuser")
 
     def test_comments_and_blanks_skipped(self):
         self.assertIsNone(proxies.Proxy.parse("   "))

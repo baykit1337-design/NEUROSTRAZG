@@ -20,7 +20,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 PROXY_FILE = "proxies.txt"
-CHECK_TIMEOUT = 8
+CHECK_TIMEOUT = 10
 CHECK_CONCURRENCY = 5  # разовая процедура; к скачиванию глав отношения не имеет
 GEO_TIMEOUT = 5
 GEO_URL = "http://ip-api.com/json/?fields=country,countryCode"
@@ -76,20 +76,48 @@ class Proxy:
 
     @classmethod
     def parse(cls, line: str) -> Proxy | None:
-        """`ip:port:username:password`, авторизация необязательна."""
+        """Разбирает строку списка.
+
+        В одном файле спокойно уживаются платные и общие открытые адреса:
+
+            ip:port:username:password
+            ip:port                     — открытый, без авторизации
+            ip:port::                    — то же, пустые поля
+            username:password@ip:port
+            http://ip:port
+        """
         line = line.strip()
         if not line or line.startswith("#"):
             return None
 
-        parts = line.split(":")
-        if len(parts) not in (2, 4):
-            raise ValueError(f"Строка не в формате ip:port:username:password: {line!r}")
+        # Комментарий в конце строки и схема в начале нам не мешают.
+        line = line.split("#", 1)[0].strip()
+        line = re.sub(r"^[a-zA-Z][\w+.-]*://", "", line).strip("/")
+        if not line:
+            return None
 
-        host, port = parts[0].strip(), parts[1].strip()
+        if "@" in line:
+            credentials, _, address = line.rpartition("@")
+            username, _, password = credentials.partition(":")
+        else:
+            parts = [p.strip() for p in line.split(":")]
+            if len(parts) < 2 or len(parts) > 4:
+                raise ValueError(f"Строка не в формате ip:port[:username:password]: {line!r}")
+            address = ":".join(parts[:2])
+            username = parts[2] if len(parts) > 2 else ""
+            password = parts[3] if len(parts) > 3 else ""
+
+        host, _, port = address.rpartition(":")
+        host, port = host.strip(), port.strip()
         if not host or not port.isdigit():
             raise ValueError(f"Плохой адрес прокси: {line!r}")
 
-        username, password = (parts[2].strip(), parts[3].strip()) if len(parts) == 4 else ("", "")
+        username, password = username.strip(), password.strip()
+        if username and not password:
+            raise ValueError(f"Логин без пароля: {line!r}")
+        if password and not username:
+            raise ValueError(f"Пароль без логина: {line!r}")
+
         remember_secret(password)
         return cls(host=host, port=int(port), username=username, password=password)
 
@@ -111,6 +139,15 @@ class Proxy:
         return f"http://{self.host}:{self.port}"
 
     @property
+    def open_proxy(self) -> bool:
+        """Общий открытый адрес, без логина и пароля."""
+        return not self.username
+
+    @property
+    def kind(self) -> str:
+        return "открытый" if self.open_proxy else "с ключом"
+
+    @property
     def usable(self) -> bool:
         """Прошёл проверку и не помечен непригодным во время прогона."""
         return bool(self.alive) and self.status == 200 and not self.disabled
@@ -127,6 +164,8 @@ class Proxy:
         return {
             "label": self.label,
             "safe_url": self.safe_url,
+            "kind": self.kind,
+            "open": self.open_proxy,
             "alive": self.alive,
             "status": self.status,
             "elapsed": round(self.elapsed, 2) if self.elapsed else None,
@@ -305,7 +344,7 @@ class ProxyPool:
 
     def table(self) -> str:
         """Таблица результатов проверки. Пароли замаскированы."""
-        rows = [f"{'адрес':<24}{'страна':<8}{'отклик':>8}  статус"]
+        rows = [f"{'адрес':<24}{'тип':<11}{'страна':<8}{'отклик':>9}  статус"]
         for proxy in self.results():
             elapsed = f"{proxy.elapsed:.2f} с" if proxy.elapsed else "—"
             if proxy.alive and proxy.status == 200:
@@ -316,7 +355,10 @@ class ProxyPool:
                 status = f"HTTP {proxy.status}"
             else:
                 status = proxy.error or "не отвечает"
-            rows.append(f"{proxy.label:<24}{proxy.country or '—':<8}{elapsed:>8}  {status}")
+            rows.append(
+                f"{proxy.label:<24}{proxy.kind:<11}{proxy.country or '—':<8}"
+                f"{elapsed:>9}  {status}"
+            )
         return "\n".join(rows)
 
     # --------------------------------------------------------- переключение

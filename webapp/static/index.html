@@ -269,13 +269,14 @@ function renderPool(data, warning){
 
     return `<tr class="${p.usable ? '' : 'dead'}">
       <td><span class="dot ${dot}"></span>${p.label}</td>
+      <td>${p.kind || ''}</td>
       <td>${p.country || '—'}</td>
       <td>${p.elapsed != null ? p.elapsed.toFixed(2) + ' с' : '—'}</td>
       <td>${status}</td></tr>`;
   }).join('');
 
   box.innerHTML = `<div class="ptable"><table>
-      <tr><th>адрес</th><th>страна</th><th>отклик</th><th>статус</th></tr>
+      <tr><th>адрес</th><th>тип</th><th>страна</th><th>отклик</th><th>статус</th></tr>
       ${rows}</table></div>`
     + (data.checked
         ? `<p class="pnow">Пригодных: ${data.usable} из ${data.total}`
