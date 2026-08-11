@@ -12,15 +12,18 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api, booksplit  # noqa: E402
+from mvl import api, booksplit, nativedialog, rename, textcheck, toword  # noqa: E402
+from mvl.toword import ConvertError  # noqa: E402
+from mvl.rename import RenameError  # noqa: E402
 from mvl.booksplit import Cancelled as SplitCancelled  # noqa: E402
 from mvl.booksplit import HeadingsNotFound, SplitError  # noqa: E402
+from mvl import client as client_mod  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
@@ -38,7 +41,7 @@ class Job:
     """Фоновая задача: скачивание книги или разбивка на главы."""
 
     id: str
-    kind: str = "download"  # download | split
+    kind: str = "download"  # download | split | rename | word | check
     meta: dict = field(default_factory=dict)
     output_dir: str = ""
     progress: dict = field(default_factory=dict)
@@ -226,6 +229,37 @@ def api_links():
         client.close()
 
 
+@app.get("/api/pick/available")
+def api_pick_available():
+    """Есть ли системный проводник — если нет, интерфейс прячет кнопку."""
+    return jsonify(available=nativedialog.available())
+
+
+@app.post("/api/pick/<kind>")
+def api_pick(kind: str):
+    """Открывает настоящее окно проводника и возвращает выбранный путь.
+
+    Пустой path — нажали «Отмена», это не ошибка.
+    """
+    if kind not in ("folder", "file"):
+        return jsonify(error=f"Неизвестный выбор: {kind}"), 404
+
+    payload = request.json or {}
+    initial = (payload.get("initial") or "").strip()
+    title = (payload.get("title") or "").strip()
+
+    try:
+        if kind == "folder":
+            path = nativedialog.ask_directory(title or "Выберите папку", initial)
+        else:
+            path = nativedialog.ask_open_file(title or "Выберите файл книги", initial)
+    except nativedialog.DialogUnavailable as exc:
+        # Не ошибка сервера: интерфейс просто остаётся на встроенном обзоре.
+        return jsonify(error=str(exc), fallback=True), 503
+
+    return jsonify(path=path, cancelled=not path)
+
+
 @app.get("/api/browse")
 def api_browse():
     """Обзор папок на этой машине — чтобы выбрать место или файл книги.
@@ -285,8 +319,16 @@ def api_start():
                     "proxy": pool.current().label if pool and pool.usable_count else "",
                     "switches": 0}
 
+    try:
+        read_timeout = int(payload.get("timeout") or client_mod.TIMEOUT)
+        connect_timeout = int(payload.get("connect_timeout") or client_mod.CONNECT_TIMEOUT)
+    except (TypeError, ValueError):
+        return jsonify(error="Таймаут должен быть числом секунд"), 400
+    if read_timeout < 5 or connect_timeout < 1:
+        return jsonify(error="Слишком маленький таймаут"), 400
+
     def work(job: Job):
-        client = Client()
+        client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
         downloader = Downloader(
             client=client,
             pool=pool,
@@ -392,6 +434,269 @@ def api_split_start():
         )
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+# --------------------------------------- вкладка «Переименование и деление»
+
+
+def _plan_from_payload(payload: dict):
+    """Собирает план по параметрам запроса. Общее для предпросмотра и записи."""
+    folder = (payload.get("folder_in") or "").strip()
+    if not folder:
+        raise RenameError("Выберите папку с главами")
+
+    pattern = (payload.get("pattern") or "").strip() or None
+    chapters = rename.scan(folder, pattern)
+
+    start = payload.get("renumber_from")
+    renumber_from = None
+    if payload.get("renumber") and str(start or "").strip():
+        try:
+            renumber_from = int(start)
+        except (TypeError, ValueError):
+            raise RenameError("Начальный номер должен быть числом") from None
+
+    rows = rename.make_plan(
+        chapters,
+        rename.NameFormat.from_dict(payload.get("format")),
+        splits={str(k): int(v) for k, v in (payload.get("splits") or {}).items()},
+        renumber_from=renumber_from,
+        skip_service=bool(payload.get("skip_service", True)),
+    )
+    return chapters, rows
+
+
+@app.post("/api/rename/scan")
+def api_rename_scan():
+    """Список глав в папке: имя, номер, объём, признак служебного файла."""
+    payload = request.json or {}
+    folder = (payload.get("folder_in") or "").strip()
+    if not folder:
+        return jsonify(error="Выберите папку с главами"), 400
+    try:
+        chapters = rename.scan(folder, (payload.get("pattern") or "").strip() or None)
+    except RenameError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return jsonify(
+        chapters=[c.as_dict() for c in chapters],
+        service=sum(1 for c in chapters if c.service),
+        total=len(chapters),
+    )
+
+
+@app.post("/api/rename/plan")
+def api_rename_plan():
+    """Предпросмотр «старое имя → новое имя». На диск ничего не пишется."""
+    payload = request.json or {}
+    try:
+        _, rows = _plan_from_payload(payload)
+    except RenameError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return jsonify(
+        rows=[r.as_dict() for r in rows],
+        total=len(rows),
+        # Двоеточие в именах файлов Windows не разрешает — предупредим один раз.
+        forbidden=rename.has_forbidden(
+            rename.NameFormat.from_dict(payload.get("format")).separator
+        ),
+    )
+
+
+@app.post("/api/rename/apply")
+def api_rename_apply():
+    """Пишет результат в новую папку. Оригиналы не трогаются."""
+    payload = request.json or {}
+    base = (payload.get("base") or "").strip()
+    out_name = (payload.get("folder_out") or "").strip()
+    fmt = (payload.get("out_format") or "txt").strip().lower()
+
+    if not base:
+        return jsonify(error="Выберите папку, где создать каталог"), 400
+    if not out_name:
+        return jsonify(error="Введите имя новой папки"), 400
+    if fmt not in ("txt", "docx"):
+        return jsonify(error=f"Неизвестный формат: {fmt}"), 400
+
+    try:
+        _, rows = _plan_from_payload(payload)
+    except RenameError as exc:
+        return jsonify(error=str(exc)), 400
+    if not rows:
+        return jsonify(error="Нечего переименовывать"), 400
+
+    # Правки из предпросмотра: приходят по индексу строки, текст глав через
+    # клиент не гоняем — план пересобирается на сервере.
+    for index, name in enumerate(payload.get("names") or []):
+        if index < len(rows) and str(name).strip():
+            rows[index].new_name = str(name).strip()
+
+    try:
+        output_dir = prepare_output_dir(base, out_name)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    style = Style.from_dict(payload.get("style"))
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="rename",
+        meta={"source": payload.get("folder_in"), "format": fmt, "total": len(rows)},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "rename", "message": f"Пишем {len(rows)} файлов…",
+                    "done": 0, "total": len(rows), "written": 0, "failed": 0}
+
+    def work(job: Job):
+        report = rename.apply_plan(
+            rows, Path(job.output_dir), fmt=fmt, style=style,
+            on_progress=lambda done, total: job.progress.update(
+                done=done, total=total, message=f"Файл {done} из {total}"),
+            cancel=job.cancel,
+        )
+        job.report = report.as_dict()
+        job.progress.update(
+            stage="done", written=report.written, failed=report.failed,
+            message=(f"Готово. Записано {report.written} из {report.total}"
+                     + (f", ошибок {report.failed}" if report.failed else "")),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+# ----------------------------------------------------- вкладка «В Word»
+
+
+@app.post("/api/word/scan")
+def api_word_scan():
+    payload = request.json or {}
+    folder = (payload.get("folder_in") or "").strip()
+    if not folder:
+        return jsonify(error="Выберите папку с главами"), 400
+    try:
+        chapters = toword.collect(folder)
+    except ConvertError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(total=len(chapters), titles=[toword.heading_for(c) for c in chapters[:5]])
+
+
+@app.post("/api/word/start")
+def api_word_start():
+    payload = request.json or {}
+    folder = (payload.get("folder_in") or "").strip()
+    base = (payload.get("base") or "").strip()
+    name = (payload.get("name") or "").strip()
+    mode = (payload.get("mode") or toword.MODE_SINGLE).strip()
+
+    if not folder:
+        return jsonify(error="Выберите папку с главами"), 400
+    if not base:
+        return jsonify(error="Выберите, куда сохранить"), 400
+    if not name:
+        return jsonify(error="Введите имя документа или папки"), 400
+    if mode not in (toword.MODE_SINGLE, toword.MODE_PER_CHAPTER):
+        return jsonify(error=f"Неизвестный режим: {mode}"), 400
+
+    try:
+        chapters = toword.collect(folder)
+    except ConvertError as exc:
+        return jsonify(error=str(exc)), 400
+
+    base_dir = Path(base).expanduser()
+    if not base_dir.is_dir():
+        return jsonify(error=f"Папка не найдена: {base_dir}"), 400
+
+    clean = rename.safe_filename(name)
+    output = base_dir / (f"{clean}.docx" if mode == toword.MODE_SINGLE else clean)
+
+    style = Style.from_dict(payload.get("style"))
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="word",
+        meta={"source": folder, "mode": mode, "total": len(chapters)},
+        output_dir=str(output),
+    )
+    job.progress = {"stage": "word", "message": f"Собираем {len(chapters)} глав…",
+                    "done": 0, "total": len(chapters), "written": 0, "failed": 0}
+
+    def work(job: Job):
+        report = toword.convert(
+            folder, output, mode=mode, style=style,
+            on_progress=lambda done, total: job.progress.update(
+                done=done, total=total, message=f"Глава {done} из {total}"),
+            cancel=job.cancel,
+        )
+        job.report = report.as_dict()
+        job.progress.update(
+            stage="done", written=report.written, failed=report.failed,
+            message=(f"Готово. Собрано {report.written} из {report.total}"
+                     + (f", ошибок {report.failed}" if report.failed else "")),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+# -------------------------------------------------- вкладка «Проверка текста»
+
+
+@app.post("/api/check/start")
+def api_check_start():
+    payload = request.json or {}
+    target = (payload.get("target") or "").strip()
+    # Ключа нет — проверяем всё. Пустой список — это снятые галочки, и это
+    # уже ошибка: молча проверять всё подряд нельзя.
+    kinds = payload.get("kinds")
+    if kinds is None:
+        kinds = list(textcheck.ALL_KINDS)
+
+    if not target:
+        return jsonify(error="Выберите папку или файл"), 400
+    if not kinds:
+        return jsonify(error="Отметьте хотя бы одну проверку"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="check",
+        meta={"target": target, "kinds": kinds},
+        output_dir=target,
+    )
+    job.progress = {"stage": "check", "message": "Читаем файлы…", "done": 0, "total": 0}
+
+    def work(job: Job):
+        report = textcheck.check(
+            target, kinds,
+            on_progress=lambda done, total: job.progress.update(
+                done=done, total=total, message=f"Файл {done} из {total}"),
+            cancel=job.cancel,
+        )
+        job.report = report.as_dict()
+        # Текст отчёта держим в задаче — выгрузка берёт его отсюда.
+        job.meta["report_text"] = textcheck.report_text(report)
+        job.progress.update(
+            stage="done",
+            message=(f"Готово. Находок {len(report.findings)} "
+                     f"в {report.files_with_findings} файлах из {report.files_checked}"),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.get("/api/check/<job_id>/report")
+def api_check_report(job_id: str):
+    """Выгрузка отчёта в .txt."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None or job.kind != "check":
+        return jsonify(error="Задача не найдена"), 404
+    text = job.meta.get("report_text")
+    if not text:
+        return jsonify(error="Отчёт ещё не готов"), 409
+
+    return Response(
+        text,
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="check-report.txt"'},
+    )
 
 
 @app.get("/api/job/<job_id>")

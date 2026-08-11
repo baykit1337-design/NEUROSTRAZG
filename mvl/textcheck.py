@@ -1,0 +1,396 @@
+"""Проверка готового перевода на мусор.
+
+Ничего не исправляет — только показывает, где смотреть. Каждый тип проверки
+включается своей галочкой.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import statistics
+import threading
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .booksplit import Cancelled
+
+log = logging.getLogger(__name__)
+
+READABLE = (".txt", ".md", ".docx")
+#: Сколько символов вокруг находки показывать в таблице.
+CONTEXT = 60
+WHITELIST_FILE = "whitelist.txt"
+
+# 1. Иероглифы и азиатские алфавиты — непереведённые куски.
+CJK = re.compile(
+    "["
+    "一-鿿"   # китайские иероглифы
+    "㐀-䶿"   # китайские, расширение A
+    "가-힯"   # корейский хангыль
+    "ᄀ-ᇿ"   # корейские джамо
+    "぀-ゟ"   # японская хирагана
+    "゠-ヿ"   # японская катакана
+    "　-〿"   # восточноазиатская пунктуация
+    "＀-￯"   # полноширинные формы
+    "]+"
+)
+
+# 2. Остатки markdown.
+MARKDOWN = [
+    re.compile(r"\*\*"),
+    re.compile(r"__"),
+    re.compile(r"~~"),
+    re.compile(r"`"),
+    re.compile(r"^\s*#{1,6}\s"),
+    re.compile(r"\[[^\]]+\]\([^)]*\)"),
+    re.compile(r"^\s*>"),
+    re.compile(r"^\s*-{3,}\s*$"),
+]
+
+# 3. Латиница в русском тексте — слова из трёх и более букв.
+LATIN_WORD = re.compile(r"\b[A-Za-z][A-Za-z'’-]{2,}\b")
+CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
+#: Адреса, HTML-теги и сущности сами по себе латиница, но ловить их как
+#: «непереведённое слово» бессмысленно — они уже видны в своих проверках.
+NOISE = re.compile(r"https?://\S+|www\.\S+|</?[a-zA-Z][^>]*>|&[a-zA-Z]+;|&#\d+;|\([^)\s]*\)")
+
+
+def _mask_noise(line: str) -> str:
+    """Затирает адреса и разметку пробелами, сохраняя позиции символов."""
+    return NOISE.sub(lambda m: " " * len(m.group(0)), line)
+
+# 4. Следы работы модели-переводчика.
+MODEL_TRACES = [
+    re.compile(r"\bNote:", re.I),
+    re.compile(r"Translator'?s note", re.I),
+    re.compile(r"Примечани[ея] переводчика", re.I),
+    re.compile(r"Вот перевод", re.I),
+    re.compile(r"Here is the translation", re.I),
+    re.compile(r"I hope this helps", re.I),
+    re.compile(r"\bAs an AI\b", re.I),
+    re.compile(r"```"),
+    re.compile(r"</?thinking>", re.I),
+]
+
+# 5. Битая кодировка и HTML.
+BROKEN = [
+    re.compile("�"),
+    re.compile(" "),
+    re.compile(r"&nbsp;|&amp;|&quot;|&#\d+;"),
+    re.compile(r"</?(?:p|br|span)\b[^>]*>", re.I),
+]
+
+#: Парные знаки для проверки 8.
+PAIRS = (("«", "»"), ("„", "“"), ("(", ")"), ("[", "]"), ("{", "}"))
+
+#: Ключ проверки → как называется в отчёте.
+KINDS = {
+    "cjk": "Иероглифы и азиатские алфавиты",
+    "markdown": "Остатки markdown",
+    "latin": "Латиница в русском тексте",
+    "model": "Следы модели-переводчика",
+    "broken": "Битая кодировка и HTML",
+    "loop": "Зацикливание модели",
+    "size": "Подозрительный объём",
+    "pairs": "Непарные кавычки и скобки",
+}
+ALL_KINDS = tuple(KINDS)
+
+#: Файл короче этого — подозрительный (пункт 7).
+MIN_CHARS = 500
+#: Во столько раз можно отличаться от медианы, прежде чем это станет подозрительным.
+SIZE_FACTOR = 3
+#: Столько одинаковых абзацев подряд считаем зацикливанием (пункт 6).
+LOOP_REPEATS = 3
+
+
+class CheckError(Exception):
+    """Проверить не удалось."""
+
+
+@dataclass
+class Finding:
+    file: str
+    line: int
+    kind: str
+    fragment: str
+
+    @property
+    def kind_name(self) -> str:
+        return KINDS.get(self.kind, self.kind)
+
+    def as_dict(self) -> dict:
+        return {
+            "file": self.file,
+            "line": self.line,
+            "kind": self.kind,
+            "kind_name": self.kind_name,
+            "fragment": self.fragment,
+        }
+
+
+@dataclass
+class CheckReport:
+    findings: list[Finding] = field(default_factory=list)
+    summary: dict = field(default_factory=dict)
+    latin_words: list = field(default_factory=list)
+    files_checked: int = 0
+    files_with_findings: int = 0
+    unreadable: list = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "findings": [f.as_dict() for f in self.findings],
+            "summary": [
+                {"kind": k, "kind_name": KINDS.get(k, k), "count": v}
+                for k, v in sorted(self.summary.items(), key=lambda kv: -kv[1])
+            ],
+            "latin_words": self.latin_words,
+            "files_checked": self.files_checked,
+            "files_with_findings": self.files_with_findings,
+            "unreadable": self.unreadable,
+            "total": len(self.findings),
+        }
+
+
+def read_lines(path: Path) -> list[str]:
+    """Строки файла. Для .docx строкой считается абзац."""
+    if path.suffix.lower() == ".docx":
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise CheckError("Для .docx нужен python-docx") from exc
+        return [p.text for p in Document(str(path)).paragraphs]
+    # Битая кодировка — как раз то, что ищем, поэтому errors='replace'.
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def load_whitelist(folder: Path) -> set[str]:
+    """Слова-исключения для проверки латиницы: имена собственные и прочее."""
+    for candidate in (folder / WHITELIST_FILE, Path.cwd() / WHITELIST_FILE):
+        if candidate.is_file():
+            words = candidate.read_text(encoding="utf-8", errors="replace").split()
+            return {w.strip().lower() for w in words if w.strip()}
+    return set()
+
+
+def _fragment(line: str, start: int, end: int) -> str:
+    """Кусок строки вокруг находки — CONTEXT символов с запасом по краям."""
+    half = max(0, (CONTEXT - (end - start)) // 2)
+    left = max(0, start - half)
+    right = min(len(line), end + half)
+    piece = line[left:right].strip()
+    return ("…" if left > 0 else "") + piece + ("…" if right < len(line) else "")
+
+
+def check_file(
+    path: Path,
+    kinds: set[str],
+    whitelist: set[str] | None = None,
+    latin_counter: Counter | None = None,
+) -> list[Finding]:
+    """Проверки, которым хватает одного файла. Объём считается отдельно."""
+    whitelist = whitelist or set()
+    lines = read_lines(path)
+    name = path.name
+    found: list[Finding] = []
+
+    def add(number: int, kind: str, line: str, start: int, end: int):
+        found.append(Finding(name, number, kind, _fragment(line, start, end)))
+
+    for number, line in enumerate(lines, 1):
+        if "cjk" in kinds:
+            for match in CJK.finditer(line):
+                add(number, "cjk", line, match.start(), match.end())
+
+        if "markdown" in kinds:
+            for pattern in MARKDOWN:
+                match = pattern.search(line)
+                if match:
+                    add(number, "markdown", line, match.start(), match.end())
+                    break
+
+        if "model" in kinds:
+            for pattern in MODEL_TRACES:
+                match = pattern.search(line)
+                if match:
+                    add(number, "model", line, match.start(), match.end())
+                    break
+
+        if "broken" in kinds:
+            for pattern in BROKEN:
+                match = pattern.search(line)
+                if match:
+                    add(number, "broken", line, match.start(), match.end())
+                    break
+
+        if "latin" in kinds and CYRILLIC.search(line):
+            # Латиница интересна только внутри русского текста и только вне
+            # адресов и разметки — фрагмент при этом берём из исходной строки.
+            for match in LATIN_WORD.finditer(_mask_noise(line)):
+                word = match.group(0)
+                if word.lower() in whitelist:
+                    continue
+                if latin_counter is not None:
+                    latin_counter[word] += 1
+                add(number, "latin", line, match.start(), match.end())
+
+        if "pairs" in kinds:
+            unbalanced = _unbalanced(line)
+            if unbalanced:
+                found.append(Finding(name, number, "pairs", f"{unbalanced}: {line.strip()[:CONTEXT]}"))
+
+    if "loop" in kinds:
+        found.extend(_loops(name, lines))
+
+    return found
+
+
+def _unbalanced(paragraph: str) -> str:
+    """Непарные кавычки и скобки в пределах абзаца."""
+    problems = []
+    for left, right in PAIRS:
+        if paragraph.count(left) != paragraph.count(right):
+            problems.append(f"{left}{right}")
+    # Прямые кавычки одинаковы с обеих сторон — считаем чётность.
+    if paragraph.count('"') % 2:
+        problems.append('"')
+    return ", ".join(problems)
+
+
+def _loops(name: str, lines: list[str]) -> list[Finding]:
+    """Один и тот же абзац подряд три раза и больше."""
+    found: list[Finding] = []
+    previous, start, count = None, 0, 0
+
+    def flush():
+        if previous and count >= LOOP_REPEATS:
+            found.append(
+                Finding(name, start, "loop", f"{count}× подряд: {previous.strip()[:CONTEXT]}")
+            )
+
+    for number, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == previous:
+            count += 1
+            continue
+        flush()
+        previous, start, count = stripped, number, 1
+    flush()
+    return found
+
+
+def check(
+    target: str | Path,
+    kinds=None,
+    on_progress=None,
+    cancel: threading.Event | None = None,
+) -> CheckReport:
+    """Проверяет папку или один файл."""
+    path = Path(target).expanduser()
+    kinds = set(kinds or ALL_KINDS)
+    unknown = kinds - set(ALL_KINDS)
+    if unknown:
+        raise CheckError(f"Неизвестная проверка: {', '.join(sorted(unknown))}")
+
+    if path.is_dir():
+        files = [
+            p for p in sorted(path.iterdir())
+            # Список исключений — служебный файл, а не глава книги.
+            if p.is_file() and p.suffix.lower() in READABLE and p.name.lower() != WHITELIST_FILE
+        ]
+        folder = path
+    elif path.is_file():
+        files, folder = [path], path.parent
+    else:
+        raise CheckError(f"Не найдено: {path}")
+
+    if not files:
+        raise CheckError("Нет файлов .txt, .md или .docx")
+
+    whitelist = load_whitelist(folder) if "latin" in kinds else set()
+    latin_counter: Counter = Counter()
+    report = CheckReport(files_checked=len(files))
+    sizes: dict[Path, int] = {}
+    per_file: dict[str, list[Finding]] = {}
+
+    for index, file_path in enumerate(files, 1):
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        try:
+            found = check_file(file_path, kinds, whitelist, latin_counter)
+            sizes[file_path] = sum(len(line) for line in read_lines(file_path))
+            per_file.setdefault(file_path.name, []).extend(found)
+        except Exception as exc:
+            # Один нечитаемый файл не должен прерывать проверку остальных.
+            log.warning("Не проверен %s: %s", file_path.name, exc)
+            report.unreadable.append(f"{file_path.name}: {type(exc).__name__}: {exc}")
+        if on_progress:
+            on_progress(index, len(files))
+
+    if "size" in kinds and sizes:
+        for finding in _size_findings(sizes):
+            per_file.setdefault(finding.file, []).append(finding)
+
+    for file_name in sorted(per_file):
+        report.findings.extend(sorted(per_file[file_name], key=lambda f: (f.line, f.kind)))
+
+    report.summary = dict(Counter(f.kind for f in report.findings))
+    # Файлы без находок в таблицу не попадают.
+    report.files_with_findings = len({f.file for f in report.findings})
+    report.latin_words = [
+        {"word": word, "count": count} for word, count in latin_counter.most_common()
+    ]
+    return report
+
+
+def _size_findings(sizes: dict[Path, int]) -> list[Finding]:
+    """Слишком короткие файлы и сильно отличающиеся от медианы по книге."""
+    found: list[Finding] = []
+    median = statistics.median(sizes.values()) if sizes else 0
+
+    for path, size in sizes.items():
+        if size < MIN_CHARS:
+            found.append(Finding(path.name, 1, "size", f"всего {size} символов"))
+        elif median and (size > median * SIZE_FACTOR or size * SIZE_FACTOR < median):
+            found.append(
+                Finding(path.name, 1, "size",
+                        f"{size} символов при медиане {int(median)} по книге")
+            )
+    return found
+
+
+def report_text(report: CheckReport) -> str:
+    """Отчёт для выгрузки в .txt."""
+    lines = [
+        "Проверка текста",
+        f"Файлов проверено: {report.files_checked}",
+        f"Файлов с находками: {report.files_with_findings}",
+        f"Всего находок: {len(report.findings)}",
+        "",
+        "Сводка по типам:",
+    ]
+    for row in report.as_dict()["summary"]:
+        lines.append(f"  {row['kind_name']}: {row['count']}")
+
+    if report.latin_words:
+        lines += ["", "Латиница — уникальные слова:"]
+        lines += [f"  {row['word']}  ×{row['count']}" for row in report.latin_words]
+
+    if report.unreadable:
+        lines += ["", "Не удалось прочитать:"] + [f"  {row}" for row in report.unreadable]
+
+    lines += ["", "Находки:"]
+    current = None
+    for finding in report.findings:
+        if finding.file != current:
+            current = finding.file
+            lines.append(f"\n{current}")
+        lines.append(f"  строка {finding.line} · {finding.kind_name} · {finding.fragment}")
+
+    return "\n".join(lines) + "\n"

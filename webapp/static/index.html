@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MVLEMPYR — качалка глав</title>
+<title>MVLEMPYR — качалка и обработка глав</title>
+<!-- Та же книга со стрелкой, что и на первой вкладке: во вкладке браузера
+     не должно быть пустого квадрата. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M4 4.5A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5V4.5Z' stroke='%23c084fc' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20' stroke='%23c084fc' stroke-width='1.6'/%3E%3Cpath d='M12 6.5v6m0 0 2.5-2.5M12 12.5 9.5 10' stroke='%238c54ff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   :root{
     --bg:#07060a;
@@ -80,7 +83,11 @@
   button.primary{background:rgba(176,108,255,.16);box-shadow:0 0 20px rgba(176,108,255,.22)}
 
   .tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
-  .tabs button{padding:9px 18px;font-size:13px;border-color:var(--stroke-soft)}
+  .tabs button{
+    padding:9px 16px;font-size:13px;border-color:var(--stroke-soft);
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .tabs button svg{flex:none}
   .tabs button.on{
     border-color:var(--neon);background:rgba(176,108,255,.16);
     box-shadow:0 0 20px rgba(176,108,255,.28);
@@ -88,8 +95,57 @@
   section{display:flex;flex-direction:column;gap:18px}
   section[hidden]{display:none}
 
-  .pick{flex:1;font-size:14px;border-color:var(--stroke-soft)}
-  .pick.on{border-color:var(--neon);background:rgba(176,108,255,.16)}
+  .pick,.pick2,.pick3{flex:1;font-size:14px;border-color:var(--stroke-soft)}
+  .pick.on,.pick2.on,.pick3.on{border-color:var(--neon);background:rgba(176,108,255,.16)}
+
+  .checks{display:flex;gap:14px;flex-wrap:wrap}
+  .chk{
+    display:inline-flex;align-items:center;gap:7px;font-size:13px;
+    color:#d9d2ea;cursor:pointer;user-select:none;text-transform:none;letter-spacing:0;
+  }
+  .chk input{accent-color:#a855f7;width:15px;height:15px;cursor:pointer}
+
+  select{
+    width:100%;padding:10px 12px;border-radius:10px;font-size:14px;
+    background:rgba(255,255,255,.05);color:#f2eeff;
+    border:1px solid var(--stroke-soft);
+  }
+
+  /* Таблицы глав, предпросмотра и находок. */
+  .table{max-height:340px;overflow:auto;border-radius:10px;
+         border:1px solid var(--stroke-soft);background:rgba(0,0,0,.22)}
+  .table .tr{
+    display:flex;gap:10px;align-items:center;padding:7px 11px;font-size:12.5px;
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .table .tr:last-child{border-bottom:none}
+  .table .tr:hover{background:rgba(176,108,255,.07)}
+  .table .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .table .num{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .table .tr.service{opacity:.62}
+  .table .tag{
+    font-size:10.5px;padding:2px 7px;border-radius:99px;white-space:nowrap;
+    background:rgba(176,108,255,.2);color:#e2d3ff;
+  }
+  .table input.rowname{
+    flex:1;min-width:0;padding:4px 8px;font-size:12.5px;
+    background:rgba(255,255,255,.05);border:1px solid var(--stroke-soft);border-radius:7px;
+  }
+  .arrow{color:var(--muted);flex:none}
+
+  .modal{
+    position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
+    background:rgba(4,3,8,.72);backdrop-filter:blur(3px);padding:20px;
+  }
+  .modal[hidden]{display:none}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{
+    font-size:12px;padding:6px 12px;border-radius:99px;cursor:pointer;
+    border:1px solid var(--stroke-soft);background:rgba(255,255,255,.04);color:#ddd5ee;
+  }
+  .chip.on{border-color:var(--neon);background:rgba(176,108,255,.18);color:#fff}
+  .chip b{color:#fff}
 
   .dirs .file{color:#e8e2ff}
   .dirs .file.on{background:rgba(176,108,255,.18);color:#fff}
@@ -121,12 +177,37 @@
   .dirs .up{color:var(--neon)}
   .empty{color:var(--muted);font-size:13px;padding:10px 12px}
 
-  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden;margin:14px 0 10px}
+  /* Прогресс-бар: неоновый фиолетовый градиент со свечением. */
+  .bar{
+    height:8px;
+    border-radius:999px;
+    background:#1a1a24;
+    overflow:hidden;
+    box-shadow:inset 0 0 4px rgba(0,0,0,.6);
+    margin:14px 0 10px;
+  }
   .bar > i{
-    display:block;height:100%;width:0;border-radius:99px;
-    background:linear-gradient(90deg,var(--neon-dim),var(--neon));
-    box-shadow:0 0 16px rgba(176,108,255,.7);
+    display:block;
+    height:100%;
+    width:0;
+    border-radius:999px;
+    background:linear-gradient(90deg,#3b1d78 0%,#6d28d9 45%,#a855f7 75%,#d8b4fe 100%);
+    box-shadow:0 0 10px rgba(140,84,255,.7), 0 0 20px rgba(140,84,255,.35);
     transition:width .3s ease;
+    position:relative;
+  }
+  /* Блик бежит только пока операция идёт — на готовой полосе он лишний. */
+  .bar > i.active::after{
+    content:'';
+    position:absolute;
+    inset:0;
+    border-radius:999px;
+    background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.25) 50%,transparent 100%);
+    animation:mvl-shimmer 1.6s linear infinite;
+  }
+  @keyframes mvl-shimmer{
+    from{transform:translateX(-100%)}
+    to{transform:translateX(100%)}
   }
   .stats{display:flex;gap:18px;font-size:13px;color:var(--muted);flex-wrap:wrap}
   .stats b{color:#fff;font-weight:600}
@@ -161,13 +242,49 @@
 </style>
 </head>
 <body>
+<input type="hidden" id="baseHidden"><input type="hidden" id="bookHidden"><input type="hidden" id="spBaseHidden">
 <div class="wrap">
   <h1>MVLEMPYR</h1>
   <p class="sub">качалка глав и работа с текстом</p>
 
   <nav class="tabs">
-    <button class="on" data-tab="download">Качалка</button>
-    <button data-tab="split">Разбить книгу</button>
+    <button class="on" data-tab="download">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5V4.5Z"
+              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#c084fc" stroke-width="1.6"/>
+        <path d="M12 6.5v6m0 0 2.5-2.5M12 12.5 9.5 10" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>Качалка</button>
+    <button data-tab="split">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <circle cx="6" cy="18" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
+        <circle cx="18" cy="18" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
+        <path d="M8 16.2 18.5 4M16 16.2 5.5 4" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round"/>
+      </svg>Разбить</button>
+    <button data-tab="rename">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M4 6h10M4 12h7M4 18h10" stroke="#c084fc" stroke-width="1.6"
+              stroke-linecap="round"/>
+        <path d="M16 15.5 19 12l2.2 2.2-3.5 3.5-2.6.6.4-2.8Z" stroke="#8c54ff"
+              stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>Переименовать</button>
+    <button data-tab="word">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
+              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M14 3v5h5" stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M8.5 12.5l1.4 4 1.6-4 1.6 4 1.4-4" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>В Word</button>
+    <button data-tab="check">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <circle cx="11" cy="11" r="6.5" stroke="#c084fc" stroke-width="1.6"/>
+        <path d="m16 16 4.5 4.5" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="m8.5 11 2 2 3.5-3.8" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>Проверка</button>
   </nav>
 
   <div class="card err" id="error" hidden></div>
@@ -206,6 +323,8 @@
   <div class="card" id="place" hidden>
     <label>Где создать папку</label>
     <div class="crumb">
+      <button class="ghost browse" data-target="baseHidden" data-kind="folder"
+              style="padding:5px 12px;font-size:12px">Обзор…</button>
       <button class="ghost" id="home" style="padding:5px 12px;font-size:12px">Домой</button>
       <code id="curPath">…</code>
     </div>
@@ -232,6 +351,18 @@
       <button id="links" class="ghost" title="Список ссылок для WebToEpub">Ссылки</button>
     </div>
     <p class="hint" id="finalPath"></p>
+    <div class="row" style="margin-top:14px">
+      <div style="flex:1">
+        <label for="tmRead">таймаут чтения, с</label>
+        <input id="tmRead" type="number" value="120" min="5" max="600">
+      </div>
+      <div style="flex:1">
+        <label for="tmConnect">таймаут соединения, с</label>
+        <input id="tmConnect" type="number" value="15" min="1" max="120">
+      </div>
+    </div>
+    <p class="hint">Страница главы весит около 220 КБ: при 30 секундах она не
+       успевала дойти и обрывалась. 120 секунд — рабочее значение.</p>
     <p class="hint" id="estimate"></p>
   </div>
 
@@ -260,6 +391,8 @@
   <div class="card lit">
     <label>Файл книги — .epub или .txt</label>
     <div class="crumb">
+      <button class="ghost browse" data-target="bookHidden" data-kind="file"
+              style="padding:5px 12px;font-size:12px">Обзор…</button>
       <button class="ghost" id="spHome" style="padding:5px 12px;font-size:12px">Домой</button>
       <code id="spPath">…</code>
     </div>
@@ -285,6 +418,8 @@
   <div class="card" id="spPlace" hidden>
     <label>Где создать папку</label>
     <div class="crumb">
+      <button class="ghost browse" data-target="spBaseHidden" data-kind="folder"
+              style="padding:5px 12px;font-size:12px">Обзор…</button>
       <button class="ghost" id="spOutHome" style="padding:5px 12px;font-size:12px">Домой</button>
       <code id="spOutPath">…</code>
     </div>
@@ -323,6 +458,262 @@
       <button id="spAgain" class="ghost" hidden>Другая книга</button>
     </div>
     <p class="hint" id="spSummary"></p>
+  </div>
+</section>
+
+<!-- ================= Переименование и деление ================= -->
+<section id="tab-rename" hidden>
+  <div class="card lit">
+    <label>Папка с главами</label>
+    <div class="row">
+      <input id="rnIn" type="text" placeholder="Путь к папке от WebToEpub" autocomplete="off">
+      <button class="ghost browse" data-target="rnIn" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="rnScan" class="primary" style="flex:1">Прочитать папку</button>
+    </div>
+    <p class="hint" id="rnScanned"></p>
+  </div>
+
+  <div class="card" id="rnPatternCard" hidden>
+    <label for="rnPattern">Своё регулярное выражение для имени</label>
+    <input id="rnPattern" type="text" spellcheck="false" autocomplete="off"
+           placeholder="оставьте пустым — сработает разбор по умолчанию">
+    <p class="hint">Группы: <code>seq</code>, <code>number</code>, <code>part</code>,
+       <code>title</code>. Пример: <code>^(?P&lt;number&gt;\d+)\.\s*(?P&lt;title&gt;.*)$</code></p>
+  </div>
+
+  <div class="card" id="rnFormat" hidden>
+    <label>Формат имени</label>
+    <div class="checks">
+      <label class="chk"><input type="checkbox" id="rnNum" checked> номер главы</label>
+      <label class="chk"><input type="checkbox" id="rnPart" checked> номер части</label>
+      <label class="chk"><input type="checkbox" id="rnTitle" checked> название</label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label for="rnPrefix">приставка</label>
+        <input id="rnPrefix" type="text" value="Глава" autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label for="rnSep">разделитель</label>
+        <select id="rnSep">
+          <option value=": ">: (двоеточие)</option>
+          <option value=". ">. (точка)</option>
+          <option value=" — "> — (тире)</option>
+          <option value=" - "> - (дефис)</option>
+        </select>
+      </div>
+    </div>
+    <p class="hint">пример: <b id="rnExample">—</b></p>
+    <p class="hint" id="rnForbidden" hidden></p>
+
+    <div style="margin-top:14px">
+      <label class="chk"><input type="checkbox" id="rnRenumber"> нумерация начинается с</label>
+      <input id="rnStart" type="number" value="1" min="0" style="max-width:120px" disabled>
+      <p class="hint">иначе номер берётся из имени файла</p>
+    </div>
+
+    <div style="margin-top:14px">
+      <label class="chk"><input type="checkbox" id="rnSkipService" checked>
+        пропускать служебные файлы</label>
+      <p class="hint" id="rnServiceNote"></p>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button id="rnHalve" class="ghost" style="flex:1">Разбить пополам</button>
+      <button id="rnSplit" class="ghost" style="flex:1">Разделить…</button>
+    </div>
+    <p class="hint">действуют на отмеченные главы и используют галочки выше</p>
+  </div>
+
+  <div class="card" id="rnListCard" hidden>
+    <label>Главы <span class="hint" id="rnSelected"></span></label>
+    <div class="row" style="margin-bottom:8px">
+      <button class="ghost" id="rnAll" style="padding:5px 12px;font-size:12px">Выбрать все</button>
+      <button class="ghost" id="rnNone" style="padding:5px 12px;font-size:12px">Снять</button>
+    </div>
+    <div class="table" id="rnList"></div>
+  </div>
+
+  <div class="card" id="rnPreviewCard" hidden>
+    <label>Предпросмотр — строки можно править вручную</label>
+    <div class="table" id="rnPreview"></div>
+  </div>
+
+  <div class="card" id="rnPlace" hidden>
+    <label>Куда сохранить (новая папка, оригиналы не трогаем)</label>
+    <div class="row">
+      <input id="rnBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="rnBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="rnOut">Имя новой папки</label>
+      <input id="rnOut" type="text" placeholder="Готово" autocomplete="off">
+    </div>
+    <div style="margin-top:14px">
+      <label>Формат</label>
+      <div class="row">
+        <button class="pick2 on" data-fmt="txt">.txt</button>
+        <button class="pick2" data-fmt="docx">.docx</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="rnApply" class="primary" style="flex:1" disabled>Применить</button>
+    </div>
+    <p class="hint" id="rnApplyHint">Сначала постройте предпросмотр.</p>
+  </div>
+
+  <!-- Окно «Разделить»: единственный вопрос — на сколько частей. -->
+  <div class="modal" id="rnDialog" hidden>
+    <div class="card lit" style="max-width:320px;width:100%">
+      <label for="rnParts">На сколько частей разделить</label>
+      <select id="rnParts">
+        <option value="2">2</option><option value="3">3</option>
+        <option value="4">4</option><option value="5">5</option>
+        <option value="6">6</option>
+      </select>
+      <div class="row" style="margin-top:16px">
+        <button id="rnPartsOk" class="primary" style="flex:1">Разделить</button>
+        <button id="rnPartsCancel" class="ghost" style="flex:1">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card lit" id="rnProgress" hidden>
+    <div class="status" id="rnStatus"></div>
+    <div class="bar"><i id="rnFill"></i></div>
+    <div class="stats">
+      <span>записано <b id="rnWritten">0</b></span>
+      <span>ошибок <b id="rnFailed">0</b></span>
+      <span id="rnPct"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="rnStop" class="ghost">Остановить</button>
+    </div>
+    <p class="hint" id="rnSummary"></p>
+  </div>
+</section>
+
+<!-- ========================= В Word ========================= -->
+<section id="tab-word" hidden>
+  <div class="card lit">
+    <label>Папка с главами</label>
+    <div class="row">
+      <input id="wdIn" type="text" placeholder="Путь к папке" autocomplete="off">
+      <button class="ghost browse" data-target="wdIn" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="wdScan" class="primary" style="flex:1">Прочитать папку</button>
+    </div>
+    <p class="hint" id="wdScanned"></p>
+  </div>
+
+  <div class="card" id="wdOpts" hidden>
+    <label>Режим</label>
+    <div class="row">
+      <button class="pick3 on" data-mode="single">Один документ</button>
+      <button class="pick3" data-mode="per_chapter">Отдельный .docx на главу</button>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <div style="flex:2">
+        <label for="wdFont">шрифт</label>
+        <input id="wdFont" type="text" value="Times New Roman" autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label for="wdSize">кегль</label>
+        <input id="wdSize" type="number" value="12" min="6" max="72">
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label for="wdSpacing">интервал</label>
+        <input id="wdSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
+      </div>
+      <div style="flex:1">
+        <label for="wdIndent">отступ первой строки, см</label>
+        <input id="wdIndent" type="number" value="1.25" step="0.05" min="0" max="5">
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="wdBreak" checked> разрыв страницы между главами</label>
+
+    <div style="margin-top:16px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="wdBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="wdBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="wdName">имя документа</label>
+        <input id="wdName" type="text" placeholder="Книга" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="wdStart" class="primary" style="flex:1">Собрать</button>
+    </div>
+    <p class="hint" id="wdFinal"></p>
+  </div>
+
+  <div class="card lit" id="wdProgress" hidden>
+    <div class="status" id="wdStatus"></div>
+    <div class="bar"><i id="wdFill"></i></div>
+    <div class="stats">
+      <span>собрано <b id="wdWritten">0</b></span>
+      <span>ошибок <b id="wdFailed">0</b></span>
+      <span id="wdPct"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="wdStop" class="ghost">Остановить</button>
+    </div>
+    <p class="hint" id="wdSummary"></p>
+    <div class="table" id="wdErrors" hidden></div>
+  </div>
+</section>
+
+<!-- ====================== Проверка текста ====================== -->
+<section id="tab-check" hidden>
+  <div class="card lit">
+    <label>Папка или файл</label>
+    <div class="row">
+      <input id="ckIn" type="text" placeholder="Путь к папке с переводом" autocomplete="off">
+      <button class="ghost browse" data-target="ckIn" data-kind="folder">Папка…</button>
+      <button class="ghost browse" data-target="ckIn" data-kind="file">Файл…</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>Что искать</label>
+    <div class="checks" id="ckKinds"></div>
+    <div class="row" style="margin-top:16px">
+      <button id="ckStart" class="primary" style="flex:1">Проверить</button>
+    </div>
+  </div>
+
+  <div class="card lit" id="ckProgress" hidden>
+    <div class="status" id="ckStatus"></div>
+    <div class="bar"><i id="ckFill"></i></div>
+    <div class="row" style="margin-top:12px">
+      <button id="ckStop" class="ghost">Остановить</button>
+      <button id="ckSave" class="ghost" hidden>Выгрузить отчёт</button>
+    </div>
+  </div>
+
+  <div class="card" id="ckSummaryCard" hidden>
+    <label>Сводка</label>
+    <div class="chips" id="ckSummary"></div>
+  </div>
+
+  <div class="card" id="ckWordsCard" hidden>
+    <label>Латиница — уникальные слова</label>
+    <div class="table" id="ckWords"></div>
+  </div>
+
+  <div class="card" id="ckResults" hidden>
+    <label>Находки <span class="hint" id="ckCount"></span></label>
+    <div class="table" id="ckTable"></div>
   </div>
 </section>
 </div>
@@ -497,7 +888,9 @@ async function exportLinks(){
     const data = await call('/api/links', {
       novel,
       first: Number($('first').value) || 1,
-      last: Number($('last').value) || novel.total_chapters
+      last: Number($('last').value) || novel.total_chapters,
+      timeout: Number($('tmRead').value) || 120,
+      connect_timeout: Number($('tmConnect').value) || 15
     });
     const blob = new Blob([data.links.join('\n') + '\n'], {type:'text/plain'});
     const a = document.createElement('a');
@@ -557,6 +950,7 @@ async function tick(){
 
     const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
     $('fill').style.width = pct + '%';
+    $('fill').classList.toggle('active', busy);
     $('sPct').textContent = p.total ? pct + '%' : '';
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
@@ -772,6 +1166,7 @@ async function splitTick(){
     $('spStatus').innerHTML = (busy ? '<span class="spin"></span>' : '') + (p.message || '');
     const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
     $('spFill').style.width = pct + '%';
+    $('spFill').classList.toggle('active', busy);
     $('spPct').textContent = p.total ? pct + '%' : '';
     $('spWritten').textContent = p.written || p.done || 0;
     $('spFailed').textContent = p.failed || 0;
@@ -828,5 +1223,8 @@ browseBook();
 $('stop').onclick = stop;
 $('again').onclick = reset;
 </script>
+<!-- Вкладки «Переименовать», «В Word» и «Проверка» — общие помощники
+     объявлены выше, поэтому файл подключается следом. -->
+<script src="/static/tabs.js"></script>
 </body>
 </html>

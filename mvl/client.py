@@ -26,7 +26,19 @@ PAUSE_RANGE = (1.0, 2.0)
 # Витрина: строго один поток, пауза 2-4 секунды с джиттером.
 SITE_PAUSE_RANGE = (2.0, 4.0)
 MAX_ATTEMPTS = 3
-TIMEOUT = 30
+#: Страница главы весит ~220 КБ и на медленном канале не успевает прийти за
+#: 30 секунд — обрыв случался на ~22 КБ. Cloudflare тут ни при чём.
+TIMEOUT = 120
+#: Соединение либо устанавливается быстро, либо адрес недоступен — ждать
+#: столько же, сколько тело ответа, незачем.
+CONNECT_TIMEOUT = 15
+
+#: Признаки того, что ответ оборвался на середине, а не «сайт не ответил».
+#: Диагноз другой, поэтому и в лог пишется другое.
+INCOMPLETE_MARKERS = (
+    "partial", "incomplete", "truncated", "transfer closed",
+    "connection reset", "chunked", "recv failure",
+)
 
 log = logging.getLogger(__name__)
 
@@ -92,9 +104,14 @@ _FALLBACK_UA = (
 
 
 class _UrllibResponse:
-    def __init__(self, status: int, body: bytes):
+    def __init__(self, status: int, body: bytes, headers: dict | None = None):
         self.status_code = status
         self._body = body
+        self.headers = headers or {}
+
+    @property
+    def content(self) -> bytes:
+        return self._body
 
     @property
     def text(self) -> str:
@@ -109,21 +126,69 @@ class _UrllibResponse:
 class _UrllibSession:
     """Последний рубеж: стандартная библиотека, без внешних зависимостей."""
 
-    def get(self, url: str, params=None, timeout: int = TIMEOUT, **_):
+    def get(self, url: str, params=None, timeout=TIMEOUT, **_):
         import urllib.error
         import urllib.request
+
+        # urllib умеет только один таймаут — берём тот, что на чтение.
+        if isinstance(timeout, (tuple, list)):
+            timeout = timeout[-1]
 
         if params:
             url = f"{url}?{encode_params(params)}"
         req = urllib.request.Request(url, headers={"User-Agent": _FALLBACK_UA})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return _UrllibResponse(resp.status, resp.read())
+                return _UrllibResponse(resp.status, resp.read(), dict(resp.headers))
         except urllib.error.HTTPError as exc:
-            return _UrllibResponse(exc.code, exc.read())
+            return _UrllibResponse(exc.code, exc.read(), dict(exc.headers or {}))
 
     def close(self):
         pass
+
+
+def _body_length(resp) -> int | None:
+    """Сколько байт реально пришло. None, если тело недоступно."""
+    for attribute in ("content", "_body"):
+        body = getattr(resp, attribute, None)
+        if isinstance(body, (bytes, bytearray)):
+            return len(body)
+    text = getattr(resp, "text", None)
+    return len(text.encode("utf-8", "replace")) if isinstance(text, str) else None
+
+
+def _incomplete(resp) -> str | None:
+    """Сверяет Content-Length с тем, что пришло.
+
+    Возвращает готовую строку для лога или None, если ответ целый.
+    """
+    headers = getattr(resp, "headers", None) or {}
+    try:
+        declared = int(headers.get("Content-Length") or headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        return None
+    if declared <= 0:
+        return None
+    # Сжатый ответ распаковывается, и длина законно расходится с заголовком.
+    encoding = str(headers.get("Content-Encoding") or headers.get("content-encoding") or "")
+    if encoding.strip():
+        return None
+
+    received = _body_length(resp)
+    if received is None or received >= declared:
+        return None
+    return f"получено {received} байт из {declared}, ответ неполный"
+
+
+def _describe(exc: Exception) -> str:
+    """Отличает оборванный ответ от обычного таймаута — диагноз разный."""
+    text = f"{type(exc).__name__}: {exc}"
+    low = text.lower()
+    if any(marker in low for marker in INCOMPLETE_MARKERS):
+        received = getattr(exc, "received", None) or getattr(exc, "partial", None)
+        size = f"получено {len(received)} байт, " if isinstance(received, (bytes, str)) else ""
+        return f"{size}ответ неполный ({text})"
+    return text
 
 
 def _scrub(text) -> str:
@@ -166,9 +231,11 @@ class Client:
         timeout: int = TIMEOUT,
         headers: dict[str, str] | None = None,
         proxy_url: str | None = None,
+        connect_timeout: int = CONNECT_TIMEOUT,
     ):
         self.max_attempts = max_attempts
         self.timeout = timeout
+        self.connect_timeout = connect_timeout
         self.headers = dict(headers or {})
         self.proxy_url = proxy_url
         self._local = threading.local()
@@ -200,13 +267,24 @@ class Client:
                 else:
                     full_url = url
                 resp = self._session().get(
-                    full_url, timeout=self.timeout, headers=request_headers or None
+                    full_url,
+                    # (на соединение, на чтение) — обрыв тела и недоступный
+                    # адрес это разные беды с разными сроками ожидания.
+                    timeout=(self.connect_timeout, self.timeout),
+                    headers=request_headers or None,
                 )
                 status = resp.status_code
                 network_failure = False
 
                 if status == 200:
-                    return resp
+                    short = _incomplete(resp)
+                    if short:
+                        # Не «таймаут»: соединение было, ответ пришёл рваным.
+                        network_failure = True
+                        last_error = short
+                        log.warning("%s: %s", url, short)
+                    else:
+                        return resp
                 if status in self.block_statuses:
                     raise Blocked(f"HTTP {status} — доступ закрыт: {url}", status=status)
                 if status in (407, 502, 503) and self.proxy_url:
@@ -226,7 +304,7 @@ class Client:
                 raise
             except Exception as exc:  # сетевые сбои, таймауты, TLS, прокси
                 network_failure = True
-                last_error = _scrub(f"{type(exc).__name__}: {exc}")
+                last_error = _scrub(_describe(exc))
 
             if attempt < self.max_attempts:
                 delay = (2**attempt) + random.uniform(0, 0.5)

@@ -27,7 +27,6 @@ class Style:
     line_spacing: float = 1.5
     first_line_indent_cm: float = 1.25
     page_break_between_chapters: bool = True
-    table_of_contents: bool = True
 
     @classmethod
     def from_dict(cls, data: dict | None) -> Style:
@@ -42,7 +41,6 @@ class Style:
             page_break_between_chapters=bool(
                 data.get("page_break_between_chapters", cls.page_break_between_chapters)
             ),
-            table_of_contents=bool(data.get("table_of_contents", cls.table_of_contents)),
         )
 
 
@@ -97,20 +95,103 @@ def _qn(tag: str) -> str:
     return qn(tag)
 
 
+# Разметка markdown: её надо отрисовывать, а не тащить символами в текст.
+HEADING = re.compile(r"^(#{1,6})\s+(.*)$", re.S)
+QUOTE = re.compile(r"^>\s?(.*)$", re.S)
+RULE = re.compile(r"^\s*(?:-{3,}|_{3,})\s*$")
+#: Жирный, курсив, моноширинный и ссылка вида [текст](адрес).
+INLINE = re.compile(
+    r"(\*\*.+?\*\*|__.+?__|\*[^*\n]+?\*|_[^_\n]+?_|`[^`\n]+?`|\[[^\]]+?\]\([^)]*?\))",
+    re.S,
+)
+LINK = re.compile(r"^\[([^\]]+?)\]\(([^)]*?)\)$", re.S)
+
+
+def add_runs(paragraph, text: str) -> None:
+    """Разбирает строчную разметку в отдельные run-ы с оформлением."""
+    for token in INLINE.split(text):
+        if not token:
+            continue
+        bold = italic = mono = False
+        body = token
+
+        if token.startswith("**") and token.endswith("**") and len(token) > 4:
+            bold, body = True, token[2:-2]
+        elif token.startswith("__") and token.endswith("__") and len(token) > 4:
+            bold, body = True, token[2:-2]
+        elif token.startswith("*") and token.endswith("*") and len(token) > 2:
+            italic, body = True, token[1:-1]
+        elif token.startswith("_") and token.endswith("_") and len(token) > 2:
+            italic, body = True, token[1:-1]
+        elif token.startswith("`") and token.endswith("`") and len(token) > 2:
+            mono, body = True, token[1:-1]
+        else:
+            link = LINK.match(token)
+            if link:
+                # Адрес в бумажном тексте не нужен — оставляем подпись.
+                body = link.group(1)
+
+        run = paragraph.add_run(body)
+        run.bold = bold
+        run.italic = italic
+        if mono:
+            run.font.name = "Courier New"
+
+
 def add_paragraphs(document, text: str, style: Style | None = None) -> int:
-    """Добавляет текст главы абзацами. Возвращает число абзацев."""
+    """Добавляет текст главы абзацами, разбирая markdown.
+
+    Возвращает число добавленных абзацев.
+    """
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
     added = 0
     for block in split_paragraphs(text):
-        paragraph = document.add_paragraph()
+        # Разделитель сцен проверяем первым: «***» — это сцена, а не разметка.
         if SCENE_BREAK.match(block):
-            # Разделитель сцен: по центру и без красной строки.
+            paragraph = document.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             paragraph.paragraph_format.first_line_indent = 0
-        paragraph.add_run(block)
+            paragraph.add_run(block.strip())
+            added += 1
+            continue
+
+        if RULE.match(block):
+            paragraph = document.add_paragraph()
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.paragraph_format.first_line_indent = 0
+            paragraph.add_run("* * *")
+            added += 1
+            continue
+
+        heading = HEADING.match(block)
+        if heading:
+            level = min(len(heading.group(1)), 4)
+            document.add_heading(heading.group(2).strip(), level=level)
+            added += 1
+            continue
+
+        quote = QUOTE.match(block)
+        if quote:
+            paragraph = document.add_paragraph()
+            paragraph.paragraph_format.left_indent = _cm(1.0)
+            paragraph.paragraph_format.first_line_indent = 0
+            add_runs(paragraph, quote.group(1).strip())
+            for run in paragraph.runs:
+                run.italic = True
+            added += 1
+            continue
+
+        paragraph = document.add_paragraph()
+        add_runs(paragraph, block)
         added += 1
     return added
+
+
+def _cm(value: float):
+    from docx.shared import Cm
+
+    return Cm(value)
 
 
 def split_paragraphs(text: str) -> list[str]:
