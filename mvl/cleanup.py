@@ -48,6 +48,21 @@ HTML_RULES = (
 NBSP = " "
 REPLACEMENT = "�"
 
+#: Полноширинные азиатские знаки, оставшиеся от оригинала. Замена
+#: безопасная: смысл текста не меняется, поэтому её можно делать машинально
+#: — в отличие от самих иероглифов.
+FULLWIDTH_MAP = {
+    "【": "[", "】": "]",      # 【 】
+    "（": "(", "）": ")",      # （ ）
+    "《": "«", "》": "»",  # 《 》
+    "，": ",", "。": ".",      # ， 。
+    "：": ":", "；": ";",      # ： ；
+    "！": "!", "？": "?",      # ！ ？
+    "　": " ",                     # полноширинный пробел
+    "．": ".", "～": "~",
+    "「": "«", "」": "»",  # 「 」
+}
+
 #: Ключ → подпись в интерфейсе.
 KINDS = {
     "markdown": "Остатки markdown",
@@ -57,6 +72,7 @@ KINDS = {
     "model": "Следы модели-переводчика",
     "dupes": "Повторяющиеся абзацы",
     "blanks": "Лишние пустые строки",
+    "fullwidth": "Полноширинные знаки → обычные",
 }
 ALL_KINDS = tuple(KINDS)
 
@@ -118,6 +134,17 @@ def clean_lines(lines: list[str], kinds: set[str]) -> tuple[list[str], dict]:
     if "broken" in kinds:
         counts["broken"] = sum(line.count(REPLACEMENT) for line in result)
         result = [line.replace(REPLACEMENT, "") for line in result]
+
+    if "fullwidth" in kinds:
+        total = 0
+        replaced = []
+        for line in result:
+            for wide, plain in FULLWIDTH_MAP.items():
+                if wide in line:
+                    total += line.count(wide)
+                    line = line.replace(wide, plain)
+            replaced.append(line)
+        result, counts["fullwidth"] = replaced, total
 
     if "model" in kinds:
         kept = []

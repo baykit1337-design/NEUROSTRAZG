@@ -86,8 +86,13 @@ BROKEN = [
     re.compile(r"</?(?:p|br|span)\b[^>]*>", re.I),
 ]
 
-#: Парные знаки для проверки 8.
-PAIRS = (("«", "»"), ("„", "“"), ("(", ")"), ("[", "]"), ("{", "}"))
+#: Парные знаки для проверки 8. Одиночный апостроф не считаем: он часто
+#: встречается внутри слов и давал ложные срабатывания.
+PAIRS = (("«", "»"), ("„", "“"), ("(", ")"), ("[", "]"), ("{", "}"), ("【", "】"))
+
+#: Сколько абзацев может занимать блок в скобках, прежде чем это станет
+#: подозрительным. Игровые сообщения новеллы законно тянутся на несколько.
+MAX_BRACKET_SPAN = 10
 
 #: Ключ проверки → как называется в отчёте.
 KINDS = {
@@ -120,6 +125,10 @@ class Finding:
     line: int
     kind: str
     fragment: str
+    #: Абзац целиком — разворачивается по клику в интерфейсе.
+    context: str = ""
+    #: Полный путь: по двойному клику файл открывается в Word или редакторе.
+    path: str = ""
 
     @property
     def kind_name(self) -> str:
@@ -132,6 +141,8 @@ class Finding:
             "kind": self.kind,
             "kind_name": self.kind_name,
             "fragment": self.fragment,
+            "context": self.context or self.fragment,
+            "path": self.path,
         }
 
 
@@ -199,6 +210,7 @@ def check_file(
     kinds: set[str],
     whitelist: set[str] | None = None,
     latin_counter: Counter | None = None,
+    max_span: int = MAX_BRACKET_SPAN,
 ) -> list[Finding]:
     """Проверки, которым хватает одного файла. Объём считается отдельно."""
     whitelist = whitelist or set()
@@ -206,8 +218,13 @@ def check_file(
     name = path.name
     found: list[Finding] = []
 
+    full_path = str(path)
+
     def add(number: int, kind: str, line: str, start: int, end: int):
-        found.append(Finding(name, number, kind, _fragment(line, start, end)))
+        found.append(Finding(
+            name, number, kind, _fragment(line, start, end),
+            context=line.strip(), path=full_path,
+        ))
 
     for number, line in enumerate(lines, 1):
         if "cjk" in kinds:
@@ -246,27 +263,78 @@ def check_file(
                     latin_counter[word] += 1
                 add(number, "latin", line, match.start(), match.end())
 
-        if "pairs" in kinds:
-            unbalanced = _unbalanced(line)
-            if unbalanced:
-                found.append(Finding(name, number, "pairs", f"{unbalanced}: {line.strip()[:CONTEXT]}"))
+
 
     if "loop" in kinds:
         found.extend(_loops(name, lines))
 
+    if "pairs" in kinds:
+        found.extend(_unbalanced(name, lines, max_span))
+
+    # Путь и контекст проставляем всем разом: часть проверок работает не
+    # по строке, а по файлу целиком.
+    for finding in found:
+        finding.path = finding.path or full_path
+        if not finding.context:
+            index = finding.line - 1
+            finding.context = lines[index].strip() if 0 <= index < len(lines) else finding.fragment
+
     return found
 
 
-def _unbalanced(paragraph: str) -> str:
-    """Непарные кавычки и скобки в пределах абзаца."""
-    problems = []
-    for left, right in PAIRS:
-        if paragraph.count(left) != paragraph.count(right):
-            problems.append(f"{left}{right}")
-    # Прямые кавычки одинаковы с обеих сторон — считаем чётность.
-    if paragraph.count('"') % 2:
-        problems.append('"')
-    return ", ".join(problems)
+def _unbalanced(name: str, lines: list[str], max_span: int = MAX_BRACKET_SPAN) -> list[Finding]:
+    """Непарные скобки и кавычки — по балансу **всего файла**.
+
+    Считать в пределах абзаца нельзя: игровые сообщения новеллы вида
+    `{Распределение:` законно тянутся на несколько абзацев, закрывающая
+    скобка стоит через два-три. Поэтому ведём стек открытых скобок по всему
+    файлу и ругаемся только если скобка так и не закрылась — либо если блок
+    растянулся дольше, чем `max_span` абзацев.
+    """
+    found: list[Finding] = []
+    # Стек открытых скобок: (символ, номер строки).
+    stack: list[tuple[str, int]] = []
+    openers = {left: right for left, right in PAIRS}
+    closers = {right: left for left, right in PAIRS}
+
+    for number, line in enumerate(lines, 1):
+        for char in line:
+            if char in openers:
+                stack.append((char, number))
+            elif char in closers:
+                wanted = closers[char]
+                # Ищем ближайшую подходящую открывающую.
+                for index in range(len(stack) - 1, -1, -1):
+                    if stack[index][0] == wanted:
+                        opened_at = stack[index][1]
+                        span = number - opened_at
+                        if span > max_span:
+                            found.append(Finding(
+                                name, opened_at, "pairs",
+                                f"блок {wanted}{char} растянут на {span} строк "
+                                f"(строки {opened_at}–{number})",
+                            ))
+                        del stack[index]
+                        break
+                else:
+                    found.append(Finding(
+                        name, number, "pairs",
+                        f"закрывающая {char} без открывающей: {line.strip()[:CONTEXT]}",
+                    ))
+
+    for char, number in stack:
+        found.append(Finding(
+            name, number, "pairs",
+            f"открывающая {char} осталась незакрытой: "
+            f"{lines[number - 1].strip()[:CONTEXT]}",
+        ))
+
+    # Прямые кавычки одинаковы с обеих сторон — считаем чётность по файлу.
+    doubles = sum(line.count('"') for line in lines)
+    if doubles % 2:
+        found.append(Finding(name, 1, "pairs", f'нечётное число кавычек " в файле: {doubles}'))
+
+    return found
 
 
 def _loops(name: str, lines: list[str]) -> list[Finding]:
@@ -298,6 +366,7 @@ def check(
     kinds=None,
     on_progress=None,
     cancel: threading.Event | None = None,
+    max_span: int = MAX_BRACKET_SPAN,
 ) -> CheckReport:
     """Проверяет папку или один файл."""
     kinds = set(kinds or ALL_KINDS)
@@ -353,7 +422,7 @@ def check(
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         try:
-            found = check_file(file_path, kinds, whitelist, latin_counter)
+            found = check_file(file_path, kinds, whitelist, latin_counter, max_span)
             sizes[file_path] = sum(len(line) for line in read_lines(file_path))
             per_file.setdefault(file_path.name, []).extend(found)
         except Exception as exc:

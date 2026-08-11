@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MVLEMPYR — качалка и обработка глав</title>
+<title>НЕЙРОСТРАЖ 2.0</title>
 <!-- Та же книга со стрелкой, что и на первой вкладке: во вкладке браузера
      не должно быть пустого квадрата. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M4 4.5A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5V4.5Z' stroke='%23c084fc' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20' stroke='%23c084fc' stroke-width='1.6'/%3E%3Cpath d='M12 6.5v6m0 0 2.5-2.5M12 12.5 9.5 10' stroke='%238c54ff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
@@ -85,17 +85,17 @@
   /* 5.4 Полосы прокрутки — системные белые выбивались из темы. */
   *{
     scrollbar-width:thin;
-    scrollbar-color:#6d28d9 #15151d;
+    scrollbar-color:#8c54ff #15151d;
   }
   *::-webkit-scrollbar{width:10px;height:10px}
   *::-webkit-scrollbar-track{background:#131319;border-radius:999px}
   *::-webkit-scrollbar-thumb{
-    background:linear-gradient(180deg,#6d28d9,#a855f7);
+    background:#8c54ff;
     border-radius:999px;
     border:2px solid #131319;
   }
   *::-webkit-scrollbar-thumb:hover{
-    background:linear-gradient(180deg,#7c3aed,#c084fc);
+    background:#9d6dff;
     box-shadow:0 0 8px rgba(140,84,255,.5);
   }
 
@@ -232,6 +232,26 @@
   }
   .arrow{color:var(--muted);flex:none}
 
+  /* 8.6 Таблица находок: имя файла не шире 30%, текст занимает остальное. */
+  .findings{overflow:auto}
+  .findings .tr{align-items:flex-start;cursor:pointer}
+  .findings .fname{
+    flex:0 1 auto;max-width:30%;min-width:90px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b9b2cc;
+  }
+  .findings .ftext{
+    flex:1;min-width:220px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .findings .tr.open .ftext{white-space:normal;overflow:visible}
+  .findings .full{
+    flex-basis:100%;margin-top:6px;padding:9px 11px;border-radius:9px;
+    background:rgba(140,84,255,.10);border:1px solid var(--stroke-soft);
+    white-space:pre-wrap;color:#e5e0f2;line-height:1.5;
+  }
+  .findings .full .row{margin-top:8px}
+  .findings .full button{padding:5px 12px;font-size:12px;border-radius:8px}
+
   .modal{
     position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
     background:rgba(4,3,8,.72);backdrop-filter:blur(3px);padding:20px;
@@ -360,7 +380,7 @@
 <body>
 <input type="hidden" id="baseHidden"><input type="hidden" id="bookHidden"><input type="hidden" id="spBaseHidden">
 <div class="wrap">
-  <h1>MVLEMPYR</h1>
+  <h1>НЕЙРОСТРАЖ 2.0</h1>
   <p class="sub">качалка глав и работа с текстом</p>
 
   <nav class="tabs">
@@ -415,7 +435,14 @@
       <button id="checkProxies">Проверить</button>
       <button id="reloadProxies" class="ghost" title="Перечитать файл">↻</button>
     </div>
-    <p class="hint">Формат строки: <code>ip:port:username:password</code>. Пароли никуда не показываются.</p>
+    <div class="row" style="margin-top:10px;align-items:flex-end">
+      <div style="flex:0 0 170px">
+        <label for="pxTimeout">таймаут проверки, с<i class="hint-icon" data-tip="Сколько ждать ответа от прокси при проверке. Десяти секунд не хватало — прокси не успевал подключиться.">?</i></label>
+        <input id="pxTimeout" type="number" value="60" min="1" max="300">
+      </div>
+      <p class="hint" style="flex:1">Формат строки: <code>ip:port:username:password</code>.
+         Пароли никуда не показываются.</p>
+    </div>
     <div id="proxyTable"></div>
   </div>
 
@@ -849,7 +876,7 @@
     <label>Находки <span class="hint hint-inline" id="ckCount"></span></label>
     <input id="ckSearch" type="text" placeholder="поиск по тексту находки"
            autocomplete="off" style="margin-bottom:10px">
-    <div class="table" id="ckTable" style="max-height:520px"></div>
+    <div class="table findings" id="ckTable" style="max-height:520px"></div>
   </div>
 
   <!-- 3.3 Очистка: после проверки должно быть действие. -->
@@ -944,7 +971,10 @@ function renderPool(data, warning){
       ${rows}</table></div>`
     + (data.checked
         ? `<p class="pnow">Пригодных: ${data.usable} из ${data.total}`
-          + (data.current ? ` · работаем через ${data.current}` : '') + '</p>'
+          + (data.current ? ` · работаем через ${data.current}` : '')
+          // Видно, с каким таймаутом шла проверка — иначе непонятно,
+          // «не отвечает» это насовсем или просто не дождались.
+          + (data.check_timeout ? ` · таймаут ${data.check_timeout} с` : '') + '</p>'
         : `<p class="hint">${data.total} адресов загружено, проверка не запускалась.</p>`);
 
   if(warning) showError(warning);
@@ -964,7 +994,10 @@ async function proxyAction(url, button, busyText){
   button.disabled = true;
   button.textContent = busyText;
   try{
-    const data = await call(url, {path: $('proxyPath').value.trim()});
+    const data = await call(url, {
+      path: $('proxyPath').value.trim(),
+      timeout: Number($('pxTimeout').value) || 60,
+    });
     renderPool(data.pool, data.pool && data.pool.warning);
   }catch(err){ showError(err.message); }
   finally{

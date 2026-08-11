@@ -20,9 +20,13 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 PROXY_FILE = "proxies.txt"
-CHECK_TIMEOUT = 10
+#: Таймаут проверки прокси. Десяти секунд не хватало — в таблице
+#: висело «10.01 с — таймаут». Значение настраивается в интерфейсе.
+CHECK_TIMEOUT = 60
+#: Потолок для любых таймаутов, задаваемых из интерфейса.
+MAX_TIMEOUT = 300
 CHECK_CONCURRENCY = 5  # разовая процедура; к скачиванию глав отношения не имеет
-GEO_TIMEOUT = 5
+GEO_TIMEOUT = 15
 GEO_URL = "http://ip-api.com/json/?fields=country,countryCode"
 
 # ---------------------------------------------------------------- маскирование
@@ -225,7 +229,12 @@ def short_reason(exc: Exception | str) -> str:
     return text[:80]
 
 
-def check_proxy(proxy: Proxy, url: str | None = None, geo: bool = True) -> Proxy:
+def check_proxy(
+    proxy: Proxy,
+    url: str | None = None,
+    geo: bool = True,
+    timeout: int = CHECK_TIMEOUT,
+) -> Proxy:
     """Один запрос к витрине через прокси. Результат кладёт в сам объект."""
     from .client import SITE, BROWSER_HEADERS
 
@@ -237,7 +246,7 @@ def check_proxy(proxy: Proxy, url: str | None = None, geo: bool = True) -> Proxy
         with curl_requests.Session(
             impersonate="chrome", proxies={"http": proxy.url, "https": proxy.url}
         ) as session:
-            response = session.get(target, headers=BROWSER_HEADERS, timeout=CHECK_TIMEOUT)
+            response = session.get(target, headers=BROWSER_HEADERS, timeout=timeout)
             proxy.elapsed = time.monotonic() - started
             proxy.status = response.status_code
             proxy.alive = True
@@ -254,11 +263,11 @@ def check_proxy(proxy: Proxy, url: str | None = None, geo: bool = True) -> Proxy
         return proxy
 
     if geo:
-        proxy.country = _lookup_country(proxy)
+        proxy.country = _lookup_country(proxy, min(timeout, GEO_TIMEOUT))
     return proxy
 
 
-def _lookup_country(proxy: Proxy) -> str:
+def _lookup_country(proxy: Proxy, timeout: int = GEO_TIMEOUT) -> str:
     """Страна выходного узла. Не критично: не вышло — оставляем пустым."""
     try:
         from curl_cffi import requests as curl_requests
@@ -266,7 +275,7 @@ def _lookup_country(proxy: Proxy) -> str:
         with curl_requests.Session(
             impersonate="chrome", proxies={"http": proxy.url, "https": proxy.url}
         ) as session:
-            data = session.get(GEO_URL, timeout=GEO_TIMEOUT).json()
+            data = session.get(GEO_URL, timeout=timeout).json()
         return str(data.get("countryCode") or data.get("country") or "")
     except Exception as exc:
         log.debug("Страну для %s определить не вышло: %s", proxy.label, scrub(exc))
@@ -310,11 +319,15 @@ class ProxyPool:
 
     # ------------------------------------------------------------- проверка
 
-    def check_all(self, on_progress=None, geo: bool = True) -> list[Proxy]:
+    def check_all(
+        self, on_progress=None, geo: bool = True, timeout: int = CHECK_TIMEOUT
+    ) -> list[Proxy]:
         """Проверяет весь список, до 5 проверок параллельно."""
         done = 0
+        # Запоминаем, с каким таймаутом шла проверка — это видно в таблице.
+        self.check_timeout = timeout
         with ThreadPoolExecutor(max_workers=CHECK_CONCURRENCY) as pool:
-            for _ in pool.map(lambda p: check_proxy(p, geo=geo), self.proxies):
+            for _ in pool.map(lambda p: check_proxy(p, geo=geo, timeout=timeout), self.proxies):
                 done += 1
                 if on_progress:
                     on_progress(done, len(self.proxies))
@@ -437,6 +450,7 @@ class ProxyPool:
             "total": len(self.proxies),
             "usable": self.usable_count,
             "current": self._current.label if self._current else None,
+            "check_timeout": getattr(self, "check_timeout", CHECK_TIMEOUT),
             "switches": len(self.switches),
             "proxies": [p.to_dict() for p in self.results()],
         }

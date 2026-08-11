@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +32,7 @@ from mvl import client as client_mod  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
+from mvl import proxies as proxies_mod  # noqa: E402
 from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
 from mvl.word import DocxUnavailable, Style  # noqa: E402
 
@@ -195,20 +198,29 @@ def api_proxies_reload():
 @app.post("/api/proxies/check")
 def api_proxies_check():
     """Проверка живости всего списка. Пароли в ответ не попадают."""
-    path = (request.json or {}).get("path", "").strip() or PROXY_FILE
+    payload = request.json or {}
+    path = payload.get("path", "").strip() or PROXY_FILE
+
+    try:
+        timeout = int(payload.get("timeout") or proxies_mod.CHECK_TIMEOUT)
+    except (TypeError, ValueError):
+        return jsonify(error="Таймаут должен быть числом секунд"), 400
+    if not 1 <= timeout <= MAX_TIMEOUT:
+        return jsonify(error=f"Таймаут проверки: от 1 до {MAX_TIMEOUT} секунд"), 400
+
     try:
         pool = load_pool(path)
     except (OSError, ValueError) as exc:
         return jsonify(error=scrub(str(exc))), 400
 
-    pool.check_all()
-    payload = pool.to_dict()
+    pool.check_all(timeout=timeout)
+    result = pool.to_dict()
     if pool.usable_count == 0:
-        payload["warning"] = (
+        result["warning"] = (
             "Ни один прокси не пропускает до сайта. Напрямую не идём — "
             "этот путь заблокирован. Обновите список и проверьте снова."
         )
-    return jsonify(pool=payload, default_path=PROXY_FILE)
+    return jsonify(pool=result, default_path=PROXY_FILE)
 
 
 @app.post("/api/links")
@@ -814,6 +826,36 @@ def api_clean_start():
         )
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/open")
+def api_open():
+    """Открывает файл в программе по умолчанию (Word для .docx и так далее).
+
+    Точное позиционирование на строке средствами Windows недостижимо,
+    поэтому открываем файл целиком — искать место человек будет через
+    Ctrl+F по скопированному фрагменту.
+    """
+    payload = request.json or {}
+    name = (payload.get("path") or "").strip()
+    if not name:
+        return jsonify(error="Не указан файл"), 400
+
+    path = Path(name).expanduser()
+    if not path.exists():
+        return jsonify(error=f"Файл не найден: {path}"), 404
+
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))  # noqa: S606 — открываем в программе по умолчанию
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception as exc:
+        return jsonify(error=f"Не удалось открыть: {type(exc).__name__}: {exc}"), 500
+
+    return jsonify(opened=str(path))
 
 
 @app.get("/api/check/<job_id>/report")

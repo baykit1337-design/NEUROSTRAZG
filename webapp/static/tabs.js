@@ -685,9 +685,12 @@ const CLEAN_KINDS = [
   ['model', 'Следы модели-переводчика'],
   ['dupes', 'Повторяющиеся абзацы'],
   ['blanks', 'Лишние пустые строки'],
+  ['fullwidth', 'Полноширинные знаки → обычные'],
 ];
 
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;
+//: Замеренная высота строки таблицы и защита от зацикливания перерисовки.
+let ckRowHeight = 0, drawPasses = 0;
 
 (function ckBuildChecks(){
   const box = $('ckKinds');
@@ -794,18 +797,21 @@ function ckRender(report){
   }
   $('ckWordsCard').hidden = !report.latin_words.length;
 
-  ckRenderTable();
+  // Сначала показываем карточку, потом рисуем: у скрытого блока высота
+  // равна нулю, и замер строки не срабатывает.
   $('ckResults').hidden = false;
   $('ckCleanCard').hidden = false;
+  ckRenderTable();
 }
 
-/** Все находки доступны в самом окне: список рисуется по мере прокрутки. */
+/** Все находки доступны в самом окне — без обрезки, список виртуальный. */
 function ckRenderTable(){
   const needle = $('ckSearch').value.trim().toLowerCase();
   let rows = ckFilter ? ckFindings.filter(f => f.kind === ckFilter) : ckFindings;
   if(needle){
     rows = rows.filter(f =>
-      f.fragment.toLowerCase().includes(needle) || f.file.toLowerCase().includes(needle));
+      (f.context || f.fragment).toLowerCase().includes(needle) ||
+      f.file.toLowerCase().includes(needle));
   }
   $('ckCount').textContent = `— ${rows.length}` +
     (rows.length !== ckFindings.length ? ` из ${ckFindings.length}` : '');
@@ -816,53 +822,184 @@ function ckRenderTable(){
 
   // Виртуальный список: в DOM держим только видимую часть, поэтому даже
   // 30 тысяч находок открываются без обрезки и без подвисаний.
-  const ROW = 31;
+  // Высоту строки не зашиваем — при другом шрифте или масштабе она другая,
+  // и строки начинают наезжать друг на друга. Меряем по факту.
+  let ROW = ckRowHeight || 31;
   const spacer = document.createElement('div');
   spacer.style.height = rows.length * ROW + 'px';
   spacer.style.position = 'relative';
+  spacer.style.minWidth = 'min-content';
   table.append(spacer);
 
+  // Развёрнутых строк немного, поэтому их добавочную высоту держим
+  // отдельно и учитываем в раскладке — иначе они наезжают на соседей.
+  const opened = new Set();
+  const extra = new Map();
+
+  function offsetOf(index){
+    let shift = 0;
+    for(const [i, value] of extra){
+      if(i < index) shift += value;
+    }
+    return index * ROW + shift;
+  }
+
+  function totalHeight(){
+    let sum = rows.length * ROW;
+    for(const value of extra.values()) sum += value;
+    return sum;
+  }
+
   function draw(){
+    spacer.style.height = totalHeight() + 'px';
     const top = table.scrollTop;
     const height = table.clientHeight || 400;
-    const first = Math.max(0, Math.floor(top / ROW) - 5);
-    const last = Math.min(rows.length, Math.ceil((top + height) / ROW) + 5);
+
+    // Границы окна ищем по фактическим смещениям: строки разной высоты.
+    let first = 0;
+    while(first < rows.length && offsetOf(first + 1) < top) first++;
+    let last = first;
+    while(last < rows.length && offsetOf(last) < top + height) last++;
+    first = Math.max(0, first - 3);
+    last = Math.min(rows.length, last + 3);
 
     spacer.innerHTML = '';
+    const drawn = [];
     for(let i = first; i < last; i++){
-      const finding = rows[i];
-      const line = document.createElement('div');
-      line.className = 'tr';
-      line.style.position = 'absolute';
-      line.style.top = i * ROW + 'px';
-      line.style.left = '0';
-      line.style.right = '0';
-
-      const file = document.createElement('span');
-      file.className = 'grow';
-      file.textContent = finding.file;
-      file.title = finding.file;
-
-      const lineNo = document.createElement('span');
-      lineNo.className = 'num';
-      lineNo.textContent = 'стр. ' + finding.line;
-
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = finding.kind_name;
-
-      const fragment = document.createElement('span');
-      fragment.className = 'grow';
-      fragment.textContent = finding.fragment;
-      fragment.title = finding.fragment;
-
-      line.append(file, lineNo, tag, fragment);
-      spacer.append(line);
+      const node = buildRow(rows[i], i);
+      node.style.top = offsetOf(i) + 'px';
+      spacer.append(node);
+      drawn.push([i, node]);
     }
+
+    let changed = false;
+
+    // Сначала уточняем высоту обычной строки — от неё считается вся раскладка.
+    const plain = drawn.find(([i]) => !opened.has(i));
+    if(plain){
+      const measured = plain[1].offsetHeight;
+      if(measured > 0 && Math.abs(measured - ROW) > 1){
+        ROW = measured;
+        ckRowHeight = measured;
+        changed = true;
+      }
+    }
+
+    // Затем добавочную высоту развёрнутых.
+    for(const [i, node] of drawn){
+      if(!opened.has(i)) continue;
+      const value = Math.max(0, node.offsetHeight - ROW);
+      if(Math.abs((extra.get(i) || 0) - value) > 1){
+        extra.set(i, value);
+        changed = true;
+      }
+    }
+    if(changed && drawPasses < 4){
+      drawPasses++;
+      draw();
+    }else{
+      drawPasses = 0;
+    }
+  }
+
+  function buildRow(finding, index){
+    const line = document.createElement('div');
+    line.className = 'tr' + (opened.has(index) ? ' open' : '');
+    line.style.position = 'absolute';
+    line.style.left = '0';
+    line.style.right = '0';
+    if(opened.has(index)) line.style.flexWrap = 'wrap';
+
+    const file = document.createElement('span');
+    file.className = 'fname';
+    file.textContent = finding.file;
+    file.title = finding.file;   // полное имя в подсказке
+
+    const lineNo = document.createElement('span');
+    lineNo.className = 'num';
+    lineNo.textContent = 'стр. ' + finding.line;
+
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = finding.kind_name;
+
+    const text = document.createElement('span');
+    text.className = 'ftext';
+    text.textContent = finding.fragment;
+    text.title = finding.context || finding.fragment;  // полный текст в подсказке
+
+    line.append(file, lineNo, tag, text);
+
+    if(opened.has(index)){
+      // Одиночный клик разворачивает строку и показывает абзац целиком.
+      const full = document.createElement('div');
+      full.className = 'full';
+      full.textContent = finding.context || finding.fragment;
+
+      const row = document.createElement('div');
+      row.className = 'row';
+
+      const copy = document.createElement('button');
+      copy.className = 'ghost';
+      copy.textContent = 'Скопировать фрагмент';
+      copy.onclick = async e => {
+        e.stopPropagation();
+        const value = finding.context || finding.fragment;
+        try{
+          await navigator.clipboard.writeText(value);
+          copy.textContent = 'Скопировано';
+        }catch(err){
+          // Буфер может быть закрыт политикой браузера — выделим текст сам.
+          const range = document.createRange();
+          range.selectNodeContents(full);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          copy.textContent = 'Выделено, нажмите Ctrl+C';
+        }
+        setTimeout(() => { copy.textContent = 'Скопировать фрагмент'; }, 2500);
+      };
+
+      const open = document.createElement('button');
+      open.className = 'ghost';
+      open.textContent = 'Открыть файл';
+      open.onclick = e => { e.stopPropagation(); openFinding(finding); };
+
+      row.append(copy, open);
+      full.append(row);
+      line.append(full);
+      // Развёрнутая строка выше обычной — сдвигаем последующие.
+      line.style.zIndex = '2';
+      line.style.background = '#12101a';
+    }
+
+    line.onclick = () => {
+      if(opened.has(index)){
+        opened.delete(index);
+        extra.delete(index);
+      }else{
+        opened.add(index);
+      }
+      draw();
+    };
+    // Двойной клик открывает файл в программе по умолчанию.
+    line.ondblclick = e => { e.stopPropagation(); openFinding(finding); };
+
+    return line;
   }
 
   table.onscroll = draw;
   draw();
+}
+
+/** Открывает файл находки в Word, редакторе — чем система умеет. */
+async function openFinding(finding){
+  if(!finding.path){ showError('Путь к файлу неизвестен'); return; }
+  try{
+    await call('/api/open', {path: finding.path});
+  }catch(err){
+    showError(err.message);
+  }
 }
 
 /* ------------------------------------------------------------ очистка */
