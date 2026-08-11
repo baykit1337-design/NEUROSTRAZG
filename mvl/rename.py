@@ -13,11 +13,13 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .booksplit import Cancelled, safe_name
-from .word import SCENE_BREAK, Style, split_paragraphs
+from .source import read_paragraphs as read_source_paragraphs
+from .textprep import SCENE_BREAK, PrepOptions, prepare, to_text
+from .word import Style, split_paragraphs
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +74,10 @@ def has_forbidden(text: str) -> bool:
 
 class RenameError(Exception):
     """Папку не удалось разобрать."""
+
+
+class NameCollision(RenameError):
+    """Два файла претендуют на одно имя — записывать нельзя."""
 
 
 @dataclass
@@ -180,17 +186,8 @@ class Chapter:
 
 
 def read_paragraphs(path: Path) -> list[str]:
-    """Абзацы файла. Понимает .txt, .md и .docx."""
-    suffix = path.suffix.lower()
-    if suffix == ".docx":
-        try:
-            from docx import Document
-        except ImportError as exc:
-            raise RenameError("Для .docx нужен python-docx") from exc
-        document = Document(str(path))
-        return [p.text.strip() for p in document.paragraphs if p.text.strip()]
-    # UTF-8 с errors='replace' — битый файл не должен ронять обработку.
-    return split_paragraphs(path.read_text(encoding="utf-8", errors="replace"))
+    """Абзацы файла — через общий модуль чтения (он же понимает epub)."""
+    return read_source_paragraphs(path)
 
 
 def scan(folder: str | Path, pattern: str | None = None) -> list[Chapter]:
@@ -453,12 +450,15 @@ def make_plan(
         count = max(1, int(splits.get(str(chapter.path), 1) or 1))
         if count > 1:
             pieces = split_into_parts(chapter.text_parts, count)
+            # У разрезанной главы номер части в имени обязателен: без него
+            # все части получат одно имя и затрут друг друга.
+            part_fmt = fmt if fmt.part else replace(fmt, part=True)
             for index, piece in enumerate(pieces, 1):
                 rows.append(
                     PlanRow(
                         source=str(chapter.path),
                         old_name=chapter.path.name,
-                        new_name=build_name(number, index, chapter.title, fmt),
+                        new_name=build_name(number, index, chapter.title, part_fmt),
                         number=number, part=index, title=chapter.title,
                         size=sum(len(p) for p in piece), service=False,
                         paragraphs=piece,
@@ -479,36 +479,65 @@ def make_plan(
     return rows
 
 
+def find_collisions(rows: list[PlanRow], suffix: str = "txt") -> list[str]:
+    """Ищет одинаковые имена в плане.
+
+    Совпадение имён — ошибка логики, а не повод дописать «(2)»: именно так
+    вторая часть главы затирала первую.
+    """
+    seen: dict[str, str] = {}
+    clashes: list[str] = []
+    for row in rows:
+        name = f"{safe_filename(row.new_name)}.{suffix}".lower()
+        if name in seen:
+            clashes.append(f"«{row.new_name}.{suffix}» — из {seen[name]} и {row.old_name}")
+        else:
+            seen[name] = row.old_name
+    return clashes
+
+
 def apply_plan(
     rows: list[PlanRow],
     output_dir: Path,
     fmt: str = "txt",
     style: Style | None = None,
+    prep: PrepOptions | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
 ) -> RenameReport:
     """Пишет результат в новую папку. Оригиналы не трогаются.
 
-    Сбой на одном файле не останавливает остальные.
+    Сбой на одном файле не останавливает остальные, но совпадение имён
+    останавливает всё: иначе файлы молча затрут друг друга.
     """
+    suffix = fmt if fmt in ("txt", "docx") else "txt"
+    clashes = find_collisions(rows, suffix)
+    if clashes:
+        raise NameCollision(
+            "Совпадают имена файлов, запись остановлена:\n" + "\n".join(clashes[:10])
+        )
+
+    prep = prep or PrepOptions()
     output_dir.mkdir(parents=True, exist_ok=True)
     report = RenameReport(output_dir=str(output_dir), total=len(rows))
-    used: set[str] = set()
 
     for index, row in enumerate(rows, 1):
         if cancel is not None and cancel.is_set():
             raise Cancelled()
 
-        suffix = fmt if fmt in ("txt", "docx") else "txt"
-        name = _unique(safe_filename(row.new_name) or f"{index:04d}", suffix, used)
+        name = f"{safe_filename(row.new_name) or f'{index:04d}'}.{suffix}"
         try:
             target = output_dir / name
+            # Та же подготовка текста, что и в остальных путях вывода.
+            blocks = prepare(row.paragraphs, row.title, prep)
             if suffix == "docx":
-                from .word import write_chapter
+                from .word import add_blocks, new_document
 
-                write_chapter(target, "", "\n\n".join(row.paragraphs), style)
+                document = new_document(style)
+                add_blocks(document, blocks, style, prep)
+                document.save(str(target))
             else:
-                target.write_text("\n\n".join(row.paragraphs) + "\n", encoding="utf-8")
+                target.write_text(to_text(blocks) + "\n", encoding="utf-8")
             report.written += 1
         except Exception as exc:
             log.warning("Не записан %s: %s", name, exc)
@@ -519,17 +548,3 @@ def apply_plan(
             on_progress(index, len(rows))
 
     return report
-
-
-def _unique(stem: str, suffix: str, used: set[str]) -> str:
-    """Разводит совпадающие имена, чтобы файлы не затирали друг друга."""
-    name = f"{stem}.{suffix}"
-    if name.lower() not in used:
-        used.add(name.lower())
-        return name
-    counter = 2
-    while f"{stem} ({counter}).{suffix}".lower() in used:
-        counter += 1
-    name = f"{stem} ({counter}).{suffix}"
-    used.add(name.lower())
-    return name

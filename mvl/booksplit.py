@@ -20,7 +20,8 @@ if str(_ROOT) not in sys.path:
 
 import split_book  # noqa: E402  — модуль лежит в корне проекта
 
-from .word import Style, write_chapter as write_chapter_docx  # noqa: E402
+from .textprep import PrepOptions, prepare, to_text  # noqa: E402
+from .word import Style, add_blocks, new_document, split_paragraphs  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ def write_chapters(
     output_dir: Path,
     fmt: str = FORMAT_TXT,
     style: Style | None = None,
+    prep: PrepOptions | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
 ) -> SplitReport:
@@ -169,6 +171,7 @@ def write_chapters(
     Ошибка на одной главе не прерывает остальные: файл пропускается, причина
     уходит в лог, в конце — сводка.
     """
+    prep = prep or PrepOptions()
     output_dir.mkdir(parents=True, exist_ok=True)
     width = name_width(len(chapters))
     suffix = FORMAT_DOCX if fmt == FORMAT_DOCX else FORMAT_TXT
@@ -182,11 +185,21 @@ def write_chapters(
         filename = chapter_filename(index, chapter.title, width, suffix)
         try:
             target = output_dir / filename
+            # Та же подготовка, что и во всех остальных путях вывода:
+            # дубль названия, разделители, пустые абзацы.
+            blocks = prepare(split_paragraphs(chapter.text), chapter.title, prep)
             if suffix == FORMAT_DOCX:
-                write_chapter_docx(target, chapter.title, chapter.text, style)
+                document = new_document(style)
+                if chapter.title:
+                    document.add_heading(chapter.title, level=1)
+                add_blocks(document, blocks, style, prep)
+                document.save(str(target))
             else:
-                body = f"{chapter.title}\n\n{chapter.text}\n" if chapter.title else f"{chapter.text}\n"
-                target.write_text(body, encoding="utf-8")
+                body = to_text(blocks)
+                target.write_text(
+                    f"{chapter.title}\n\n{body}\n" if chapter.title else f"{body}\n",
+                    encoding="utf-8",
+                )
             report.written += 1
         except Exception as exc:
             log.warning("Глава %s (%s) не записана: %s", index, filename, exc)
@@ -205,11 +218,13 @@ def split_book_to_dir(
     fmt: str = FORMAT_TXT,
     pattern: str | None = None,
     style: Style | None = None,
+    prep: PrepOptions | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
 ) -> SplitReport:
     """Разбор и запись одним вызовом — для CLI и для фоновой задачи."""
     chapters = read_chapters(path, pattern)
     return write_chapters(
-        chapters, output_dir, fmt=fmt, style=style, on_progress=on_progress, cancel=cancel
+        chapters, output_dir, fmt=fmt, style=style, prep=prep,
+        on_progress=on_progress, cancel=cancel,
     )

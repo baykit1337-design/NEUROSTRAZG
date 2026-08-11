@@ -82,6 +82,104 @@
   button.ghost{border-color:var(--stroke-soft);font-weight:400}
   button.primary{background:rgba(176,108,255,.16);box-shadow:0 0 20px rgba(176,108,255,.22)}
 
+  /* 5.4 Полосы прокрутки — системные белые выбивались из темы. */
+  *{
+    scrollbar-width:thin;
+    scrollbar-color:#6d28d9 #15151d;
+  }
+  *::-webkit-scrollbar{width:10px;height:10px}
+  *::-webkit-scrollbar-track{background:#131319;border-radius:999px}
+  *::-webkit-scrollbar-thumb{
+    background:linear-gradient(180deg,#6d28d9,#a855f7);
+    border-radius:999px;
+    border:2px solid #131319;
+  }
+  *::-webkit-scrollbar-thumb:hover{
+    background:linear-gradient(180deg,#7c3aed,#c084fc);
+    box-shadow:0 0 8px rgba(140,84,255,.5);
+  }
+
+  /* 5.1 Подписи полей загораются при наведении. */
+  label{
+    transition:color .25s ease, text-shadow .25s ease;
+    cursor:default;
+  }
+  label:hover{
+    color:#c084fc;
+    text-shadow:0 0 8px rgba(192,132,252,.6);
+  }
+
+  /* 5.1 Границы полей ввода — неон при наведении и фокусе. */
+  input[type=text],input[type=number],select,.table input.rowname{
+    transition:border-color .25s ease, box-shadow .25s ease;
+  }
+  input[type=text]:hover,input[type=number]:hover,select:hover,
+  .table input.rowname:hover{
+    border-color:#6d28d9;
+    box-shadow:0 0 8px rgba(140,84,255,.3);
+  }
+  input[type=text]:focus,input[type=number]:focus,select:focus,
+  .table input.rowname:focus{
+    border-color:#a855f7;
+    box-shadow:0 0 12px rgba(168,85,247,.45);
+    outline:none;
+  }
+
+  /* 5.2 Всплывающие подсказки, появление с задержкой. */
+  .hint-icon{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:15px;height:15px;margin-left:6px;border-radius:50%;
+    font-size:10px;font-weight:600;cursor:help;vertical-align:middle;
+    border:1px solid #6d28d9;color:#c084fc;background:rgba(140,84,255,.12);
+    position:relative;
+  }
+  .tooltip{
+    position:absolute;bottom:calc(100% + 8px);left:50%;
+    transform:translate(-50%,4px);
+    background:#15151d;
+    color:#e5e5ec;
+    border:1px solid #6d28d9;
+    border-radius:10px;
+    padding:8px 12px;
+    font-size:12px;
+    line-height:1.45;
+    width:max-content;
+    max-width:280px;
+    text-align:left;text-transform:none;letter-spacing:0;font-weight:400;
+    box-shadow:0 6px 20px rgba(0,0,0,.5), 0 0 12px rgba(140,84,255,.25);
+    opacity:0;
+    transition:opacity .2s ease, transform .2s ease;
+    pointer-events:none;
+    z-index:40;
+  }
+  .tooltip.visible{opacity:1;transform:translate(-50%,0)}
+
+  /* 5.3 Свой выпадающий список — нативный был белым и нечитаемым. */
+  .dropdown{position:relative}
+  .dropdown-toggle{
+    width:100%;text-align:left;padding:10px 12px;font-size:14px;
+    border-color:var(--stroke-soft);background:rgba(255,255,255,.05);
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+  }
+  .dropdown-menu{
+    position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;
+    background:#15151d;
+    border:1px solid #6d28d9;
+    border-radius:10px;
+    padding:4px;
+    box-shadow:0 8px 24px rgba(0,0,0,.6), 0 0 14px rgba(140,84,255,.25);
+  }
+  .dropdown-menu[hidden]{display:none}
+  .dropdown-item{
+    padding:8px 12px;
+    border-radius:7px;
+    color:#d4d4dc;
+    cursor:pointer;
+    transition:background .18s ease, color .18s ease;
+  }
+  .dropdown-item:hover{background:rgba(140,84,255,.18);color:#e9d5ff}
+  .dropdown-item.selected{background:rgba(140,84,255,.32);color:#fff}
+
   .tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
   .tabs button{
     padding:9px 16px;font-size:13px;border-color:var(--stroke-soft);
@@ -99,6 +197,7 @@
   .pick.on,.pick2.on,.pick3.on{border-color:var(--neon);background:rgba(176,108,255,.16)}
 
   .checks{display:flex;gap:14px;flex-wrap:wrap}
+  .hint-inline{text-transform:none;letter-spacing:0}
   .chk{
     display:inline-flex;align-items:center;gap:7px;font-size:13px;
     color:#d9d2ea;cursor:pointer;user-select:none;text-transform:none;letter-spacing:0;
@@ -147,8 +246,25 @@
   .chip.on{border-color:var(--neon);background:rgba(176,108,255,.18);color:#fff}
   .chip b{color:#fff}
 
+  .dirs button{display:flex;align-items:center;gap:8px}
+  .dirs button svg{flex:none}
   .dirs .file{color:#e8e2ff}
-  .dirs .file.on{background:rgba(176,108,255,.18);color:#fff}
+  .dirs .file.on{background:rgba(176,108,255,.22);color:#fff;
+                 box-shadow:inset 0 0 0 1px rgba(176,108,255,.5)}
+
+  /* Список выбранного: видно, что именно взято, и можно снять. */
+  .chosen{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+  .chosen .item{
+    display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12.5px;
+    background:rgba(176,108,255,.10);border:1px solid var(--stroke-soft);
+    border-radius:9px;
+  }
+  .chosen .item span{flex:1;min-width:0;overflow:hidden;
+                     text-overflow:ellipsis;white-space:nowrap}
+  .chosen .item button{
+    padding:2px 8px;font-size:14px;line-height:1;border-radius:7px;
+    border-color:var(--stroke-soft);background:none;box-shadow:none;
+  }
 
   .row{display:flex;gap:10px}
   .row > input{flex:1}
@@ -528,7 +644,7 @@
   </div>
 
   <div class="card" id="rnListCard" hidden>
-    <label>Главы <span class="hint" id="rnSelected"></span></label>
+    <label>Главы <span class="hint hint-inline" id="rnSelected"></span></label>
     <div class="row" style="margin-bottom:8px">
       <button class="ghost" id="rnAll" style="padding:5px 12px;font-size:12px">Выбрать все</button>
       <button class="ghost" id="rnNone" style="padding:5px 12px;font-size:12px">Снять</button>
@@ -598,23 +714,21 @@
 <!-- ========================= В Word ========================= -->
 <section id="tab-word" hidden>
   <div class="card lit">
-    <label>Папка с главами</label>
+    <label>Что обрабатываем — .epub, .docx, .txt или .md</label>
     <div class="row">
-      <input id="wdIn" type="text" placeholder="Путь к папке" autocomplete="off">
-      <button class="ghost browse" data-target="wdIn" data-kind="folder">Обзор…</button>
+      <button class="ghost pickany" data-list="wdList" style="flex:1">Выбрать…</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button id="wdScan" class="primary" style="flex:1">Прочитать папку</button>
-    </div>
-    <p class="hint" id="wdScanned"></p>
+    <div class="chosen" id="wdList"></div>
+    <p class="hint" id="wdScanned">Файлы читаются сразу после выбора.</p>
   </div>
 
   <div class="card" id="wdOpts" hidden>
     <label>Режим</label>
     <div class="row">
-      <button class="pick3 on" data-mode="single">Один документ</button>
-      <button class="pick3" data-mode="per_chapter">Отдельный .docx на главу</button>
+      <button class="pick3 on" data-mode="single">Собрать в один документ</button>
+      <button class="pick3" data-mode="per_chapter">Разложить по главам</button>
     </div>
+    <p class="hint" id="wdModeNote"></p>
 
     <div class="row" style="margin-top:16px">
       <div style="flex:2">
@@ -622,22 +736,43 @@
         <input id="wdFont" type="text" value="Times New Roman" autocomplete="off">
       </div>
       <div style="flex:1">
-        <label for="wdSize">кегль</label>
+        <label for="wdSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
         <input id="wdSize" type="number" value="12" min="6" max="72">
       </div>
     </div>
     <div class="row" style="margin-top:10px">
       <div style="flex:1">
-        <label for="wdSpacing">интервал</label>
+        <label for="wdSpacing">интервал<i class="hint-icon" data-tip="Расстояние между строками. 1,5 — стандарт.">?</i></label>
         <input id="wdSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
       </div>
       <div style="flex:1">
-        <label for="wdIndent">отступ первой строки, см</label>
-        <input id="wdIndent" type="number" value="1.25" step="0.05" min="0" max="5">
+        <label for="wdIndent">отступ первой строки, см<i class="hint-icon" data-tip="«Красная строка» в начале абзаца, в сантиметрах. По умолчанию 0.">?</i></label>
+        <input id="wdIndent" type="number" value="0" step="0.05" min="0" max="5">
       </div>
     </div>
     <label class="chk" style="margin-top:12px">
-      <input type="checkbox" id="wdBreak" checked> разрыв страницы между главами</label>
+      <input type="checkbox" id="wdBreak" checked> разрыв страницы между главами
+      <i class="hint-icon" data-tip="Каждая глава начинается с новой страницы.">?</i></label>
+
+    <div class="row" style="margin-top:14px">
+      <div style="flex:1">
+        <label>выравнивание</label>
+        <div class="dropdown" id="wdAlign"
+             data-options='[["left","по левому краю"],["justify","по ширине"],["center","по центру"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>вид разделителя сцен</label>
+        <div class="dropdown" id="wdScene"
+             data-options='[["stars","* * * по центру"],["blank","пустая строка"],["dashes","— — — по центру"],["keep","как в исходнике"]]'></div>
+      </div>
+    </div>
+
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="wdStripTitle" checked> убирать название главы из текста
+      <i class="hint-icon" data-tip="В исходнике название нередко продублировано в первых абзацах. Оно живёт только в имени файла.">?</i></label>
+    <label class="chk" style="margin-top:8px">
+      <input type="checkbox" id="wdItalicSystem"> выделять системные сообщения курсивом
+      <i class="hint-icon" data-tip="Игровые уведомления в фигурных и квадратных скобках. Они часть текста, удалять их нельзя.">?</i></label>
 
     <div style="margin-top:16px">
       <label>Куда сохранить</label>
@@ -676,12 +811,11 @@
 <!-- ====================== Проверка текста ====================== -->
 <section id="tab-check" hidden>
   <div class="card lit">
-    <label>Папка или файл</label>
+    <label>Что проверяем — .epub, .docx, .txt или .md</label>
     <div class="row">
-      <input id="ckIn" type="text" placeholder="Путь к папке с переводом" autocomplete="off">
-      <button class="ghost browse" data-target="ckIn" data-kind="folder">Папка…</button>
-      <button class="ghost browse" data-target="ckIn" data-kind="file">Файл…</button>
+      <button class="ghost pickany" data-list="ckList" style="flex:1">Выбрать…</button>
     </div>
+    <div class="chosen" id="ckList"></div>
   </div>
 
   <div class="card">
@@ -712,14 +846,52 @@
   </div>
 
   <div class="card" id="ckResults" hidden>
-    <label>Находки <span class="hint" id="ckCount"></span></label>
-    <div class="table" id="ckTable"></div>
+    <label>Находки <span class="hint hint-inline" id="ckCount"></span></label>
+    <input id="ckSearch" type="text" placeholder="поиск по тексту находки"
+           autocomplete="off" style="margin-bottom:10px">
+    <div class="table" id="ckTable" style="max-height:520px"></div>
+  </div>
+
+  <!-- 3.3 Очистка: после проверки должно быть действие. -->
+  <div class="card" id="ckCleanCard" hidden>
+    <label>Очистить</label>
+    <p class="hint">Иероглифы и латиницу не трогаем — их надо смотреть глазами.</p>
+    <div class="checks" id="ckCleanKinds" style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="ckCleanPreview" class="ghost" style="flex:1">Посчитать замены</button>
+    </div>
+    <div class="table" id="ckCleanCounts" hidden style="margin-top:10px"></div>
+
+    <div style="margin-top:14px">
+      <label>Куда сохранить (новая папка, оригиналы не трогаем)</label>
+      <div class="row">
+        <input id="ckBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="ckBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <input id="ckOut" type="text" placeholder="Очищено" value="Очищено" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="ckClean" class="primary" style="flex:1">Очистить</button>
+    </div>
+    <p class="hint" id="ckCleanResult"></p>
   </div>
 </section>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+
+// Пурпурные иконки вместо жёлтых системных — те выбивались из темы.
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+  <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
+        stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+const FILE_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+  <path d="M6 3h7l5 5v13H6V3Z" stroke="#8c54ff" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M13 3v5h5" stroke="#8c54ff" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 let novel = null, basePath = null, jobId = null, poll = null;
 
 function showError(msg){
@@ -857,7 +1029,8 @@ async function browse(path){
     }
     for(const dir of data.dirs){
       const btn = document.createElement('button');
-      btn.textContent = '📁  ' + dir.name;
+      btn.innerHTML = FOLDER_ICON;
+      btn.append(dir.name);
       btn.onclick = () => browse(dir.path);
       list.appendChild(btn);
     }
@@ -1054,14 +1227,16 @@ function makeBrowser({listId, pathId, files, onPick}){
       }
       for(const dir of data.dirs){
         const btn = document.createElement('button');
-        btn.textContent = '📁  ' + dir.name;
+        btn.innerHTML = FOLDER_ICON;
+        btn.append(dir.name);
         btn.onclick = () => go(dir.path);
         list.appendChild(btn);
       }
       for(const file of (data.files || [])){
         const btn = document.createElement('button');
         btn.className = 'file';
-        btn.textContent = '📄  ' + file.name;
+        btn.innerHTML = FILE_ICON;
+        btn.append(file.name);
         btn.onclick = () => {
           list.querySelectorAll('.file').forEach(b => b.classList.remove('on'));
           btn.classList.add('on');

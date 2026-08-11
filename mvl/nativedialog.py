@@ -40,21 +40,24 @@ try:
     root.attributes("-topmost", True)
     root.update()
 
+    types = [("Книги и тексты", "*.epub *.docx *.txt *.md"), ("Все файлы", "*.*")]
     if mode == "dir":
-        path = filedialog.askdirectory(title=title, initialdir=initial or None)
+        paths = [filedialog.askdirectory(title=title, initialdir=initial or None)]
+    elif mode == "files":
+        # Множественное выделение через Ctrl и Shift.
+        paths = list(filedialog.askopenfilenames(
+            title=title, initialdir=initial or None, filetypes=types) or [])
     else:
-        path = filedialog.askopenfilename(
-            title=title,
-            initialdir=initial or None,
-            filetypes=[("Книги", "*.epub *.txt"), ("Все файлы", "*.*")],
-        )
+        paths = [filedialog.askopenfilename(
+            title=title, initialdir=initial or None, filetypes=types)]
     root.destroy()
 except Exception as exc:
     print(json.dumps({"error": "%s: %s" % (type(exc).__name__, exc)}))
     raise SystemExit(0)
 
-# Пустая строка = пользователь нажал «Отмена».
-print(json.dumps({"path": path or ""}))
+# Пустой список = пользователь нажал «Отмена».
+paths = [p for p in paths if p]
+print(json.dumps({"paths": paths}))
 """
 
 
@@ -62,7 +65,7 @@ class DialogUnavailable(RuntimeError):
     """Системный диалог показать не удалось — работаем встроенным обзором."""
 
 
-def _ask(mode: str, title: str, initial: str = "") -> str:
+def _ask(mode: str, title: str, initial: str = "") -> list[str]:
     try:
         result = subprocess.run(
             [sys.executable, "-c", _SCRIPT, mode, title, initial or ""],
@@ -90,17 +93,38 @@ def _ask(mode: str, title: str, initial: str = "") -> str:
 
     if payload.get("error"):
         raise DialogUnavailable(payload["error"])
-    return payload.get("path") or ""
+    return list(payload.get("paths") or [])
 
 
 def ask_directory(title: str = "Выберите папку", initial: str = "") -> str:
     """Путь к папке или пустая строка, если нажали «Отмена»."""
-    return _ask("dir", title, initial)
+    paths = _ask("dir", title, initial)
+    return paths[0] if paths else ""
 
 
 def ask_open_file(title: str = "Выберите файл", initial: str = "") -> str:
     """Путь к файлу или пустая строка, если нажали «Отмена»."""
-    return _ask("file", title, initial)
+    paths = _ask("file", title, initial)
+    return paths[0] if paths else ""
+
+
+def ask_open_files(title: str = "Выберите файлы", initial: str = "") -> list[str]:
+    """Несколько файлов сразу — выделение через Ctrl и Shift."""
+    return _ask("files", title, initial)
+
+
+def ask_any(title: str = "Выберите файлы или папку", initial: str = "") -> list[str]:
+    """Одна кнопка «Выбрать…»: сначала файлы, иначе папка.
+
+    Tk не умеет диалог, принимающий и файлы, и папки одним окном, поэтому
+    сперва предлагаем выбрать файлы; если человек закрыл окно, ничего не
+    выбрав, показываем выбор папки.
+    """
+    files = ask_open_files(title, initial)
+    if files:
+        return files
+    folder = ask_directory("Или выберите папку целиком", initial)
+    return [folder] if folder else []
 
 
 def available() -> bool:

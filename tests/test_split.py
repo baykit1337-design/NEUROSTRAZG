@@ -168,10 +168,21 @@ class TestWriteChapters(SplitTestCase):
         self.assertEqual(lines[1], "")
 
     def test_scene_separator_survives_the_write(self):
+        """Разделитель сохраняется, но приводится к единому виду (ТЗ v4)."""
         out = self.tmp / "out"
         booksplit.split_book_to_dir(self.epub, out)
         body = (out / "0001 - Глава 1 Название.txt").read_text(encoding="utf-8")
-        self.assertIn("\n\n*\n\n", body)
+        self.assertIn("\n\n* * *\n\n", body)
+
+    def test_scene_separator_form_is_configurable(self):
+        from mvl.textprep import PrepOptions
+
+        out = self.tmp / "dashes"
+        booksplit.split_book_to_dir(
+            self.epub, out, prep=PrepOptions(scene_style="dashes")
+        )
+        body = (out / "0001 - Глава 1 Название.txt").read_text(encoding="utf-8")
+        self.assertIn("— — —", body)
 
     def test_report_counts(self):
         report = booksplit.split_book_to_dir(self.epub, self.tmp / "out")
@@ -191,7 +202,7 @@ class TestWriteChapters(SplitTestCase):
         document = Document(str(sorted(out.glob("*.docx"))[0]))
         texts = [p.text for p in document.paragraphs if p.text.strip()]
         self.assertEqual(texts[0], "Глава 1: Название")
-        self.assertIn("*", texts)  # разделитель сцен на месте
+        self.assertIn("* * *", texts)  # разделитель сцен на месте, в едином виде
 
     def test_docx_applies_style(self):
         from docx import Document
@@ -253,7 +264,8 @@ class TestWordHelpers(unittest.TestCase):
         self.assertEqual(style.font, "Times New Roman")
         self.assertEqual(style.size, 12)
         self.assertEqual(style.line_spacing, 1.5)
-        self.assertEqual(style.first_line_indent_cm, 1.25)
+        # По ТЗ v4 красной строки по умолчанию нет.
+        self.assertEqual(style.first_line_indent_cm, 0.0)
 
     def test_style_from_dict_ignores_junk(self):
         style = Style.from_dict({"font": "Arial", "size": "abc", "line_spacing": 0})

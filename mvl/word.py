@@ -25,7 +25,8 @@ class Style:
     font: str = "Times New Roman"
     size: int = 12
     line_spacing: float = 1.5
-    first_line_indent_cm: float = 1.25
+    #: По ТЗ v4 красной строки по умолчанию нет — было 1.25 см.
+    first_line_indent_cm: float = 0.0
     page_break_between_chapters: bool = True
 
     @classmethod
@@ -138,42 +139,111 @@ def add_runs(paragraph, text: str) -> None:
             run.font.name = "Courier New"
 
 
-def add_paragraphs(document, text: str, style: Style | None = None) -> int:
-    """Добавляет текст главы абзацами, разбирая markdown.
-
-    Возвращает число добавленных абзацев.
-    """
+def _alignment(name: str):
+    """Название выравнивания → константа Word."""
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+    return {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }.get(name, WD_ALIGN_PARAGRAPH.LEFT)
+
+
+def add_blocks(document, blocks, style: Style | None = None, prep=None) -> int:
+    """Вставляет подготовленные блоки в документ.
+
+    Выравнивание и отступ проставляются каждому абзацу явно: исходное
+    форматирование из epub или html наследовать нельзя, иначе часть текста
+    приезжает по центру вперемешку с обычными абзацами.
+    """
+    from .textprep import KIND_SCENE, KIND_SYSTEM, PrepOptions
+
+    style = style or Style()
+    prep = prep or PrepOptions()
+    body_align = _alignment(prep.align)
+    indent = _cm(prep.first_line_indent_cm)
+
     added = 0
-    for block in split_paragraphs(text):
-        # Разделитель сцен проверяем первым: «***» — это сцена, а не разметка.
-        if SCENE_BREAK.match(block):
+    for block in blocks:
+        if block.kind == KIND_SCENE and not block.text:
+            # «Пустая строка» — разделитель убран, остаётся отбивка.
             paragraph = document.add_paragraph()
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.alignment = body_align
             paragraph.paragraph_format.first_line_indent = 0
-            paragraph.add_run(block.strip())
             added += 1
             continue
 
-        if RULE.match(block):
+        if block.kind == KIND_SCENE:
             paragraph = document.add_paragraph()
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            paragraph.alignment = _alignment("center")
             paragraph.paragraph_format.first_line_indent = 0
-            paragraph.add_run("* * *")
+            paragraph.add_run(block.text)
             added += 1
             continue
 
-        heading = HEADING.match(block)
+        # Блочная разметка markdown: заголовок и цитата — не просто текст.
+        heading = HEADING.match(block.text)
         if heading:
             level = min(len(heading.group(1)), 4)
             document.add_heading(heading.group(2).strip(), level=level)
             added += 1
             continue
 
-        quote = QUOTE.match(block)
+        quote = QUOTE.match(block.text)
         if quote:
             paragraph = document.add_paragraph()
+            paragraph.alignment = body_align
+            paragraph.paragraph_format.left_indent = _cm(1.0)
+            paragraph.paragraph_format.first_line_indent = 0
+            add_runs(paragraph, quote.group(1).strip())
+            for run in paragraph.runs:
+                run.italic = True
+            added += 1
+            continue
+
+        # Системные сообщения выравниваются как обычный текст.
+        paragraph = document.add_paragraph()
+        paragraph.alignment = body_align
+        paragraph.paragraph_format.first_line_indent = indent
+        add_runs(paragraph, block.text)
+        if block.kind == KIND_SYSTEM and prep.italic_system:
+            for run in paragraph.runs:
+                run.italic = True
+        added += 1
+    return added
+
+
+def add_paragraphs(document, text: str, style: Style | None = None, prep=None) -> int:
+    """Добавляет текст главы абзацами, разбирая markdown.
+
+    Возвращает число добавленных абзацев.
+    """
+    from .textprep import KIND_TEXT, Block, PrepOptions
+
+    style = style or Style()
+    prep = prep or PrepOptions()
+    body_align = _alignment(prep.align)
+    indent = _cm(prep.first_line_indent_cm)
+
+    added = 0
+    for chunk in split_paragraphs(text):
+        # Разделитель сцен проверяем первым: «***» — это сцена, а не разметка.
+        if SCENE_BREAK.match(chunk) or RULE.match(chunk):
+            added += add_blocks(document, [Block(chunk.strip(), "scene")], style, prep)
+            continue
+
+        heading = HEADING.match(chunk)
+        if heading:
+            level = min(len(heading.group(1)), 4)
+            document.add_heading(heading.group(2).strip(), level=level)
+            added += 1
+            continue
+
+        quote = QUOTE.match(chunk)
+        if quote:
+            paragraph = document.add_paragraph()
+            paragraph.alignment = body_align
             paragraph.paragraph_format.left_indent = _cm(1.0)
             paragraph.paragraph_format.first_line_indent = 0
             add_runs(paragraph, quote.group(1).strip())
@@ -183,8 +253,12 @@ def add_paragraphs(document, text: str, style: Style | None = None) -> int:
             continue
 
         paragraph = document.add_paragraph()
-        add_runs(paragraph, block)
+        paragraph.alignment = body_align
+        paragraph.paragraph_format.first_line_indent = indent
+        add_runs(paragraph, chunk)
         added += 1
+
+    _ = KIND_TEXT
     return added
 
 
@@ -202,16 +276,25 @@ def split_paragraphs(text: str) -> list[str]:
     return [b.strip() for b in blocks if b.strip()]
 
 
-def add_chapter(document, title: str, text: str, style: Style | None = None) -> None:
-    """Заголовок главы стилем Heading 1, дальше абзацы."""
+def add_chapter(document, title: str, text: str, style: Style | None = None, prep=None) -> None:
+    """Заголовок главы стилем Heading 1, дальше подготовленные абзацы.
+
+    Текст всегда проходит через общую подготовку: дубль названия убирается,
+    разделители схлопываются, пустые абзацы выбрасываются.
+    """
+    from .textprep import PrepOptions, prepare
+
+    prep = prep or PrepOptions()
     if title:
         document.add_heading(title, level=1)
-    add_paragraphs(document, text, style)
+    add_blocks(document, prepare(split_paragraphs(text), title, prep), style, prep)
 
 
-def write_chapter(path: Path, title: str, text: str, style: Style | None = None) -> None:
+def write_chapter(
+    path: Path, title: str, text: str, style: Style | None = None, prep=None
+) -> None:
     """Одна глава — один .docx."""
     style = style or Style()
     document = new_document(style)
-    add_chapter(document, title, text, style)
+    add_chapter(document, title, text, style, prep)
     document.save(str(path))

@@ -243,14 +243,44 @@ class TestApplyPlan(RenameFolderTest):
         rename.apply_plan(rows, out, fmt="docx")
         self.assertEqual(len(list(out.glob("*.docx"))), 3)
 
-    def test_duplicate_names_do_not_overwrite(self):
+    def test_duplicate_names_stop_the_run(self):
+        """Совпадение имён — ошибка логики, а не повод дописать «(2)»."""
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
         for row in rows:
             row.new_name = "Одно и то же"
         out = self.tmp / "dup"
+
+        with self.assertRaises(rename.NameCollision) as ctx:
+            rename.apply_plan(rows, out)
+        self.assertIn("Одно и то же", str(ctx.exception))
+        # Ничего не записано: остановились до первой записи.
+        self.assertFalse(out.exists())
+
+    def test_split_parts_get_distinct_names_without_the_checkbox(self):
+        """У разрезанной главы номер части обязателен, иначе файлы затрут друг друга."""
+        chapters = rename.scan(self.folder)
+        target = next(c for c in chapters if c.number == 202)
+        rows = rename.make_plan(
+            chapters,
+            NameFormat(part=False),           # галочка «номер части» снята
+            splits={str(target.path): 2},
+        )
+        names = [r.new_name for r in rows if r.number == 202]
+        self.assertEqual(names, ["Глава 202.1 - Название 202", "Глава 202.2 - Название 202"])
+        self.assertEqual(rename.find_collisions(rows), [])
+
+    def test_split_parts_are_written_as_separate_files(self):
+        chapters = rename.scan(self.folder)
+        target = next(c for c in chapters if c.number == 202)
+        rows = rename.make_plan(chapters, NameFormat(part=False),
+                                splits={str(target.path): 2})
+        out = self.tmp / "parts"
         report = rename.apply_plan(rows, out)
-        self.assertEqual(report.written, 3)
-        self.assertEqual(len(list(out.glob("*.txt"))), 3)
+        self.assertEqual(report.written, 4)
+        self.assertTrue((out / "Глава 202.1 - Название 202.txt").is_file())
+        self.assertTrue((out / "Глава 202.2 - Название 202.txt").is_file())
+        # Ни одного имени с «(2)» — Windows разруливать конфликт не должен.
+        self.assertFalse(any("(2)" in p.name for p in out.glob("*.txt")))
 
     def test_cancel_stops_writing(self):
         cancel = threading.Event()

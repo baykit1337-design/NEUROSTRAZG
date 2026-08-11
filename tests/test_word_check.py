@@ -50,11 +50,12 @@ class TestConvert(WordTestCase):
         self.assertEqual((report.written, report.failed), (2, 0))
         self.assertTrue(out.is_file())
 
-    def test_per_chapter(self):
+    def test_per_chapter_on_plain_files_says_there_is_nothing_to_do(self):
+        """Молча копировать готовые файлы нельзя — надо сказать об этом."""
         out = self.tmp / "по главам"
-        report = toword.convert(self.folder, out, mode=toword.MODE_PER_CHAPTER)
-        self.assertEqual(report.written, 2)
-        self.assertEqual(len(list(out.glob("*.docx"))), 2)
+        with self.assertRaises(toword.NothingToDo) as ctx:
+            toword.convert(self.folder, out, mode=toword.MODE_PER_CHAPTER)
+        self.assertIn("уже отдельные файлы", str(ctx.exception))
 
     def test_headings_use_heading_1(self):
         from docx import Document
@@ -110,13 +111,13 @@ class TestConvert(WordTestCase):
                     if p.style.name.startswith("Heading")]
         self.assertIn("Внутренний заголовок", headings)
 
-    def test_scene_separator_survives(self):
+    def test_scene_separator_becomes_the_chosen_form(self):
         from docx import Document
 
         out = self.tmp / "к.docx"
         toword.convert(self.folder, out)
         texts = [p.text.strip() for p in Document(str(out)).paragraphs]
-        self.assertIn("*", texts)
+        self.assertIn("* * *", texts)
 
     def test_broken_file_is_reported_with_file_step_and_error(self):
         """Молчаливый отказ недопустим."""
@@ -400,15 +401,17 @@ class TestWordCheckWebApi(WordTestCase):
         self.assertEqual(job["report"]["written"], 2)
         self.assertTrue((self.tmp / "Книга.docx").is_file())
 
-    def test_word_per_chapter_job(self):
+    def test_word_per_chapter_on_plain_files_reports_nothing_to_do(self):
         from webapp.app import JOBS
 
         res = self.app.post("/api/word/start", json={
-            "folder_in": str(self.folder), "base": str(self.tmp),
+            "targets": [str(self.folder)], "base": str(self.tmp),
             "name": "Главы", "mode": "per_chapter"})
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=60)
-        self.assertEqual(len(list((self.tmp / "Главы").glob("*.docx"))), 2)
+
+        job = self.app.get(f"/api/job/{job_id}").get_json()["job"]
+        self.assertIn("раскладывать нечего", job["error"])
 
     def test_check_job_and_report_download(self):
         from webapp.app import JOBS

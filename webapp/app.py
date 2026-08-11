@@ -18,7 +18,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api, booksplit, nativedialog, rename, textcheck, toword  # noqa: E402
+from mvl import api, booksplit, cleanup, nativedialog, rename, textcheck, toword  # noqa: E402
+from mvl.cleanup import CleanError  # noqa: E402
+from mvl.source import SourceError  # noqa: E402
+from mvl.textprep import PrepOptions  # noqa: E402
 from mvl.toword import ConvertError  # noqa: E402
 from mvl.rename import RenameError  # noqa: E402
 from mvl.booksplit import Cancelled as SplitCancelled  # noqa: E402
@@ -31,6 +34,9 @@ from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
 from mvl.word import DocxUnavailable, Style  # noqa: E402
 
 log = logging.getLogger(__name__)
+
+#: Потолок таймаута из ТЗ: прокси иногда подключается очень долго.
+MAX_TIMEOUT = 300
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
@@ -241,7 +247,7 @@ def api_pick(kind: str):
 
     Пустой path — нажали «Отмена», это не ошибка.
     """
-    if kind not in ("folder", "file"):
+    if kind not in ("folder", "file", "files", "any"):
         return jsonify(error=f"Неизвестный выбор: {kind}"), 404
 
     payload = request.json or {}
@@ -250,14 +256,20 @@ def api_pick(kind: str):
 
     try:
         if kind == "folder":
-            path = nativedialog.ask_directory(title or "Выберите папку", initial)
+            paths = [nativedialog.ask_directory(title or "Выберите папку", initial)]
+        elif kind == "file":
+            paths = [nativedialog.ask_open_file(title or "Выберите файл", initial)]
+        elif kind == "files":
+            paths = nativedialog.ask_open_files(title or "Выберите файлы", initial)
         else:
-            path = nativedialog.ask_open_file(title or "Выберите файл книги", initial)
+            # «Выбрать…» — принимает и файлы, и папку.
+            paths = nativedialog.ask_any(title or "Выберите файлы или папку", initial)
     except nativedialog.DialogUnavailable as exc:
         # Не ошибка сервера: интерфейс просто остаётся на встроенном обзоре.
         return jsonify(error=str(exc), fallback=True), 503
 
-    return jsonify(path=path, cancelled=not path)
+    paths = [p for p in paths if p]
+    return jsonify(paths=paths, path=paths[0] if paths else "", cancelled=not paths)
 
 
 @app.get("/api/browse")
@@ -326,6 +338,8 @@ def api_start():
         return jsonify(error="Таймаут должен быть числом секунд"), 400
     if read_timeout < 5 or connect_timeout < 1:
         return jsonify(error="Слишком маленький таймаут"), 400
+    if read_timeout > MAX_TIMEOUT or connect_timeout > MAX_TIMEOUT:
+        return jsonify(error=f"Таймаут больше {MAX_TIMEOUT} секунд не имеет смысла"), 400
 
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
@@ -567,39 +581,49 @@ def api_rename_apply():
 # ----------------------------------------------------- вкладка «В Word»
 
 
+def _targets(payload: dict) -> list[str]:
+    """Что выбрано: список файлов и/или папок."""
+    targets = payload.get("targets")
+    if isinstance(targets, str):
+        targets = [targets]
+    if not targets:
+        one = (payload.get("folder_in") or payload.get("target") or "").strip()
+        targets = [one] if one else []
+    return [str(t).strip() for t in targets if str(t).strip()]
+
+
 @app.post("/api/word/scan")
 def api_word_scan():
-    payload = request.json or {}
-    folder = (payload.get("folder_in") or "").strip()
-    if not folder:
-        return jsonify(error="Выберите папку с главами"), 400
+    """Читается сразу после выбора — отдельной кнопки «Прочитать» больше нет."""
+    targets = _targets(request.json or {})
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
     try:
-        chapters = toword.collect(folder)
-    except ConvertError as exc:
+        return jsonify(**toword.scan(targets))
+    except (ConvertError, SourceError) as exc:
         return jsonify(error=str(exc)), 400
-    return jsonify(total=len(chapters), titles=[toword.heading_for(c) for c in chapters[:5]])
 
 
 @app.post("/api/word/start")
 def api_word_start():
     payload = request.json or {}
-    folder = (payload.get("folder_in") or "").strip()
+    targets = _targets(payload)
     base = (payload.get("base") or "").strip()
     name = (payload.get("name") or "").strip()
     mode = (payload.get("mode") or toword.MODE_SINGLE).strip()
 
-    if not folder:
-        return jsonify(error="Выберите папку с главами"), 400
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
     if not base:
         return jsonify(error="Выберите, куда сохранить"), 400
     if not name:
         return jsonify(error="Введите имя документа или папки"), 400
-    if mode not in (toword.MODE_SINGLE, toword.MODE_PER_CHAPTER):
+    if mode not in toword.MODES:
         return jsonify(error=f"Неизвестный режим: {mode}"), 400
 
     try:
-        chapters = toword.collect(folder)
-    except ConvertError as exc:
+        info = toword.scan(targets)
+    except (ConvertError, SourceError) as exc:
         return jsonify(error=str(exc)), 400
 
     base_dir = Path(base).expanduser()
@@ -610,18 +634,20 @@ def api_word_start():
     output = base_dir / (f"{clean}.docx" if mode == toword.MODE_SINGLE else clean)
 
     style = Style.from_dict(payload.get("style"))
+    prep = PrepOptions.from_dict(payload.get("prep"))
+    total = info["total"]
     job = Job(
         id=uuid.uuid4().hex[:12],
         kind="word",
-        meta={"source": folder, "mode": mode, "total": len(chapters)},
+        meta={"targets": targets, "mode": mode, "total": total},
         output_dir=str(output),
     )
-    job.progress = {"stage": "word", "message": f"Собираем {len(chapters)} глав…",
-                    "done": 0, "total": len(chapters), "written": 0, "failed": 0}
+    job.progress = {"stage": "word", "message": f"Собираем {total} глав…",
+                    "done": 0, "total": total, "written": 0, "failed": 0}
 
     def work(job: Job):
         report = toword.convert(
-            folder, output, mode=mode, style=style,
+            targets, output, mode=mode, style=style, prep=prep,
             on_progress=lambda done, total: job.progress.update(
                 done=done, total=total, message=f"Глава {done} из {total}"),
             cancel=job.cancel,
@@ -642,29 +668,29 @@ def api_word_start():
 @app.post("/api/check/start")
 def api_check_start():
     payload = request.json or {}
-    target = (payload.get("target") or "").strip()
+    targets = _targets(payload)
     # Ключа нет — проверяем всё. Пустой список — это снятые галочки, и это
     # уже ошибка: молча проверять всё подряд нельзя.
     kinds = payload.get("kinds")
     if kinds is None:
         kinds = list(textcheck.ALL_KINDS)
 
-    if not target:
-        return jsonify(error="Выберите папку или файл"), 400
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
     if not kinds:
         return jsonify(error="Отметьте хотя бы одну проверку"), 400
 
     job = Job(
         id=uuid.uuid4().hex[:12],
         kind="check",
-        meta={"target": target, "kinds": kinds},
-        output_dir=target,
+        meta={"targets": targets, "kinds": kinds},
+        output_dir=targets[0],
     )
     job.progress = {"stage": "check", "message": "Читаем файлы…", "done": 0, "total": 0}
 
     def work(job: Job):
         report = textcheck.check(
-            target, kinds,
+            targets, kinds,
             on_progress=lambda done, total: job.progress.update(
                 done=done, total=total, message=f"Файл {done} из {total}"),
             cancel=job.cancel,
@@ -676,6 +702,115 @@ def api_check_start():
             stage="done",
             message=(f"Готово. Находок {len(report.findings)} "
                      f"в {report.files_with_findings} файлах из {report.files_checked}"),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/clean/preview")
+def api_clean_preview():
+    """Сколько замен будет сделано — до того, как что-то записано."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        # Считаем по всем выбранным целям сразу.
+        merged: dict = {}
+        total = 0
+        unreadable: list = []
+        for target in targets:
+            kinds = payload.get("kinds")
+            result = cleanup.preview(
+                target, list(cleanup.ALL_KINDS) if kinds is None else kinds
+            )
+            total += result["total"]
+            unreadable.extend(result["unreadable"])
+            for row in result["counts"]:
+                merged[row["kind"]] = merged.get(row["kind"], 0) + row["count"]
+    except CleanError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return jsonify(
+        counts=[
+            {"kind": k, "kind_name": cleanup.KINDS.get(k, k), "count": v}
+            for k, v in sorted(merged.items(), key=lambda kv: -kv[1])
+        ],
+        total=total,
+        unreadable=unreadable,
+    )
+
+
+@app.post("/api/clean/start")
+def api_clean_start():
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+    # Ключа нет — чистим всё. Пустой список — снятые галочки, это ошибка:
+    # молча вычистить всё подряд нельзя, правки необратимы для результата.
+    kinds = payload.get("kinds")
+    if kinds is None:
+        kinds = list(cleanup.ALL_KINDS)
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите, куда сохранить"), 400
+    if not folder:
+        return jsonify(error="Введите имя новой папки"), 400
+
+    try:
+        cleanup._validate(kinds)
+    except CleanError as exc:
+        return jsonify(error=str(exc)), 400
+
+    try:
+        output_dir = prepare_output_dir(base, folder)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="clean",
+        meta={"targets": targets, "kinds": kinds},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "clean", "message": "Чистим…", "done": 0, "total": 0}
+
+    def work(job: Job):
+        # Несколько целей чистим по очереди в одну папку.
+        merged: dict = {}
+        written = failed = files = 0
+        failures: list = []
+        for target in targets:
+            report = cleanup.clean(
+                target, kinds, Path(job.output_dir),
+                on_progress=lambda done, total: job.progress.update(
+                    done=done, total=total, message=f"Файл {done} из {total}"),
+                cancel=job.cancel,
+            )
+            written += report.written
+            failed += report.failed
+            files += report.files
+            failures.extend(report.failures)
+            for key, value in report.counts.items():
+                merged[key] = merged.get(key, 0) + value
+
+        job.report = {
+            "output_dir": job.output_dir,
+            "files": files, "written": written, "failed": failed,
+            "total": sum(merged.values()),
+            "counts": [
+                {"kind": k, "kind_name": cleanup.KINDS.get(k, k), "count": v}
+                for k, v in sorted(merged.items(), key=lambda kv: -kv[1]) if v
+            ],
+            "failed_files": failures,
+        }
+        job.progress.update(
+            stage="done",
+            message=(f"Готово. Исправлено {sum(merged.values())} мест "
+                     f"в {written} файлах" + (f", ошибок {failed}" if failed else "")),
         )
 
     return jsonify(job=start_job(job, work).snapshot())

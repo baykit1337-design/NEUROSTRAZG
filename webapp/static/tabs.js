@@ -46,6 +46,148 @@ $('bookHidden').addEventListener('input', e => {
   if(path) pickBook({path, name: path.split(/[/\\]/).pop()});
 });
 
+
+/* ------------------------------------------------- всплывающие подсказки */
+
+// Появление с задержкой 400 мс, чтобы не мельтешили.
+const TOOLTIP_DELAY = 400;
+
+document.querySelectorAll('.hint-icon').forEach(icon => {
+  const tip = document.createElement('span');
+  tip.className = 'tooltip';
+  tip.textContent = icon.dataset.tip || '';
+  icon.append(tip);
+
+  let timer = null;
+  icon.addEventListener('mouseenter', () => {
+    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
+  });
+  icon.addEventListener('mouseleave', () => {
+    clearTimeout(timer);
+    tip.classList.remove('visible');
+  });
+});
+
+/** Ставит подсказку на произвольный элемент (для галочек, что строит JS). */
+function attachTip(element, text){
+  if(!text) return;
+  const icon = document.createElement('i');
+  icon.className = 'hint-icon';
+  icon.textContent = '?';
+  const tip = document.createElement('span');
+  tip.className = 'tooltip';
+  tip.textContent = text;
+  icon.append(tip);
+
+  let timer = null;
+  icon.addEventListener('mouseenter', () => {
+    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
+  });
+  icon.addEventListener('mouseleave', () => {
+    clearTimeout(timer);
+    tip.classList.remove('visible');
+  });
+  element.append(icon);
+}
+
+/* ----------------------------------------------- свои выпадающие списки */
+
+/** Нативный select был белым и нечитаемым — рисуем свой. */
+function makeDropdown(node, onChange){
+  const options = JSON.parse(node.dataset.options || '[]');
+  let value = options.length ? options[0][0] : '';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'ghost dropdown-toggle';
+  const menu = document.createElement('div');
+  menu.className = 'dropdown-menu';
+  menu.hidden = true;
+
+  function label(){
+    const found = options.find(o => o[0] === value);
+    toggle.innerHTML = `<span>${found ? found[1] : ''}</span><span>▾</span>`;
+  }
+
+  for(const [key, text] of options){
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+    item.textContent = text;
+    item.onclick = () => {
+      value = key;
+      menu.hidden = true;
+      menu.querySelectorAll('.dropdown-item').forEach(i => i.classList.remove('selected'));
+      item.classList.add('selected');
+      label();
+      if(onChange) onChange(value);
+    };
+    if(key === value) item.classList.add('selected');
+    menu.append(item);
+  }
+
+  toggle.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  document.addEventListener('click', () => { menu.hidden = true; });
+
+  label();
+  node.append(toggle, menu);
+  return {get value(){ return value; }};
+}
+
+/* -------------------------------------- одна кнопка «Выбрать…» на всё */
+
+//: Что выбрано на каждой вкладке: список путей.
+const CHOSEN = {};
+
+/** Рисует список выбранного с возможностью снять. */
+function renderChosen(listId){
+  const box = $(listId);
+  const paths = CHOSEN[listId] || [];
+  box.innerHTML = '';
+  for(const path of paths){
+    const row = document.createElement('div');
+    row.className = 'item';
+    const name = document.createElement('span');
+    name.textContent = path.split(/[/\\]/).pop() || path;
+    name.title = path;
+    const drop = document.createElement('button');
+    drop.textContent = '×';
+    drop.title = 'Убрать из списка';
+    drop.onclick = () => {
+      CHOSEN[listId] = (CHOSEN[listId] || []).filter(p => p !== path);
+      renderChosen(listId);
+      if(box.dataset.onchange) window[box.dataset.onchange]();
+    };
+    row.append(name, drop);
+    box.append(row);
+  }
+}
+
+document.querySelectorAll('.pickany').forEach(button => {
+  button.onclick = async () => {
+    const listId = button.dataset.list;
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Окно…';
+    try{
+      const data = await call('/api/pick/any', {});
+      if(data.paths?.length){
+        // Добавляем к уже выбранному, дубликаты отсеиваем.
+        const current = new Set(CHOSEN[listId] || []);
+        data.paths.forEach(p => current.add(p));
+        CHOSEN[listId] = [...current];
+        renderChosen(listId);
+        // Читается сразу после выбора — отдельной кнопки нет.
+        const handler = $(listId).dataset.onchange;
+        if(handler && window[handler]) window[handler]();
+      }
+    }catch(err){
+      showError(err.message + ' Путь можно вписать вручную ниже.');
+    }finally{
+      button.disabled = false;
+      button.textContent = label;
+    }
+  };
+});
+
 /* ------------------------------------------------------ общий прогресс */
 
 /** Рисует полосу и возвращает true, пока операция идёт. */
@@ -372,7 +514,13 @@ $('rnStop').onclick = () => stopJob(rnJob);
 
 /* ============================== В Word ============================== */
 
-let wdMode = 'single', wdJob = null;
+let wdMode = 'single', wdJob = null, wdAlign = null, wdScene = null;
+
+//: Пояснение под каждым режимом — что получится на выходе.
+const WD_MODE_NOTES = {
+  single: 'Все главы из выбранного лягут в один файл .docx.',
+  per_chapter: 'Каждая глава станет отдельным файлом .docx в новой папке.',
+};
 
 function wdStyle(){
   return {
@@ -384,27 +532,52 @@ function wdStyle(){
   };
 }
 
+function wdPrep(){
+  return {
+    strip_title: $('wdStripTitle').checked,
+    italic_system: $('wdItalicSystem').checked,
+    align: wdAlign ? wdAlign.value : 'left',
+    scene_style: wdScene ? wdScene.value : 'stars',
+    first_line_indent_cm: $('wdIndent').value,
+  };
+}
+
 function wdUpdateFinal(){
   const base = $('wdBase').value.trim(), name = $('wdName').value.trim();
   $('wdFinal').textContent = base && name
     ? (wdMode === 'single' ? `Документ: ${base}/${name}.docx` : `Папка: ${base}/${name}`)
     : '';
+  $('wdModeNote').textContent = WD_MODE_NOTES[wdMode] || '';
 }
 
+/** Читается сразу после выбора — отдельной кнопки «Прочитать» больше нет. */
 async function wdScan(){
+  const targets = CHOSEN.wdList || [];
+  if(!targets.length){
+    $('wdOpts').hidden = true;
+    $('wdScanned').textContent = 'Файлы читаются сразу после выбора.';
+    return;
+  }
   showError('');
+  $('wdScanned').innerHTML = '<span class="spin"></span>Читаем…';
   try{
-    const data = await call('/api/word/scan', {folder_in: $('wdIn').value.trim()});
+    const data = await call('/api/word/scan', {targets});
     $('wdScanned').textContent =
-      `Глав: ${data.total}. Первые: ${data.titles.join(' · ')}`;
+      `Файлов: ${data.file_count}, глав: ${data.total}. ` +
+      (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
+    if(data.unreadable?.length){
+      showError('Не прочитаны: ' + data.unreadable.join('; '));
+    }
     $('wdOpts').hidden = false;
     if(!$('wdName').value) $('wdName').value = 'Книга';
     wdUpdateFinal();
   }catch(err){
     showError(err.message);
     $('wdOpts').hidden = true;
+    $('wdScanned').textContent = '';
   }
 }
+window.wdScan = wdScan;
 
 async function wdStart(){
   showError('');
@@ -412,11 +585,12 @@ async function wdStart(){
   $('wdErrors').hidden = true;
   try{
     const {job} = await call('/api/word/start', {
-      folder_in: $('wdIn').value.trim(),
+      targets: CHOSEN.wdList || [],
       base: $('wdBase').value.trim(),
       name: $('wdName').value.trim(),
       mode: wdMode,
       style: wdStyle(),
+      prep: wdPrep(),
     });
     wdJob = job.id;
     $('wdProgress').hidden = false;
@@ -441,10 +615,18 @@ async function wdStart(){
           for(const failure of failures){
             const row = document.createElement('div');
             row.className = 'tr';
-            row.innerHTML =
-              `<span class="grow" title="${failure.file}">${failure.file}</span>` +
-              `<span class="tag">${failure.step}</span>` +
-              `<span class="grow">${failure.error}</span>`;
+            const file = document.createElement('span');
+            file.className = 'grow';
+            file.textContent = failure.file;
+            file.title = failure.file;
+            const step = document.createElement('span');
+            step.className = 'tag';
+            step.textContent = failure.step;
+            const text = document.createElement('span');
+            text.className = 'grow';
+            text.textContent = failure.error;
+            text.title = failure.error;
+            row.append(file, step, text);
             table.append(row);
           }
           table.hidden = false;
@@ -464,33 +646,73 @@ document.querySelectorAll('.pick3').forEach(btn => {
     wdUpdateFinal();
   };
 });
-$('wdScan').onclick = wdScan;
+$('wdList').dataset.onchange = 'wdScan';
 $('wdStart').onclick = wdStart;
 $('wdStop').onclick = () => stopJob(wdJob);
 ['wdBase','wdName'].forEach(id => $(id).addEventListener('input', wdUpdateFinal));
+wdAlign = makeDropdown($('wdAlign'));
+wdScene = makeDropdown($('wdScene'));
+wdUpdateFinal();
 
 /* ========================== Проверка текста ========================== */
 
+//: Тип проверки → подпись и всплывающая подсказка.
 const CHECK_KINDS = [
-  ['cjk', 'Иероглифы и азиатские алфавиты'],
-  ['markdown', 'Остатки markdown'],
-  ['latin', 'Латиница в русском тексте'],
-  ['model', 'Следы модели-переводчика'],
-  ['broken', 'Битая кодировка и HTML'],
-  ['loop', 'Зацикливание модели'],
-  ['size', 'Подозрительный объём'],
-  ['pairs', 'Непарные кавычки и скобки'],
+  ['cjk', 'Иероглифы и азиатские алфавиты',
+   'Куски текста, оставшиеся непереведёнными: китайские, корейские, японские символы.'],
+  ['markdown', 'Остатки markdown',
+   'Служебные символы разметки (**, ##, ---), которые модель оставила в тексте.'],
+  ['latin', 'Латиница в русском тексте',
+   'Английские слова, которые могли остаться без перевода. Часто это имена — смотреть глазами.'],
+  ['model', 'Следы модели-переводчика',
+   'Фразы вроде «Вот перевод» или «Translator\u2019s note», случайно попавшие в текст.'],
+  ['broken', 'Битая кодировка и HTML',
+   'Испорченные символы и неубранные теги вроде &nbsp; или <br>.'],
+  ['loop', 'Зацикливание модели',
+   'Один и тот же абзац повторён три раза подряд и больше. Так бывает, когда модель «залипает».'],
+  ['size', 'Подозрительный объём',
+   'Глава заметно короче или длиннее остальных. Возможно, перевод оборвался.'],
+  ['pairs', 'Непарные кавычки и скобки',
+   'Открывающая есть, закрывающей нет.'],
 ];
 
-let ckJob = null, ckFindings = [], ckFilter = null;
+//: Что умеет чистить кнопка «Очистить».
+const CLEAN_KINDS = [
+  ['markdown', 'Остатки markdown'],
+  ['html', 'HTML-теги и entity'],
+  ['nbsp', 'Неразрывные пробелы'],
+  ['broken', 'Битые символы'],
+  ['model', 'Следы модели-переводчика'],
+  ['dupes', 'Повторяющиеся абзацы'],
+  ['blanks', 'Лишние пустые строки'],
+];
+
+let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;
 
 (function ckBuildChecks(){
   const box = $('ckKinds');
-  for(const [key, label] of CHECK_KINDS){
+  for(const [key, label, tip] of CHECK_KINDS){
     const wrap = document.createElement('label');
     wrap.className = 'chk';
-    wrap.innerHTML = `<input type="checkbox" value="${key}" checked> ${label}`;
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = key;
+    input.checked = true;
+    wrap.append(input, document.createTextNode(' ' + label));
+    attachTip(wrap, tip);
     box.append(wrap);
+  }
+
+  const clean = $('ckCleanKinds');
+  for(const [key, label] of CLEAN_KINDS){
+    const wrap = document.createElement('label');
+    wrap.className = 'chk';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.value = key;
+    input.checked = true;
+    wrap.append(input, document.createTextNode(' ' + label));
+    clean.append(wrap);
   }
 })();
 
@@ -498,15 +720,22 @@ function ckSelected(){
   return [...$('ckKinds').querySelectorAll('input:checked')].map(i => i.value);
 }
 
+function ckCleanSelected(){
+  return [...$('ckCleanKinds').querySelectorAll('input:checked')].map(i => i.value);
+}
+
 async function ckStart(){
   showError('');
+  const targets = CHOSEN.ckList || [];
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
   const kinds = ckSelected();
   if(!kinds.length){ showError('Отметьте хотя бы одну проверку'); return; }
 
   $('ckStart').disabled = true;
   ckFilter = null;
+  $('ckSearch').value = '';
   try{
-    const {job} = await call('/api/check/start', {target: $('ckIn').value.trim(), kinds});
+    const {job} = await call('/api/check/start', {targets, kinds});
     ckJob = job.id;
     $('ckProgress').hidden = false;
     $('ckStop').hidden = false;
@@ -554,55 +783,163 @@ function ckRender(report){
   for(const row of report.latin_words){
     const line = document.createElement('div');
     line.className = 'tr';
-    line.innerHTML = `<span class="grow">${row.word}</span><span class="num">×${row.count}</span>`;
+    const word = document.createElement('span');
+    word.className = 'grow';
+    word.textContent = row.word;
+    const count = document.createElement('span');
+    count.className = 'num';
+    count.textContent = '×' + row.count;
+    line.append(word, count);
     words.append(line);
   }
   $('ckWordsCard').hidden = !report.latin_words.length;
 
   ckRenderTable();
   $('ckResults').hidden = false;
+  $('ckCleanCard').hidden = false;
 }
 
+/** Все находки доступны в самом окне: список рисуется по мере прокрутки. */
 function ckRenderTable(){
-  const rows = ckFilter ? ckFindings.filter(f => f.kind === ckFilter) : ckFindings;
-  $('ckCount').textContent = `— ${rows.length}` + (ckFilter ? ' (фильтр)' : '');
+  const needle = $('ckSearch').value.trim().toLowerCase();
+  let rows = ckFilter ? ckFindings.filter(f => f.kind === ckFilter) : ckFindings;
+  if(needle){
+    rows = rows.filter(f =>
+      f.fragment.toLowerCase().includes(needle) || f.file.toLowerCase().includes(needle));
+  }
+  $('ckCount').textContent = `— ${rows.length}` +
+    (rows.length !== ckFindings.length ? ` из ${ckFindings.length}` : '');
 
   const table = $('ckTable');
   table.innerHTML = '';
-  // Больших книг тут может быть много — рисуем первые 500 строк.
-  for(const finding of rows.slice(0, 500)){
-    const line = document.createElement('div');
-    line.className = 'tr';
-    const fragment = document.createElement('span');
-    fragment.className = 'grow';
-    fragment.textContent = finding.fragment;
-    fragment.title = finding.fragment;
+  table.onscroll = null;
 
-    const file = document.createElement('span');
-    file.className = 'grow';
-    file.textContent = finding.file;
-    file.title = finding.file;
+  // Виртуальный список: в DOM держим только видимую часть, поэтому даже
+  // 30 тысяч находок открываются без обрезки и без подвисаний.
+  const ROW = 31;
+  const spacer = document.createElement('div');
+  spacer.style.height = rows.length * ROW + 'px';
+  spacer.style.position = 'relative';
+  table.append(spacer);
 
-    const line_no = document.createElement('span');
-    line_no.className = 'num';
-    line_no.textContent = 'стр. ' + finding.line;
+  function draw(){
+    const top = table.scrollTop;
+    const height = table.clientHeight || 400;
+    const first = Math.max(0, Math.floor(top / ROW) - 5);
+    const last = Math.min(rows.length, Math.ceil((top + height) / ROW) + 5);
 
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = finding.kind_name;
+    spacer.innerHTML = '';
+    for(let i = first; i < last; i++){
+      const finding = rows[i];
+      const line = document.createElement('div');
+      line.className = 'tr';
+      line.style.position = 'absolute';
+      line.style.top = i * ROW + 'px';
+      line.style.left = '0';
+      line.style.right = '0';
 
-    line.append(file, line_no, tag, fragment);
-    table.append(line);
+      const file = document.createElement('span');
+      file.className = 'grow';
+      file.textContent = finding.file;
+      file.title = finding.file;
+
+      const lineNo = document.createElement('span');
+      lineNo.className = 'num';
+      lineNo.textContent = 'стр. ' + finding.line;
+
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = finding.kind_name;
+
+      const fragment = document.createElement('span');
+      fragment.className = 'grow';
+      fragment.textContent = finding.fragment;
+      fragment.title = finding.fragment;
+
+      line.append(file, lineNo, tag, fragment);
+      spacer.append(line);
+    }
   }
-  if(rows.length > 500){
-    const note = document.createElement('div');
-    note.className = 'tr';
-    note.innerHTML = `<span class="grow">…и ещё ${rows.length - 500}. ` +
-                     `Полный список — в выгрузке отчёта.</span>`;
-    table.append(note);
+
+  table.onscroll = draw;
+  draw();
+}
+
+/* ------------------------------------------------------------ очистка */
+
+async function ckCleanPreview(){
+  showError('');
+  const targets = CHOSEN.ckList || [];
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('ckCleanPreview').disabled = true;
+  try{
+    const data = await call('/api/clean/preview', {targets, kinds: ckCleanSelected()});
+    const table = $('ckCleanCounts');
+    table.innerHTML = '';
+    for(const row of data.counts){
+      const line = document.createElement('div');
+      line.className = 'tr';
+      const name = document.createElement('span');
+      name.className = 'grow';
+      name.textContent = row.kind_name;
+      const count = document.createElement('span');
+      count.className = 'num';
+      count.textContent = row.count;
+      line.append(name, count);
+      table.append(line);
+    }
+    table.hidden = false;
+    $('ckCleanResult').textContent = `Будет исправлено мест: ${data.total}. ` +
+      'Оригиналы не изменятся.';
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('ckCleanPreview').disabled = false;
+  }
+}
+
+async function ckClean(){
+  showError('');
+  const targets = CHOSEN.ckList || [];
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('ckClean').disabled = true;
+  try{
+    const {job} = await call('/api/clean/start', {
+      targets,
+      kinds: ckCleanSelected(),
+      base: $('ckBase').value.trim(),
+      folder: $('ckOut').value.trim(),
+    });
+    ckCleanJob = job.id;
+    $('ckProgress').hidden = false;
+    $('ckStop').hidden = false;
+
+    pollJob(job.id,
+      job => drawProgress(job.progress || {}, 'ckFill', 'ckStatus'),
+      job => {
+        $('ckStop').hidden = true;
+        if(job.error){ showError(job.error); return; }
+        const report = job.report || {};
+        // Отчёт: что и сколько исправлено.
+        const parts = (report.counts || []).map(r => `${r.kind_name}: ${r.count}`);
+        $('ckCleanResult').style.whiteSpace = 'pre-line';
+        $('ckCleanResult').textContent =
+          `Готово. Папка: ${report.output_dir}\n` +
+          `Файлов: ${report.written}, исправлено мест: ${report.total}\n` +
+          parts.join('\n');
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('ckClean').disabled = false;
   }
 }
 
 $('ckStart').onclick = ckStart;
-$('ckStop').onclick = () => stopJob(ckJob);
+$('ckStop').onclick = () => stopJob(ckCleanJob || ckJob);
 $('ckSave').onclick = () => { window.location = '/api/check/' + ckJob + '/report'; };
+$('ckSearch').addEventListener('input', ckRenderTable);
+$('ckCleanPreview').onclick = ckCleanPreview;
+$('ckClean').onclick = ckClean;

@@ -15,10 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .booksplit import Cancelled
+from .source import SourceError
+from .source import read_paragraphs as read_source_paragraphs
 
 log = logging.getLogger(__name__)
 
-READABLE = (".txt", ".md", ".docx")
+#: Форматы, которые принимает проверка. epub разбирается как архив.
+READABLE = (".txt", ".md", ".docx", ".epub")
 #: Сколько символов вокруг находки показывать в таблице.
 CONTEXT = 60
 WHITELIST_FILE = "whitelist.txt"
@@ -157,13 +160,18 @@ class CheckReport:
 
 
 def read_lines(path: Path) -> list[str]:
-    """Строки файла. Для .docx строкой считается абзац."""
-    if path.suffix.lower() == ".docx":
+    """Строки файла.
+
+    Для .docx строкой считается абзац, для .epub — абзац всех его глав.
+    Открывать epub как текст нельзя: это ZIP-архив, и в проверку летели
+    сырые байты вида `??v????A`.
+    """
+    suffix = path.suffix.lower()
+    if suffix in (".docx", ".epub"):
         try:
-            from docx import Document
-        except ImportError as exc:
-            raise CheckError("Для .docx нужен python-docx") from exc
-        return [p.text for p in Document(str(path)).paragraphs]
+            return read_source_paragraphs(path)
+        except SourceError as exc:
+            raise CheckError(str(exc)) from exc
     # Битая кодировка — как раз то, что ищем, поэтому errors='replace'.
     return path.read_text(encoding="utf-8", errors="replace").splitlines()
 
@@ -292,26 +300,48 @@ def check(
     cancel: threading.Event | None = None,
 ) -> CheckReport:
     """Проверяет папку или один файл."""
-    path = Path(target).expanduser()
     kinds = set(kinds or ALL_KINDS)
     unknown = kinds - set(ALL_KINDS)
     if unknown:
         raise CheckError(f"Неизвестная проверка: {', '.join(sorted(unknown))}")
 
-    if path.is_dir():
-        files = [
-            p for p in sorted(path.iterdir())
-            # Список исключений — служебный файл, а не глава книги.
-            if p.is_file() and p.suffix.lower() in READABLE and p.name.lower() != WHITELIST_FILE
-        ]
-        folder = path
-    elif path.is_file():
-        files, folder = [path], path.parent
-    else:
-        raise CheckError(f"Не найдено: {path}")
+    # Принимаем один путь или сразу несколько: файлы и папки вперемешку.
+    targets = [target] if isinstance(target, (str, Path)) else list(target)
+    if not targets:
+        raise CheckError("Выберите файлы или папку")
+
+    files: list[Path] = []
+    seen: set[str] = set()
+    folder = Path.cwd()
+
+    for item in targets:
+        path = Path(str(item)).expanduser()
+        if path.is_dir():
+            found = [
+                p for p in sorted(path.iterdir())
+                # Список исключений — служебный файл, а не глава книги.
+                if p.is_file() and p.suffix.lower() in READABLE
+                and p.name.lower() != WHITELIST_FILE
+            ]
+            folder = path
+        elif path.is_file():
+            # Расширение проверяем и здесь: раньше одиночный epub
+            # проваливался в текстовое чтение и давал тысячи мусорных находок.
+            if path.suffix.lower() not in READABLE:
+                raise CheckError(f"{path.name}: нужен .txt, .md, .docx или .epub")
+            found = [path]
+            folder = path.parent
+        else:
+            raise CheckError(f"Не найдено: {path}")
+
+        for candidate in found:
+            key = str(candidate.resolve())
+            if key not in seen:
+                seen.add(key)
+                files.append(candidate)
 
     if not files:
-        raise CheckError("Нет файлов .txt, .md или .docx")
+        raise CheckError("Нет файлов .txt, .md, .docx или .epub")
 
     whitelist = load_whitelist(folder) if "latin" in kinds else set()
     latin_counter: Counter = Counter()
