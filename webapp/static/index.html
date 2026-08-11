@@ -79,6 +79,21 @@
   button.ghost{border-color:var(--stroke-soft);font-weight:400}
   button.primary{background:rgba(176,108,255,.16);box-shadow:0 0 20px rgba(176,108,255,.22)}
 
+  .tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+  .tabs button{padding:9px 18px;font-size:13px;border-color:var(--stroke-soft)}
+  .tabs button.on{
+    border-color:var(--neon);background:rgba(176,108,255,.16);
+    box-shadow:0 0 20px rgba(176,108,255,.28);
+  }
+  section{display:flex;flex-direction:column;gap:18px}
+  section[hidden]{display:none}
+
+  .pick{flex:1;font-size:14px;border-color:var(--stroke-soft)}
+  .pick.on{border-color:var(--neon);background:rgba(176,108,255,.16)}
+
+  .dirs .file{color:#e8e2ff}
+  .dirs .file.on{background:rgba(176,108,255,.18);color:#fff}
+
   .row{display:flex;gap:10px}
   .row > input{flex:1}
   .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -148,7 +163,16 @@
 <body>
 <div class="wrap">
   <h1>MVLEMPYR</h1>
-  <p class="sub">качалка глав в .txt</p>
+  <p class="sub">качалка глав и работа с текстом</p>
+
+  <nav class="tabs">
+    <button class="on" data-tab="download">Качалка</button>
+    <button data-tab="split">Разбить книгу</button>
+  </nav>
+
+  <div class="card err" id="error" hidden></div>
+
+<section id="tab-download">
 
   <!-- 0. Прокси -->
   <div class="card" id="proxyCard">
@@ -171,8 +195,6 @@
     </div>
     <p class="hint">Можно вставить ссылку с сайта, слаг или числовой код книги.</p>
   </div>
-
-  <div class="card err" id="error" hidden></div>
 
   <!-- 2. Книга найдена -->
   <div class="card lit" id="book" hidden>
@@ -230,6 +252,79 @@
     </div>
     <p class="hint" id="summary"></p>
   </div>
+</section>
+
+<section id="tab-split" hidden>
+
+  <!-- 1. Файл книги -->
+  <div class="card lit">
+    <label>Файл книги — .epub или .txt</label>
+    <div class="crumb">
+      <button class="ghost" id="spHome" style="padding:5px 12px;font-size:12px">Домой</button>
+      <code id="spPath">…</code>
+    </div>
+    <div class="dirs" id="spBrowse"></div>
+    <p class="hint" id="spChosen">Файл не выбран</p>
+  </div>
+
+  <!-- 2. Свой шаблон заголовка, если не нашлись -->
+  <div class="card" id="spPatternCard" hidden>
+    <label for="spPattern">Регулярное выражение для заголовка главы</label>
+    <input id="spPattern" type="text" spellcheck="false" autocomplete="off">
+    <p class="hint">Наугад не режем. Посмотрите, как выглядит начало главы в файле,
+       и опишите его здесь. Пример: <code>^\s*Глава\s+\d+</code></p>
+  </div>
+
+  <!-- 3. Превью -->
+  <div class="card lit" id="spPreview" hidden>
+    <div class="book-name" id="spCount"></div>
+    <div class="meta" id="spTitles"></div>
+  </div>
+
+  <!-- 4. Куда сохранять -->
+  <div class="card" id="spPlace" hidden>
+    <label>Где создать папку</label>
+    <div class="crumb">
+      <button class="ghost" id="spOutHome" style="padding:5px 12px;font-size:12px">Домой</button>
+      <code id="spOutPath">…</code>
+    </div>
+    <div class="dirs" id="spOutBrowse"></div>
+
+    <div style="margin-top:16px">
+      <label for="spFolder">Имя папки</label>
+      <input id="spFolder" type="text" placeholder="Название книги" autocomplete="off">
+    </div>
+
+    <div style="margin-top:16px">
+      <label>Формат глав</label>
+      <div class="row">
+        <button class="pick on" data-fmt="txt">.txt</button>
+        <button class="pick" data-fmt="docx">.docx</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="spSave" class="primary" style="flex:1">Сохранить</button>
+    </div>
+    <p class="hint" id="spFinalPath"></p>
+  </div>
+
+  <!-- 5. Прогресс -->
+  <div class="card lit" id="spProgress" hidden>
+    <div class="status" id="spStatus"></div>
+    <div class="bar"><i id="spFill"></i></div>
+    <div class="stats">
+      <span>записано <b id="spWritten">0</b></span>
+      <span>ошибок <b id="spFailed">0</b></span>
+      <span id="spPct"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="spStop" class="ghost">Остановить</button>
+      <button id="spAgain" class="ghost" hidden>Другая книга</button>
+    </div>
+    <p class="hint" id="spSummary"></p>
+  </div>
+</section>
 </div>
 
 <script>
@@ -247,7 +342,13 @@ async function call(url, body){
   const opts = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({error:'Сервер вернул не JSON'}));
-  if(!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+  if(!res.ok){
+    const err = new Error(data.error || `Ошибка ${res.status}`);
+    // Подсказка «заголовки не нашлись, задайте свой шаблон» едет с ответом.
+    err.needPattern = !!data.need_pattern;
+    err.pattern = data.pattern;
+    throw err;
+  }
   return data;
 }
 
@@ -520,6 +621,210 @@ $('links').onclick = exportLinks;
 $('checkProxies').onclick = () => proxyAction('/api/proxies/check', $('checkProxies'), 'Проверяем…');
 $('reloadProxies').onclick = () => proxyAction('/api/proxies/reload', $('reloadProxies'), '…');
 loadProxyState();
+
+/* ================================ вкладки ================================ */
+
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
+    document.querySelectorAll('section').forEach(s => {
+      s.hidden = s.id !== 'tab-' + btn.dataset.tab;
+    });
+    showError('');
+  };
+});
+
+/* ========================== вкладка «Разбить книгу» ====================== */
+
+let bookPath = null, splitBase = null, splitFmt = 'txt', splitJob = null, splitPoll = null;
+
+/** Обзор папок: универсальный, для выбора файла книги и для места сохранения. */
+function makeBrowser({listId, pathId, files, onPick}){
+  async function go(path){
+    try{
+      const query = new URLSearchParams();
+      if(path) query.set('path', path);
+      if(files) query.set('files', files);
+      const data = await call('/api/browse?' + query);
+      $(pathId).textContent = data.path + (files || data.writable ? '' : '  (нет прав на запись)');
+      if(!files) splitBase = data.path;
+
+      const list = $(listId);
+      list.innerHTML = '';
+      if(data.parent){
+        const up = document.createElement('button');
+        up.className = 'up';
+        up.textContent = '↑  ..';
+        up.onclick = () => go(data.parent);
+        list.appendChild(up);
+      }
+      for(const dir of data.dirs){
+        const btn = document.createElement('button');
+        btn.textContent = '📁  ' + dir.name;
+        btn.onclick = () => go(dir.path);
+        list.appendChild(btn);
+      }
+      for(const file of (data.files || [])){
+        const btn = document.createElement('button');
+        btn.className = 'file';
+        btn.textContent = '📄  ' + file.name;
+        btn.onclick = () => {
+          list.querySelectorAll('.file').forEach(b => b.classList.remove('on'));
+          btn.classList.add('on');
+          onPick(file);
+        };
+        list.appendChild(btn);
+      }
+      if(onPick) onPick(null, data);
+    }catch(err){ showError(err.message); }
+  }
+  return go;
+}
+
+const browseBook = makeBrowser({
+  listId: 'spBrowse', pathId: 'spPath', files: 'epub,txt',
+  onPick: file => { if(file) pickBook(file); }
+});
+
+const browseSplitOut = makeBrowser({
+  listId: 'spOutBrowse', pathId: 'spOutPath',
+  onPick: () => updateSplitPath()
+});
+
+async function pickBook(file){
+  bookPath = file.path;
+  $('spChosen').textContent = 'Выбрано: ' + file.name;
+  $('spFolder').value = file.name.replace(/\.[^.]+$/, '');
+  await runPreview();
+}
+
+/** Превью до записи: сколько глав и первые названия. */
+async function runPreview(){
+  if(!bookPath) return;
+  showError('');
+  $('spChosen').innerHTML = '<span class="spin"></span>Разбираем книгу…';
+  try{
+    const {preview} = await call('/api/split/preview', {
+      path: bookPath,
+      pattern: $('spPattern').value.trim()
+    });
+    $('spChosen').textContent = 'Выбрано: ' + bookPath.split(/[/\\]/).pop();
+    $('spCount').textContent = `Найдено глав: ${preview.total}`;
+    $('spTitles').textContent = preview.titles.join('  ·  ')
+      + (preview.total > preview.titles.length ? '  …' : '');
+    $('spPreview').hidden = false;
+    $('spPlace').hidden = false;
+    $('spPatternCard').hidden = preview.kind !== 'txt';
+    if(preview.kind === 'txt' && !$('spPattern').value) $('spPattern').value = preview.pattern;
+    if(splitBase === null) browseSplitOut();
+    updateSplitPath();
+  }catch(err){
+    $('spChosen').textContent = 'Выбрано: ' + bookPath.split(/[/\\]/).pop();
+    $('spPreview').hidden = true;
+    $('spPlace').hidden = true;
+    if(err.needPattern){
+      $('spPatternCard').hidden = false;
+      if(!$('spPattern').value) $('spPattern').value = err.pattern || '';
+    }
+    showError(err.message);
+  }
+}
+
+function updateSplitPath(){
+  const name = $('spFolder').value.trim();
+  $('spFinalPath').textContent = splitBase && name
+    ? `Главы лягут в: ${splitBase}/${name}  (.${splitFmt})` : '';
+}
+
+async function saveSplit(){
+  showError('');
+  $('spSave').disabled = true;
+  try{
+    const {job} = await call('/api/split/start', {
+      path: bookPath,
+      base: splitBase,
+      folder: $('spFolder').value.trim(),
+      format: splitFmt,
+      pattern: $('spPattern').value.trim()
+    });
+    splitJob = job.id;
+    $('spPlace').hidden = true;
+    $('spProgress').hidden = false;
+    $('spAgain').hidden = true;
+    $('spStop').hidden = false;
+    $('spSummary').textContent = 'Папка: ' + job.output_dir;
+    splitPoll = setInterval(splitTick, 500);
+    splitTick();
+  }catch(err){
+    showError(err.message);
+    if(err.needPattern) $('spPatternCard').hidden = false;
+  }finally{
+    $('spSave').disabled = false;
+  }
+}
+
+async function splitTick(){
+  try{
+    const {job} = await call('/api/job/' + splitJob);
+    const p = job.progress || {};
+    const busy = !TERMINAL.includes(p.stage);
+
+    $('spStatus').innerHTML = (busy ? '<span class="spin"></span>' : '') + (p.message || '');
+    const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
+    $('spFill').style.width = pct + '%';
+    $('spPct').textContent = p.total ? pct + '%' : '';
+    $('spWritten').textContent = p.written || p.done || 0;
+    $('spFailed').textContent = p.failed || 0;
+
+    if(!busy){
+      clearInterval(splitPoll);
+      $('spStop').hidden = true;
+      $('spAgain').hidden = false;
+      if(p.stage === 'done') $('spStatus').classList.add('ok');
+      if(job.report){
+        let text = `Папка: ${job.report.output_dir}`;
+        if(job.report.failed_files?.length){
+          text += '\nНе записаны:\n' + job.report.failed_files.join('\n');
+        }
+        $('spSummary').style.whiteSpace = 'pre-line';
+        $('spSummary').textContent = text;
+      }
+      if(job.error) showError(job.error);
+    }
+  }catch(err){
+    clearInterval(splitPoll);
+    showError(err.message);
+  }
+}
+
+document.querySelectorAll('.pick').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.pick').forEach(b => b.classList.toggle('on', b === btn));
+    splitFmt = btn.dataset.fmt;
+    updateSplitPath();
+  };
+});
+
+$('spHome').onclick = () => browseBook();
+$('spOutHome').onclick = () => browseSplitOut();
+$('spFolder').addEventListener('input', updateSplitPath);
+$('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') runPreview(); });
+$('spSave').onclick = saveSplit;
+$('spStop').onclick = async () => {
+  $('spStop').disabled = true;
+  try{ await call('/api/job/' + splitJob + '/cancel', {}); }
+  catch(err){ showError(err.message); }
+  finally{ $('spStop').disabled = false; }
+};
+$('spAgain').onclick = () => {
+  clearInterval(splitPoll);
+  $('spProgress').hidden = true;
+  $('spPlace').hidden = false;
+  $('spStatus').classList.remove('ok');
+  $('spSummary').textContent = '';
+  showError('');
+};
+browseBook();
 $('stop').onclick = stop;
 $('again').onclick = reset;
 </script>

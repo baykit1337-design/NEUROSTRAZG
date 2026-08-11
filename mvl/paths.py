@@ -62,19 +62,35 @@ def prepare_output_dir(base: str | os.PathLike, folder_name: str) -> Path:
     return target
 
 
-def list_dirs(path: str | os.PathLike | None = None) -> dict:
-    """Содержимое директории (только папки) — для выбора места в интерфейсе."""
+def list_dirs(
+    path: str | os.PathLike | None = None,
+    suffixes: tuple[str, ...] | None = None,
+) -> dict:
+    """Содержимое директории для выбора в интерфейсе.
+
+    Папки — всегда. Файлы — только если задан список расширений (тогда это
+    выбор файла, а не места сохранения).
+    """
     current = expand(path) if path else Path.home()
     if not current.is_dir():
         current = Path.home()
 
-    entries = []
+    entries: list[dict] = []
+    files: list[dict] = []
     try:
         for item in sorted(current.iterdir(), key=lambda p: p.name.lower()):
-            if item.is_dir() and not item.name.startswith("."):
+            if item.name.startswith("."):
+                continue
+            if item.is_dir():
                 entries.append({"name": item.name, "path": str(item)})
+            elif suffixes and item.suffix.lower() in suffixes:
+                try:
+                    size = item.stat().st_size
+                except OSError:
+                    size = 0
+                files.append({"name": item.name, "path": str(item), "size": size})
     except PermissionError:
-        entries = []
+        entries, files = [], []
 
     parent = str(current.parent) if current.parent != current else None
     return {
@@ -82,6 +98,7 @@ def list_dirs(path: str | os.PathLike | None = None) -> dict:
         "parent": parent,
         "home": str(Path.home()),
         "dirs": entries,
+        "files": files,
         "writable": os.access(current, os.W_OK),
     }
 

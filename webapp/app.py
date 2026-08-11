@@ -18,11 +18,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api  # noqa: E402
+from mvl import api, booksplit  # noqa: E402
+from mvl.booksplit import Cancelled as SplitCancelled  # noqa: E402
+from mvl.booksplit import HeadingsNotFound, SplitError  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
 from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
+from mvl.word import DocxUnavailable, Style  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +35,12 @@ app = Flask(__name__, static_folder=str(STATIC_DIR))
 
 @dataclass
 class Job:
+    """Фоновая задача: скачивание книги или разбивка на главы."""
+
     id: str
-    novel: dict
-    output_dir: str
+    kind: str = "download"  # download | split
+    meta: dict = field(default_factory=dict)
+    output_dir: str = ""
     progress: dict = field(default_factory=dict)
     report: dict | None = None
     error: str | None = None
@@ -44,13 +50,39 @@ class Job:
     def snapshot(self) -> dict:
         return {
             "id": self.id,
-            "novel": self.novel,
+            "kind": self.kind,
+            "meta": self.meta,
             "output_dir": self.output_dir,
             "progress": self.progress,
             "report": self.report,
             "error": self.error,
             "cancelled": self.cancel.is_set(),
         }
+
+
+def start_job(job: Job, work) -> Job:
+    """Запускает работу в фоне, ошибки складывает в саму задачу."""
+
+    def runner():
+        try:
+            work(job)
+        except SplitCancelled:
+            job.progress["stage"] = "cancelled"
+            job.progress["message"] = "Остановлено."
+        except Cancelled:
+            job.progress["stage"] = "cancelled"
+            job.progress["message"] = "Остановлено. Прогресс сохранён."
+        except Exception as exc:  # noqa: BLE001 — показываем пользователю любую поломку
+            log.exception("Задача %s упала", job.id)
+            job.error = scrub(f"{type(exc).__name__}: {exc}")
+            job.progress["stage"] = "error"
+            job.progress["message"] = job.error
+
+    job.thread = threading.Thread(target=runner, daemon=True)
+    with JOBS_LOCK:
+        JOBS[job.id] = job
+    job.thread.start()
+    return job
 
 
 JOBS: dict[str, Job] = {}
@@ -196,9 +228,14 @@ def api_links():
 
 @app.get("/api/browse")
 def api_browse():
-    """Обзор папок на этой машине — чтобы выбрать, где создать папку книги."""
+    """Обзор папок на этой машине — чтобы выбрать место или файл книги.
+
+    Параметр `files=epub,txt` включает показ файлов с этими расширениями.
+    """
+    raw = (request.args.get("files") or "").strip()
+    suffixes = tuple(f".{s.strip().lstrip('.').lower()}" for s in raw.split(",") if s.strip())
     try:
-        return jsonify(list_dirs(request.args.get("path")))
+        return jsonify(list_dirs(request.args.get("path"), suffixes or None))
     except OSError as exc:
         return jsonify(error=str(exc)), 400
 
@@ -237,13 +274,18 @@ def api_start():
             "этот путь заблокирован. Обновите список и проверьте снова."
         ), 400
 
-    job = Job(id=uuid.uuid4().hex[:12], novel=novel.to_dict(), output_dir=str(output_dir))
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="download",
+        meta={"novel": novel.to_dict()},
+        output_dir=str(output_dir),
+    )
     job.progress = {"stage": "queued", "message": "Запускаем…", "done": 0, "total": last - first + 1,
                     "downloaded": 0, "skipped": 0, "failed": 0,
                     "proxy": pool.current().label if pool and pool.usable_count else "",
                     "switches": 0}
 
-    def worker():
+    def work(job: Job):
         client = Client()
         downloader = Downloader(
             client=client,
@@ -252,25 +294,104 @@ def api_start():
             cancel_event=job.cancel,
         )
         try:
-            report = downloader.run(novel, output_dir, first=first, last=last)
-            job.report = report.as_dict()
-        except Cancelled:
-            job.progress["stage"] = "cancelled"
-            job.progress["message"] = "Остановлено. Прогресс сохранён."
-        except Exception as exc:  # noqa: BLE001 — показываем пользователю любую поломку
-            log.exception("Задача %s упала", job.id)
-            job.error = f"{type(exc).__name__}: {exc}"
-            job.progress["stage"] = "error"
-            job.progress["message"] = job.error
+            job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
         finally:
             client.close()
 
-    job.thread = threading.Thread(target=worker, daemon=True)
-    with JOBS_LOCK:
-        JOBS[job.id] = job
-    job.thread.start()
+    return jsonify(job=start_job(job, work).snapshot())
 
-    return jsonify(job=job.snapshot())
+
+# ------------------------------------------------------- вкладка «Разбить книгу»
+
+
+@app.post("/api/split/preview")
+def api_split_preview():
+    """Сколько глав нашлось и первые названия — до записи на диск."""
+    payload = request.json or {}
+    path = (payload.get("path") or "").strip()
+    pattern = (payload.get("pattern") or "").strip() or None
+
+    if not path:
+        return jsonify(error="Выберите файл книги (.epub или .txt)"), 400
+
+    try:
+        return jsonify(preview=booksplit.preview(path, pattern).as_dict())
+    except HeadingsNotFound as exc:
+        # Наугад не режем — просим своё регулярное выражение.
+        return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except SplitError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/split/start")
+def api_split_start():
+    payload = request.json or {}
+    path = (payload.get("path") or "").strip()
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+    fmt = (payload.get("format") or booksplit.FORMAT_TXT).strip().lower()
+    pattern = (payload.get("pattern") or "").strip() or None
+
+    if not path:
+        return jsonify(error="Выберите файл книги"), 400
+    if not base:
+        return jsonify(error="Выберите папку, где создать каталог"), 400
+    if not folder:
+        return jsonify(error="Введите имя папки"), 400
+    if fmt not in (booksplit.FORMAT_TXT, booksplit.FORMAT_DOCX):
+        return jsonify(error=f"Неизвестный формат: {fmt}"), 400
+
+    # Разбираем до создания папки, чтобы не плодить пустые каталоги.
+    try:
+        chapters = booksplit.read_chapters(path, pattern)
+    except HeadingsNotFound as exc:
+        return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except SplitError as exc:
+        return jsonify(error=str(exc)), 400
+
+    try:
+        output_dir = prepare_output_dir(base, folder)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    style = Style.from_dict(payload.get("style"))
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="split",
+        meta={"source": path, "format": fmt, "total": len(chapters)},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "split", "message": f"Пишем {len(chapters)} глав…",
+                    "done": 0, "total": len(chapters), "written": 0, "failed": 0}
+
+    def work(job: Job):
+        def on_progress(done: int, total: int):
+            job.progress.update(done=done, total=total, message=f"Глава {done} из {total}")
+
+        try:
+            report = booksplit.write_chapters(
+                chapters,
+                Path(job.output_dir),
+                fmt=fmt,
+                style=style,
+                on_progress=on_progress,
+                cancel=job.cancel,
+            )
+        except DocxUnavailable as exc:
+            raise SplitError(str(exc)) from exc
+
+        job.report = report.as_dict()
+        job.progress.update(
+            stage="done",
+            written=report.written,
+            failed=report.failed,
+            message=(
+                f"Готово. Записано {report.written} из {report.total}"
+                + (f", ошибок {report.failed}" if report.failed else "")
+            ),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 @app.get("/api/job/<job_id>")
