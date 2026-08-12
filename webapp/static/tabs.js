@@ -68,6 +68,23 @@ document.querySelectorAll('.hint-icon').forEach(icon => {
   });
 });
 
+// Раздел 12: подсказка вешается прямо на элемент, значок вопроса не нужен.
+document.querySelectorAll('.tipped').forEach(node => {
+  const tip = document.createElement('span');
+  tip.className = 'tooltip';
+  tip.textContent = node.dataset.tip || '';
+  node.append(tip);
+
+  let timer = null;
+  node.addEventListener('mouseenter', () => {
+    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
+  });
+  node.addEventListener('mouseleave', () => {
+    clearTimeout(timer);
+    tip.classList.remove('visible');
+  });
+});
+
 /** Ставит подсказку на произвольный элемент (для галочек, что строит JS). */
 function attachTip(element, text){
   if(!text) return;
@@ -203,6 +220,19 @@ function drawProgress(p, fillId, statusId, pctId){
   return busy;
 }
 
+/** Общий блок результата: кружок, пульсирующий текст, полоса (раздел 2). */
+function drawResult(p, fillId, statusId, pctId){
+  const busy = drawProgress(p, fillId, null, pctId);
+  const box = $(statusId);
+  if(box){
+    box.textContent = p.message || '';
+    box.classList.toggle('result-done', !busy && p.stage === 'done');
+    const dot = box.parentElement && box.parentElement.querySelector('.result-dot');
+    if(dot) dot.classList.toggle('idle', !busy && p.stage !== 'done');
+  }
+  return busy;
+}
+
 /** Опрашивает задачу до конца. onDone получает готовый job. */
 function pollJob(jobId, draw, onDone){
   const timer = setInterval(async () => {
@@ -227,6 +257,8 @@ function stopJob(jobId){
 /* ========================== Переименовать ========================== */
 
 let rnChapters = [], rnRows = [], rnFmtOut = 'txt', rnJob = null, rnTimer = null;
+//: Ввод пути руками не должен дёргать сервер на каждой букве.
+let rnScanTimer = null;
 const rnSplits = {};      // путь к файлу -> на сколько частей
 const rnChosen = new Set();  // отмеченные главы
 
@@ -236,7 +268,7 @@ function rnFormat(){
     part: $('rnPart').checked,
     title: $('rnTitle').checked,
     prefix: $('rnPrefix').value,
-    separator: $('rnSep').value,
+    separator: rnSepMenu ? rnSepMenu.value : ': ',
   };
 }
 
@@ -295,8 +327,6 @@ function rnUpdateExample(){
 
 async function rnScan(){
   showError('');
-  const button = $('rnScan');
-  button.disabled = true;
   try{
     const data = await call('/api/rename/scan', {
       folder_in: $('rnIn').value.trim(),
@@ -320,8 +350,6 @@ async function rnScan(){
   }catch(err){
     showError(err.message);
     $('rnPatternCard').hidden = false;
-  }finally{
-    button.disabled = false;
   }
 }
 
@@ -457,7 +485,7 @@ async function rnApply(){
         const p = job.progress || {};
         $('rnWritten').textContent = p.written || p.done || 0;
         $('rnFailed').textContent = p.failed || 0;
-        return drawProgress(p, 'rnFill', 'rnStatus', 'rnPct');
+        return drawResult(p, 'rnFill', 'rnStatus', 'rnPct');
       },
       job => {
         $('rnStop').hidden = true;
@@ -478,7 +506,11 @@ async function rnApply(){
   }
 }
 
-$('rnScan').onclick = rnScan;
+// Папка читается сразу после выбора — отдельной кнопки нет.
+$('rnIn').addEventListener('input', () => {
+  clearTimeout(rnScanTimer);
+  rnScanTimer = setTimeout(() => { if($('rnIn').value.trim()) rnScan(); }, 400);
+});
 $('rnAll').onclick = () => {
   rnChapters.filter(c => !c.service).forEach(c => rnChosen.add(c.path));
   rnRenderList();
@@ -496,7 +528,7 @@ $('rnRenumber').onchange = () => {
 ['rnPrefix','rnStart'].forEach(id => {
   $(id).addEventListener('input', () => { rnUpdateExample(); rnBuildPreview(); });
 });
-$('rnSep').onchange = () => { rnUpdateExample(); rnBuildPreview(); };
+const rnSepMenu = makeDropdown($('rnSep'), () => { rnUpdateExample(); rnBuildPreview(); });
 $('rnPattern').addEventListener('keydown', e => { if(e.key === 'Enter') rnScan(); });
 document.querySelectorAll('.pick2').forEach(btn => {
   btn.onclick = () => {
@@ -504,9 +536,10 @@ document.querySelectorAll('.pick2').forEach(btn => {
     rnFmtOut = btn.dataset.fmt;
   };
 });
+const rnPartsMenu = makeDropdown($('rnParts'));
 $('rnPartsOk').onclick = () => {
   $('rnDialog').hidden = true;
-  rnApplySplit(parseInt($('rnParts').value, 10));
+  rnApplySplit(parseInt(rnPartsMenu.value, 10));
 };
 $('rnPartsCancel').onclick = () => { $('rnDialog').hidden = true; };
 $('rnApply').onclick = rnApply;
@@ -514,7 +547,14 @@ $('rnStop').onclick = () => stopJob(rnJob);
 
 /* ============================== В Word ============================== */
 
-let wdMode = 'single', wdJob = null, wdAlign = null, wdScene = null;
+let wdMode = 'single', wdJob = null, wdAlign = null, wdScene = null, wdFontMenu = null;
+
+/** Шрифт: из списка либо из поля «Другой…». */
+function wdFontValue(){
+  const chosen = wdFontMenu ? wdFontMenu.value : 'Times New Roman';
+  if(chosen === '__other__') return $('wdFontOther').value.trim() || 'Times New Roman';
+  return chosen;
+}
 
 //: Пояснение под каждым режимом — что получится на выходе.
 const WD_MODE_NOTES = {
@@ -524,7 +564,7 @@ const WD_MODE_NOTES = {
 
 function wdStyle(){
   return {
-    font: $('wdFont').value.trim() || 'Times New Roman',
+    font: wdFontValue(),
     size: $('wdSize').value,
     line_spacing: $('wdSpacing').value,
     first_line_indent_cm: $('wdIndent').value,
@@ -602,7 +642,7 @@ async function wdStart(){
         const p = job.progress || {};
         $('wdWritten').textContent = p.written || p.done || 0;
         $('wdFailed').textContent = p.failed || 0;
-        return drawProgress(p, 'wdFill', 'wdStatus', 'wdPct');
+        return drawResult(p, 'wdFill', 'wdStatus', 'wdPct');
       },
       job => {
         $('wdStop').hidden = true;
@@ -650,74 +690,104 @@ $('wdList').dataset.onchange = 'wdScan';
 $('wdStart').onclick = wdStart;
 $('wdStop').onclick = () => stopJob(wdJob);
 ['wdBase','wdName'].forEach(id => $(id).addEventListener('input', wdUpdateFinal));
+wdFontMenu = makeDropdown($('wdFont'), value => {
+  // «Другой…» открывает поле для ручного ввода.
+  $('wdFontOther').hidden = value !== '__other__';
+});
 wdAlign = makeDropdown($('wdAlign'));
 wdScene = makeDropdown($('wdScene'));
 wdUpdateFinal();
 
 /* ========================== Проверка текста ========================== */
 
-//: Тип проверки → подпись и всплывающая подсказка.
-const CHECK_KINDS = [
-  ['cjk', 'Иероглифы и азиатские алфавиты',
-   'Куски текста, оставшиеся непереведёнными: китайские, корейские, японские символы.'],
-  ['markdown', 'Остатки markdown',
-   'Служебные символы разметки (**, ##, ---), которые модель оставила в тексте.'],
-  ['latin', 'Латиница в русском тексте',
-   'Английские слова, которые могли остаться без перевода. Часто это имена — смотреть глазами.'],
-  ['model', 'Следы модели-переводчика',
-   'Фразы вроде «Вот перевод» или «Translator\u2019s note», случайно попавшие в текст.'],
-  ['broken', 'Битая кодировка и HTML',
-   'Испорченные символы и неубранные теги вроде &nbsp; или <br>.'],
-  ['loop', 'Зацикливание модели',
-   'Один и тот же абзац повторён три раза подряд и больше. Так бывает, когда модель «залипает».'],
-  ['size', 'Подозрительный объём',
-   'Глава заметно короче или длиннее остальных. Возможно, перевод оборвался.'],
-  ['pairs', 'Непарные кавычки и скобки',
-   'Открывающая есть, закрывающей нет.'],
-];
-
-//: Что умеет чистить кнопка «Очистить».
-const CLEAN_KINDS = [
-  ['markdown', 'Остатки markdown'],
-  ['html', 'HTML-теги и entity'],
-  ['nbsp', 'Неразрывные пробелы'],
-  ['broken', 'Битые символы'],
-  ['model', 'Следы модели-переводчика'],
-  ['dupes', 'Повторяющиеся абзацы'],
-  ['blanks', 'Лишние пустые строки'],
-  ['fullwidth', 'Полноширинные знаки → обычные'],
-];
-
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;
 //: Замеренная высота строки таблицы и защита от зацикливания перерисовки.
 let ckRowHeight = 0, drawPasses = 0;
 
-(function ckBuildChecks(){
+/** Строит галочки проверок по группам и кнопки пресетов. */
+async function ckBuildChecks(){
+  let data;
+  try{
+    data = await call('/api/check/rules');
+  }catch(err){
+    showError(err.message);
+    return;
+  }
+
   const box = $('ckKinds');
-  for(const [key, label, tip] of CHECK_KINDS){
-    const wrap = document.createElement('label');
-    wrap.className = 'chk';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.value = key;
-    input.checked = true;
-    wrap.append(input, document.createTextNode(' ' + label));
-    attachTip(wrap, tip);
+  box.innerHTML = '';
+  for(const group of data.groups){
+    const wrap = document.createElement('div');
+    wrap.className = 'check-group';
+
+    const head = document.createElement('div');
+    head.className = 'check-group-head';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = group.title;
+
+    const all = document.createElement('button');
+    all.className = 'ghost';
+    all.textContent = 'Отметить все';
+    const none = document.createElement('button');
+    none.className = 'ghost';
+    none.textContent = 'Снять все';
+
+    head.append(name, all, none);
+    wrap.append(head);
+
+    const checks = document.createElement('div');
+    checks.className = 'checks';
+    for(const rule of group.rules){
+      const label = document.createElement('label');
+      label.className = 'chk';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = rule.key;
+      input.checked = true;
+      label.append(input, document.createTextNode(' ' + rule.name));
+      // Подсказка при наведении: что ищется и почему это важно.
+      attachTip(label, rule.tip);
+      checks.append(label);
+    }
+    all.onclick = () => checks.querySelectorAll('input').forEach(i => { i.checked = true; });
+    none.onclick = () => checks.querySelectorAll('input').forEach(i => { i.checked = false; });
+
+    wrap.append(checks);
     box.append(wrap);
   }
 
+  const presets = $('ckPresets');
+  presets.innerHTML = '';
+  for(const preset of data.presets){
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.textContent = preset.name;
+    chip.onclick = () => {
+      const wanted = new Set(preset.kinds);
+      box.querySelectorAll('input').forEach(i => { i.checked = wanted.has(i.value); });
+      presets.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+      chip.classList.add('on');
+    };
+    presets.append(chip);
+  }
+
+  // Пункты очистки — оттуда же, чтобы список не расходился с сервером.
   const clean = $('ckCleanKinds');
-  for(const [key, label] of CLEAN_KINDS){
-    const wrap = document.createElement('label');
-    wrap.className = 'chk';
+  clean.innerHTML = '';
+  for(const kind of data.clean_kinds){
+    const label = document.createElement('label');
+    label.className = 'chk';
     const input = document.createElement('input');
     input.type = 'checkbox';
-    input.value = key;
+    input.value = kind.key;
     input.checked = true;
-    wrap.append(input, document.createTextNode(' ' + label));
-    clean.append(wrap);
+    label.append(input, document.createTextNode(' ' + kind.name));
+    clean.append(label);
   }
-})();
+}
+
+ckBuildChecks();
 
 function ckSelected(){
   return [...$('ckKinds').querySelectorAll('input:checked')].map(i => i.value);
@@ -745,7 +815,7 @@ async function ckStart(){
     $('ckSave').hidden = true;
 
     pollJob(job.id,
-      job => drawProgress(job.progress || {}, 'ckFill', 'ckStatus'),
+      job => drawResult(job.progress || {}, 'ckFill', 'ckStatus'),
       job => {
         $('ckStop').hidden = true;
         if(job.error){ showError(job.error); return; }
@@ -1050,20 +1120,17 @@ async function ckClean(){
       folder: $('ckOut').value.trim(),
     });
     ckCleanJob = job.id;
-    $('ckProgress').hidden = false;
-    $('ckStop').hidden = false;
+    $('ckCleanResultBox').hidden = false;
 
     pollJob(job.id,
-      job => drawProgress(job.progress || {}, 'ckFill', 'ckStatus'),
+      job => drawResult(job.progress || {}, 'ckCleanFill', 'ckCleanStatus'),
       job => {
-        $('ckStop').hidden = true;
         if(job.error){ showError(job.error); return; }
         const report = job.report || {};
         // Отчёт: что и сколько исправлено.
         const parts = (report.counts || []).map(r => `${r.kind_name}: ${r.count}`);
-        $('ckCleanResult').style.whiteSpace = 'pre-line';
         $('ckCleanResult').textContent =
-          `Готово. Папка: ${report.output_dir}\n` +
+          `Папка: ${report.output_dir}\n` +
           `Файлов: ${report.written}, исправлено мест: ${report.total}\n` +
           parts.join('\n');
       });
@@ -1080,3 +1147,6 @@ $('ckSave').onclick = () => { window.location = '/api/check/' + ckJob + '/report
 $('ckSearch').addEventListener('input', ckRenderTable);
 $('ckCleanPreview').onclick = ckCleanPreview;
 $('ckClean').onclick = ckClean;
+
+// Раздел 3: свои стрелки у всех числовых полей приложения.
+addSpinners();

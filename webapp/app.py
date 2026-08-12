@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api, booksplit, cleanup, nativedialog, rename, textcheck, toword  # noqa: E402
+from mvl import api, booksplit, checks, cleanup, nativedialog, rename, textcheck, toword  # noqa: E402
 from mvl.cleanup import CleanError  # noqa: E402
 from mvl.source import SourceError  # noqa: E402
 from mvl.textprep import PrepOptions  # noqa: E402
@@ -675,6 +675,21 @@ def api_word_start():
 
 
 # -------------------------------------------------- вкладка «Проверка текста»
+
+
+@app.get("/api/check/rules")
+def api_check_rules():
+    """Правила по группам и пресеты — интерфейс строит галочки по этому."""
+    return jsonify(
+        groups=checks.grouped(),
+        presets=[
+            {"key": key, "name": name, "kinds": list(checks.PRESET_KEYS[key])}
+            for key, name in checks.PRESETS.items()
+        ],
+        clean_kinds=[
+            {"key": key, "name": name} for key, name in cleanup.KINDS.items()
+        ],
+    )
 
 
 @app.post("/api/check/start")

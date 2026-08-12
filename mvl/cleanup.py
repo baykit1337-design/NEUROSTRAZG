@@ -63,6 +63,22 @@ FULLWIDTH_MAP = {
     "「": "«", "」": "»",  # 「 」
 }
 
+# Раздел 14: безопасные типографские автозамены.
+TYPO_RULES = (
+    # Три точки → многоточие.
+    (re.compile(r"\.\.\."), "…"),
+)
+SPACE_RULES = (
+    # Двойные пробелы схлопываем в один.
+    (re.compile(r"  +"), " "),
+    # Пробел перед знаком препинания убираем.
+    (re.compile(r"\s+([.,!?;:])"), r"\1"),
+)
+#: Дефис в начале реплики → длинное тире.
+DIALOG_DASH = re.compile(r"^(\s*)[-–](\s+\S)")
+#: Множественные знаки: !!! → !, ??? → ?
+MULTI_PUNCT = re.compile(r"([!?])\1+")
+
 #: Ключ → подпись в интерфейсе.
 KINDS = {
     "markdown": "Остатки markdown",
@@ -73,6 +89,11 @@ KINDS = {
     "dupes": "Повторяющиеся абзацы",
     "blanks": "Лишние пустые строки",
     "fullwidth": "Полноширинные знаки → обычные",
+    "ellipsis": "Три точки → многоточие",
+    "spaces": "Двойные пробелы и пробел перед знаком",
+    "dialog_dash": "Дефис в начале реплики → тире",
+    "edge_space": "Пробелы по краям абзаца",
+    "multi_punct": "Множественные знаки: !!! → !",
 }
 ALL_KINDS = tuple(KINDS)
 
@@ -145,6 +166,34 @@ def clean_lines(lines: list[str], kinds: set[str]) -> tuple[list[str], dict]:
                     line = line.replace(wide, plain)
             replaced.append(line)
         result, counts["fullwidth"] = replaced, total
+
+    if "ellipsis" in kinds:
+        result, counts["ellipsis"] = _apply(result, TYPO_RULES)
+
+    if "spaces" in kinds:
+        result, counts["spaces"] = _apply(result, SPACE_RULES)
+
+    if "dialog_dash" in kinds:
+        total = 0
+        replaced = []
+        for line in result:
+            line, count = DIALOG_DASH.subn(r"\1—\2", line)
+            total += count
+            replaced.append(line)
+        result, counts["dialog_dash"] = replaced, total
+
+    if "multi_punct" in kinds:
+        result, counts["multi_punct"] = _apply(result, ((MULTI_PUNCT, r"\1"),))
+
+    if "edge_space" in kinds:
+        total = 0
+        replaced = []
+        for line in result:
+            stripped = line.strip()
+            if stripped != line and stripped:
+                total += 1
+            replaced.append(stripped if stripped else line)
+        result, counts["edge_space"] = replaced, total
 
     if "model" in kinds:
         kept = []

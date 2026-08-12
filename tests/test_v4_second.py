@@ -235,9 +235,9 @@ class TestBranding(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_program_name(self):
-        self.assertIn("<title>НЕЙРОСТРАЖ 2.0</title>", self.html)
-        self.assertIn("<h1>НЕЙРОСТРАЖ 2.0</h1>", self.html)
-        self.assertNotIn("<h1>MVLEMPYR</h1>", self.html)
+        """Название теперь латиницей — подробности в tests/test_checks.py."""
+        self.assertIn("NEUROSTRAZH 2.0", self.html)
+        self.assertNotIn("MVLEMPYR</h1>", self.html)
 
     def test_scrollbar_is_flat_interface_colour(self):
         self.assertIn("scrollbar-color:#8c54ff #15151d", self.html)

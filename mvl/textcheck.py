@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import checks
 from .booksplit import Cancelled
 from .source import SourceError
 from .source import read_paragraphs as read_source_paragraphs
@@ -94,17 +95,8 @@ PAIRS = (("«", "»"), ("„", "“"), ("(", ")"), ("[", "]"), ("{", "}"), ("【
 #: подозрительным. Игровые сообщения новеллы законно тянутся на несколько.
 MAX_BRACKET_SPAN = 10
 
-#: Ключ проверки → как называется в отчёте.
-KINDS = {
-    "cjk": "Иероглифы и азиатские алфавиты",
-    "markdown": "Остатки markdown",
-    "latin": "Латиница в русском тексте",
-    "model": "Следы модели-переводчика",
-    "broken": "Битая кодировка и HTML",
-    "loop": "Зацикливание модели",
-    "size": "Подозрительный объём",
-    "pairs": "Непарные кавычки и скобки",
-}
+#: Ключ проверки → как называется в отчёте. Реестр правил живёт в checks.py.
+KINDS = {rule.key: rule.name for rule in checks.RULES}
 ALL_KINDS = tuple(KINDS)
 
 #: Файл короче этого — подозрительный (пункт 7).
@@ -154,6 +146,9 @@ class CheckReport:
     files_checked: int = 0
     files_with_findings: int = 0
     unreadable: list = field(default_factory=list)
+    #: Группы вариантов одного имени и статистика по видам кавычек.
+    name_groups: list = field(default_factory=list)
+    quote_kinds: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -166,6 +161,8 @@ class CheckReport:
             "files_checked": self.files_checked,
             "files_with_findings": self.files_with_findings,
             "unreadable": self.unreadable,
+            "name_groups": self.name_groups,
+            "quote_kinds": self.quote_kinds,
             "total": len(self.findings),
         }
 
@@ -211,12 +208,21 @@ def check_file(
     whitelist: set[str] | None = None,
     latin_counter: Counter | None = None,
     max_span: int = MAX_BRACKET_SPAN,
+    glossary: dict | None = None,
+    name_counter: Counter | None = None,
+    quote_counter: Counter | None = None,
 ) -> list[Finding]:
     """Проверки, которым хватает одного файла. Объём считается отдельно."""
     whitelist = whitelist or set()
+    glossary = glossary or {}
+    name_counter = name_counter if name_counter is not None else Counter()
+    quote_counter = quote_counter if quote_counter is not None else Counter()
     lines = read_lines(path)
     name = path.name
     found: list[Finding] = []
+    #: Кандидаты на «заглавную посреди предложения» и имена этой главы.
+    mid_candidates: list[tuple] = []
+    local_names: Counter = Counter()
 
     full_path = str(path)
 
@@ -263,6 +269,101 @@ def check_file(
                     latin_counter[word] += 1
                 add(number, "latin", line, match.start(), match.end())
 
+        # ---- группа «Перевод» ----
+        if "homoglyph" in kinds:
+            for match, _ in checks.mixed_script_words(line):
+                add(number, "homoglyph", line, match.start(), match.end())
+
+        if "untranslated" in kinds:
+            for match, _ in checks.untranslated_sentences(line):
+                add(number, "untranslated", line, match.start(), match.end())
+
+        if "imperial" in kinds:
+            for match in checks.IMPERIAL.finditer(line):
+                add(number, "imperial", line, match.start(), match.end())
+
+        if "glossary" in kinds and glossary:
+            for start, end, source, target in checks.glossary_misses(line, glossary):
+                found.append(Finding(
+                    name, number, "glossary",
+                    f"«{source}» → по глоссарию «{target}»",
+                    context=line.strip(), path=full_path,
+                ))
+
+        if "names" in kinds:
+            checks.collect_proper_names(line, name_counter)
+
+        # ---- группа «Пунктуация и типографика» ----
+        if "dialog_dash" in kinds and checks.DIALOG_DASH.match(line):
+            add(number, "dialog_dash", line, 0, min(len(line), 3))
+
+        if "three_dots" in kinds:
+            match = checks.THREE_DOTS.search(line)
+            if match:
+                add(number, "three_dots", line, match.start(), match.end())
+
+        if "spaces" in kinds:
+            for pattern in (checks.DOUBLE_SPACE, checks.SPACE_BEFORE_PUNCT):
+                match = pattern.search(line)
+                if match:
+                    add(number, "spaces", line, match.start(), match.end())
+                    break
+
+        if "no_space" in kinds:
+            match = checks.NO_SPACE_AFTER.search(line)
+            if match:
+                add(number, "no_space", line, match.start(), min(len(line), match.end() + 1))
+
+        if "multi_punct" in kinds:
+            match = checks.MULTI_PUNCT.search(line)
+            if match:
+                add(number, "multi_punct", line, match.start(), match.end())
+
+        if "edge_space" in kinds and line and checks.EDGE_SPACE.search(line):
+            add(number, "edge_space", line, 0, min(len(line), 24))
+
+        if "hyphen_dash" in kinds:
+            match = checks.HYPHEN_AS_DASH.search(line)
+            if match:
+                add(number, "hyphen_dash", line, match.start(), match.end())
+
+        if "quotes" in kinds:
+            for label, marks in checks.QUOTE_KINDS.items():
+                for mark in marks:
+                    if mark in line:
+                        quote_counter[label] += line.count(mark)
+
+        # ---- группа «Структура» ----
+        if "repeated_word" in kinds:
+            match = checks.REPEATED_WORD.search(line)
+            if match:
+                add(number, "repeated_word", line, match.start(), match.end())
+
+        if "no_end" in kinds and line.strip() and not line.rstrip().endswith(checks.SENTENCE_END):
+            add(number, "no_end", line, max(0, len(line) - 30), len(line))
+
+        if "long_paragraph" in kinds and len(line) > checks.LONG_PARAGRAPH:
+            found.append(Finding(
+                name, number, "long_paragraph",
+                f"{len(line)} символов в одном абзаце",
+                context=line.strip(), path=full_path,
+            ))
+
+        if "caps_line" in kinds and checks.is_all_caps(line):
+            add(number, "caps_line", line, 0, min(len(line), 40))
+
+        if "mid_capital" in kinds:
+            for match, word in checks.find_capital_mid_sentence(line):
+                # Решение отложено: слово может оказаться именем собственным,
+                # а это станет видно только по всей главе.
+                mid_candidates.append((number, line, match.start(), match.end(), word))
+                local_names[word] += 1
+
+        # ---- группа «Технический мусор» ----
+        if "fullwidth" in kinds:
+            match = checks.FULLWIDTH.search(line)
+            if match:
+                add(number, "fullwidth", line, match.start(), match.end())
 
 
     if "loop" in kinds:
@@ -270,6 +371,24 @@ def check_file(
 
     if "pairs" in kinds:
         found.extend(_unbalanced(name, lines, max_span))
+
+    if "mid_capital" in kinds:
+        # Имя, встреченное в главе не раз, — это имя собственное, а не ошибка.
+        # Без этого отсева проверка давала тысячи находок на каждом «сказал Тео».
+        for number, line, start, end, word in mid_candidates:
+            if local_names[word] >= checks.KNOWN_NAME_COUNT:
+                continue
+            add(number, "mid_capital", line, start, end)
+
+    if "empty_chapter" in kinds:
+        filled = [line for line in lines if line.strip()]
+        if not filled:
+            found.append(Finding(name, 1, "empty_chapter", "глава пустая"))
+        elif len(filled) == 1:
+            found.append(Finding(
+                name, 1, "empty_chapter",
+                f"глава из одного абзаца: {filled[0].strip()[:CONTEXT]}",
+            ))
 
     # Путь и контекст проставляем всем разом: часть проверок работает не
     # по строке, а по файлу целиком.
@@ -413,7 +532,11 @@ def check(
         raise CheckError("Нет файлов .txt, .md, .docx или .epub")
 
     whitelist = load_whitelist(folder) if "latin" in kinds else set()
+    glossary = checks.load_glossary(folder) if "glossary" in kinds else {}
     latin_counter: Counter = Counter()
+    # Разнобой имён и кавычек виден только по книге целиком.
+    name_counter: Counter = Counter()
+    quote_counter: Counter = Counter()
     report = CheckReport(files_checked=len(files))
     sizes: dict[Path, int] = {}
     per_file: dict[str, list[Finding]] = {}
@@ -422,7 +545,10 @@ def check(
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         try:
-            found = check_file(file_path, kinds, whitelist, latin_counter, max_span)
+            found = check_file(
+                file_path, kinds, whitelist, latin_counter, max_span,
+                glossary, name_counter, quote_counter,
+            )
             sizes[file_path] = sum(len(line) for line in read_lines(file_path))
             per_file.setdefault(file_path.name, []).extend(found)
         except Exception as exc:
@@ -431,6 +557,24 @@ def check(
             report.unreadable.append(f"{file_path.name}: {type(exc).__name__}: {exc}")
         if on_progress:
             on_progress(index, len(files))
+
+    if "names" in kinds:
+        # Варианты одного имени считаем по всей книге, иначе не видно разнобоя.
+        for group in checks.name_variants(name_counter):
+            variants = ", ".join(f"{word} ×{count}" for word, count in group)
+            report.name_groups.append([{"word": w, "count": c} for w, c in group])
+            per_file.setdefault("— по всей книге —", []).append(
+                Finding("— по всей книге —", 1, "names", f"варианты: {variants}")
+            )
+
+    if "quotes" in kinds:
+        used = {label: count for label, count in quote_counter.items() if count}
+        if len(used) > 1:
+            listing = ", ".join(f"{label} ×{count}" for label, count in used.items())
+            report.quote_kinds = [{"kind": k, "count": v} for k, v in used.items()]
+            per_file.setdefault("— по всей книге —", []).append(
+                Finding("— по всей книге —", 1, "quotes", f"в тексте смешаны: {listing}")
+            )
 
     if "size" in kinds and sizes:
         for finding in _size_findings(sizes):

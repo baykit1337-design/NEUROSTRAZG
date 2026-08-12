@@ -3,11 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>НЕЙРОСТРАЖ 2.0</title>
+<title>NEUROSTRAZH 2.0</title>
 <!-- Та же книга со стрелкой, что и на первой вкладке: во вкладке браузера
      не должно быть пустого квадрата. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M4 4.5A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5V4.5Z' stroke='%23c084fc' stroke-width='1.6' stroke-linejoin='round'/%3E%3Cpath d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20' stroke='%23c084fc' stroke-width='1.6'/%3E%3Cpath d='M12 6.5v6m0 0 2.5-2.5M12 12.5 9.5 10' stroke='%238c54ff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
+  /* Раздел 1: шрифт подключён локально. Через интернет тянуть нельзя — не
+     загрузится и молча съедет на системный. Файлы лежат в static/fonts. */
+  @font-face{
+    font-family:'Exo 2';
+    font-style:normal;
+    font-weight:700;
+    font-display:swap;
+    src:url('/static/fonts/exo2-cyrillic.woff2') format('woff2');
+    unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+  }
+  @font-face{
+    font-family:'Exo 2';
+    font-style:normal;
+    font-weight:700;
+    font-display:swap;
+    src:url('/static/fonts/exo2-latin.woff2') format('woff2');
+    unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
   :root{
     --bg:#07060a;
     --panel:rgba(255,255,255,.045);
@@ -33,20 +52,31 @@
   }
   .wrap{max-width:660px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 
-  h1{
-    font-size:22px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-    text-align:center;color:#fff;
-    text-shadow:0 0 18px rgba(176,108,255,.65), 0 0 44px rgba(176,108,255,.3);
+  h1,.app-title{
+    font-family:'Exo 2', system-ui, sans-serif;
+    font-size:24px;
+    font-weight:700;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    text-align:center;
+    color:#e9d5ff;
+    text-shadow:0 0 12px rgba(168,85,247,.7), 0 0 28px rgba(140,84,255,.35);
   }
   .sub{text-align:center;color:var(--muted);font-size:13px;margin-top:-10px}
 
+  /* Раздел 5: неоновая обводка у всех карточек без исключения. */
   .card{
     background:var(--panel);
-    border:1px solid var(--stroke-soft);
+    border:1px solid rgba(140,84,255,.35);
     border-radius:var(--radius);
     padding:20px;
     backdrop-filter:blur(14px);
     -webkit-backdrop-filter:blur(14px);
+    transition:border-color .25s ease, box-shadow .25s ease;
+  }
+  .card:hover{
+    border-color:rgba(168,85,247,.6);
+    box-shadow:0 0 16px rgba(140,84,255,.25);
   }
   .card.lit{border-color:var(--stroke);box-shadow:0 0 34px rgba(176,108,255,.13)}
   .card[hidden]{display:none}
@@ -63,6 +93,32 @@
   input:focus{border-color:var(--neon);box-shadow:0 0 0 3px rgba(176,108,255,.16)}
   input::placeholder{color:#5d5872}
 
+  /* Раздел 3: системные стрелки выбиваются из палитры — рисуем свои. */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button{
+    -webkit-appearance:none;
+    appearance:none;
+    margin:0;
+  }
+  input[type=number]{-moz-appearance:textfield;appearance:textfield}
+  .spin-wrap{position:relative}
+  .spin-wrap .spin-btns{
+    position:absolute;right:10px;top:50%;transform:translateY(-50%);
+    display:flex;flex-direction:column;gap:1px;
+  }
+  .spin-wrap .spin-btns button{
+    padding:0;width:16px;height:12px;line-height:12px;font-size:9px;
+    background:none;border:none;box-shadow:none;border-radius:3px;
+    color:#8c54ff;cursor:pointer;backdrop-filter:none;
+    transition:color .18s ease, text-shadow .18s ease;
+  }
+  .spin-wrap .spin-btns button:hover{
+    color:#c084fc;
+    text-shadow:0 0 7px rgba(192,132,252,.9);
+    background:none;box-shadow:none;
+  }
+  .spin-wrap input[type=number]{padding-right:34px}
+
   button{
     padding:12px 20px;
     background:rgba(255,255,255,.06);
@@ -70,12 +126,16 @@
     border-radius:14px;
     color:var(--text);font:inherit;font-weight:500;cursor:pointer;
     backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
-    transition:background .18s, box-shadow .18s, border-color .18s, transform .1s;
+    transition:background .18s, box-shadow .2s ease, border-color .2s ease,
+               color .2s ease, text-shadow .2s ease, transform .1s;
   }
   button:hover:not(:disabled){
     background:rgba(176,108,255,.16);
     box-shadow:0 0 22px rgba(176,108,255,.35);
     border-color:var(--neon);
+    /* Раздел 4: текст тоже разгорается, не только рамка. */
+    color:#ffffff;
+    text-shadow:0 0 8px rgba(255,255,255,.85), 0 0 18px rgba(192,132,252,.7);
   }
   button:active:not(:disabled){transform:translateY(1px)}
   button:disabled{opacity:.4;cursor:not-allowed}
@@ -198,6 +258,24 @@
 
   .checks{display:flex;gap:14px;flex-wrap:wrap}
   .hint-inline{text-transform:none;letter-spacing:0}
+
+  /* Раздел 12: подсказка вешается прямо на элемент, без значка вопроса. */
+  .tipped{position:relative;cursor:help;border-bottom:1px dashed rgba(192,132,252,.5)}
+
+  /* Группы проверок из раздела 13. */
+  .check-group{margin-top:16px}
+  .check-group:first-child{margin-top:0}
+  .check-group-head{
+    display:flex;align-items:center;gap:10px;margin-bottom:9px;flex-wrap:wrap;
+  }
+  .check-group-head .name{
+    font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:#c9c2db;
+  }
+  .check-group-head button{
+    padding:3px 10px;font-size:11px;border-radius:8px;
+    border-color:var(--stroke-soft);font-weight:400;
+  }
+  .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
   .chk{
     display:inline-flex;align-items:center;gap:7px;font-size:13px;
     color:#d9d2ea;cursor:pointer;user-select:none;text-transform:none;letter-spacing:0;
@@ -226,9 +304,18 @@
     font-size:10.5px;padding:2px 7px;border-radius:99px;white-space:nowrap;
     background:rgba(176,108,255,.2);color:#e2d3ff;
   }
+  /* Раздел 11: новые имена были чёрными на тёмном — читать невозможно. */
   .table input.rowname{
     flex:1;min-width:0;padding:4px 8px;font-size:12.5px;
-    background:rgba(255,255,255,.05);border:1px solid var(--stroke-soft);border-radius:7px;
+    color:#c084fc;
+    background:rgba(255,255,255,.05);
+    border:1px solid rgba(140,84,255,.35);
+    border-radius:7px;
+  }
+  .table input.rowname:focus{
+    color:#e9d5ff;
+    border-color:#a855f7;
+    box-shadow:0 0 12px rgba(168,85,247,.45);
   }
   .arrow{color:var(--muted);flex:none}
 
@@ -353,7 +440,30 @@
     border-color:rgba(255,90,120,.4);
     color:#ff9db0;font-size:13px;
   }
-  .ok{color:#9cffc4}
+  /* Раздел 2: результат везде одинаковый, зелёного в палитре нет. */
+  .ok,.result-done{
+    color:#c084fc;
+    font-weight:600;
+    animation:mvl-pulse 1.9s ease-in-out infinite;
+  }
+  @keyframes mvl-pulse{
+    0%,100%{ text-shadow:0 0 10px rgba(192,132,252,.75); opacity:1; }
+    50%    { text-shadow:0 0 20px rgba(192,132,252,1),
+                         0 0 34px rgba(140,84,255,.55); opacity:.82; }
+  }
+  .result-dot{
+    display:inline-block;flex:none;
+    width:9px;height:9px;border-radius:50%;
+    background:#a855f7;
+    box-shadow:0 0 8px #a855f7, 0 0 18px rgba(168,85,247,.65);
+    animation:mvl-pulse 1.9s ease-in-out infinite;
+  }
+  .result-dot.idle{animation:none;background:#4a4458;box-shadow:none}
+  .status{display:flex;align-items:center;gap:9px}
+  .result-path{
+    font-size:12px;color:var(--muted);word-break:break-all;margin-top:6px;
+    white-space:pre-line;
+  }
   .hint{font-size:12px;color:var(--muted);margin-top:8px}
   .hint code{background:rgba(255,255,255,.06);padding:2px 6px;border-radius:6px;color:#cdb9ff}
 
@@ -367,7 +477,8 @@
   .ptable td{padding:6px 8px;border-top:1px solid rgba(255,255,255,.05)}
   .ptable tr.dead td{color:#6f6a82}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px}
-  .dot.ok{background:#7dffb0;box-shadow:0 0 8px rgba(125,255,176,.8)}
+  /* Статус OK в таблице прокси — тоже фиолетовый, не зелёный. */
+  .dot.ok{background:#a855f7;box-shadow:0 0 8px rgba(168,85,247,.8)}
   .dot.warn{background:#ffc86b;box-shadow:0 0 8px rgba(255,200,107,.7)}
   .dot.bad{background:#5a5468}
   .pnow{color:var(--neon);font-size:12px;margin-top:10px}
@@ -380,7 +491,7 @@
 <body>
 <input type="hidden" id="baseHidden"><input type="hidden" id="bookHidden"><input type="hidden" id="spBaseHidden">
 <div class="wrap">
-  <h1>НЕЙРОСТРАЖ 2.0</h1>
+  <h1 class="app-title">NEUROSTRAZH 2.0</h1>
   <p class="sub">качалка глав и работа с текстом</p>
 
   <nav class="tabs">
@@ -511,7 +622,7 @@
 
   <!-- 4. Прогресс -->
   <div class="card lit" id="progress" hidden>
-    <div class="status" id="status"></div>
+    <div class="status"><span class="result-dot idle"></span><span id="status"></span></div>
     <div class="bar"><i id="fill"></i></div>
     <div class="stats">
       <span>скачано <b id="sDone">0</b></span>
@@ -582,14 +693,14 @@
     </div>
 
     <div class="row" style="margin-top:18px">
-      <button id="spSave" class="primary" style="flex:1">Сохранить</button>
+      <button id="spSave" class="primary" style="flex:1">Разбить</button>
     </div>
     <p class="hint" id="spFinalPath"></p>
   </div>
 
   <!-- 5. Прогресс -->
   <div class="card lit" id="spProgress" hidden>
-    <div class="status" id="spStatus"></div>
+    <div class="status"><span class="result-dot idle"></span><span id="spStatus"></span></div>
     <div class="bar"><i id="spFill"></i></div>
     <div class="stats">
       <span>записано <b id="spWritten">0</b></span>
@@ -610,20 +721,22 @@
     <label>Папка с главами</label>
     <div class="row">
       <input id="rnIn" type="text" placeholder="Путь к папке от WebToEpub" autocomplete="off">
-      <button class="ghost browse" data-target="rnIn" data-kind="folder">Обзор…</button>
+      <button class="ghost browse" data-target="rnIn" data-kind="folder">Выбрать…</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button id="rnScan" class="primary" style="flex:1">Прочитать папку</button>
-    </div>
-    <p class="hint" id="rnScanned"></p>
+    <p class="hint" id="rnScanned">Папка читается сразу после выбора.</p>
   </div>
 
   <div class="card" id="rnPatternCard" hidden>
     <label for="rnPattern">Своё регулярное выражение для имени</label>
     <input id="rnPattern" type="text" spellcheck="false" autocomplete="off"
            placeholder="оставьте пустым — сработает разбор по умолчанию">
-    <p class="hint">Группы: <code>seq</code>, <code>number</code>, <code>part</code>,
-       <code>title</code>. Пример: <code>^(?P&lt;number&gt;\d+)\.\s*(?P&lt;title&gt;.*)$</code></p>
+    <p class="hint">Группы:
+       <code class="tipped" data-tip="Порядковый номер файла в папке. В имени «0002 - Глава 201. Название» это 0002. В новое имя не попадает, нужен только для сортировки.">seq</code>,
+       <code class="tipped" data-tip="Номер главы. В том же примере это 201. Именно он подставляется как {n}.">number</code>,
+       <code class="tipped" data-tip="Номер части, если глава была разрезана: 1, 2, 3. У целых глав пустой.">part</code>,
+       <code class="tipped" data-tip="Название главы без номера: «Название».">title</code>.
+       Пример:
+       <code class="tipped" data-tip="Правило, по которому программа разбирает имена файлов. (?P&lt;number&gt;\d+) означает «здесь идут цифры, это номер главы», (?P&lt;title&gt;.*) — «дальше всё остальное, это название». Менять нужно, только если имена ваших файлов устроены иначе, чем ожидает программа. Если поле пустое, используется разбор по умолчанию.">^(?P&lt;number&gt;\d+)\.\s*(?P&lt;title&gt;.*)$</code></p>
   </div>
 
   <div class="card" id="rnFormat" hidden>
@@ -640,12 +753,8 @@
       </div>
       <div style="flex:1">
         <label for="rnSep">разделитель</label>
-        <select id="rnSep">
-          <option value=": ">: (двоеточие)</option>
-          <option value=". ">. (точка)</option>
-          <option value=" — "> — (тире)</option>
-          <option value=" - "> - (дефис)</option>
-        </select>
+        <div class="dropdown" id="rnSep"
+             data-options='[[": ",": (двоеточие)"],[". ",". (точка)"],[" — "," — (тире)"],[" - "," - (дефис)"]]'></div>
       </div>
     </div>
     <p class="hint">пример: <b id="rnExample">—</b></p>
@@ -702,7 +811,7 @@
       </div>
     </div>
     <div class="row" style="margin-top:16px">
-      <button id="rnApply" class="primary" style="flex:1" disabled>Применить</button>
+      <button id="rnApply" class="primary" style="flex:1" disabled>Переименовать</button>
     </div>
     <p class="hint" id="rnApplyHint">Сначала постройте предпросмотр.</p>
   </div>
@@ -711,11 +820,8 @@
   <div class="modal" id="rnDialog" hidden>
     <div class="card lit" style="max-width:320px;width:100%">
       <label for="rnParts">На сколько частей разделить</label>
-      <select id="rnParts">
-        <option value="2">2</option><option value="3">3</option>
-        <option value="4">4</option><option value="5">5</option>
-        <option value="6">6</option>
-      </select>
+      <div class="dropdown" id="rnParts"
+           data-options='[["2","2 части"],["3","3 части"],["4","4 части"],["5","5 частей"],["6","6 частей"]]'></div>
       <div class="row" style="margin-top:16px">
         <button id="rnPartsOk" class="primary" style="flex:1">Разделить</button>
         <button id="rnPartsCancel" class="ghost" style="flex:1">Отмена</button>
@@ -724,7 +830,7 @@
   </div>
 
   <div class="card lit" id="rnProgress" hidden>
-    <div class="status" id="rnStatus"></div>
+    <div class="status"><span class="result-dot idle"></span><span id="rnStatus"></span></div>
     <div class="bar"><i id="rnFill"></i></div>
     <div class="stats">
       <span>записано <b id="rnWritten">0</b></span>
@@ -759,8 +865,11 @@
 
     <div class="row" style="margin-top:16px">
       <div style="flex:2">
-        <label for="wdFont">шрифт</label>
-        <input id="wdFont" type="text" value="Times New Roman" autocomplete="off">
+        <label>шрифт</label>
+        <div class="dropdown" id="wdFont"
+             data-options='[["Times New Roman","Times New Roman"],["Georgia","Georgia"],["Garamond","Garamond"],["Book Antiqua","Book Antiqua"],["Palatino Linotype","Palatino Linotype"],["Arial","Arial"],["Calibri","Calibri"],["Verdana","Verdana"],["Tahoma","Tahoma"],["Segoe UI","Segoe UI"],["PT Serif","PT Serif"],["PT Sans","PT Sans"],["Liberation Serif","Liberation Serif"],["__other__","Другой…"]]'></div>
+        <input id="wdFontOther" type="text" placeholder="Название шрифта"
+               autocomplete="off" style="margin-top:8px" hidden>
       </div>
       <div style="flex:1">
         <label for="wdSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
@@ -820,7 +929,7 @@
   </div>
 
   <div class="card lit" id="wdProgress" hidden>
-    <div class="status" id="wdStatus"></div>
+    <div class="status"><span class="result-dot idle"></span><span id="wdStatus"></span></div>
     <div class="bar"><i id="wdFill"></i></div>
     <div class="stats">
       <span>собрано <b id="wdWritten">0</b></span>
@@ -847,14 +956,15 @@
 
   <div class="card">
     <label>Что искать</label>
-    <div class="checks" id="ckKinds"></div>
+    <div class="presets" id="ckPresets"></div>
+    <div id="ckKinds"></div>
     <div class="row" style="margin-top:16px">
       <button id="ckStart" class="primary" style="flex:1">Проверить</button>
     </div>
   </div>
 
   <div class="card lit" id="ckProgress" hidden>
-    <div class="status" id="ckStatus"></div>
+    <div class="status"><span class="result-dot idle"></span><span id="ckStatus"></span></div>
     <div class="bar"><i id="ckFill"></i></div>
     <div class="row" style="margin-top:12px">
       <button id="ckStop" class="ghost">Остановить</button>
@@ -904,13 +1014,57 @@
     <div class="row" style="margin-top:14px">
       <button id="ckClean" class="primary" style="flex:1">Очистить</button>
     </div>
-    <p class="hint" id="ckCleanResult"></p>
+
+    <!-- Общий блок результата: кружок, текст, полоса, путь. -->
+    <div id="ckCleanResultBox" hidden style="margin-top:14px">
+      <div class="status"><span class="result-dot idle"></span><span id="ckCleanStatus"></span></div>
+      <div class="bar"><i id="ckCleanFill"></i></div>
+      <p class="result-path" id="ckCleanResult"></p>
+    </div>
   </div>
 </section>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+
+/** Общий вид результата: пульсирующий текст и кружок-индикатор. */
+function markResult(id, busy, stage){
+  const box = $(id);
+  if(!box) return;
+  box.classList.toggle('result-done', !busy && stage === 'done');
+  const dot = box.parentElement && box.parentElement.querySelector('.result-dot');
+  if(dot) dot.classList.toggle('idle', !busy && stage !== 'done');
+}
+
+/** Раздел 3: свои стрелки у числовых полей вместо системных. */
+function addSpinners(root){
+  (root || document).querySelectorAll('input[type=number]').forEach(input => {
+    if(input.dataset.spun) return;
+    input.dataset.spun = '1';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'spin-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.append(input);
+
+    const btns = document.createElement('div');
+    btns.className = 'spin-btns';
+    for(const [text, step] of [['▲', 1], ['▼', -1]]){
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = text;
+      button.tabIndex = -1;
+      button.onclick = () => {
+        step > 0 ? input.stepUp() : input.stepDown();
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+      };
+      btns.append(button);
+    }
+    wrap.append(btns);
+  });
+}
 
 // Пурпурные иконки вместо жёлтых системных — те выбивались из темы.
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16">
@@ -1371,7 +1525,8 @@ async function splitTick(){
     const p = job.progress || {};
     const busy = !TERMINAL.includes(p.stage);
 
-    $('spStatus').innerHTML = (busy ? '<span class="spin"></span>' : '') + (p.message || '');
+    $('spStatus').textContent = p.message || '';
+    markResult('spStatus', busy, p.stage);
     const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
     $('spFill').style.width = pct + '%';
     $('spFill').classList.toggle('active', busy);
