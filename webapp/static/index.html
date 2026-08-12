@@ -65,20 +65,30 @@
   .sub{text-align:center;color:var(--muted);font-size:13px;margin-top:-10px}
 
   /* Раздел 5: неоновая обводка у всех карточек без исключения. */
+  /* Раздел 1: базовое свечение есть у каждой карточки, не только при
+     наведении. Эталон — форма «Файл книги» на вкладке «Разбить». */
   .card{
     background:var(--panel);
-    border:1px solid rgba(140,84,255,.35);
+    border:1px solid rgba(140,84,255,.4);
     border-radius:var(--radius);
     padding:20px;
     backdrop-filter:blur(14px);
     -webkit-backdrop-filter:blur(14px);
+    box-shadow:0 0 10px rgba(140,84,255,.18),
+               inset 0 0 20px rgba(140,84,255,.04);
     transition:border-color .25s ease, box-shadow .25s ease;
   }
   .card:hover{
-    border-color:rgba(168,85,247,.6);
-    box-shadow:0 0 16px rgba(140,84,255,.25);
+    border-color:rgba(168,85,247,.7);
+    box-shadow:0 0 20px rgba(140,84,255,.38),
+               inset 0 0 24px rgba(140,84,255,.07);
   }
-  .card.lit{border-color:var(--stroke);box-shadow:0 0 34px rgba(176,108,255,.13)}
+  /* .lit — та же схема, чуть ярче: карточка, на которую сейчас смотрят. */
+  .card.lit{
+    border-color:rgba(168,85,247,.55);
+    box-shadow:0 0 18px rgba(140,84,255,.3),
+               inset 0 0 22px rgba(140,84,255,.06);
+  }
   .card[hidden]{display:none}
 
   label{display:block;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
@@ -101,9 +111,12 @@
     margin:0;
   }
   input[type=number]{-moz-appearance:textfield;appearance:textfield}
-  .spin-wrap{position:relative}
+  /* Раздел 2: обёртка повторяет ширину поля, иначе кнопки уезжают вправо
+     в пустоту — так было у «нумерация начинается с» с max-width:120px. */
+  .spin-wrap{position:relative;display:block;width:100%}
+  .spin-wrap input[type=number]{width:100%}
   .spin-wrap .spin-btns{
-    position:absolute;right:10px;top:50%;transform:translateY(-50%);
+    position:absolute;right:8px;top:50%;transform:translateY(-50%);
     display:flex;flex-direction:column;gap:1px;
   }
   .spin-wrap .spin-btns button{
@@ -280,7 +293,39 @@
     display:inline-flex;align-items:center;gap:7px;font-size:13px;
     color:#d9d2ea;cursor:pointer;user-select:none;text-transform:none;letter-spacing:0;
   }
-  .chk input{accent-color:#a855f7;width:15px;height:15px;cursor:pointer}
+  /* Раздел 3: ни одного системного чекбокса — все свои, фиолетовые. */
+  input[type=checkbox]{
+    appearance:none;
+    -webkit-appearance:none;
+    flex:none;
+    width:18px;height:18px;
+    margin:0;
+    border:1px solid rgba(140,84,255,.5);
+    border-radius:5px;
+    background:#15151d;
+    cursor:pointer;
+    position:relative;
+    transition:background .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  input[type=checkbox]:hover{
+    border-color:rgba(168,85,247,.8);
+    box-shadow:0 0 8px rgba(140,84,255,.35);
+  }
+  input[type=checkbox]:checked{
+    background:#8c54ff;
+    border-color:#a855f7;
+    box-shadow:0 0 10px rgba(168,85,247,.6);
+  }
+  input[type=checkbox]:checked::after{
+    content:'';
+    position:absolute;
+    left:5px;top:1px;
+    width:5px;height:10px;
+    border:solid #fff;
+    border-width:0 2px 2px 0;
+    transform:rotate(45deg);
+  }
+  input[type=checkbox]:disabled{opacity:.45;cursor:not-allowed}
 
   select{
     width:100%;padding:10px 12px;border-radius:10px;font-size:14px;
@@ -440,26 +485,66 @@
     border-color:rgba(255,90,120,.4);
     color:#ff9db0;font-size:13px;
   }
-  /* Раздел 2: результат везде одинаковый, зелёного в палитре нет. */
-  .ok,.result-done{
-    color:#c084fc;
-    font-weight:600;
-    animation:mvl-pulse 1.9s ease-in-out infinite;
+  /* Раздел 4: кружок и текст пульсируют строго в такт.
+
+     Одинаковой длительности для этого мало: анимации стартуют в момент
+     появления элемента, а кружок и текст добавляются в разные моменты — со
+     временем фазы разъезжаются. Поэтому анимируется одна переменная на
+     родителе, а кружок и текст только читают её значение. */
+  @property --glow{
+    syntax:'<number>';
+    inherits:true;
+    initial-value:0;
   }
+
+  @keyframes mvl-glow{
+    0%,100%{ --glow:0 }
+    50%    { --glow:1 }
+  }
+  /* Запасной вариант, если @property не поддержан: одинаковые параметры у
+     обоих элементов и переключение состояния только на родителе. */
   @keyframes mvl-pulse{
-    0%,100%{ text-shadow:0 0 10px rgba(192,132,252,.75); opacity:1; }
-    50%    { text-shadow:0 0 20px rgba(192,132,252,1),
-                         0 0 34px rgba(140,84,255,.55); opacity:.82; }
+    0%,100%{ opacity:1 }
+    50%    { opacity:.82 }
   }
+
+  .status{display:flex;align-items:center;gap:9px}
+  .result-block.running{animation:mvl-glow 1s   ease-in-out infinite}
+  .result-block.done   {animation:mvl-glow 1.9s ease-in-out infinite}
+
   .result-dot{
     display:inline-block;flex:none;
     width:9px;height:9px;border-radius:50%;
-    background:#a855f7;
-    box-shadow:0 0 8px #a855f7, 0 0 18px rgba(168,85,247,.65);
-    animation:mvl-pulse 1.9s ease-in-out infinite;
+    /* Ожидание: серый, без свечения. */
+    background:#3a3a48;
+    transition:background .2s ease;
   }
-  .result-dot.idle{animation:none;background:#4a4458;box-shadow:none}
-  .status{display:flex;align-items:center;gap:9px}
+  .result-block.running .result-dot,
+  .result-block.done .result-dot{
+    background:#a855f7;
+    opacity:calc(1 - var(--glow) * .18);
+    box-shadow:0 0 calc(8px  + var(--glow) * 10px) #a855f7,
+               0 0 calc(18px + var(--glow) * 16px) rgba(168,85,247,.65);
+  }
+  .result-block.error .result-dot{
+    background:#ff6b6b;
+    box-shadow:0 0 8px rgba(255,107,107,.7);
+    opacity:1;
+  }
+
+  .result-block.running .result-text,
+  .result-block.done .result-text{
+    color:#c084fc;
+    font-weight:600;
+    opacity:calc(1 - var(--glow) * .18);
+    text-shadow:0 0 calc(10px + var(--glow) * 10px) rgba(192,132,252,.85),
+                0 0 calc(0px  + var(--glow) * 34px) rgba(140,84,255,.55);
+  }
+  .result-block.error .result-text{color:#ff9d9d;font-weight:600}
+
+  /* Совместимость со старым классом: те же правила. */
+  .ok,.result-done{color:#c084fc;font-weight:600}
+
   .result-path{
     font-size:12px;color:var(--muted);word-break:break-all;margin-top:6px;
     white-space:pre-line;
@@ -525,6 +610,13 @@
         <path d="M8.5 12.5l1.4 4 1.6-4 1.6 4 1.4-4" stroke="#8c54ff" stroke-width="1.8"
               stroke-linecap="round" stroke-linejoin="round"/>
       </svg>В Word</button>
+    <button data-tab="totxt">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M4 6h6M4 11h6M4 16h6" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M13.5 11h6m0 0-2.5-2.5M19.5 11 17 13.5" stroke="#8c54ff"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M20 3v16" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>В TXT</button>
     <button data-tab="check">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <circle cx="11" cy="11" r="6.5" stroke="#c084fc" stroke-width="1.6"/>
@@ -612,7 +704,11 @@
       </div>
       <div style="flex:1">
         <label for="tmConnect">таймаут соединения, с</label>
-        <input id="tmConnect" type="number" value="15" min="1" max="120">
+        <input id="tmConnect" type="number" value="15" min="1" max="300">
+      </div>
+      <div style="flex:1">
+        <label for="dlThreads">потоков<i class="hint-icon" data-tip="Сколько глав качать одновременно. 3 — безопасное значение. Больше — быстрее, но выше риск, что сайт временно перестанет отвечать.">?</i></label>
+        <input id="dlThreads" type="number" value="3" min="1" max="6">
       </div>
     </div>
     <p class="hint">Страница главы весит около 220 КБ: при 30 секундах она не
@@ -622,7 +718,7 @@
 
   <!-- 4. Прогресс -->
   <div class="card lit" id="progress" hidden>
-    <div class="status"><span class="result-dot idle"></span><span id="status"></span></div>
+    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="status"></span></div>
     <div class="bar"><i id="fill"></i></div>
     <div class="stats">
       <span>скачано <b id="sDone">0</b></span>
@@ -700,7 +796,7 @@
 
   <!-- 5. Прогресс -->
   <div class="card lit" id="spProgress" hidden>
-    <div class="status"><span class="result-dot idle"></span><span id="spStatus"></span></div>
+    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="spStatus"></span></div>
     <div class="bar"><i id="spFill"></i></div>
     <div class="stats">
       <span>записано <b id="spWritten">0</b></span>
@@ -830,7 +926,7 @@
   </div>
 
   <div class="card lit" id="rnProgress" hidden>
-    <div class="status"><span class="result-dot idle"></span><span id="rnStatus"></span></div>
+    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="rnStatus"></span></div>
     <div class="bar"><i id="rnFill"></i></div>
     <div class="stats">
       <span>записано <b id="rnWritten">0</b></span>
@@ -929,7 +1025,7 @@
   </div>
 
   <div class="card lit" id="wdProgress" hidden>
-    <div class="status"><span class="result-dot idle"></span><span id="wdStatus"></span></div>
+    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="wdStatus"></span></div>
     <div class="bar"><i id="wdFill"></i></div>
     <div class="stats">
       <span>собрано <b id="wdWritten">0</b></span>
@@ -941,6 +1037,77 @@
     </div>
     <p class="hint" id="wdSummary"></p>
     <div class="table" id="wdErrors" hidden></div>
+  </div>
+</section>
+
+<!-- ========================== В TXT ========================== -->
+<section id="tab-totxt" hidden>
+  <div class="card lit">
+    <label>Папка с главами — .txt, .md, .docx или .epub</label>
+    <div class="row">
+      <button class="ghost pickany" data-list="txList" style="flex:1">Выбрать…</button>
+    </div>
+    <div class="chosen" id="txList"></div>
+    <p class="hint" id="txScanned">Файлы читаются сразу после выбора.</p>
+  </div>
+
+  <div class="card" id="txOpts" hidden>
+    <div class="row">
+      <div style="flex:1">
+        <label>порядок глав</label>
+        <div class="dropdown" id="txOrder"
+             data-options='[["number","по номеру главы"],["name","по имени файла"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>кодировка</label>
+        <div class="dropdown" id="txEncoding"
+             data-options='[["utf-8","UTF-8"],["windows-1251","Windows-1251"]]'></div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <label>разделитель между главами</label>
+      <div class="dropdown" id="txSeparator"
+           data-options='[["blank","пустая строка"],["stars","* * *"],["dashes","---"],["double","═══"],["custom","свой вариант"]]'></div>
+      <input id="txCustom" type="text" placeholder="Свой разделитель"
+             autocomplete="off" style="margin-top:8px" hidden>
+    </div>
+
+    <label class="chk" style="margin-top:14px">
+      <input type="checkbox" id="txHeadings" checked> добавлять название главы перед текстом
+      <i class="hint-icon" data-tip="Название берётся из имени файла.">?</i></label>
+
+    <div style="margin-top:16px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="txBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="txBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="txName">имя файла</label>
+        <input id="txName" type="text" placeholder="Книга" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="txStart" class="primary" style="flex:1">Собрать в TXT</button>
+    </div>
+    <p class="hint" id="txFinal"></p>
+  </div>
+
+  <div class="card lit" id="txProgress" hidden>
+    <div class="status result-block"><span class="result-dot"></span>
+      <span class="result-text" id="txStatus"></span></div>
+    <div class="bar"><i id="txFill"></i></div>
+    <div class="stats">
+      <span>собрано <b id="txWritten">0</b></span>
+      <span>ошибок <b id="txFailed">0</b></span>
+      <span id="txPct"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="txStop" class="ghost">Остановить</button>
+    </div>
+    <p class="result-path" id="txSummary"></p>
   </div>
 </section>
 
@@ -964,12 +1131,19 @@
   </div>
 
   <div class="card lit" id="ckProgress" hidden>
-    <div class="status"><span class="result-dot idle"></span><span id="ckStatus"></span></div>
+    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="ckStatus"></span></div>
     <div class="bar"><i id="ckFill"></i></div>
     <div class="row" style="margin-top:12px">
       <button id="ckStop" class="ghost">Остановить</button>
       <button id="ckSave" class="ghost" hidden>Выгрузить отчёт</button>
     </div>
+  </div>
+
+  <!-- Целостность нумерации — отдельным блоком до общего списка находок. -->
+  <div class="card" id="ckNumberingCard" hidden>
+    <label>Целостность нумерации</label>
+    <p class="hint-inline" id="ckNumbering" style="font-size:14px;color:#c084fc"></p>
+    <div class="table" id="ckDupes" hidden style="margin-top:10px"></div>
   </div>
 
   <div class="card" id="ckSummaryCard" hidden>
@@ -1017,7 +1191,7 @@
 
     <!-- Общий блок результата: кружок, текст, полоса, путь. -->
     <div id="ckCleanResultBox" hidden style="margin-top:14px">
-      <div class="status"><span class="result-dot idle"></span><span id="ckCleanStatus"></span></div>
+      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="ckCleanStatus"></span></div>
       <div class="bar"><i id="ckCleanFill"></i></div>
       <p class="result-path" id="ckCleanResult"></p>
     </div>
@@ -1028,13 +1202,27 @@
 <script>
 const $ = id => document.getElementById(id);
 
+/** Раздел 4: состояние блока результата. Класс вешается на родителя, чтобы
+ *  кружок и текст пульсировали синхронно и не разъезжались по фазе. */
+function setResultState(textId, state){
+  const text = document.getElementById(textId);
+  const block = text && text.closest('.result-block');
+  if(!block) return;
+  block.classList.remove('running', 'done', 'error');
+  if(state) block.classList.add(state);
+}
+
+/** Стадия задачи → состояние индикатора. */
+function resultState(busy, stage){
+  if(stage === 'error') return 'error';
+  if(busy) return 'running';
+  if(stage === 'done') return 'done';
+  return '';
+}
+
 /** Общий вид результата: пульсирующий текст и кружок-индикатор. */
 function markResult(id, busy, stage){
-  const box = $(id);
-  if(!box) return;
-  box.classList.toggle('result-done', !busy && stage === 'done');
-  const dot = box.parentElement && box.parentElement.querySelector('.result-dot');
-  if(dot) dot.classList.toggle('idle', !busy && stage !== 'done');
+  setResultState(id, resultState(busy, stage));
 }
 
 /** Раздел 3: свои стрелки у числовых полей вместо системных. */
@@ -1045,6 +1233,13 @@ function addSpinners(root){
 
     const wrap = document.createElement('div');
     wrap.className = 'spin-wrap';
+    // Ширину поля переносим на обёртку: кнопки позиционируются от неё, и
+    // при max-width на самом поле они улетали вправо в пустоту.
+    const inline = input.getAttribute('style');
+    if(inline){
+      wrap.setAttribute('style', inline);
+      input.removeAttribute('style');
+    }
     input.parentNode.insertBefore(wrap, input);
     wrap.append(input);
 
@@ -1250,6 +1445,7 @@ async function exportLinks(){
       first: Number($('first').value) || 1,
       last: Number($('last').value) || novel.total_chapters,
       timeout: Number($('tmRead').value) || 120,
+      threads: Number($('dlThreads').value) || 1,
       connect_timeout: Number($('tmConnect').value) || 15
     });
     const blob = new Blob([data.links.join('\n') + '\n'], {type:'text/plain'});

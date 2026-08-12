@@ -341,8 +341,10 @@ class TestBranding(unittest.TestCase):
         self.assertIn("color:#ffffff", block)
 
     def test_cards_have_neon_border(self):
+        """Рамка стала чуть плотнее в NEUROSTRAZH — свечение проверяет
+        tests/test_integrity.py."""
         block = self.html.split("  .card{")[1].split("}")[0]
-        self.assertIn("rgba(140,84,255,.35)", block)
+        self.assertIn("rgba(140,84,255,", block)
 
 
 if __name__ == "__main__":

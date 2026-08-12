@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +27,11 @@ from .paths import chapter_filename, write_chapter
 from .proxies import NoProxiesLeft, ProxyPool, scrub
 
 log = logging.getLogger(__name__)
+
+#: Потолок числа потоков. Выше не поднимаем даже вручную.
+MAX_THREADS = 6
+#: Пауза между пачками при параллельном скачивании (не между главами).
+BATCH_PAUSE_RANGE = (1.0, 2.0)
 
 STATE_FILE = "state.json"
 ERROR_LOG = "errors.log"
@@ -69,6 +75,9 @@ class Report:
     blocked_at: int | None = None
     #: Почему прогон остановился досрочно (кончились прокси, серия 429).
     stopped_reason: str = ""
+    #: Сколько потоков работало и не пришлось ли снизить их до одного.
+    threads: int = 1
+    threads_downgraded: bool = False
     proxy: str = ""
     proxy_switches: int = 0
 
@@ -148,6 +157,7 @@ class Downloader:
         pool: ProxyPool | None = None,
         on_progress=None,
         cancel_event: threading.Event | None = None,
+        threads: int = 1,
     ):
         self.client = client or Client()
         # Если сессию витрины передали снаружи, закрывать её мы не должны.
@@ -158,6 +168,11 @@ class Downloader:
         self.progress = Progress()
         #: Множитель паузы, растёт после каждого 429.
         self.pause_multiplier = 1.0
+        #: Сколько глав качать одновременно. Выше MAX_THREADS не поднимаем:
+        #: сайт не наш, заваливать его запросами не нужно.
+        self.threads = max(1, min(int(threads or 1), MAX_THREADS))
+        #: state.json пишут все потоки — доступ к нему только под замком.
+        self._state_lock = threading.Lock()
 
     # ------------------------------------------------------------- служебное
 
@@ -245,6 +260,21 @@ class Downloader:
         blocked_at: int | None = None
         stopped_reason = ""
         rate_limit_streak = 0
+        threads_downgraded = False
+
+        if self.threads > 1:
+            # Пачками: смена прокси и повтор главы тут не делаются — по ТЗ
+            # первый же 403 или 429 останавливает весь прогон.
+            downloaded, failed, blocked_at, stopped_reason, threads_downgraded = (
+                self._run_batches(pending, novel, output_dir, site, state, last)
+            )
+            state.save()
+            if site is not self.site_client:
+                site.close()
+            return self._finish(
+                novel, output_dir, toc, downloaded, skipped, failed,
+                blocked_at, stopped_reason, threads_downgraded,
+            )
 
         try:
             for index, chapter in enumerate(pending):
@@ -351,6 +381,16 @@ class Downloader:
             if site is not self.site_client:
                 site.close()
 
+        return self._finish(
+            novel, output_dir, toc, downloaded, skipped, failed,
+            blocked_at, stopped_reason, threads_downgraded,
+        )
+
+    def _finish(
+        self, novel, output_dir, toc, downloaded, skipped, failed,
+        blocked_at, stopped_reason, threads_downgraded=False,
+    ) -> Report:
+        """Собирает отчёт и последнее сообщение — общее для обоих путей."""
         report = Report(
             novel=novel.to_dict(),
             output_dir=str(output_dir),
@@ -365,6 +405,8 @@ class Downloader:
             stopped_reason=stopped_reason,
             proxy=self._proxy_label(),
             proxy_switches=self._switch_count(),
+            threads=self.threads,
+            threads_downgraded=threads_downgraded,
         )
 
         if blocked_at is not None or stopped_reason:
@@ -423,6 +465,93 @@ class Downloader:
         low, high = SITE_PAUSE_RANGE
         time.sleep(random.uniform(low, high) * self.pause_multiplier)
 
+    def _run_batches(self, pending, novel, output_dir, site, state, last):
+        """Качает главы пачками по числу потоков.
+
+        Своя сессия у каждого потока получается сама: `Client` держит сессии
+        в thread-local, поэтому куки Cloudflare переиспользуются в пределах
+        потока и не мешают друг другу.
+
+        Порядок записи файлов не зависит от порядка ответов: каждая глава
+        пишет свой файл, а прогресс считает завершённые.
+        """
+        downloaded = 0
+        failed: list[int] = []
+        blocked_at: int | None = None
+        stopped_reason = ""
+
+        self._emit(
+            stage="download",
+            message=f"Качаем {len(pending)} глав в {self.threads} потока…",
+            done=0, total=len(pending),
+        )
+
+        for start in range(0, len(pending), self.threads):
+            self._check_cancel()
+            batch = pending[start:start + self.threads]
+
+            with ThreadPoolExecutor(max_workers=self.threads) as pool:
+                futures = {
+                    pool.submit(self._one_guarded, chapter, novel, output_dir, site, state): chapter
+                    for chapter in batch
+                }
+                for future in as_completed(futures):
+                    chapter = futures[future]
+                    error = future.result()
+
+                    if error is None:
+                        downloaded += 1
+                    elif _is_refusal(error):
+                        # Первый же отказ останавливает весь прогон, в каком
+                        # бы потоке он ни случился.
+                        blocked_at = chapter.number
+                        stopped_reason = (
+                            f"сайт ответил отказом на главе {chapter.number} "
+                            f"({scrub(str(error))}). Прогон остановлен, "
+                            f"следующий запуск пойдёт в один поток."
+                        )
+                        self._log_error(output_dir, chapter.number, stopped_reason)
+                    else:
+                        reason = scrub(f"{type(error).__name__}: {error}")
+                        log.warning("Глава %s не скачана: %s", chapter.number, reason)
+                        with self._state_lock:
+                            state.mark_failed(chapter.number, reason)
+                        self._log_error(output_dir, chapter.number, reason)
+                        failed.append(chapter.number)
+
+                    self._emit(
+                        done=downloaded + len(failed),
+                        downloaded=downloaded,
+                        failed=len(failed),
+                        message=f"Глава {chapter.number} из {last}",
+                    )
+
+            with self._state_lock:
+                state.save()
+
+            if blocked_at is not None:
+                # Потоки снижаем до одного для следующего запуска.
+                self.threads = 1
+                return downloaded, failed, blocked_at, stopped_reason, True
+
+            if start + self.threads < len(pending):
+                # Пауза между пачками, а не между каждой главой.
+                low, high = BATCH_PAUSE_RANGE
+                if self.cancel.wait(random.uniform(low, high) * self.pause_multiplier):
+                    raise Cancelled()
+
+        return downloaded, failed, blocked_at, stopped_reason, False
+
+    def _one_guarded(self, chapter, novel, output_dir, site, state):
+        """`_one` для потока: исключение возвращается, а не улетает наверх."""
+        if self.cancel.is_set():
+            return Cancelled()
+        try:
+            self._one(chapter, novel, output_dir, site, state)
+            return None
+        except Exception as exc:  # noqa: BLE001 — разбирает вызывающий
+            return exc
+
     def _one(
         self,
         chapter: api.Chapter,
@@ -438,7 +567,19 @@ class Downloader:
 
         filename = chapter_filename(chapter.number, title or chapter.title)
         write_chapter(output_dir / filename, novel.name, title or chapter.title, chapter.number, text)
-        state.mark_done(chapter.number, filename)
+        with self._state_lock:
+            state.mark_done(chapter.number, filename)
+
+
+def _is_refusal(error: BaseException) -> bool:
+    """Сайт отказал: 403 или 429.
+
+    Тип исключения зависит от того, как настроен клиент, поэтому смотрим и
+    на сам код ответа — отказ обязан останавливать прогон в любом случае.
+    """
+    if isinstance(error, (Blocked, RateLimited)):
+        return True
+    return isinstance(error, HttpError) and error.status in (403, 429)
 
 
 class Cancelled(Exception):

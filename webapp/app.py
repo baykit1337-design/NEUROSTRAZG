@@ -20,7 +20,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mvl import api, booksplit, checks, cleanup, nativedialog, rename, textcheck, toword  # noqa: E402
+from mvl import api, booksplit, checks, cleanup, nativedialog, rename  # noqa: E402
+from mvl import textcheck, totxt, toword  # noqa: E402
+from mvl.totxt import TxtError  # noqa: E402
 from mvl.cleanup import CleanError  # noqa: E402
 from mvl.source import SourceError  # noqa: E402
 from mvl.textprep import PrepOptions  # noqa: E402
@@ -30,6 +32,7 @@ from mvl.booksplit import Cancelled as SplitCancelled  # noqa: E402
 from mvl.booksplit import HeadingsNotFound, SplitError  # noqa: E402
 from mvl import client as client_mod  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
+from mvl import downloader as downloader_mod  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
 from mvl import proxies as proxies_mod  # noqa: E402
@@ -353,6 +356,15 @@ def api_start():
     if read_timeout > MAX_TIMEOUT or connect_timeout > MAX_TIMEOUT:
         return jsonify(error=f"Таймаут больше {MAX_TIMEOUT} секунд не имеет смысла"), 400
 
+    try:
+        threads = int(payload.get("threads") or 1)
+    except (TypeError, ValueError):
+        return jsonify(error="Потоков должно быть числом"), 400
+    if not 1 <= threads <= downloader_mod.MAX_THREADS:
+        return jsonify(
+            error=f"Потоков: от 1 до {downloader_mod.MAX_THREADS}"
+        ), 400
+
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
         downloader = Downloader(
@@ -360,6 +372,7 @@ def api_start():
             pool=pool,
             on_progress=lambda p: job.progress.update(p.as_dict()),
             cancel_event=job.cancel,
+            threads=threads,
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
@@ -669,6 +682,83 @@ def api_word_start():
             stage="done", written=report.written, failed=report.failed,
             message=(f"Готово. Собрано {report.written} из {report.total}"
                      + (f", ошибок {report.failed}" if report.failed else "")),
+        )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+# ------------------------------------------------------- вкладка «В TXT»
+
+
+@app.post("/api/txt/scan")
+def api_txt_scan():
+    targets = _targets(request.json or {})
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**totxt.scan(targets, (request.json or {}).get("order") or totxt.ORDER_NUMBER))
+    except TxtError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/txt/start")
+def api_txt_start():
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    name = (payload.get("name") or "").strip()
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите, куда сохранить"), 400
+    if not name:
+        return jsonify(error="Введите имя файла"), 400
+
+    base_dir = Path(base).expanduser()
+    if not base_dir.is_dir():
+        return jsonify(error=f"Папка не найдена: {base_dir}"), 400
+
+    order = (payload.get("order") or totxt.ORDER_NUMBER).strip()
+    encoding = (payload.get("encoding") or "utf-8").strip()
+    if order not in totxt.ORDERS:
+        return jsonify(error=f"Неизвестный порядок: {order}"), 400
+    if encoding not in totxt.ENCODINGS:
+        return jsonify(error=f"Неизвестная кодировка: {encoding}"), 400
+
+    try:
+        info = totxt.scan(targets, order)
+    except TxtError as exc:
+        return jsonify(error=str(exc)), 400
+
+    output = base_dir / f"{rename.safe_filename(name)}.txt"
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="txt",
+        meta={"targets": targets, "total": info["total"]},
+        output_dir=str(output),
+    )
+    job.progress = {"stage": "txt", "message": f"Собираем {info['total']} глав…",
+                    "done": 0, "total": info["total"], "written": 0, "failed": 0}
+
+    def work(job: Job):
+        report = totxt.build(
+            targets, output,
+            order=order,
+            headings=bool(payload.get("headings", True)),
+            separator=(payload.get("separator") or totxt.DEFAULT_SEPARATOR),
+            custom_separator=(payload.get("custom_separator") or ""),
+            encoding=encoding,
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            on_progress=lambda done, total: job.progress.update(
+                done=done, total=total, message=f"Глава {done} из {total}"),
+            cancel=job.cancel,
+        )
+        job.report = report.as_dict()
+        job.progress.update(
+            stage="done", written=report.written, failed=report.failed,
+            message=(f"Готово. Собрано {report.written} из {report.chapters}, "
+                     f"{report.characters} символов"),
         )
 
     return jsonify(job=start_job(job, work).snapshot())

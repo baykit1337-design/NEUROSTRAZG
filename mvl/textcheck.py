@@ -14,7 +14,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import checks
+from . import checks, integrity
 from .booksplit import Cancelled
 from .source import SourceError
 from .source import read_paragraphs as read_source_paragraphs
@@ -149,6 +149,9 @@ class CheckReport:
     #: Группы вариантов одного имени и статистика по видам кавычек.
     name_groups: list = field(default_factory=list)
     quote_kinds: list = field(default_factory=list)
+    #: Целостность нумерации и пары повторяющихся глав.
+    numbering: dict = field(default_factory=dict)
+    duplicate_pairs: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -163,6 +166,8 @@ class CheckReport:
             "unreadable": self.unreadable,
             "name_groups": self.name_groups,
             "quote_kinds": self.quote_kinds,
+            "numbering": self.numbering,
+            "duplicate_pairs": self.duplicate_pairs,
             "total": len(self.findings),
         }
 
@@ -534,6 +539,8 @@ def check(
     whitelist = load_whitelist(folder) if "latin" in kinds else set()
     glossary = checks.load_glossary(folder) if "glossary" in kinds else {}
     latin_counter: Counter = Counter()
+    #: Тексты для поиска дублей — собираем только когда проверка включена.
+    file_texts: dict[str, str] = {}
     # Разнобой имён и кавычек виден только по книге целиком.
     name_counter: Counter = Counter()
     quote_counter: Counter = Counter()
@@ -549,7 +556,10 @@ def check(
                 file_path, kinds, whitelist, latin_counter, max_span,
                 glossary, name_counter, quote_counter,
             )
-            sizes[file_path] = sum(len(line) for line in read_lines(file_path))
+            file_lines = read_lines(file_path)
+            sizes[file_path] = sum(len(line) for line in file_lines)
+            if "dupes" in kinds:
+                file_texts[file_path.name] = "\n".join(file_lines)
             per_file.setdefault(file_path.name, []).extend(found)
         except Exception as exc:
             # Один нечитаемый файл не должен прерывать проверку остальных.
@@ -557,6 +567,26 @@ def check(
             report.unreadable.append(f"{file_path.name}: {type(exc).__name__}: {exc}")
         if on_progress:
             on_progress(index, len(files))
+
+    if "numbering" in kinds:
+        # Быстрая проверка по именам файлов, текст не читаем — идёт первой.
+        report.numbering = integrity.check_numbering(files).as_dict()
+        if not report.numbering["clean"]:
+            per_file.setdefault("— по всей книге —", []).append(
+                Finding("— по всей книге —", 1, "numbering", report.numbering["summary"])
+            )
+
+    if "dupes" in kinds:
+        for pair in integrity.find_duplicates(file_texts):
+            row = pair.as_dict()
+            report.duplicate_pairs.append(row)
+            per_file.setdefault("— по всей книге —", []).append(
+                Finding(
+                    "— по всей книге —", 1, "dupes",
+                    f"{row['left']} ↔ {row['right']}: совпадение {row['percent']}%"
+                    + (" (точный дубль)" if row["exact"] else ""),
+                )
+            )
 
     if "names" in kinds:
         # Варианты одного имени считаем по всей книге, иначе не видно разнобоя.

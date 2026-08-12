@@ -226,9 +226,8 @@ function drawResult(p, fillId, statusId, pctId){
   const box = $(statusId);
   if(box){
     box.textContent = p.message || '';
-    box.classList.toggle('result-done', !busy && p.stage === 'done');
-    const dot = box.parentElement && box.parentElement.querySelector('.result-dot');
-    if(dot) dot.classList.toggle('idle', !busy && p.stage !== 'done');
+    // Состояние ставится на родителя — кружок и текст в такт.
+    markResult(statusId, busy, p.stage);
   }
   return busy;
 }
@@ -697,6 +696,93 @@ wdFontMenu = makeDropdown($('wdFont'), value => {
 wdAlign = makeDropdown($('wdAlign'));
 wdScene = makeDropdown($('wdScene'));
 wdUpdateFinal();
+
+
+/* ============================== В TXT ============================== */
+
+let txJob = null, txOrder = null, txEncoding = null, txSeparator = null;
+
+function txUpdateFinal(){
+  const base = $('txBase').value.trim(), name = $('txName').value.trim();
+  $('txFinal').textContent = base && name ? `Файл: ${base}/${name}.txt` : '';
+}
+
+/** Читается сразу после выбора, как на остальных вкладках. */
+async function txScan(){
+  const targets = CHOSEN.txList || [];
+  if(!targets.length){
+    $('txOpts').hidden = true;
+    $('txScanned').textContent = 'Файлы читаются сразу после выбора.';
+    return;
+  }
+  showError('');
+  $('txScanned').innerHTML = '<span class="spin"></span>Читаем…';
+  try{
+    const data = await call('/api/txt/scan', {targets, order: txOrder ? txOrder.value : 'number'});
+    $('txScanned').textContent =
+      `Глав: ${data.total}. ` + (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
+    $('txOpts').hidden = false;
+    if(!$('txName').value) $('txName').value = 'Книга';
+    txUpdateFinal();
+  }catch(err){
+    showError(err.message);
+    $('txOpts').hidden = true;
+    $('txScanned').textContent = '';
+  }
+}
+window.txScan = txScan;
+
+async function txStart(){
+  showError('');
+  $('txStart').disabled = true;
+  try{
+    const {job} = await call('/api/txt/start', {
+      targets: CHOSEN.txList || [],
+      base: $('txBase').value.trim(),
+      name: $('txName').value.trim(),
+      order: txOrder ? txOrder.value : 'number',
+      encoding: txEncoding ? txEncoding.value : 'utf-8',
+      separator: txSeparator ? txSeparator.value : 'blank',
+      custom_separator: $('txCustom').value,
+      headings: $('txHeadings').checked,
+    });
+    txJob = job.id;
+    $('txProgress').hidden = false;
+    $('txStop').hidden = false;
+    $('txSummary').textContent = 'Файл: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('txWritten').textContent = p.written || p.done || 0;
+        $('txFailed').textContent = p.failed || 0;
+        return drawResult(p, 'txFill', 'txStatus', 'txPct');
+      },
+      job => {
+        $('txStop').hidden = true;
+        if(job.error){ showError(job.error); return; }
+        const report = job.report || {};
+        let text = `Файл: ${report.output}\nСимволов: ${report.characters}, кодировка ${report.encoding}`;
+        if(report.failed_files?.length) text += '\nНе собраны:\n' + report.failed_files.join('\n');
+        $('txSummary').textContent = text;
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('txStart').disabled = false;
+  }
+}
+
+$('txList').dataset.onchange = 'txScan';
+$('txStart').onclick = txStart;
+$('txStop').onclick = () => stopJob(txJob);
+['txBase','txName'].forEach(id => $(id).addEventListener('input', txUpdateFinal));
+txOrder = makeDropdown($('txOrder'), () => txScan());
+txEncoding = makeDropdown($('txEncoding'));
+txSeparator = makeDropdown($('txSeparator'), value => {
+  // «Свой вариант» открывает поле для ручного ввода.
+  $('txCustom').hidden = value !== 'custom';
+});
 
 /* ========================== Проверка текста ========================== */
 
