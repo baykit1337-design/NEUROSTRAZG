@@ -36,6 +36,11 @@ PLAIN = (".txt", ".md", ".markdown")
 CONTEXT = 60
 WHITELIST_FILE = "whitelist.txt"
 
+#: Под этим именем идут находки, относящиеся к книге целиком: дыры в
+#: нумерации, повторы глав, разнобой в именах и кавычках. Файла с таким
+#: именем на диске нет, и в счёт файлов он не идёт.
+BOOK_WIDE = "— по всей книге —"
+
 # 1. Иероглифы и азиатские алфавиты — непереведённые куски.
 CJK = re.compile(
     "["
@@ -586,17 +591,17 @@ def check(
         # Быстрая проверка по именам файлов, текст не читаем — идёт первой.
         report.numbering = integrity.check_numbering(files).as_dict()
         if not report.numbering["clean"]:
-            per_file.setdefault("— по всей книге —", []).append(
-                Finding("— по всей книге —", 1, "numbering", report.numbering["summary"])
+            per_file.setdefault(BOOK_WIDE, []).append(
+                Finding(BOOK_WIDE, 1, "numbering", report.numbering["summary"])
             )
 
     if "dupes" in kinds:
         for pair in integrity.find_duplicates(file_texts):
             row = pair.as_dict()
             report.duplicate_pairs.append(row)
-            per_file.setdefault("— по всей книге —", []).append(
+            per_file.setdefault(BOOK_WIDE, []).append(
                 Finding(
-                    "— по всей книге —", 1, "dupes",
+                    BOOK_WIDE, 1, "dupes",
                     f"{row['left']} ↔ {row['right']}: совпадение {row['percent']}%"
                     + (" (точный дубль)" if row["exact"] else ""),
                 )
@@ -607,8 +612,8 @@ def check(
         for group in checks.name_variants(name_counter):
             variants = ", ".join(f"{word} ×{count}" for word, count in group)
             report.name_groups.append([{"word": w, "count": c} for w, c in group])
-            per_file.setdefault("— по всей книге —", []).append(
-                Finding("— по всей книге —", 1, "names", f"варианты: {variants}")
+            per_file.setdefault(BOOK_WIDE, []).append(
+                Finding(BOOK_WIDE, 1, "names", f"варианты: {variants}")
             )
 
     if "quotes" in kinds:
@@ -616,8 +621,8 @@ def check(
         if len(used) > 1:
             listing = ", ".join(f"{label} ×{count}" for label, count in used.items())
             report.quote_kinds = [{"kind": k, "count": v} for k, v in used.items()]
-            per_file.setdefault("— по всей книге —", []).append(
-                Finding("— по всей книге —", 1, "quotes", f"в тексте смешаны: {listing}")
+            per_file.setdefault(BOOK_WIDE, []).append(
+                Finding(BOOK_WIDE, 1, "quotes", f"в тексте смешаны: {listing}")
             )
 
     if "size" in kinds and sizes:
@@ -628,8 +633,11 @@ def check(
         report.findings.extend(sorted(per_file[file_name], key=lambda f: (f.line, f.kind)))
 
     report.summary = dict(Counter(f.kind for f in report.findings))
-    # Файлы без находок в таблицу не попадают.
-    report.files_with_findings = len({f.file for f in report.findings})
+    # Файлы без находок в таблицу не попадают. Находки по книге целиком —
+    # тоже не файл: без этой оговорки выходило «в 6 файлах из 5».
+    report.files_with_findings = len(
+        {f.file for f in report.findings if f.file != BOOK_WIDE}
+    )
     report.latin_words = [
         {"word": word, "count": count} for word, count in latin_counter.most_common()
     ]

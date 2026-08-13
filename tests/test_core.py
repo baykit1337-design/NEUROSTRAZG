@@ -642,3 +642,30 @@ class TestTabsShareTheCore(unittest.TestCase):
                                              paragraphs=[body])], headings=True)
                 report = textcheck.check(path, kinds=["cjk"])
                 self.assertEqual(len(report.findings), 1, suffix)
+
+
+class TestCheckCounts(unittest.TestCase):
+    """Счётчик файлов в отчёте проверки."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def test_book_wide_findings_are_not_counted_as_a_file(self):
+        """Выходило «в 6 файлах из 5»: находки по книге считались файлом."""
+        from mvl import textcheck
+
+        body = "Тут 修炼 остался. " + "Обычный текст главы. " * 25
+        # Дыра в нумерации даёт находку «по всей книге».
+        for number in (201, 203):
+            formats.write(self.tmp / f"Глава {number}.txt",
+                          [Chapter(number=number, title=f"Глава {number}",
+                                   paragraphs=[body])], headings=True)
+
+        report = textcheck.check(self.tmp)
+        self.assertTrue(
+            any(f.file == textcheck.BOOK_WIDE for f in report.findings),
+            "нужна хотя бы одна находка по книге целиком")
+        self.assertEqual(report.files_checked, 2)
+        self.assertLessEqual(report.files_with_findings, report.files_checked)
