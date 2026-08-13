@@ -232,18 +232,31 @@ class Client:
         headers: dict[str, str] | None = None,
         proxy_url: str | None = None,
         connect_timeout: int = CONNECT_TIMEOUT,
+        shared_session: bool = False,
     ):
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.connect_timeout = connect_timeout
         self.headers = dict(headers or {})
         self.proxy_url = proxy_url
+        #: Одна сессия на все потоки вместо своей на поток. Некоторые
+        #: серверы охотнее отвечают на переиспользуемое соединение —
+        #: автопроба перебирает оба способа и оставляет рабочий.
+        self.shared_session = shared_session
         self._local = threading.local()
+        self._shared: Any = None
         self._sessions: list[Any] = []
         self._lock = threading.Lock()
         self.backend = "?"
 
     def _session(self):
+        if self.shared_session:
+            with self._lock:
+                if self._shared is None:
+                    self._shared, self.backend = _make_session(self.proxy_url)
+                    self._sessions.append(self._shared)
+                return self._shared
+
         session = getattr(self._local, "session", None)
         if session is None:
             session, backend = _make_session(self.proxy_url)
@@ -335,6 +348,7 @@ class Client:
                 except Exception:
                     pass
             self._sessions.clear()
+            self._shared = None
 
 
 # Заголовки настоящего браузера: Cloudflare смотрит не только на TLS.

@@ -284,8 +284,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-class TestParallelDownload(unittest.TestCase):
-    """Раздел 5: скачивание пачками."""
+class _DownloadCase(unittest.TestCase):
+    """Общая обвязка: локальный сервер вместо витрины, восемь глав.
+
+    Отдельным классом, а не наследованием тестов друг от друга: иначе
+    каждый набор гоняет ещё и чужие тесты.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -321,12 +325,19 @@ class TestParallelDownload(unittest.TestCase):
         api.fetch_toc = lambda *a, **k: toc
         self.addCleanup(lambda: setattr(api, "fetch_toc", self.original_toc))
 
-    def run_download(self, threads: int, **kwargs):
+    def run_download(self, threads: int, probe: bool = False, **kwargs):
+        # Автопроба здесь выключена: эти тесты проверяют сам механизм пачек.
+        # Её собственное поведение проверяется ниже, в TestAutoprobeRun.
         downloader = Downloader(
-            client=Client(), site_client=Client(max_attempts=1), threads=threads, **kwargs
+            client=Client(), site_client=Client(max_attempts=1), threads=threads,
+            probe=probe, **kwargs
         )
         downloader.pause_multiplier = 0.01
         return downloader, downloader.run(self.novel, self.tmp, first=1, last=8)
+
+
+class TestParallelDownload(_DownloadCase):
+    """Раздел 5: скачивание пачками."""
 
     def test_ceiling_is_six(self):
         self.assertEqual(Downloader(threads=99).threads, MAX_THREADS)
@@ -367,6 +378,50 @@ class TestParallelDownload(unittest.TestCase):
     def test_report_records_thread_count(self):
         _, report = self.run_download(2)
         self.assertEqual(report.threads, 2)
+
+
+class TestAutoprobeRun(_DownloadCase):
+    """A4: способ скачивания подбирается пробным прогоном перед основным."""
+
+    def test_probe_runs_and_reports(self):
+        downloader, report = self.run_download(3, probe=True)
+        self.assertIsNotNone(downloader.probe_report)
+        self.assertTrue(downloader.probe_report.attempts)
+        # Что бы проба ни решила, главы должны быть скачаны все.
+        self.assertEqual(report.downloaded, 8)
+
+    def test_blocked_site_falls_back_to_sequential(self):
+        """403 на пробе — не ошибка: качаем по очереди и говорим об этом."""
+        _Handler.block_from = 1
+        downloader = Downloader(
+            client=Client(), site_client=Client(max_attempts=1), threads=3,
+            probe=True,
+        )
+        downloader.pause_multiplier = 0.01
+        downloader.run(self.novel, self.tmp, first=1, last=8)
+
+        probe = downloader.probe_report
+        self.assertIsNotNone(probe)
+        self.assertFalse(probe.parallel)
+        self.assertEqual(downloader.threads, 1)
+        self.assertEqual(
+            probe.message,
+            "Многопоточность недоступна. Скачивание идёт по очереди.")
+
+    def test_probe_skipped_for_single_thread(self):
+        downloader, _ = self.run_download(1, probe=True)
+        self.assertIsNone(downloader.probe_report)
+
+    def test_probe_result_reaches_progress(self):
+        seen = []
+        downloader = Downloader(
+            client=Client(), site_client=Client(max_attempts=1), threads=3,
+            probe=True, on_progress=lambda p: seen.append(p.as_dict()),
+        )
+        downloader.pause_multiplier = 0.01
+        downloader.run(self.novel, self.tmp, first=1, last=8)
+        # Интерфейс показывает уведомление именно по этому полю.
+        self.assertTrue(any(step.get("probe", {}).get("message") for step in seen))
 
 
 class TestNeurostrazhWebApi(unittest.TestCase):

@@ -26,6 +26,12 @@ from .client import (
 from .paths import chapter_filename, write_chapter
 from .proxies import NoProxiesLeft, ProxyPool, scrub
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config import settings  # noqa: E402
+
 log = logging.getLogger(__name__)
 
 #: Потолок числа потоков. Выше не поднимаем даже вручную.
@@ -55,6 +61,9 @@ class Progress:
     #: Через какой прокси идёт работа и сколько было переключений.
     proxy: str = ""
     switches: int = 0
+    #: Итог автопробы способа скачивания — интерфейс показывает его
+    #: уведомлением внизу справа.
+    probe: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -158,6 +167,7 @@ class Downloader:
         on_progress=None,
         cancel_event: threading.Event | None = None,
         threads: int = 1,
+        probe: bool = True,
     ):
         self.client = client or Client()
         # Если сессию витрины передали снаружи, закрывать её мы не должны.
@@ -171,6 +181,11 @@ class Downloader:
         #: Сколько глав качать одновременно. Выше MAX_THREADS не поднимаем:
         #: сайт не наш, заваливать его запросами не нужно.
         self.threads = max(1, min(int(threads or 1), MAX_THREADS))
+        #: Подбирать ли способ многопоточности перед прогоном. Выключается
+        #: в тестах и когда потоков всё равно один.
+        self.probe = probe
+        #: Итог автопробы — интерфейс показывает его уведомлением.
+        self.probe_report = None
         #: state.json пишут все потоки — доступ к нему только под замком.
         self._state_lock = threading.Lock()
 
@@ -262,12 +277,21 @@ class Downloader:
         rate_limit_streak = 0
         threads_downgraded = False
 
+        fetcher = None
+        if self.threads > 1 and self.probe and pending:
+            # Подбираем способ до основного прогона: заявленная
+            # многопоточность и работающая — разные вещи.
+            fetcher = self._autoprobe(novel, pending)
+
         if self.threads > 1:
             # Пачками: смена прокси и повтор главы тут не делаются — по ТЗ
             # первый же 403 или 429 останавливает весь прогон.
             downloaded, failed, blocked_at, stopped_reason, threads_downgraded = (
-                self._run_batches(pending, novel, output_dir, site, state, last)
+                self._run_batches(pending, novel, output_dir, site, state, last,
+                                  fetcher=fetcher)
             )
+            if fetcher is not None:
+                fetcher.close()
             state.save()
             if site is not self.site_client:
                 site.close()
@@ -465,7 +489,52 @@ class Downloader:
         low, high = SITE_PAUSE_RANGE
         time.sleep(random.uniform(low, high) * self.pause_multiplier)
 
-    def _run_batches(self, pending, novel, output_dir, site, state, last):
+    def _autoprobe(self, novel: api.Novel, pending):
+        """Пробный прогон: 5 глав в 3 потока, способы по порядку из ТЗ.
+
+        Возвращает раздатчика клиентов для выбранного способа либо None,
+        если параллельно не вышло ни одним — тогда качаем по очереди.
+        Прогон из-за неудачной пробы не отменяется.
+        """
+        from net import pool as netpool
+
+        sample = pending[:settings.threads.probe_chapters]
+        proxies = []
+        if self.pool is not None:
+            proxies = [p for p in self.pool.proxies if not p.disabled]
+
+        def make_client(proxy_url=None, shared_session=False):
+            return SiteClient(referer=novel.page_url, proxy_url=proxy_url,
+                              shared_session=shared_session,
+                              max_attempts=settings.threads.probe_attempts)
+
+        def fetch(client, chapter):
+            return api.fetch_chapter(client, chapter)[1]
+
+        self._emit(stage="probe", message="Подбираем способ скачивания…")
+        report = netpool.autoprobe(
+            sample, make_client, fetch,
+            threads=min(self.threads, settings.threads.probe_threads),
+            proxies=proxies,
+            cancel=self.cancel,
+            on_step=lambda name: self._emit(message=f"Пробуем: {name}…"),
+        )
+        self._check_cancel()
+
+        self.probe_report = report
+        self._emit(probe=report.as_dict(), message=report.message)
+
+        if not report.parallel:
+            # Последовательный режим работает всегда — это не ошибка.
+            self.threads = 1
+            log.info("Многопоточность недоступна, качаем по очереди")
+            return None
+
+        netpool.remember(report.method)
+        return netpool.Fetcher(report.method, make_client, proxies)
+
+    def _run_batches(self, pending, novel, output_dir, site, state, last,
+                     fetcher=None):
         """Качает главы пачками по числу потоков.
 
         Своя сессия у каждого потока получается сама: `Client` держит сессии
@@ -492,7 +561,8 @@ class Downloader:
 
             with ThreadPoolExecutor(max_workers=self.threads) as pool:
                 futures = {
-                    pool.submit(self._one_guarded, chapter, novel, output_dir, site, state): chapter
+                    pool.submit(self._one_guarded, chapter, novel, output_dir,
+                                site, state, fetcher): chapter
                     for chapter in batch
                 }
                 for future in as_completed(futures):
@@ -542,12 +612,15 @@ class Downloader:
 
         return downloaded, failed, blocked_at, stopped_reason, False
 
-    def _one_guarded(self, chapter, novel, output_dir, site, state):
+    def _one_guarded(self, chapter, novel, output_dir, site, state, fetcher=None):
         """`_one` для потока: исключение возвращается, а не улетает наверх."""
         if self.cancel.is_set():
             return Cancelled()
         try:
-            self._one(chapter, novel, output_dir, site, state)
+            # Клиента даёт раздатчик выбранного способа: общая сессия или
+            # свой прокси на поток задаются именно там.
+            self._one(chapter, novel, output_dir,
+                      fetcher.client() if fetcher else site, state)
             return None
         except Exception as exc:  # noqa: BLE001 — разбирает вызывающий
             return exc
