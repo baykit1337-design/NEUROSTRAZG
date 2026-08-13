@@ -1,0 +1,87 @@
+"""Общее для всех операций: прогресс и отмена."""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from core import formats
+from core.models import Chapter, OpReport
+from core.readers.base import ReadError
+
+
+class Cancelled(Exception):
+    """Пользователь остановил операцию."""
+
+
+class Progress:
+    """Колбэк `(сделано, всего, текст)` и флаг отмены — один на все вкладки."""
+
+    def __init__(self, on_progress=None, cancel: threading.Event | None = None):
+        self.on_progress = on_progress
+        self.cancel = cancel or threading.Event()
+
+    def step(self, done: int, total: int, message: str = "") -> None:
+        if self.on_progress:
+            self.on_progress(done, total, message)
+
+    def check(self) -> None:
+        """Проверяется перед каждым шагом и во время пауз."""
+        if self.cancel.is_set():
+            raise Cancelled()
+
+    def wait(self, seconds: float) -> None:
+        if self.cancel.wait(seconds):
+            raise Cancelled()
+
+
+def collect_files(targets) -> list[Path]:
+    """Разворачивает выбранное в список файлов.
+
+    Принимает пути к файлам и папкам вперемешку: папка раскрывается в свои
+    читаемые файлы, файл берётся как есть.
+    """
+    if isinstance(targets, (str, Path)):
+        targets = [targets]
+
+    files: list[Path] = []
+    seen: set[str] = set()
+
+    for target in targets:
+        path = Path(str(target)).expanduser()
+        if path.is_dir():
+            found = [p for p in sorted(path.iterdir())
+                     if p.is_file() and formats.is_readable(p)]
+        elif path.is_file():
+            found = [path]
+        else:
+            raise ReadError(f"Не найдено: {path}")
+
+        for item in found:
+            key = str(item.resolve())
+            if key not in seen:
+                seen.add(key)
+                files.append(item)
+
+    if not files:
+        raise ReadError("Не нашлось файлов поддерживаемых форматов")
+    return files
+
+
+def read_all(files: list[Path], report: OpReport, progress: Progress | None = None
+             ) -> list[Chapter]:
+    """Читает все источники. Сбой одного файла не мешает остальным."""
+    chapters: list[Chapter] = []
+    for index, path in enumerate(files, 1):
+        if progress:
+            progress.check()
+        try:
+            chapters.extend(formats.read(path))
+        except ReadError as exc:
+            # Формат не распознан — пропускаем файл и идём дальше.
+            report.fail(path.name, "чтение", str(exc))
+        except Exception as exc:
+            report.fail(path.name, "чтение", f"{type(exc).__name__}: {exc}")
+        if progress:
+            progress.step(index, len(files), f"Читаем {path.name}")
+    return chapters

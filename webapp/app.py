@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core import platform  # noqa: E402
 from mvl import api, booksplit, checks, cleanup, nativedialog, rename  # noqa: E402
 from mvl import textcheck, totxt, toword  # noqa: E402
 from mvl.totxt import TxtError  # noqa: E402
@@ -951,16 +952,11 @@ def api_open():
         return jsonify(error=f"Файл не найден: {path}"), 404
 
     try:
-        if sys.platform.startswith("win"):
-            os.startfile(str(path))  # noqa: S606 — открываем в программе по умолчанию
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
-        else:
-            subprocess.Popen(["xdg-open", str(path)])
-    except Exception as exc:
-        return jsonify(error=f"Не удалось открыть: {type(exc).__name__}: {exc}"), 500
+        opened = platform.open_file(path)
+    except platform.OpenError as exc:
+        return jsonify(error=f"Не удалось открыть: {exc}"), 500
 
-    return jsonify(opened=str(path))
+    return jsonify(opened=str(opened))
 
 
 @app.get("/api/check/<job_id>/report")
