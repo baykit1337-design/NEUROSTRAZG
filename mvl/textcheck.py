@@ -16,13 +16,22 @@ from pathlib import Path
 
 from . import checks, integrity
 from .booksplit import Cancelled
+from core.readers.base import ReadError
+from ops.base import collect_files
+
+from . import source
 from .source import SourceError
 from .source import read_paragraphs as read_source_paragraphs
 
 log = logging.getLogger(__name__)
 
-#: Форматы, которые принимает проверка. epub разбирается как архив.
-READABLE = (".txt", ".md", ".docx", ".epub")
+#: Форматы, которые принимает проверка, — те же, что умеет ядро. Свой
+#: список здесь держать нельзя: добавив формат в core, пришлось бы
+#: вспоминать и про эту строку.
+READABLE = source.READABLE
+
+#: Форматы без разметки: читаются построчно, как лежат в файле.
+PLAIN = (".txt", ".md", ".markdown")
 #: Сколько символов вокруг находки показывать в таблице.
 CONTEXT = 60
 WHITELIST_FILE = "whitelist.txt"
@@ -175,18 +184,20 @@ class CheckReport:
 def read_lines(path: Path) -> list[str]:
     """Строки файла.
 
-    Для .docx строкой считается абзац, для .epub — абзац всех его глав.
-    Открывать epub как текст нельзя: это ZIP-архив, и в проверку летели
-    сырые байты вида `??v????A`.
+    В размеченных форматах строкой считается абзац. Читает ядро: открывать
+    epub, docx или odt как текст нельзя — это ZIP-архивы, и в проверку
+    летели сырые байты вида `??v????A`.
+
+    Голый текст читается напрямую, а не через ядро: проверке нужны строки
+    как они есть в файле, включая пустые и лишние переводы, — именно их
+    она и ищет. Битая кодировка тоже находка, поэтому errors='replace'.
     """
-    suffix = path.suffix.lower()
-    if suffix in (".docx", ".epub"):
-        try:
-            return read_source_paragraphs(path)
-        except SourceError as exc:
-            raise CheckError(str(exc)) from exc
-    # Битая кодировка — как раз то, что ищем, поэтому errors='replace'.
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if path.suffix.lower() in PLAIN:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        return read_source_paragraphs(path)
+    except SourceError as exc:
+        raise CheckError(str(exc)) from exc
 
 
 def load_whitelist(folder: Path) -> set[str]:
@@ -518,10 +529,13 @@ def check(
             ]
             folder = path
         elif path.is_file():
-            # Расширение проверяем и здесь: раньше одиночный epub
-            # проваливался в текстовое чтение и давал тысячи мусорных находок.
-            if path.suffix.lower() not in READABLE:
-                raise CheckError(f"{path.name}: нужен .txt, .md, .docx или .epub")
+            # Формат проверяем и здесь: раньше одиночный epub проваливался
+            # в текстовое чтение и давал тысячи мусорных находок. Решает
+            # ядро — оно же разбирает спор расширения с сигнатурой.
+            try:
+                collect_files([path])
+            except ReadError as exc:
+                raise CheckError(str(exc)) from exc
             found = [path]
             folder = path.parent
         else:

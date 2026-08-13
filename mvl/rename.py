@@ -11,10 +11,11 @@
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from core import formats, naming
 
 from .booksplit import Cancelled, safe_name
 from .source import read_paragraphs as read_source_paragraphs
@@ -23,132 +24,45 @@ from .word import Style, split_paragraphs
 
 log = logging.getLogger(__name__)
 
-READABLE = (".txt", ".md", ".docx")
+#: Что умеет прочитать ядро. Свой список здесь держать нельзя: добавив
+#: формат в core, пришлось бы вспоминать и про эту строку.
+READABLE = formats.READABLE
 
-#: Слова, которыми помечают главу. Нужны, чтобы отличить номер главы от
-#: порядкового номера файла.
-CHAPTER_WORD = r"(?:Глава|ГЛАВА|глава|Chapter|CHAPTER|chapter|Часть|Part)"
+# Разбор и сборка имён живут только в core/naming.py. Здесь — имена, под
+# которыми к ним обращается остальной код вкладки.
+CHAPTER_WORD = naming.CHAPTER_WORD
+SEQ_RE = naming.SEQ_RE
+NUMBER_RE = naming.NUMBER_RE
+DEFAULT_PATTERN = naming.DEFAULT_PATTERN
+DEFAULT_PREFIX = naming.DEFAULT_PREFIX
+DEFAULT_SEPARATOR = naming.DEFAULT_SEPARATOR
+SEPARATORS = naming.SEPARATORS
+FORBIDDEN_MAP = naming.FORBIDDEN_MAP
 
-#: Порядковый номер файла в начале имени: «0010 - ».
-SEQ_RE = re.compile(r"^\s*(\d+)\s*[-–—]\s*(.*)$", re.S)
-
-#: Номер главы с необязательной приставкой и необязательным номером части.
-NUMBER_RE = re.compile(
-    rf"^\s*(?:{CHAPTER_WORD}\s*)?"
-    r"(?P<number>\d+)"
-    r"(?:[.,](?P<part>\d+))?"
-    r"(?:\s*(?:[.:\-–—]|\s)\s*(?P<title>.*?))?\s*$",
-    re.S,
-)
-
-#: Совместимость: та же регулярка одной строкой — её показывает интерфейс
-#: как отправную точку для своего варианта.
-DEFAULT_PATTERN = NUMBER_RE.pattern
-
-DEFAULT_PREFIX = "Глава"
-DEFAULT_SEPARATOR = ": "
-#: Разделители перед названием, предлагаемые в интерфейсе.
-SEPARATORS = (": ", ". ", " — ", " - ")
-
-#: Windows не разрешает эти символы в именах файлов. Просто выбрасывать их
-#: нельзя: из «Глава 201: Конец» вышло бы «Глава 201 Конец», и разделитель
-#: пропал бы совсем. Поэтому подставляем читаемый эквивалент.
-FORBIDDEN_MAP = {
-    ":": " -", "/": "-", "\\": "-", "|": "-",
-    "*": "", "?": "", '"': "'", "<": "(", ">": ")",
-}
-
-
-def safe_filename(name: str) -> str:
-    """Имя файла, пригодное для Windows, с сохранением читаемости."""
-    for bad, good in FORBIDDEN_MAP.items():
-        name = name.replace(bad, good)
-    name = re.sub(r"\s+", " ", name).strip(" .")
-    return safe_name(name)
-
-
-def has_forbidden(text: str) -> bool:
-    """Есть ли в строке символы, запрещённые в именах файлов."""
-    return any(bad in text for bad in FORBIDDEN_MAP)
+NameParts = naming.NameParts
+safe_filename = naming.safe_filename
+has_forbidden = naming.has_forbidden
 
 
 class RenameError(Exception):
-    """Папку не удалось разобрать."""
+    """Что-то не так с папкой или параметрами — показываем пользователю."""
 
 
 class NameCollision(RenameError):
-    """Два файла претендуют на одно имя — записывать нельзя."""
-
-
-@dataclass
-class NameParts:
-    seq: int | None = None
-    number: int | None = None
-    part: int | None = None
-    title: str = ""
-
-    @property
-    def service(self) -> bool:
-        """Номера главы нет — файл служебный («Информация», «Обложка»)."""
-        return self.number is None
+    """Два файла претендуют на одно имя."""
 
 
 def parse_name(stem: str, pattern: str | None = None) -> NameParts:
-    """Раскладывает имя файла (без расширения) на составляющие.
+    """Разбор имени из ядра, с ошибкой в терминах вкладки.
 
-    Разбор идёт в два шага, и это принципиально: сначала отрезается
-    порядковый номер файла, и только в остатке ищется номер главы. Иначе
-    `0001 - Информация` превращается в «главу 1», хотя это служебный файл
-    без номера вовсе.
-
-    Порядковый номер разбирается, но в новое имя не попадает — он нужен
-    только чтобы понять исходный порядок.
+    Своё регулярное выражение вводит человек, и сломать его несложно.
+    Маршрут ловит RenameError, поэтому переводим ошибку разбора в неё —
+    иначе битый шаблон уходит в 500 вместо понятного сообщения.
     """
-    if pattern:
-        try:
-            match = re.match(pattern, stem)
-        except re.error as exc:
-            raise RenameError(f"Неверное регулярное выражение: {exc}") from exc
-        if not match:
-            return NameParts(seq=_leading_int(stem), title=stem.strip())
-        groups = match.groupdict()
-        return NameParts(
-            seq=_int(groups.get("seq")),
-            number=_int(groups.get("number")),
-            part=_int(groups.get("part")),
-            title=(groups.get("title") or "").strip(),
-        )
-
-    seq = None
-    rest = stem.strip()
-    head = SEQ_RE.match(rest)
-    if head:
-        seq, rest = int(head.group(1)), head.group(2).strip()
-
-    match = NUMBER_RE.match(rest)
-    if not match:
-        # Номера главы нет — служебный файл («Информация», «Обложка»).
-        return NameParts(seq=seq if seq is not None else _leading_int(stem),
-                         title=rest or stem.strip())
-
-    return NameParts(
-        seq=seq,
-        number=_int(match.group("number")),
-        part=_int(match.group("part")),
-        title=(match.group("title") or "").strip(),
-    )
-
-
-def _int(value) -> int | None:
     try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _leading_int(stem: str) -> int | None:
-    match = re.match(r"\s*(\d+)", stem)
-    return int(match.group(1)) if match else None
+        return naming.parse(stem, pattern)
+    except naming.NamingError as exc:
+        raise RenameError(str(exc)) from exc
 
 
 @dataclass
@@ -238,51 +152,8 @@ def sort_chapters(chapters: list[Chapter]) -> list[Chapter]:
 # --------------------------------------------------------------- сборка имени
 
 
-@dataclass
-class NameFormat:
-    """Три галочки из ТЗ плюс приставка и разделитель."""
-
-    number: bool = True
-    part: bool = True
-    title: bool = True
-    prefix: str = DEFAULT_PREFIX
-    separator: str = DEFAULT_SEPARATOR
-
-    @classmethod
-    def from_dict(cls, data: dict | None) -> NameFormat:
-        data = data or {}
-        prefix = data.get("prefix")
-        separator = data.get("separator")
-        return cls(
-            number=bool(data.get("number", True)),
-            part=bool(data.get("part", True)),
-            title=bool(data.get("title", True)),
-            # Приставку можно очистить, поэтому проверяем на None, а не на «пусто».
-            prefix=DEFAULT_PREFIX if prefix is None else str(prefix),
-            separator=DEFAULT_SEPARATOR if separator is None else str(separator),
-        )
-
-
-def build_name(number: int | None, part: int | None, title: str, fmt: NameFormat) -> str:
-    """Собирает новое имя главы по галочкам.
-
-    Номер части подставляется только если он есть: у целой главы части нет,
-    и включённая галочка ничего не добавляет.
-    """
-    head = ""
-    if fmt.number and number is not None:
-        head = f"{fmt.prefix} {number}".strip() if fmt.prefix else str(number)
-        if fmt.part and part is not None:
-            head = f"{head}.{part}"
-
-    name = head
-    if fmt.title and title:
-        name = f"{head}{fmt.separator}{title}" if head else title
-
-    # Все галочки сняты — пустое имя недопустимо, оставляем номер.
-    if not name.strip():
-        name = str(number) if number is not None else title
-    return safe_filename(name.strip())
+NameFormat = naming.NameFormat
+build_name = naming.build
 
 
 # ------------------------------------------------------------ деление на части

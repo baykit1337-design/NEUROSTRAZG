@@ -40,6 +40,11 @@ def collect_files(targets) -> list[Path]:
 
     Принимает пути к файлам и папкам вперемешку: папка раскрывается в свои
     читаемые файлы, файл берётся как есть.
+
+    Разница в обращении с чужим форматом намеренная. В папке он молча
+    пропускается — там могут лежать `state.json` и прочее служебное. А вот
+    файл, выбранный руками, отвергается сразу: человек указал именно на
+    него, и прочитать `.pdf` как текст значит выдать мусор вместо отказа.
     """
     if isinstance(targets, (str, Path)):
         targets = [targets]
@@ -53,6 +58,9 @@ def collect_files(targets) -> list[Path]:
             found = [p for p in sorted(path.iterdir())
                      if p.is_file() and formats.is_readable(p)]
         elif path.is_file():
+            # Через reader_for, а не по расширению: он же решает спор
+            # расширения с сигнатурой, и epub, названный .dat, пройдёт.
+            formats.reader_for(path)
             found = [path]
         else:
             raise ReadError(f"Не найдено: {path}")

@@ -552,3 +552,93 @@ class TestHeadings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCollectFiles(unittest.TestCase):
+    """Как ядро обращается с чужим форматом — по-разному и намеренно."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def test_single_unknown_file_is_refused(self):
+        """Выбран руками — значит, отказ, а не чтение .pdf как текста."""
+        from ops.base import collect_files
+
+        bad = self.tmp / "книга.pdf"
+        bad.write_bytes(b"%PDF-1.4 \x00\x01\x02")
+        with self.assertRaises(ReadError):
+            collect_files([str(bad)])
+
+    def test_unknown_file_in_folder_is_skipped(self):
+        """В папке — молча мимо: там лежит и служебное."""
+        from ops.base import collect_files
+
+        (self.tmp / "state.json").write_text("{}", encoding="utf-8")
+        (self.tmp / "книга.pdf").write_bytes(b"%PDF-1.4")
+        formats.write(self.tmp / "Глава 1.txt",
+                      [Chapter(number=1, title="Глава 1", paragraphs=["Текст."])])
+        files = collect_files([str(self.tmp)])
+        self.assertEqual([f.name for f in files], ["Глава 1.txt"])
+
+    def test_signature_beats_extension_for_single_file(self):
+        """epub под чужим именем читается: спор решает содержимое."""
+        from ops.base import collect_files
+
+        path = self.tmp / "книга.dat"
+        formats.write(self.tmp / "книга.epub",
+                      [Chapter(number=1, title="Глава 1", paragraphs=["Текст."])])
+        (self.tmp / "книга.epub").rename(path)
+        self.assertEqual(collect_files([str(path)]), [path])
+
+    def test_missing_path_is_reported(self):
+        from ops.base import collect_files
+
+        with self.assertRaises(ReadError):
+            collect_files([str(self.tmp / "нет-такого.txt")])
+
+
+class TestTabsShareTheCore(unittest.TestCase):
+    """A0: у вкладок нет своих списков форматов и своего разбора имён."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def test_format_lists_come_from_core(self):
+        from mvl import rename, source, textcheck
+
+        self.assertEqual(source.READABLE, formats.READABLE)
+        self.assertEqual(rename.READABLE, formats.READABLE)
+        self.assertEqual(textcheck.READABLE, formats.READABLE)
+
+    def test_naming_is_not_duplicated(self):
+        """«Переименовать» разбирает имена тем же кодом, что и остальные."""
+        from mvl import rename
+
+        self.assertIs(rename.NameFormat, naming.NameFormat)
+        self.assertIs(rename.safe_filename, naming.safe_filename)
+        self.assertIs(rename.build_name, naming.build)
+        # Разбор обёрнут ради своей ошибки, но ходит в ядро.
+        self.assertEqual(rename.parse_name("Глава 12.3: Имя").part, 3)
+
+    def test_text_processing_is_not_duplicated(self):
+        from mvl import textprep
+
+        self.assertIs(textprep.prepare, text.prepare)
+        self.assertIs(textprep.PrepOptions, text.PrepOptions)
+
+    def test_check_reads_every_format_core_can(self):
+        """Проверка принимала 4 формата из 8 — теперь все, что читает ядро."""
+        from mvl import textcheck
+
+        body = "Тут 修炼 остался. " + "Обычный текст главы. " * 20
+        for suffix in formats.WRITABLE:
+            with self.subTest(suffix=suffix):
+                path = self.tmp / f"Глава 1{suffix}"
+                formats.write(path, [Chapter(number=1, title="Глава 1",
+                                             paragraphs=[body])], headings=True)
+                report = textcheck.check(path, kinds=["cjk"])
+                self.assertEqual(len(report.findings), 1, suffix)
