@@ -176,6 +176,56 @@ class TestProbeMethod(unittest.TestCase):
         self.assertEqual(attempt.reason, "остановлено")
 
 
+class TestProxySwap(unittest.TestCase):
+    """A5: отвалившийся адрес меняется, поток продолжает с той же главы."""
+
+    def fetcher(self, proxies, created=None):
+        return pool.Fetcher(pool.PROXY_PER_THREAD, maker(created), proxies)
+
+    def test_replace_takes_the_next_address(self):
+        created = []
+        f = self.fetcher([Proxy("http://a"), Proxy("http://b")], created)
+        first = f.client()
+        second = f.replace("не отвечает")
+        self.assertIsNot(first, second)
+        self.assertNotEqual(first.proxy_url, second.proxy_url)
+        # Старый клиент закрыт: сессию с мёртвым адресом держать незачем.
+        self.assertTrue(first.closed)
+
+    def test_dead_address_is_dropped_from_the_pool(self):
+        proxies = [Proxy("http://a"), Proxy("http://b")]
+        f = self.fetcher(proxies)
+        f.client()
+        f.replace("не отвечает")
+        self.assertEqual(f.alive, 1)
+        self.assertTrue(any(p.disabled for p in proxies))
+
+    def test_last_address_cannot_be_replaced(self):
+        f = self.fetcher([Proxy("http://a")])
+        f.client()
+        self.assertIsNone(f.replace("не отвечает"))
+        self.assertEqual(f.alive, 0)
+
+    def test_other_methods_do_not_swap(self):
+        f = pool.Fetcher(pool.OWN_SESSION, maker(), [Proxy("http://a")])
+        f.client()
+        self.assertIsNone(f.replace("не отвечает"))
+
+    def test_threads_drop_to_the_number_of_addresses(self):
+        """Двум потокам на один адрес делать нечего — смысл способа в IP."""
+        def fetch(client, chapter):
+            if client.proxy_url is None:
+                raise RuntimeError("403")
+            time.sleep(0.05)
+            return "Текст главы."
+
+        proxies = [Proxy("http://a"), Proxy("http://b")]
+        report = pool.autoprobe(CHAPTERS, maker(), fetch, threads=5,
+                                proxies=proxies, last="")
+        self.assertEqual(report.method, pool.PROXY_PER_THREAD)
+        self.assertEqual(report.threads, 2)
+
+
 class TestAutoprobe(unittest.TestCase):
     def test_first_working_method_wins(self):
         report = pool.autoprobe(CHAPTERS, maker(), slow(0.05), threads=3, last="")

@@ -139,6 +139,15 @@ class Fetcher:
         self._lock = threading.Lock()
         self._next = 0
 
+    def _take_proxy(self):
+        """Следующий свободный адрес по кругу. None — адресов нет."""
+        if not self.proxies:
+            return None
+        with self._lock:
+            proxy = self.proxies[self._next % len(self.proxies)]
+            self._next += 1
+        return proxy
+
     def client(self):
         """Клиент текущего потока."""
         if self.method == SHARED_SESSION:
@@ -149,19 +158,56 @@ class Fetcher:
 
         client = getattr(self._local, "client", None)
         if client is None:
-            proxy_url = None
-            if self.method == PROXY_PER_THREAD and self.proxies:
+            proxy = None
+            if self.method == PROXY_PER_THREAD:
                 # Кука Cloudflare привязана к адресу, поэтому у каждого
                 # потока свой: нагрузка на адрес втрое ниже.
-                with self._lock:
-                    proxy = self.proxies[self._next % len(self.proxies)]
-                    self._next += 1
-                proxy_url = getattr(proxy, "url", proxy)
-            client = self.make_client(proxy_url=proxy_url)
+                proxy = self._take_proxy()
+            client = self.make_client(proxy_url=getattr(proxy, "url", proxy))
             self._local.client = client
+            self._local.proxy = proxy
             with self._lock:
                 self._clients.append(client)
         return client
+
+    def replace(self, reason: str = ""):
+        """Меняет адрес отвалившегося потока на следующий свободный.
+
+        Менять прокси внутри живой сессии нельзя — кука Cloudflare привязана
+        к адресу, — поэтому поток получает новый клиент целиком и повторяет
+        ту же главу. Возвращает None, если менять не на что.
+        """
+        if self.method != PROXY_PER_THREAD:
+            return None
+
+        previous = getattr(self._local, "proxy", None)
+        if previous is not None:
+            previous.disabled = True
+            setattr(previous, "disabled_reason", reason)
+            with self._lock:
+                self.proxies = [p for p in self.proxies if p is not previous]
+
+        if not self.proxies:
+            return None
+
+        old = getattr(self._local, "client", None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001 — закрытие не должно ломать прогон
+                pass
+            with self._lock:
+                self._clients = [c for c in self._clients if c is not old]
+
+        self._local.client = None
+        self._local.proxy = None
+        log.info("Поток меняет прокси: %s", reason or "адрес отвалился")
+        return self.client()
+
+    @property
+    def alive(self) -> int:
+        """Сколько адресов ещё в работе."""
+        return len(self.proxies)
 
     def close(self) -> None:
         with self._lock:
@@ -298,6 +344,10 @@ def autoprobe(chapters, make_client, fetch, threads: int | None = None,
         if attempt.ok:
             report.method = method
             report.proxies = attempt.proxies
+            if method == PROXY_PER_THREAD and attempt.proxies < report.threads:
+                # Двум потокам на один адрес делать нечего: смысл способа
+                # именно в том, что у каждого свой IP.
+                report.threads = attempt.proxies
             return report
 
     report.method = SEQUENTIAL

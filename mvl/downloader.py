@@ -531,6 +531,8 @@ class Downloader:
             return None
 
         netpool.remember(report.method)
+        # Адресов может оказаться меньше, чем потоков, — проба это учла.
+        self.threads = max(1, min(self.threads, report.threads))
         return netpool.Fetcher(report.method, make_client, proxies)
 
     def _run_batches(self, pending, novel, output_dir, site, state, last,
@@ -622,8 +624,30 @@ class Downloader:
             self._one(chapter, novel, output_dir,
                       fetcher.client() if fetcher else site, state)
             return None
+        except (Blocked, NetworkError) as exc:
+            # Отвалился прокси этого потока — берём следующий свободный и
+            # повторяем ту же главу. Отказ сайта (403/429) это не лечит:
+            # его разбирает вызывающий и останавливает весь прогон.
+            replacement = self._swap_proxy(fetcher, exc)
+            if replacement is None:
+                return exc
+            try:
+                self._one(chapter, novel, output_dir, replacement, state)
+                return None
+            except Exception as retry:  # noqa: BLE001 — разбирает вызывающий
+                return retry
         except Exception as exc:  # noqa: BLE001 — разбирает вызывающий
             return exc
+
+    def _swap_proxy(self, fetcher, error: BaseException):
+        """Новый клиент потока на другом адресе. None — менять не на что."""
+        if fetcher is None or _is_refusal(error):
+            return None
+        try:
+            return fetcher.replace(scrub(str(error)))
+        except Exception as exc:  # noqa: BLE001 — замена не должна ронять поток
+            log.warning("Не удалось сменить прокси в потоке: %s", exc)
+            return None
 
     def _one(
         self,
