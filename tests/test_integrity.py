@@ -385,16 +385,17 @@ class TestNeurostrazhWebApi(unittest.TestCase):
             (self.src / f"Глава {number}.txt").write_text(
                 f"Текст главы {number}.\n", encoding="utf-8")
 
-    def test_txt_scan(self):
-        res = self.app.post("/api/txt/scan", json={"targets": [str(self.src)]})
+    def test_merge_scan(self):
+        res = self.app.post("/api/merge/scan", json={"targets": [str(self.src)]})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["total"], 2)
 
-    def test_txt_job(self):
+    def test_merge_job(self):
         from webapp.app import JOBS
 
-        res = self.app.post("/api/txt/start", json={
-            "targets": [str(self.src)], "base": str(self.tmp), "name": "Книга"})
+        res = self.app.post("/api/merge/start", json={
+            "targets": [str(self.src)], "base": str(self.tmp), "name": "Книга",
+            "format": "txt"})
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=60)
 
@@ -402,10 +403,10 @@ class TestNeurostrazhWebApi(unittest.TestCase):
         self.assertIsNone(job["error"])
         self.assertTrue((self.tmp / "Книга.txt").is_file())
 
-    def test_txt_rejects_unknown_encoding(self):
-        res = self.app.post("/api/txt/start", json={
+    def test_merge_rejects_unknown_encoding(self):
+        res = self.app.post("/api/merge/start", json={
             "targets": [str(self.src)], "base": str(self.tmp),
-            "name": "К", "encoding": "koi8-r"})
+            "name": "К", "format": "txt", "encoding": "koi8-r"})
         self.assertEqual(res.status_code, 400)
 
     def test_download_rejects_too_many_threads(self):
@@ -454,9 +455,14 @@ class TestNeurostrazhStyles(unittest.TestCase):
     def test_threads_field_present(self):
         self.assertIn('id="dlThreads"', self.html)
 
-    def test_txt_tab_present(self):
-        self.assertIn('data-tab="totxt"', self.html)
-        self.assertIn('id="tab-totxt"', self.html)
+    def test_tabs_are_split_and_merge(self):
+        """A1: «В Word» и «В TXT» упразднены, формат стал параметром."""
+        for name in ("split", "merge"):
+            self.assertIn(f'data-tab="{name}"', self.html)
+            self.assertIn(f'id="tab-{name}"', self.html)
+        for gone in ("word", "totxt"):
+            self.assertNotIn(f'data-tab="{gone}"', self.html)
+            self.assertNotIn(f'id="tab-{gone}"', self.html)
 
 
 if __name__ == "__main__":

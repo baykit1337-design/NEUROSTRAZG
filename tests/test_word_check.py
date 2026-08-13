@@ -376,23 +376,23 @@ class TestWordCheckWebApi(WordTestCase):
         app.config["TESTING"] = True
         self.app = app.test_client()
 
-    def test_word_scan(self):
-        res = self.app.post("/api/word/scan", json={"folder_in": str(self.folder)})
+    def test_merge_scan(self):
+        res = self.app.post("/api/merge/scan", json={"folder_in": str(self.folder)})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["total"], 2)
 
-    def test_word_rejects_unknown_mode(self):
-        res = self.app.post("/api/word/start", json={
+    def test_merge_rejects_unknown_format(self):
+        res = self.app.post("/api/merge/start", json={
             "folder_in": str(self.folder), "base": str(self.tmp),
-            "name": "К", "mode": "нет такого"})
+            "name": "К", "format": "pdf"})
         self.assertEqual(res.status_code, 400)
 
-    def test_word_single_job(self):
+    def test_merge_to_docx_job(self):
         from webapp.app import JOBS
 
-        res = self.app.post("/api/word/start", json={
+        res = self.app.post("/api/merge/start", json={
             "folder_in": str(self.folder), "base": str(self.tmp),
-            "name": "Книга", "mode": "single"})
+            "name": "Книга", "format": "docx"})
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=60)
 
@@ -401,17 +401,24 @@ class TestWordCheckWebApi(WordTestCase):
         self.assertEqual(job["report"]["written"], 2)
         self.assertTrue((self.tmp / "Книга.docx").is_file())
 
-    def test_word_per_chapter_on_plain_files_reports_nothing_to_do(self):
+    def test_split_plain_files_to_docx(self):
+        """Папка обычных .txt раскладывается в .docx по файлу на главу.
+
+        Раньше это отвечало «раскладывать нечего»: конвертер требовал,
+        чтобы в источнике было несколько глав. Через общее ядро каждый
+        файл — уже глава, и раскладывать есть что.
+        """
         from webapp.app import JOBS
 
-        res = self.app.post("/api/word/start", json={
+        res = self.app.post("/api/split/start", json={
             "targets": [str(self.folder)], "base": str(self.tmp),
-            "name": "Главы", "mode": "per_chapter"})
+            "folder": "Главы", "format": "docx"})
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=60)
 
         job = self.app.get(f"/api/job/{job_id}").get_json()["job"]
-        self.assertIn("раскладывать нечего", job["error"])
+        self.assertIsNone(job["error"])
+        self.assertEqual(len(list((self.tmp / "Главы").glob("*.docx"))), 2)
 
     def test_check_job_and_report_download(self):
         from webapp.app import JOBS

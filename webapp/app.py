@@ -20,17 +20,20 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import platform  # noqa: E402
-from mvl import api, booksplit, checks, cleanup, nativedialog, rename  # noqa: E402
-from mvl import textcheck, totxt, toword  # noqa: E402
-from mvl.totxt import TxtError  # noqa: E402
+from core import formats, naming, platform  # noqa: E402
+from core.headings import HeadingsNotFound  # noqa: E402
+from core.readers.base import ReadError  # noqa: E402
+from core.text import PrepOptions  # noqa: E402
+from core.writers.txt import ENCODINGS  # noqa: E402
+from ops import merge as merge_op  # noqa: E402
+from ops import split as split_op  # noqa: E402
+from ops.base import Cancelled as OpCancelled  # noqa: E402
+from ops.base import Progress  # noqa: E402
+from mvl import api, checks, cleanup, nativedialog, rename  # noqa: E402
+from mvl import textcheck  # noqa: E402
 from mvl.cleanup import CleanError  # noqa: E402
 from mvl.source import SourceError  # noqa: E402
-from mvl.textprep import PrepOptions  # noqa: E402
-from mvl.toword import ConvertError  # noqa: E402
 from mvl.rename import RenameError  # noqa: E402
-from mvl.booksplit import Cancelled as SplitCancelled  # noqa: E402
-from mvl.booksplit import HeadingsNotFound, SplitError  # noqa: E402
 from mvl import client as client_mod  # noqa: E402
 from mvl.client import Client, HttpError  # noqa: E402
 from mvl import downloader as downloader_mod  # noqa: E402
@@ -38,7 +41,7 @@ from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
 from mvl import proxies as proxies_mod  # noqa: E402
 from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
-from mvl.word import DocxUnavailable, Style  # noqa: E402
+from mvl.word import Style  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +85,7 @@ def start_job(job: Job, work) -> Job:
     def runner():
         try:
             work(job)
-        except SplitCancelled:
+        except OpCancelled:
             job.progress["stage"] = "cancelled"
             job.progress["message"] = "Остановлено."
         except Cancelled:
@@ -117,6 +120,67 @@ def load_pool(path: str) -> ProxyPool:
     with POOL_LOCK:
         POOL = pool
     return pool
+
+
+def _targets(payload: dict) -> list[str]:
+    """Что выбрано: список файлов и/или папок."""
+    targets = payload.get("targets")
+    if isinstance(targets, str):
+        targets = [targets]
+    if not targets:
+        one = (payload.get("folder_in") or payload.get("target")
+               or payload.get("path") or "").strip()
+        targets = [one] if one else []
+    return [str(t).strip() for t in targets if str(t).strip()]
+
+
+def _out_format(payload: dict) -> str:
+    """Расширение на выходе, всегда с точкой: и «docx», и «.docx» подойдут."""
+    value = (payload.get("format") or payload.get("out_format") or ".txt").strip().lower()
+    return value if value.startswith(".") else f".{value}"
+
+
+def _pattern(payload: dict) -> str | None:
+    return (payload.get("pattern") or "").strip() or None
+
+
+def _order(payload: dict) -> str:
+    return (payload.get("order") or merge_op.ORDER_NUMBER).strip()
+
+
+def _encoding(payload: dict) -> str:
+    """Кодировка для текстовых форматов. Проверяется до запуска задачи."""
+    value = (payload.get("encoding") or "utf-8").strip()
+    if value not in ENCODINGS:
+        raise ValueError(f"Неизвестная кодировка: {value}")
+    return value
+
+
+def _parts(payload: dict) -> int:
+    """На сколько частей делить каждую главу. Меньше двух — не делить."""
+    try:
+        return max(1, int(payload.get("parts") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _progress(job: Job, unit: str) -> Progress:
+    """Единый прогресс операции: колбэк и флаг отмены задачи."""
+    def on_progress(done: int, total: int, message: str = "") -> None:
+        job.progress.update(done=done, total=total,
+                            message=message or f"{unit} {done} из {total}")
+
+    return Progress(on_progress, job.cancel)
+
+
+def _finish(job: Job, report, verb: str) -> None:
+    """Итог операции в задачу — одинаково для всех вкладок."""
+    job.report = report.as_dict()
+    job.progress.update(
+        stage="done", written=report.written, failed=report.failed,
+        message=(f"Готово. {verb} {report.written} из {report.total}"
+                 + (f", ошибок {report.failed}" if report.failed else "")),
+    )
 
 
 def _novel_from_payload(data: dict) -> api.Novel:
@@ -383,52 +447,62 @@ def api_start():
     return jsonify(job=start_job(job, work).snapshot())
 
 
-# ------------------------------------------------------- вкладка «Разбить книгу»
+# --------------------------------------------- вкладка «Разбить»
 
 
-@app.post("/api/split/preview")
-def api_split_preview():
+@app.get("/api/formats")
+def api_formats():
+    """Что можно прочитать и во что записать.
+
+    Интерфейс строит списки по этому ответу, а не по своему перечню:
+    иначе новый формат приходится добавлять в двух местах.
+    """
+    return jsonify(readable=list(formats.READABLE), writable=list(formats.WRITABLE))
+
+
+@app.post("/api/split/scan")
+def api_split_scan():
     """Сколько глав нашлось и первые названия — до записи на диск."""
     payload = request.json or {}
-    path = (payload.get("path") or "").strip()
-    pattern = (payload.get("pattern") or "").strip() or None
-
-    if not path:
-        return jsonify(error="Выберите файл книги (.epub или .txt)"), 400
-
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файл книги или папку"), 400
     try:
-        return jsonify(preview=booksplit.preview(path, pattern).as_dict())
+        return jsonify(**split_op.scan(targets, _pattern(payload), _parts(payload)))
     except HeadingsNotFound as exc:
         # Наугад не режем — просим своё регулярное выражение.
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
-    except SplitError as exc:
+    except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
 
 @app.post("/api/split/start")
 def api_split_start():
     payload = request.json or {}
-    path = (payload.get("path") or "").strip()
+    targets = _targets(payload)
     base = (payload.get("base") or "").strip()
     folder = (payload.get("folder") or "").strip()
-    fmt = (payload.get("format") or booksplit.FORMAT_TXT).strip().lower()
-    pattern = (payload.get("pattern") or "").strip() or None
+    out_format = _out_format(payload)
+    try:
+        encoding = _encoding(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
-    if not path:
-        return jsonify(error="Выберите файл книги"), 400
+    if not targets:
+        return jsonify(error="Выберите файл книги или папку"), 400
     if not base:
         return jsonify(error="Выберите папку, где создать каталог"), 400
     if not folder:
         return jsonify(error="Введите имя папки"), 400
-    if fmt not in (booksplit.FORMAT_TXT, booksplit.FORMAT_DOCX):
-        return jsonify(error=f"Неизвестный формат: {fmt}"), 400
+    if out_format not in formats.WRITABLE:
+        return jsonify(error=f"Неизвестный формат: {out_format}"), 400
 
-    # Разбираем до создания папки, чтобы не плодить пустые каталоги.
+    # Читаем до создания папки, чтобы не плодить пустые каталоги.
     try:
-        chapters = booksplit.read_chapters(path, pattern)
+        info = split_op.scan(targets, _pattern(payload), _parts(payload))
     except HeadingsNotFound as exc:
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
-    except SplitError as exc:
+    except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
     try:
@@ -436,42 +510,28 @@ def api_split_start():
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
-    style = Style.from_dict(payload.get("style"))
+    total = info["total"]
     job = Job(
         id=uuid.uuid4().hex[:12],
         kind="split",
-        meta={"source": path, "format": fmt, "total": len(chapters)},
+        meta={"targets": targets, "format": out_format, "total": total},
         output_dir=str(output_dir),
     )
-    job.progress = {"stage": "split", "message": f"Пишем {len(chapters)} глав…",
-                    "done": 0, "total": len(chapters), "written": 0, "failed": 0}
+    job.progress = {"stage": "split", "message": f"Пишем {total} глав…",
+                    "done": 0, "total": total, "written": 0, "failed": 0}
 
     def work(job: Job):
-        def on_progress(done: int, total: int):
-            job.progress.update(done=done, total=total, message=f"Глава {done} из {total}")
-
-        try:
-            report = booksplit.write_chapters(
-                chapters,
-                Path(job.output_dir),
-                fmt=fmt,
-                style=style,
-                on_progress=on_progress,
-                cancel=job.cancel,
-            )
-        except DocxUnavailable as exc:
-            raise SplitError(str(exc)) from exc
-
-        job.report = report.as_dict()
-        job.progress.update(
-            stage="done",
-            written=report.written,
-            failed=report.failed,
-            message=(
-                f"Готово. Записано {report.written} из {report.total}"
-                + (f", ошибок {report.failed}" if report.failed else "")
-            ),
-        )
+        _finish(job, split_op.run(
+            targets, Path(job.output_dir),
+            out_format=out_format,
+            parts=_parts(payload),
+            pattern=_pattern(payload),
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            style=Style.from_dict(payload.get("style")),
+            titles=bool(payload.get("headings", True)),
+            encoding=encoding,
+            progress=_progress(job, "Глава"),
+        ), "Записано")
 
     return jsonify(job=start_job(job, work).snapshot())
 
@@ -604,110 +664,33 @@ def api_rename_apply():
     return jsonify(job=start_job(job, work).snapshot())
 
 
-# ----------------------------------------------------- вкладка «В Word»
+# ------------------------------------------------- вкладка «Объединить»
 
 
-def _targets(payload: dict) -> list[str]:
-    """Что выбрано: список файлов и/или папок."""
-    targets = payload.get("targets")
-    if isinstance(targets, str):
-        targets = [targets]
-    if not targets:
-        one = (payload.get("folder_in") or payload.get("target") or "").strip()
-        targets = [one] if one else []
-    return [str(t).strip() for t in targets if str(t).strip()]
-
-
-@app.post("/api/word/scan")
-def api_word_scan():
-    """Читается сразу после выбора — отдельной кнопки «Прочитать» больше нет."""
-    targets = _targets(request.json or {})
+@app.post("/api/merge/scan")
+def api_merge_scan():
+    payload = request.json or {}
+    targets = _targets(payload)
     if not targets:
         return jsonify(error="Выберите файлы или папку"), 400
     try:
-        return jsonify(**toword.scan(targets))
-    except (ConvertError, SourceError) as exc:
+        return jsonify(**merge_op.scan(targets, _order(payload)))
+    except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
 
-@app.post("/api/word/start")
-def api_word_start():
+@app.post("/api/merge/start")
+def api_merge_start():
     payload = request.json or {}
     targets = _targets(payload)
     base = (payload.get("base") or "").strip()
     name = (payload.get("name") or "").strip()
-    mode = (payload.get("mode") or toword.MODE_SINGLE).strip()
-
-    if not targets:
-        return jsonify(error="Выберите файлы или папку"), 400
-    if not base:
-        return jsonify(error="Выберите, куда сохранить"), 400
-    if not name:
-        return jsonify(error="Введите имя документа или папки"), 400
-    if mode not in toword.MODES:
-        return jsonify(error=f"Неизвестный режим: {mode}"), 400
-
+    out_format = _out_format(payload)
+    order = _order(payload)
     try:
-        info = toword.scan(targets)
-    except (ConvertError, SourceError) as exc:
+        encoding = _encoding(payload)
+    except ValueError as exc:
         return jsonify(error=str(exc)), 400
-
-    base_dir = Path(base).expanduser()
-    if not base_dir.is_dir():
-        return jsonify(error=f"Папка не найдена: {base_dir}"), 400
-
-    clean = rename.safe_filename(name)
-    output = base_dir / (f"{clean}.docx" if mode == toword.MODE_SINGLE else clean)
-
-    style = Style.from_dict(payload.get("style"))
-    prep = PrepOptions.from_dict(payload.get("prep"))
-    total = info["total"]
-    job = Job(
-        id=uuid.uuid4().hex[:12],
-        kind="word",
-        meta={"targets": targets, "mode": mode, "total": total},
-        output_dir=str(output),
-    )
-    job.progress = {"stage": "word", "message": f"Собираем {total} глав…",
-                    "done": 0, "total": total, "written": 0, "failed": 0}
-
-    def work(job: Job):
-        report = toword.convert(
-            targets, output, mode=mode, style=style, prep=prep,
-            on_progress=lambda done, total: job.progress.update(
-                done=done, total=total, message=f"Глава {done} из {total}"),
-            cancel=job.cancel,
-        )
-        job.report = report.as_dict()
-        job.progress.update(
-            stage="done", written=report.written, failed=report.failed,
-            message=(f"Готово. Собрано {report.written} из {report.total}"
-                     + (f", ошибок {report.failed}" if report.failed else "")),
-        )
-
-    return jsonify(job=start_job(job, work).snapshot())
-
-
-# ------------------------------------------------------- вкладка «В TXT»
-
-
-@app.post("/api/txt/scan")
-def api_txt_scan():
-    targets = _targets(request.json or {})
-    if not targets:
-        return jsonify(error="Выберите файлы или папку"), 400
-    try:
-        return jsonify(**totxt.scan(targets, (request.json or {}).get("order") or totxt.ORDER_NUMBER))
-    except TxtError as exc:
-        return jsonify(error=str(exc)), 400
-
-
-@app.post("/api/txt/start")
-def api_txt_start():
-    payload = request.json or {}
-    targets = _targets(payload)
-    base = (payload.get("base") or "").strip()
-    name = (payload.get("name") or "").strip()
 
     if not targets:
         return jsonify(error="Выберите файлы или папку"), 400
@@ -715,52 +698,43 @@ def api_txt_start():
         return jsonify(error="Выберите, куда сохранить"), 400
     if not name:
         return jsonify(error="Введите имя файла"), 400
+    if out_format not in formats.WRITABLE:
+        return jsonify(error=f"Неизвестный формат: {out_format}"), 400
+    if order not in merge_op.ORDERS:
+        return jsonify(error=f"Неизвестный порядок: {order}"), 400
 
     base_dir = Path(base).expanduser()
     if not base_dir.is_dir():
         return jsonify(error=f"Папка не найдена: {base_dir}"), 400
 
-    order = (payload.get("order") or totxt.ORDER_NUMBER).strip()
-    encoding = (payload.get("encoding") or "utf-8").strip()
-    if order not in totxt.ORDERS:
-        return jsonify(error=f"Неизвестный порядок: {order}"), 400
-    if encoding not in totxt.ENCODINGS:
-        return jsonify(error=f"Неизвестная кодировка: {encoding}"), 400
-
     try:
-        info = totxt.scan(targets, order)
-    except TxtError as exc:
+        info = merge_op.scan(targets, order)
+    except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
-    output = base_dir / f"{rename.safe_filename(name)}.txt"
+    output = base_dir / f"{naming.safe_filename(name)}{out_format}"
+    total = info["total"]
     job = Job(
         id=uuid.uuid4().hex[:12],
-        kind="txt",
-        meta={"targets": targets, "total": info["total"]},
+        kind="merge",
+        meta={"targets": targets, "format": out_format, "total": total},
         output_dir=str(output),
     )
-    job.progress = {"stage": "txt", "message": f"Собираем {info['total']} глав…",
-                    "done": 0, "total": info["total"], "written": 0, "failed": 0}
+    job.progress = {"stage": "merge", "message": f"Собираем {total} глав…",
+                    "done": 0, "total": total, "written": 0, "failed": 0}
 
     def work(job: Job):
-        report = totxt.build(
-            targets, output,
+        _finish(job, merge_op.run(
+            targets, Path(job.output_dir),
             order=order,
             headings=bool(payload.get("headings", True)),
-            separator=(payload.get("separator") or totxt.DEFAULT_SEPARATOR),
+            separator=(payload.get("separator") or merge_op.DEFAULT_SEPARATOR),
             custom_separator=(payload.get("custom_separator") or ""),
             encoding=encoding,
             prep=PrepOptions.from_dict(payload.get("prep")),
-            on_progress=lambda done, total: job.progress.update(
-                done=done, total=total, message=f"Глава {done} из {total}"),
-            cancel=job.cancel,
-        )
-        job.report = report.as_dict()
-        job.progress.update(
-            stage="done", written=report.written, failed=report.failed,
-            message=(f"Готово. Собрано {report.written} из {report.chapters}, "
-                     f"{report.characters} символов"),
-        )
+            style=Style.from_dict(payload.get("style")),
+            progress=_progress(job, "Файл"),
+        ), "Собрано")
 
     return jsonify(job=start_job(job, work).snapshot())
 

@@ -339,25 +339,24 @@ class TestV4WebApi(V4TestCase):
         app.config["TESTING"] = True
         self.app = app.test_client()
 
-    def test_word_scan_accepts_epub(self):
-        res = self.app.post("/api/word/scan", json={"targets": [str(self.epub)]})
+    def test_merge_scan_accepts_epub(self):
+        res = self.app.post("/api/merge/scan", json={"targets": [str(self.epub)]})
         self.assertEqual(res.status_code, 200)
-        body = res.get_json()
-        self.assertEqual(body["total"], 3)
-        self.assertTrue(body["multi_chapter"])
+        self.assertEqual(res.get_json()["total"], 3)
 
-    def test_word_scan_accepts_several_files(self):
+    def test_merge_scan_accepts_several_files(self):
         second = make_epub(self.tmp / "second.epub", count=2)
-        res = self.app.post("/api/word/scan",
+        res = self.app.post("/api/merge/scan",
                             json={"targets": [str(self.epub), str(second)]})
         self.assertEqual(res.get_json()["total"], 5)
 
     def test_epub_to_docx_job(self):
+        """«Объединить»: .epub на входе, один .docx на выходе."""
         from webapp.app import JOBS
 
-        res = self.app.post("/api/word/start", json={
+        res = self.app.post("/api/merge/start", json={
             "targets": [str(self.epub)], "base": str(self.tmp),
-            "name": "Книга", "mode": "single"})
+            "name": "Книга", "format": "docx"})
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=120)
 
@@ -365,6 +364,20 @@ class TestV4WebApi(V4TestCase):
         self.assertIsNone(job["error"])
         self.assertEqual(job["report"]["written"], 3)
         self.assertTrue((self.tmp / "Книга.docx").is_file())
+
+    def test_epub_split_to_docx_job(self):
+        """«Разбить»: .epub на входе, отдельный .docx на каждую главу."""
+        from webapp.app import JOBS
+
+        res = self.app.post("/api/split/start", json={
+            "targets": [str(self.epub)], "base": str(self.tmp),
+            "folder": "Главы", "format": "docx"})
+        job_id = res.get_json()["job"]["id"]
+        JOBS[job_id].thread.join(timeout=120)
+
+        job = self.app.get(f"/api/job/{job_id}").get_json()["job"]
+        self.assertIsNone(job["error"])
+        self.assertEqual(len(list((self.tmp / "Главы").glob("*.docx"))), 3)
 
     def test_check_on_epub_job(self):
         from webapp.app import JOBS

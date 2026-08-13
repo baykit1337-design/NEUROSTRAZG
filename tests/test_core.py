@@ -349,8 +349,6 @@ class TestMixedFolder(FormatTestCase):
         self.assertEqual(report.failed, 1)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class TestOps(FormatTestCase):
@@ -459,3 +457,98 @@ class TestOps(FormatTestCase):
         self.assertTrue(seen)
         # Колбэк один на все операции: (сделано, всего, текст).
         self.assertEqual(len(seen[0]), 3)
+
+
+class TestHeadings(unittest.TestCase):
+    """A1.1: книга одним куском режется по заголовкам — в любом формате."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def _book(self, suffix: str) -> Path:
+        """Вся книга одним файлом: заголовки идут обычными абзацами."""
+        from core import formats
+
+        paragraphs = []
+        for number in (1, 2, 3):
+            paragraphs.append(f"Глава {number}. Название {number}")
+            paragraphs.append(f"Текст главы {number}. " * 10)
+        path = self.tmp / f"книга{suffix}"
+        formats.write(path, [Chapter(title="книга", paragraphs=paragraphs)],
+                      headings=False)
+        return path
+
+    def test_cut_finds_chapters(self):
+        from core import headings
+
+        chapter = Chapter(title="книга", paragraphs=[
+            "Глава 1. Первая", "Текст первой.", "Глава 2. Вторая", "Текст второй."])
+        parts = headings.cut(chapter)
+        self.assertEqual([c.number for c in parts], [1, 2])
+        self.assertEqual(parts[0].paragraphs, ["Текст первой."])
+        # Заголовок в тело не попадает: иначе после записи он задвоится.
+        self.assertNotIn("Глава 1. Первая", parts[1].paragraphs)
+
+    def test_cut_without_headings_asks_for_pattern(self):
+        from core import headings
+
+        with self.assertRaises(headings.HeadingsNotFound):
+            headings.cut(Chapter(title="книга", paragraphs=["Просто текст."]))
+
+    def test_own_pattern_wins(self):
+        from core import headings
+
+        chapter = Chapter(paragraphs=["### 1 ###", "Раз", "### 2 ###", "Два"])
+        parts = headings.cut(chapter, r"^###\s*\d+\s*###$")
+        self.assertEqual(len(parts), 2)
+
+    def test_mention_in_text_is_not_a_heading(self):
+        from core import headings
+
+        # «в главе 12 говорилось» — обычный текст, а не заголовок.
+        chapter = Chapter(paragraphs=[
+            "Глава 1. Начало", "Как в главе 12 говорилось, всё было иначе."])
+        self.assertEqual(headings.find(chapter.paragraphs), [0])
+
+    def test_split_cuts_monolithic_book_in_every_flat_format(self):
+        """Резать книгу целиком умеем не только в .txt — это и было задачей A2."""
+        from ops import split
+
+        for suffix in (".txt", ".md", ".rtf", ".odt", ".docx"):
+            with self.subTest(suffix=suffix):
+                book = self._book(suffix)
+                out = self.tmp / f"главы{suffix}"
+                report = split.run([str(book)], out, out_format=".txt")
+                self.assertEqual(report.written, 3, suffix)
+                self.assertEqual(len(list(out.glob("*.txt"))), 3)
+
+    def test_folder_of_chapters_is_not_cut(self):
+        """Папка готовых глав — не книга: шаблон просить не за что."""
+        from core import formats
+        from ops import split
+
+        src = self.tmp / "главы"
+        src.mkdir()
+        for number in (1, 2):
+            formats.write(src / f"Глава {number}.txt",
+                          [Chapter(number=number, title=f"Глава {number}",
+                                   paragraphs=["Текст."])])
+        report = split.run([str(src)], self.tmp / "out", out_format=".txt")
+        self.assertEqual(report.written, 2)
+
+    def test_single_chapter_split_into_parts_needs_no_headings(self):
+        """Делению на части заголовки не нужны — просить шаблон незачем."""
+        from core import formats
+        from ops import split
+
+        one = self.tmp / "Пролог.txt"
+        formats.write(one, [Chapter(title="Пролог",
+                                    paragraphs=[f"Абзац {n}." for n in range(10)])])
+        report = split.run([str(one)], self.tmp / "части", out_format=".txt", parts=2)
+        self.assertEqual(report.written, 2)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

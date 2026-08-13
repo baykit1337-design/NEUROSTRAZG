@@ -574,7 +574,7 @@
 </style>
 </head>
 <body>
-<input type="hidden" id="baseHidden"><input type="hidden" id="bookHidden"><input type="hidden" id="spBaseHidden">
+<input type="hidden" id="baseHidden">
 <div class="wrap">
   <h1 class="app-title">NEUROSTRAZH 2.0</h1>
   <p class="sub">качалка глав и работа с текстом</p>
@@ -595,6 +595,15 @@
         <path d="M8 16.2 18.5 4M16 16.2 5.5 4" stroke="#8c54ff" stroke-width="1.8"
               stroke-linecap="round"/>
       </svg>Разбить</button>
+    <button data-tab="merge">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <circle cx="6" cy="6" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
+        <circle cx="6" cy="18" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
+        <path d="M8.6 6.6 14 11m-5.4 6.4L14 13" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round"/>
+        <path d="M13.5 12h6m0 0-2.5-2.5M19.5 12 17 14.5" stroke="#8c54ff"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>Объединить</button>
     <button data-tab="rename">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <path d="M4 6h10M4 12h7M4 18h10" stroke="#c084fc" stroke-width="1.6"
@@ -602,21 +611,6 @@
         <path d="M16 15.5 19 12l2.2 2.2-3.5 3.5-2.6.6.4-2.8Z" stroke="#8c54ff"
               stroke-width="1.8" stroke-linejoin="round"/>
       </svg>Переименовать</button>
-    <button data-tab="word">
-      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
-        <path d="M6 3h8l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
-        <path d="M14 3v5h5" stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
-        <path d="M8.5 12.5l1.4 4 1.6-4 1.6 4 1.4-4" stroke="#8c54ff" stroke-width="1.8"
-              stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>В Word</button>
-    <button data-tab="totxt">
-      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
-        <path d="M4 6h6M4 11h6M4 16h6" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round"/>
-        <path d="M13.5 11h6m0 0-2.5-2.5M19.5 11 17 13.5" stroke="#8c54ff"
-              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M20 3v16" stroke="#c084fc" stroke-width="1.6" stroke-linecap="round"/>
-      </svg>В TXT</button>
     <button data-tab="check">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <circle cx="11" cy="11" r="6.5" stroke="#c084fc" stroke-width="1.6"/>
@@ -735,19 +729,17 @@
   </div>
 </section>
 
+<!-- ========================== Разбить ========================== -->
 <section id="tab-split" hidden>
 
-  <!-- 1. Файл книги -->
+  <!-- 1. Что разбиваем: файл книги целиком или папка -->
   <div class="card lit">
-    <label>Файл книги — .epub или .txt</label>
-    <div class="crumb">
-      <button class="ghost browse" data-target="bookHidden" data-kind="file"
-              style="padding:5px 12px;font-size:12px">Обзор…</button>
-      <button class="ghost" id="spHome" style="padding:5px 12px;font-size:12px">Домой</button>
-      <code id="spPath">…</code>
+    <label>Что разбиваем — файл книги или папка с главами</label>
+    <div class="row">
+      <button class="ghost pickany" data-list="spList" style="flex:1">Выбрать…</button>
     </div>
-    <div class="dirs" id="spBrowse"></div>
-    <p class="hint" id="spChosen">Файл не выбран</p>
+    <div class="chosen" id="spList"></div>
+    <p class="hint" id="spScanned">Файлы читаются сразу после выбора.</p>
   </div>
 
   <!-- 2. Свой шаблон заголовка, если не нашлись -->
@@ -756,47 +748,110 @@
     <input id="spPattern" type="text" spellcheck="false" autocomplete="off">
     <p class="hint">Наугад не режем. Посмотрите, как выглядит начало главы в файле,
        и опишите его здесь. Пример: <code>^\s*Глава\s+\d+</code></p>
+    <div class="row" style="margin-top:12px">
+      <button id="spRescan" class="ghost" style="flex:1">Прочитать заново</button>
+    </div>
   </div>
 
-  <!-- 3. Превью -->
-  <div class="card lit" id="spPreview" hidden>
-    <div class="book-name" id="spCount"></div>
-    <div class="meta" id="spTitles"></div>
-  </div>
-
-  <!-- 4. Куда сохранять -->
-  <div class="card" id="spPlace" hidden>
-    <label>Где создать папку</label>
-    <div class="crumb">
-      <button class="ghost browse" data-target="spBaseHidden" data-kind="folder"
-              style="padding:5px 12px;font-size:12px">Обзор…</button>
-      <button class="ghost" id="spOutHome" style="padding:5px 12px;font-size:12px">Домой</button>
-      <code id="spOutPath">…</code>
-    </div>
-    <div class="dirs" id="spOutBrowse"></div>
+  <div class="card" id="spOpts" hidden>
+    <label>Формат на выходе</label>
+    <div class="row" id="spFormats"></div>
 
     <div style="margin-top:16px">
-      <label for="spFolder">Имя папки</label>
-      <input id="spFolder" type="text" placeholder="Название книги" autocomplete="off">
+      <label for="spParts">делить каждую главу на части
+        <i class="hint-icon" data-tip="1 — не делить. 2 — разбить пополам. Отдельные главы можно поделить точечно во вкладке «Переименовать».">?</i></label>
+      <input id="spParts" type="number" value="1" min="1" max="20">
     </div>
 
-    <div style="margin-top:16px">
-      <label>Формат глав</label>
-      <div class="row">
-        <button class="pick on" data-fmt="txt">.txt</button>
-        <button class="pick" data-fmt="docx">.docx</button>
+    <div class="row" style="margin-top:14px">
+      <div style="flex:1">
+        <label>кодировка<i class="hint-icon" data-tip="Для текстовых форматов. Windows-1251 нужна старым читалкам.">?</i></label>
+        <div class="dropdown" id="spEncoding"
+             data-options='[["utf-8","UTF-8"],["windows-1251","Windows-1251"]]'></div>
       </div>
     </div>
 
-    <div class="row" style="margin-top:18px">
-      <button id="spSave" class="primary" style="flex:1">Разбить</button>
-    </div>
-    <p class="hint" id="spFinalPath"></p>
+    <label class="chk" style="margin-top:14px">
+      <input type="checkbox" id="spHeadings" checked> добавлять название главы перед текстом
+      <i class="hint-icon" data-tip="Название берётся из заголовка главы.">?</i></label>
   </div>
 
-  <!-- 5. Прогресс -->
+  <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
+  <div class="card" id="spStyle" hidden>
+    <label>Оформление документа</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:2">
+        <label>шрифт</label>
+        <div class="dropdown" id="spFont"
+             data-options='[["Times New Roman","Times New Roman"],["Georgia","Georgia"],["Garamond","Garamond"],["Book Antiqua","Book Antiqua"],["Palatino Linotype","Palatino Linotype"],["Arial","Arial"],["Calibri","Calibri"],["Verdana","Verdana"],["Tahoma","Tahoma"],["Segoe UI","Segoe UI"],["PT Serif","PT Serif"],["PT Sans","PT Sans"],["Liberation Serif","Liberation Serif"],["__other__","Другой…"]]'></div>
+        <input id="spFontOther" type="text" placeholder="Название шрифта"
+               autocomplete="off" style="margin-top:8px" hidden>
+      </div>
+      <div style="flex:1">
+        <label for="spSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
+        <input id="spSize" type="number" value="12" min="6" max="72">
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label for="spSpacing">интервал<i class="hint-icon" data-tip="Расстояние между строками. 1,5 — стандарт.">?</i></label>
+        <input id="spSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
+      </div>
+      <div style="flex:1">
+        <label for="spIndent">отступ первой строки, см<i class="hint-icon" data-tip="«Красная строка» в начале абзаца, в сантиметрах. По умолчанию 0.">?</i></label>
+        <input id="spIndent" type="number" value="0" step="0.05" min="0" max="5">
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="spBreak" checked> разрыв страницы между главами
+      <i class="hint-icon" data-tip="Каждая глава начинается с новой страницы.">?</i></label>
+  </div>
+
+  <!-- Обработка текста — одна на обе вкладки, как и код за ней. -->
+  <div class="card" id="spPrep" hidden>
+    <label>Обработка текста</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label>выравнивание</label>
+        <div class="dropdown" id="spAlign"
+             data-options='[["left","по левому краю"],["justify","по ширине"],["center","по центру"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>вид разделителя сцен</label>
+        <div class="dropdown" id="spScene"
+             data-options='[["stars","* * * по центру"],["blank","пустая строка"],["dashes","— — — по центру"],["keep","как в исходнике"]]'></div>
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="spStripTitle" checked> убирать название главы из текста
+      <i class="hint-icon" data-tip="В исходнике название нередко продублировано в первых абзацах. Оно живёт только в имени файла.">?</i></label>
+    <label class="chk" style="margin-top:8px">
+      <input type="checkbox" id="spItalicSystem"> выделять системные сообщения курсивом
+      <i class="hint-icon" data-tip="Игровые уведомления в фигурных и квадратных скобках. Они часть текста, удалять их нельзя.">?</i></label>
+  </div>
+
+  <!-- Куда сохранять -->
+  <div class="card" id="spPlace" hidden>
+    <label>Где создать папку</label>
+    <div class="row">
+      <input id="spBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="spBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="spFolder">имя папки</label>
+      <input id="spFolder" type="text" placeholder="Название книги" autocomplete="off">
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="spStart" class="primary" style="flex:1">Разбить</button>
+    </div>
+    <p class="hint" id="spFinal"></p>
+  </div>
+
+  <!-- Результат -->
   <div class="card lit" id="spProgress" hidden>
-    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="spStatus"></span></div>
+    <div class="status result-block"><span class="result-dot"></span>
+      <span class="result-text" id="spStatus"></span></div>
     <div class="bar"><i id="spFill"></i></div>
     <div class="stats">
       <span>записано <b id="spWritten">0</b></span>
@@ -805,9 +860,9 @@
     </div>
     <div class="row" style="margin-top:16px">
       <button id="spStop" class="ghost">Остановить</button>
-      <button id="spAgain" class="ghost" hidden>Другая книга</button>
     </div>
-    <p class="hint" id="spSummary"></p>
+    <p class="result-path" id="spSummary"></p>
+    <div class="table" id="spErrors" hidden></div>
   </div>
 </section>
 
@@ -940,174 +995,132 @@
   </div>
 </section>
 
-<!-- ========================= В Word ========================= -->
-<section id="tab-word" hidden>
+<!-- ========================= Объединить ========================= -->
+<section id="tab-merge" hidden>
   <div class="card lit">
-    <label>Что обрабатываем — .epub, .docx, .txt или .md</label>
+    <label>Что объединяем — папка или отдельные файлы, форматы можно смешивать</label>
     <div class="row">
-      <button class="ghost pickany" data-list="wdList" style="flex:1">Выбрать…</button>
+      <button class="ghost pickany" data-list="mgList" style="flex:1">Выбрать…</button>
     </div>
-    <div class="chosen" id="wdList"></div>
-    <p class="hint" id="wdScanned">Файлы читаются сразу после выбора.</p>
+    <div class="chosen" id="mgList"></div>
+    <p class="hint" id="mgScanned">Файлы читаются сразу после выбора.</p>
   </div>
 
-  <div class="card" id="wdOpts" hidden>
-    <label>Режим</label>
-    <div class="row">
-      <button class="pick3 on" data-mode="single">Собрать в один документ</button>
-      <button class="pick3" data-mode="per_chapter">Разложить по главам</button>
-    </div>
-    <p class="hint" id="wdModeNote"></p>
+  <div class="card" id="mgOpts" hidden>
+    <label>Формат на выходе</label>
+    <div class="row" id="mgFormats"></div>
 
     <div class="row" style="margin-top:16px">
-      <div style="flex:2">
-        <label>шрифт</label>
-        <div class="dropdown" id="wdFont"
-             data-options='[["Times New Roman","Times New Roman"],["Georgia","Georgia"],["Garamond","Garamond"],["Book Antiqua","Book Antiqua"],["Palatino Linotype","Palatino Linotype"],["Arial","Arial"],["Calibri","Calibri"],["Verdana","Verdana"],["Tahoma","Tahoma"],["Segoe UI","Segoe UI"],["PT Serif","PT Serif"],["PT Sans","PT Sans"],["Liberation Serif","Liberation Serif"],["__other__","Другой…"]]'></div>
-        <input id="wdFontOther" type="text" placeholder="Название шрифта"
-               autocomplete="off" style="margin-top:8px" hidden>
-      </div>
-      <div style="flex:1">
-        <label for="wdSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
-        <input id="wdSize" type="number" value="12" min="6" max="72">
-      </div>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <div style="flex:1">
-        <label for="wdSpacing">интервал<i class="hint-icon" data-tip="Расстояние между строками. 1,5 — стандарт.">?</i></label>
-        <input id="wdSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
-      </div>
-      <div style="flex:1">
-        <label for="wdIndent">отступ первой строки, см<i class="hint-icon" data-tip="«Красная строка» в начале абзаца, в сантиметрах. По умолчанию 0.">?</i></label>
-        <input id="wdIndent" type="number" value="0" step="0.05" min="0" max="5">
-      </div>
-    </div>
-    <label class="chk" style="margin-top:12px">
-      <input type="checkbox" id="wdBreak" checked> разрыв страницы между главами
-      <i class="hint-icon" data-tip="Каждая глава начинается с новой страницы.">?</i></label>
-
-    <div class="row" style="margin-top:14px">
-      <div style="flex:1">
-        <label>выравнивание</label>
-        <div class="dropdown" id="wdAlign"
-             data-options='[["left","по левому краю"],["justify","по ширине"],["center","по центру"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label>вид разделителя сцен</label>
-        <div class="dropdown" id="wdScene"
-             data-options='[["stars","* * * по центру"],["blank","пустая строка"],["dashes","— — — по центру"],["keep","как в исходнике"]]'></div>
-      </div>
-    </div>
-
-    <label class="chk" style="margin-top:12px">
-      <input type="checkbox" id="wdStripTitle" checked> убирать название главы из текста
-      <i class="hint-icon" data-tip="В исходнике название нередко продублировано в первых абзацах. Оно живёт только в имени файла.">?</i></label>
-    <label class="chk" style="margin-top:8px">
-      <input type="checkbox" id="wdItalicSystem"> выделять системные сообщения курсивом
-      <i class="hint-icon" data-tip="Игровые уведомления в фигурных и квадратных скобках. Они часть текста, удалять их нельзя.">?</i></label>
-
-    <div style="margin-top:16px">
-      <label>Куда сохранить</label>
-      <div class="row">
-        <input id="wdBase" type="text" placeholder="Папка назначения" autocomplete="off">
-        <button class="ghost browse" data-target="wdBase" data-kind="folder">Обзор…</button>
-      </div>
-      <div style="margin-top:10px">
-        <label for="wdName">имя документа</label>
-        <input id="wdName" type="text" placeholder="Книга" autocomplete="off">
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:18px">
-      <button id="wdStart" class="primary" style="flex:1">Собрать</button>
-    </div>
-    <p class="hint" id="wdFinal"></p>
-  </div>
-
-  <div class="card lit" id="wdProgress" hidden>
-    <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="wdStatus"></span></div>
-    <div class="bar"><i id="wdFill"></i></div>
-    <div class="stats">
-      <span>собрано <b id="wdWritten">0</b></span>
-      <span>ошибок <b id="wdFailed">0</b></span>
-      <span id="wdPct"></span>
-    </div>
-    <div class="row" style="margin-top:16px">
-      <button id="wdStop" class="ghost">Остановить</button>
-    </div>
-    <p class="hint" id="wdSummary"></p>
-    <div class="table" id="wdErrors" hidden></div>
-  </div>
-</section>
-
-<!-- ========================== В TXT ========================== -->
-<section id="tab-totxt" hidden>
-  <div class="card lit">
-    <label>Папка с главами — .txt, .md, .docx или .epub</label>
-    <div class="row">
-      <button class="ghost pickany" data-list="txList" style="flex:1">Выбрать…</button>
-    </div>
-    <div class="chosen" id="txList"></div>
-    <p class="hint" id="txScanned">Файлы читаются сразу после выбора.</p>
-  </div>
-
-  <div class="card" id="txOpts" hidden>
-    <div class="row">
       <div style="flex:1">
         <label>порядок глав</label>
-        <div class="dropdown" id="txOrder"
+        <div class="dropdown" id="mgOrder"
              data-options='[["number","по номеру главы"],["name","по имени файла"]]'></div>
       </div>
       <div style="flex:1">
-        <label>кодировка</label>
-        <div class="dropdown" id="txEncoding"
+        <label>кодировка<i class="hint-icon" data-tip="Для текстовых форматов. Windows-1251 нужна старым читалкам.">?</i></label>
+        <div class="dropdown" id="mgEncoding"
              data-options='[["utf-8","UTF-8"],["windows-1251","Windows-1251"]]'></div>
       </div>
     </div>
 
     <div style="margin-top:14px">
       <label>разделитель между главами</label>
-      <div class="dropdown" id="txSeparator"
+      <div class="dropdown" id="mgSeparator"
            data-options='[["blank","пустая строка"],["stars","* * *"],["dashes","---"],["double","═══"],["custom","свой вариант"]]'></div>
-      <input id="txCustom" type="text" placeholder="Свой разделитель"
+      <input id="mgCustom" type="text" placeholder="Свой разделитель"
              autocomplete="off" style="margin-top:8px" hidden>
     </div>
 
     <label class="chk" style="margin-top:14px">
-      <input type="checkbox" id="txHeadings" checked> добавлять название главы перед текстом
-      <i class="hint-icon" data-tip="Название берётся из имени файла.">?</i></label>
+      <input type="checkbox" id="mgHeadings" checked> добавлять название главы перед текстом
+      <i class="hint-icon" data-tip="Название берётся из заголовка главы или из имени файла.">?</i></label>
+  </div>
 
-    <div style="margin-top:16px">
-      <label>Куда сохранить</label>
-      <div class="row">
-        <input id="txBase" type="text" placeholder="Папка назначения" autocomplete="off">
-        <button class="ghost browse" data-target="txBase" data-kind="folder">Обзор…</button>
+  <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
+  <div class="card" id="mgStyle" hidden>
+    <label>Оформление документа</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:2">
+        <label>шрифт</label>
+        <div class="dropdown" id="mgFont"
+             data-options='[["Times New Roman","Times New Roman"],["Georgia","Georgia"],["Garamond","Garamond"],["Book Antiqua","Book Antiqua"],["Palatino Linotype","Palatino Linotype"],["Arial","Arial"],["Calibri","Calibri"],["Verdana","Verdana"],["Tahoma","Tahoma"],["Segoe UI","Segoe UI"],["PT Serif","PT Serif"],["PT Sans","PT Sans"],["Liberation Serif","Liberation Serif"],["__other__","Другой…"]]'></div>
+        <input id="mgFontOther" type="text" placeholder="Название шрифта"
+               autocomplete="off" style="margin-top:8px" hidden>
       </div>
-      <div style="margin-top:10px">
-        <label for="txName">имя файла</label>
-        <input id="txName" type="text" placeholder="Книга" autocomplete="off">
+      <div style="flex:1">
+        <label for="mgSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
+        <input id="mgSize" type="number" value="12" min="6" max="72">
       </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label for="mgSpacing">интервал<i class="hint-icon" data-tip="Расстояние между строками. 1,5 — стандарт.">?</i></label>
+        <input id="mgSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
+      </div>
+      <div style="flex:1">
+        <label for="mgIndent">отступ первой строки, см<i class="hint-icon" data-tip="«Красная строка» в начале абзаца, в сантиметрах. По умолчанию 0.">?</i></label>
+        <input id="mgIndent" type="number" value="0" step="0.05" min="0" max="5">
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="mgBreak" checked> разрыв страницы между главами
+      <i class="hint-icon" data-tip="Каждая глава начинается с новой страницы.">?</i></label>
+  </div>
+
+  <!-- Обработка текста — одна на обе вкладки, как и код за ней. -->
+  <div class="card" id="mgPrep" hidden>
+    <label>Обработка текста</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label>выравнивание</label>
+        <div class="dropdown" id="mgAlign"
+             data-options='[["left","по левому краю"],["justify","по ширине"],["center","по центру"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>вид разделителя сцен</label>
+        <div class="dropdown" id="mgScene"
+             data-options='[["stars","* * * по центру"],["blank","пустая строка"],["dashes","— — — по центру"],["keep","как в исходнике"]]'></div>
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="mgStripTitle" checked> убирать название главы из текста
+      <i class="hint-icon" data-tip="В исходнике название нередко продублировано в первых абзацах. Оно живёт только в имени файла.">?</i></label>
+    <label class="chk" style="margin-top:8px">
+      <input type="checkbox" id="mgItalicSystem"> выделять системные сообщения курсивом
+      <i class="hint-icon" data-tip="Игровые уведомления в фигурных и квадратных скобках. Они часть текста, удалять их нельзя.">?</i></label>
+  </div>
+
+  <div class="card" id="mgPlace" hidden>
+    <label>Куда сохранить</label>
+    <div class="row">
+      <input id="mgBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="mgBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="mgName">имя файла</label>
+      <input id="mgName" type="text" placeholder="Книга" autocomplete="off">
     </div>
 
     <div class="row" style="margin-top:18px">
-      <button id="txStart" class="primary" style="flex:1">Собрать в TXT</button>
+      <button id="mgStart" class="primary" style="flex:1">Объединить</button>
     </div>
-    <p class="hint" id="txFinal"></p>
+    <p class="hint" id="mgFinal"></p>
   </div>
 
-  <div class="card lit" id="txProgress" hidden>
+  <div class="card lit" id="mgProgress" hidden>
     <div class="status result-block"><span class="result-dot"></span>
-      <span class="result-text" id="txStatus"></span></div>
-    <div class="bar"><i id="txFill"></i></div>
+      <span class="result-text" id="mgStatus"></span></div>
+    <div class="bar"><i id="mgFill"></i></div>
     <div class="stats">
-      <span>собрано <b id="txWritten">0</b></span>
-      <span>ошибок <b id="txFailed">0</b></span>
-      <span id="txPct"></span>
+      <span>собрано <b id="mgWritten">0</b></span>
+      <span>ошибок <b id="mgFailed">0</b></span>
+      <span id="mgPct"></span>
     </div>
     <div class="row" style="margin-top:16px">
-      <button id="txStop" class="ghost">Остановить</button>
+      <button id="mgStop" class="ghost">Остановить</button>
     </div>
-    <p class="result-path" id="txSummary"></p>
+    <p class="result-path" id="mgSummary"></p>
+    <div class="table" id="mgErrors" hidden></div>
   </div>
 </section>
 
@@ -1265,9 +1278,6 @@ function addSpinners(root){
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16">
   <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
         stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
-const FILE_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-  <path d="M6 3h7l5 5v13H6V3Z" stroke="#8c54ff" stroke-width="1.5" stroke-linejoin="round"/>
-  <path d="M13 3v5h5" stroke="#8c54ff" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 let novel = null, basePath = null, jobId = null, poll = null;
 
 function showError(msg){
@@ -1584,206 +1594,11 @@ document.querySelectorAll('.tabs button').forEach(btn => {
   };
 });
 
-/* ========================== вкладка «Разбить книгу» ====================== */
-
-let bookPath = null, splitBase = null, splitFmt = 'txt', splitJob = null, splitPoll = null;
-
-/** Обзор папок: универсальный, для выбора файла книги и для места сохранения. */
-function makeBrowser({listId, pathId, files, onPick}){
-  async function go(path){
-    try{
-      const query = new URLSearchParams();
-      if(path) query.set('path', path);
-      if(files) query.set('files', files);
-      const data = await call('/api/browse?' + query);
-      $(pathId).textContent = data.path + (files || data.writable ? '' : '  (нет прав на запись)');
-      if(!files) splitBase = data.path;
-
-      const list = $(listId);
-      list.innerHTML = '';
-      if(data.parent){
-        const up = document.createElement('button');
-        up.className = 'up';
-        up.textContent = '↑  ..';
-        up.onclick = () => go(data.parent);
-        list.appendChild(up);
-      }
-      for(const dir of data.dirs){
-        const btn = document.createElement('button');
-        btn.innerHTML = FOLDER_ICON;
-        btn.append(dir.name);
-        btn.onclick = () => go(dir.path);
-        list.appendChild(btn);
-      }
-      for(const file of (data.files || [])){
-        const btn = document.createElement('button');
-        btn.className = 'file';
-        btn.innerHTML = FILE_ICON;
-        btn.append(file.name);
-        btn.onclick = () => {
-          list.querySelectorAll('.file').forEach(b => b.classList.remove('on'));
-          btn.classList.add('on');
-          onPick(file);
-        };
-        list.appendChild(btn);
-      }
-      if(onPick) onPick(null, data);
-    }catch(err){ showError(err.message); }
-  }
-  return go;
-}
-
-const browseBook = makeBrowser({
-  listId: 'spBrowse', pathId: 'spPath', files: 'epub,txt',
-  onPick: file => { if(file) pickBook(file); }
-});
-
-const browseSplitOut = makeBrowser({
-  listId: 'spOutBrowse', pathId: 'spOutPath',
-  onPick: () => updateSplitPath()
-});
-
-async function pickBook(file){
-  bookPath = file.path;
-  $('spChosen').textContent = 'Выбрано: ' + file.name;
-  $('spFolder').value = file.name.replace(/\.[^.]+$/, '');
-  await runPreview();
-}
-
-/** Превью до записи: сколько глав и первые названия. */
-async function runPreview(){
-  if(!bookPath) return;
-  showError('');
-  $('spChosen').innerHTML = '<span class="spin"></span>Разбираем книгу…';
-  try{
-    const {preview} = await call('/api/split/preview', {
-      path: bookPath,
-      pattern: $('spPattern').value.trim()
-    });
-    $('spChosen').textContent = 'Выбрано: ' + bookPath.split(/[/\\]/).pop();
-    $('spCount').textContent = `Найдено глав: ${preview.total}`;
-    $('spTitles').textContent = preview.titles.join('  ·  ')
-      + (preview.total > preview.titles.length ? '  …' : '');
-    $('spPreview').hidden = false;
-    $('spPlace').hidden = false;
-    $('spPatternCard').hidden = preview.kind !== 'txt';
-    if(preview.kind === 'txt' && !$('spPattern').value) $('spPattern').value = preview.pattern;
-    if(splitBase === null) browseSplitOut();
-    updateSplitPath();
-  }catch(err){
-    $('spChosen').textContent = 'Выбрано: ' + bookPath.split(/[/\\]/).pop();
-    $('spPreview').hidden = true;
-    $('spPlace').hidden = true;
-    if(err.needPattern){
-      $('spPatternCard').hidden = false;
-      if(!$('spPattern').value) $('spPattern').value = err.pattern || '';
-    }
-    showError(err.message);
-  }
-}
-
-function updateSplitPath(){
-  const name = $('spFolder').value.trim();
-  $('spFinalPath').textContent = splitBase && name
-    ? `Главы лягут в: ${splitBase}/${name}  (.${splitFmt})` : '';
-}
-
-async function saveSplit(){
-  showError('');
-  $('spSave').disabled = true;
-  try{
-    const {job} = await call('/api/split/start', {
-      path: bookPath,
-      base: splitBase,
-      folder: $('spFolder').value.trim(),
-      format: splitFmt,
-      pattern: $('spPattern').value.trim()
-    });
-    splitJob = job.id;
-    $('spPlace').hidden = true;
-    $('spProgress').hidden = false;
-    $('spAgain').hidden = true;
-    $('spStop').hidden = false;
-    $('spSummary').textContent = 'Папка: ' + job.output_dir;
-    splitPoll = setInterval(splitTick, 500);
-    splitTick();
-  }catch(err){
-    showError(err.message);
-    if(err.needPattern) $('spPatternCard').hidden = false;
-  }finally{
-    $('spSave').disabled = false;
-  }
-}
-
-async function splitTick(){
-  try{
-    const {job} = await call('/api/job/' + splitJob);
-    const p = job.progress || {};
-    const busy = !TERMINAL.includes(p.stage);
-
-    $('spStatus').textContent = p.message || '';
-    markResult('spStatus', busy, p.stage);
-    const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
-    $('spFill').style.width = pct + '%';
-    $('spFill').classList.toggle('active', busy);
-    $('spPct').textContent = p.total ? pct + '%' : '';
-    $('spWritten').textContent = p.written || p.done || 0;
-    $('spFailed').textContent = p.failed || 0;
-
-    if(!busy){
-      clearInterval(splitPoll);
-      $('spStop').hidden = true;
-      $('spAgain').hidden = false;
-      if(p.stage === 'done') $('spStatus').classList.add('ok');
-      if(job.report){
-        let text = `Папка: ${job.report.output_dir}`;
-        if(job.report.failed_files?.length){
-          text += '\nНе записаны:\n' + job.report.failed_files.join('\n');
-        }
-        $('spSummary').style.whiteSpace = 'pre-line';
-        $('spSummary').textContent = text;
-      }
-      if(job.error) showError(job.error);
-    }
-  }catch(err){
-    clearInterval(splitPoll);
-    showError(err.message);
-  }
-}
-
-document.querySelectorAll('.pick').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('.pick').forEach(b => b.classList.toggle('on', b === btn));
-    splitFmt = btn.dataset.fmt;
-    updateSplitPath();
-  };
-});
-
-$('spHome').onclick = () => browseBook();
-$('spOutHome').onclick = () => browseSplitOut();
-$('spFolder').addEventListener('input', updateSplitPath);
-$('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') runPreview(); });
-$('spSave').onclick = saveSplit;
-$('spStop').onclick = async () => {
-  $('spStop').disabled = true;
-  try{ await call('/api/job/' + splitJob + '/cancel', {}); }
-  catch(err){ showError(err.message); }
-  finally{ $('spStop').disabled = false; }
-};
-$('spAgain').onclick = () => {
-  clearInterval(splitPoll);
-  $('spProgress').hidden = true;
-  $('spPlace').hidden = false;
-  $('spStatus').classList.remove('ok');
-  $('spSummary').textContent = '';
-  showError('');
-};
-browseBook();
 $('stop').onclick = stop;
 $('again').onclick = reset;
 </script>
-<!-- Вкладки «Переименовать», «В Word» и «Проверка» — общие помощники
-     объявлены выше, поэтому файл подключается следом. -->
+<!-- Вкладки «Разбить», «Объединить», «Переименовать» и «Проверка» —
+     общие помощники объявлены выше, поэтому файл подключается следом. -->
 <script src="/static/tabs.js"></script>
 </body>
 </html>

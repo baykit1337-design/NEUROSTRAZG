@@ -1,4 +1,4 @@
-/* Вкладки «Переименовать», «В Word» и «Проверка текста».
+/* Вкладки «Переименовать», «Разбить», «Объединить» и «Проверка текста».
  *
  * Общие помощники ($, call, showError, TERMINAL) объявлены в index.html и
  * доступны здесь: этот файл подключается следом.
@@ -37,14 +37,9 @@ call('/api/pick/available').then(data => {
   }
 }).catch(() => {});
 
-// На вкладках «Качалка» и «Разбить» проводник отдаёт путь через скрытое
-// поле, а дальше подхватывает их собственный обозреватель.
+// На вкладке «Качалка» проводник отдаёт путь через скрытое поле, а
+// дальше подхватывает её собственный обозреватель.
 $('baseHidden').addEventListener('input', e => browse(e.target.value));
-$('spBaseHidden').addEventListener('input', e => browseSplitOut(e.target.value));
-$('bookHidden').addEventListener('input', e => {
-  const path = e.target.value;
-  if(path) pickBook({path, name: path.split(/[/\\]/).pop()});
-});
 
 
 /* ------------------------------------------------- всплывающие подсказки */
@@ -544,245 +539,315 @@ $('rnPartsCancel').onclick = () => { $('rnDialog').hidden = true; };
 $('rnApply').onclick = rnApply;
 $('rnStop').onclick = () => stopJob(rnJob);
 
-/* ============================== В Word ============================== */
+/* ===================== «Разбить» и «Объединить» =====================
+ *
+ * Две зеркальные операции: один файл в множество и множество в один.
+ * Раньше их было три вкладки («Разбить», «В Word», «В TXT»), и каждая
+ * знала свой формат. Формат теперь параметр, а не отдельная вкладка,
+ * поэтому настройки собираются одним кодом с разной приставкой в id.
+ */
 
-let wdMode = 'single', wdJob = null, wdAlign = null, wdScene = null, wdFontMenu = null;
+//: Списки форматов приходят с сервера: иначе новый формат пришлось бы
+//: добавлять и в ядре, и здесь.
+let FORMATS = {readable: [], writable: ['.txt']};
 
-/** Шрифт: из списка либо из поля «Другой…». */
-function wdFontValue(){
-  const chosen = wdFontMenu ? wdFontMenu.value : 'Times New Roman';
-  if(chosen === '__other__') return $('wdFontOther').value.trim() || 'Times New Roman';
-  return chosen;
+/** Кнопки выбора формата на выходе. */
+function buildFormats(rowId, state, onChange){
+  const row = $(rowId);
+  row.innerHTML = '';
+  for(const suffix of FORMATS.writable){
+    const btn = document.createElement('button');
+    btn.className = 'pick' + (suffix === state.format ? ' on' : '');
+    btn.textContent = suffix;
+    btn.onclick = () => {
+      state.format = suffix;
+      row.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+      onChange();
+    };
+    row.append(btn);
+  }
 }
 
-//: Пояснение под каждым режимом — что получится на выходе.
-const WD_MODE_NOTES = {
-  single: 'Все главы из выбранного лягут в один файл .docx.',
-  per_chapter: 'Каждая глава станет отдельным файлом .docx в новой папке.',
-};
-
-function wdStyle(){
+/** Оформление .docx — общее для обеих вкладок, отличается приставкой id. */
+function styleOf(p, menus){
+  const chosen = menus.font ? menus.font.value : 'Times New Roman';
   return {
-    font: wdFontValue(),
-    size: $('wdSize').value,
-    line_spacing: $('wdSpacing').value,
-    first_line_indent_cm: $('wdIndent').value,
-    page_break_between_chapters: $('wdBreak').checked,
+    font: chosen === '__other__'
+      ? ($(p + 'FontOther').value.trim() || 'Times New Roman') : chosen,
+    size: $(p + 'Size').value,
+    line_spacing: $(p + 'Spacing').value,
+    first_line_indent_cm: $(p + 'Indent').value,
+    page_break_between_chapters: $(p + 'Break').checked,
   };
 }
 
-function wdPrep(){
+function prepOf(p, menus){
   return {
-    strip_title: $('wdStripTitle').checked,
-    italic_system: $('wdItalicSystem').checked,
-    align: wdAlign ? wdAlign.value : 'left',
-    scene_style: wdScene ? wdScene.value : 'stars',
-    first_line_indent_cm: $('wdIndent').value,
+    strip_title: $(p + 'StripTitle').checked,
+    italic_system: $(p + 'ItalicSystem').checked,
+    align: menus.align ? menus.align.value : 'left',
+    scene_style: menus.scene ? menus.scene.value : 'stars',
+    first_line_indent_cm: $(p + 'Indent').value,
   };
 }
 
-function wdUpdateFinal(){
-  const base = $('wdBase').value.trim(), name = $('wdName').value.trim();
-  $('wdFinal').textContent = base && name
-    ? (wdMode === 'single' ? `Документ: ${base}/${name}.docx` : `Папка: ${base}/${name}`)
-    : '';
-  $('wdModeNote').textContent = WD_MODE_NOTES[wdMode] || '';
+/** Показывает список ошибок по файлам: молчаливых отказов быть не должно. */
+function showFailures(tableId, failures){
+  const table = $(tableId);
+  table.innerHTML = '';
+  if(!failures || !failures.length){ table.hidden = true; return; }
+  for(const failure of failures){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const file = document.createElement('span');
+    file.className = 'grow';
+    file.textContent = failure.file;
+    file.title = failure.file;
+    const step = document.createElement('span');
+    step.className = 'tag';
+    step.textContent = failure.step;
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = failure.error;
+    text.title = failure.error;
+    row.append(file, step, text);
+    table.append(row);
+  }
+  table.hidden = false;
 }
 
-/** Читается сразу после выбора — отдельной кнопки «Прочитать» больше нет. */
-async function wdScan(){
-  const targets = CHOSEN.wdList || [];
+/** Оформление и обработка нужны не всякому формату — прячем лишнее. */
+function toggleOptions(p, format){
+  $(p + 'Style').hidden = format !== '.docx';
+  $(p + 'Prep').hidden = false;
+}
+
+/* ------------------------------------------------------------ Разбить */
+
+const spState = {format: '.txt', job: null, menus: {}};
+
+function spUpdateFinal(){
+  const base = $('spBase').value.trim(), name = $('spFolder').value.trim();
+  $('spFinal').textContent = base && name
+    ? `Главы лягут в: ${base}/${name}  (${spState.format})` : '';
+  toggleOptions('sp', spState.format);
+}
+
+/** Читается сразу после выбора — отдельной кнопки «Прочитать» нет. */
+async function spScan(){
+  const targets = CHOSEN.spList || [];
   if(!targets.length){
-    $('wdOpts').hidden = true;
-    $('wdScanned').textContent = 'Файлы читаются сразу после выбора.';
+    ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard']
+      .forEach(id => { $(id).hidden = true; });
+    $('spScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
   }
   showError('');
-  $('wdScanned').innerHTML = '<span class="spin"></span>Читаем…';
+  $('spScanned').innerHTML = '<span class="spin"></span>Читаем…';
   try{
-    const data = await call('/api/word/scan', {targets});
-    $('wdScanned').textContent =
+    const data = await call('/api/split/scan', {
+      targets,
+      pattern: $('spPattern').value.trim(),
+      parts: Number($('spParts').value) || 1,
+    });
+    $('spScanned').textContent =
       `Файлов: ${data.file_count}, глав: ${data.total}. ` +
       (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
-    if(data.unreadable?.length){
-      showError('Не прочитаны: ' + data.unreadable.join('; '));
+    if(data.unreadable?.length) showError('Не прочитаны: ' + data.unreadable.join('; '));
+    $('spOpts').hidden = false;
+    $('spPlace').hidden = false;
+    $('spPatternCard').hidden = true;
+    if(!$('spFolder').value && targets.length === 1){
+      const name = targets[0].split(/[/\\]/).pop() || '';
+      $('spFolder').value = name.replace(/\.[^.]+$/, '');
     }
-    $('wdOpts').hidden = false;
-    if(!$('wdName').value) $('wdName').value = 'Книга';
-    wdUpdateFinal();
+    spUpdateFinal();
   }catch(err){
+    $('spScanned').textContent = '';
+    $('spOpts').hidden = true;
+    $('spPlace').hidden = true;
+    // Заголовков не нашлось — наугад не режем, просим шаблон.
+    if(err.needPattern){
+      $('spPatternCard').hidden = false;
+      if(!$('spPattern').value) $('spPattern').value = err.pattern || '';
+    }
     showError(err.message);
-    $('wdOpts').hidden = true;
-    $('wdScanned').textContent = '';
   }
 }
-window.wdScan = wdScan;
+window.spScan = spScan;
 
-async function wdStart(){
+async function spStart(){
   showError('');
-  $('wdStart').disabled = true;
-  $('wdErrors').hidden = true;
+  $('spStart').disabled = true;
+  $('spErrors').hidden = true;
   try{
-    const {job} = await call('/api/word/start', {
-      targets: CHOSEN.wdList || [],
-      base: $('wdBase').value.trim(),
-      name: $('wdName').value.trim(),
-      mode: wdMode,
-      style: wdStyle(),
-      prep: wdPrep(),
+    const {job} = await call('/api/split/start', {
+      targets: CHOSEN.spList || [],
+      base: $('spBase').value.trim(),
+      folder: $('spFolder').value.trim(),
+      format: spState.format,
+      pattern: $('spPattern').value.trim(),
+      parts: Number($('spParts').value) || 1,
+      headings: $('spHeadings').checked,
+      encoding: spState.menus.encoding ? spState.menus.encoding.value : 'utf-8',
+      style: styleOf('sp', spState.menus),
+      prep: prepOf('sp', spState.menus),
     });
-    wdJob = job.id;
-    $('wdProgress').hidden = false;
-    $('wdStop').hidden = false;
-    $('wdSummary').textContent = 'Результат: ' + job.output_dir;
+    spState.job = job.id;
+    $('spProgress').hidden = false;
+    $('spStop').hidden = false;
+    $('spSummary').textContent = 'Папка: ' + job.output_dir;
 
     pollJob(job.id,
       job => {
         const p = job.progress || {};
-        $('wdWritten').textContent = p.written || p.done || 0;
-        $('wdFailed').textContent = p.failed || 0;
-        return drawResult(p, 'wdFill', 'wdStatus', 'wdPct');
+        $('spWritten').textContent = p.written || p.done || 0;
+        $('spFailed').textContent = p.failed || 0;
+        return drawResult(p, 'spFill', 'spStatus', 'spPct');
       },
       job => {
-        $('wdStop').hidden = true;
-        if(job.error) showError(job.error);
-        // Молчаливых отказов быть не должно: показываем каждую осечку.
-        const failures = job.report?.failures || [];
-        if(failures.length){
-          const table = $('wdErrors');
-          table.innerHTML = '';
-          for(const failure of failures){
-            const row = document.createElement('div');
-            row.className = 'tr';
-            const file = document.createElement('span');
-            file.className = 'grow';
-            file.textContent = failure.file;
-            file.title = failure.file;
-            const step = document.createElement('span');
-            step.className = 'tag';
-            step.textContent = failure.step;
-            const text = document.createElement('span');
-            text.className = 'grow';
-            text.textContent = failure.error;
-            text.title = failure.error;
-            row.append(file, step, text);
-            table.append(row);
-          }
-          table.hidden = false;
-        }
+        $('spStop').hidden = true;
+        if(job.error){ showError(job.error); return; }
+        $('spSummary').textContent = 'Папка: ' + (job.report?.output || job.output_dir);
+        showFailures('spErrors', job.report?.failures);
       });
   }catch(err){
     showError(err.message);
+    if(err.needPattern) $('spPatternCard').hidden = false;
   }finally{
-    $('wdStart').disabled = false;
+    $('spStart').disabled = false;
   }
 }
 
-document.querySelectorAll('.pick3').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('.pick3').forEach(b => b.classList.toggle('on', b === btn));
-    wdMode = btn.dataset.mode;
-    wdUpdateFinal();
-  };
-});
-$('wdList').dataset.onchange = 'wdScan';
-$('wdStart').onclick = wdStart;
-$('wdStop').onclick = () => stopJob(wdJob);
-['wdBase','wdName'].forEach(id => $(id).addEventListener('input', wdUpdateFinal));
-wdFontMenu = makeDropdown($('wdFont'), value => {
-  // «Другой…» открывает поле для ручного ввода.
-  $('wdFontOther').hidden = value !== '__other__';
-});
-wdAlign = makeDropdown($('wdAlign'));
-wdScene = makeDropdown($('wdScene'));
-wdUpdateFinal();
+/* --------------------------------------------------------- Объединить */
 
+const mgState = {format: '.txt', job: null, menus: {}};
 
-/* ============================== В TXT ============================== */
-
-let txJob = null, txOrder = null, txEncoding = null, txSeparator = null;
-
-function txUpdateFinal(){
-  const base = $('txBase').value.trim(), name = $('txName').value.trim();
-  $('txFinal').textContent = base && name ? `Файл: ${base}/${name}.txt` : '';
+function mgUpdateFinal(){
+  const base = $('mgBase').value.trim(), name = $('mgName').value.trim();
+  $('mgFinal').textContent = base && name
+    ? `Файл: ${base}/${name}${mgState.format}` : '';
+  toggleOptions('mg', mgState.format);
 }
 
-/** Читается сразу после выбора, как на остальных вкладках. */
-async function txScan(){
-  const targets = CHOSEN.txList || [];
+async function mgScan(){
+  const targets = CHOSEN.mgList || [];
   if(!targets.length){
-    $('txOpts').hidden = true;
-    $('txScanned').textContent = 'Файлы читаются сразу после выбора.';
+    ['mgOpts', 'mgPlace', 'mgStyle', 'mgPrep'].forEach(id => { $(id).hidden = true; });
+    $('mgScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
   }
   showError('');
-  $('txScanned').innerHTML = '<span class="spin"></span>Читаем…';
+  $('mgScanned').innerHTML = '<span class="spin"></span>Читаем…';
   try{
-    const data = await call('/api/txt/scan', {targets, order: txOrder ? txOrder.value : 'number'});
-    $('txScanned').textContent =
-      `Глав: ${data.total}. ` + (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
-    $('txOpts').hidden = false;
-    if(!$('txName').value) $('txName').value = 'Книга';
-    txUpdateFinal();
+    const data = await call('/api/merge/scan', {
+      targets,
+      order: mgState.menus.order ? mgState.menus.order.value : 'number',
+    });
+    $('mgScanned').textContent =
+      `Файлов: ${data.file_count}, глав: ${data.total}. ` +
+      (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
+    if(data.unreadable?.length) showError('Не прочитаны: ' + data.unreadable.join('; '));
+    $('mgOpts').hidden = false;
+    $('mgPlace').hidden = false;
+    if(!$('mgName').value) $('mgName').value = 'Книга';
+    mgUpdateFinal();
   }catch(err){
     showError(err.message);
-    $('txOpts').hidden = true;
-    $('txScanned').textContent = '';
+    $('mgOpts').hidden = true;
+    $('mgPlace').hidden = true;
+    $('mgScanned').textContent = '';
   }
 }
-window.txScan = txScan;
+window.mgScan = mgScan;
 
-async function txStart(){
+async function mgStart(){
   showError('');
-  $('txStart').disabled = true;
+  $('mgStart').disabled = true;
+  $('mgErrors').hidden = true;
   try{
-    const {job} = await call('/api/txt/start', {
-      targets: CHOSEN.txList || [],
-      base: $('txBase').value.trim(),
-      name: $('txName').value.trim(),
-      order: txOrder ? txOrder.value : 'number',
-      encoding: txEncoding ? txEncoding.value : 'utf-8',
-      separator: txSeparator ? txSeparator.value : 'blank',
-      custom_separator: $('txCustom').value,
-      headings: $('txHeadings').checked,
+    const {job} = await call('/api/merge/start', {
+      targets: CHOSEN.mgList || [],
+      base: $('mgBase').value.trim(),
+      name: $('mgName').value.trim(),
+      format: mgState.format,
+      order: mgState.menus.order ? mgState.menus.order.value : 'number',
+      encoding: mgState.menus.encoding ? mgState.menus.encoding.value : 'utf-8',
+      separator: mgState.menus.separator ? mgState.menus.separator.value : 'blank',
+      custom_separator: $('mgCustom').value,
+      headings: $('mgHeadings').checked,
+      style: styleOf('mg', mgState.menus),
+      prep: prepOf('mg', mgState.menus),
     });
-    txJob = job.id;
-    $('txProgress').hidden = false;
-    $('txStop').hidden = false;
-    $('txSummary').textContent = 'Файл: ' + job.output_dir;
+    mgState.job = job.id;
+    $('mgProgress').hidden = false;
+    $('mgStop').hidden = false;
+    $('mgSummary').textContent = 'Файл: ' + job.output_dir;
 
     pollJob(job.id,
       job => {
         const p = job.progress || {};
-        $('txWritten').textContent = p.written || p.done || 0;
-        $('txFailed').textContent = p.failed || 0;
-        return drawResult(p, 'txFill', 'txStatus', 'txPct');
+        $('mgWritten').textContent = p.written || p.done || 0;
+        $('mgFailed').textContent = p.failed || 0;
+        return drawResult(p, 'mgFill', 'mgStatus', 'mgPct');
       },
       job => {
-        $('txStop').hidden = true;
+        $('mgStop').hidden = true;
         if(job.error){ showError(job.error); return; }
-        const report = job.report || {};
-        let text = `Файл: ${report.output}\nСимволов: ${report.characters}, кодировка ${report.encoding}`;
-        if(report.failed_files?.length) text += '\nНе собраны:\n' + report.failed_files.join('\n');
-        $('txSummary').textContent = text;
+        $('mgSummary').textContent = 'Файл: ' + (job.report?.output || job.output_dir);
+        showFailures('mgErrors', job.report?.failures);
       });
   }catch(err){
     showError(err.message);
   }finally{
-    $('txStart').disabled = false;
+    $('mgStart').disabled = false;
   }
 }
 
-$('txList').dataset.onchange = 'txScan';
-$('txStart').onclick = txStart;
-$('txStop').onclick = () => stopJob(txJob);
-['txBase','txName'].forEach(id => $(id).addEventListener('input', txUpdateFinal));
-txOrder = makeDropdown($('txOrder'), () => txScan());
-txEncoding = makeDropdown($('txEncoding'));
-txSeparator = makeDropdown($('txSeparator'), value => {
+/* ------------------------------------------------------------ привязка */
+
+for(const [p, state, update, scan] of [
+  ['sp', spState, spUpdateFinal, spScan],
+  ['mg', mgState, mgUpdateFinal, mgScan],
+]){
+  state.menus.font = makeDropdown($(p + 'Font'), value => {
+    // «Другой…» открывает поле для ручного ввода.
+    $(p + 'FontOther').hidden = value !== '__other__';
+  });
+  state.menus.align = makeDropdown($(p + 'Align'));
+  state.menus.scene = makeDropdown($(p + 'Scene'));
+  state.menus.encoding = makeDropdown($(p + 'Encoding'));
+  $(p + 'List').dataset.onchange = p + 'Scan';
+  $(p + 'Stop').onclick = () => stopJob(state.job);
+  $(p + 'Start').onclick = p === 'sp' ? spStart : mgStart;
+  $(p + 'Base').addEventListener('input', update);
+}
+
+$('spFolder').addEventListener('input', spUpdateFinal);
+$('spParts').addEventListener('input', spUpdateFinal);
+$('spRescan').onclick = () => spScan();
+$('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') spScan(); });
+
+$('mgName').addEventListener('input', mgUpdateFinal);
+mgState.menus.order = makeDropdown($('mgOrder'), () => mgScan());
+mgState.menus.separator = makeDropdown($('mgSeparator'), value => {
   // «Свой вариант» открывает поле для ручного ввода.
-  $('txCustom').hidden = value !== 'custom';
+  $('mgCustom').hidden = value !== 'custom';
 });
+
+// Списки форматов строятся по ответу сервера, а не по своему перечню.
+call('/api/formats').then(data => {
+  FORMATS = data;
+  buildFormats('spFormats', spState, spUpdateFinal);
+  buildFormats('mgFormats', mgState, mgUpdateFinal);
+}).catch(() => {
+  buildFormats('spFormats', spState, spUpdateFinal);
+  buildFormats('mgFormats', mgState, mgUpdateFinal);
+});
+
+spUpdateFinal();
+mgUpdateFinal();
+
 
 /* ========================== Проверка текста ========================== */
 

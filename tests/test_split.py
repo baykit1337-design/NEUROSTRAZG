@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 import threading
 import unittest
+
+from core import headings as corehead
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -282,22 +284,22 @@ class TestSplitWebApi(SplitTestCase):
         app.config["TESTING"] = True
         self.app = app.test_client()
 
-    def test_preview_endpoint(self):
-        res = self.app.post("/api/split/preview", json={"path": str(self.epub)})
+    def test_scan_endpoint(self):
+        res = self.app.post("/api/split/scan", json={"path": str(self.epub)})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json()["preview"]["total"], 3)
+        self.assertEqual(res.get_json()["total"], 3)
 
-    def test_preview_requires_path(self):
-        self.assertEqual(self.app.post("/api/split/preview", json={}).status_code, 400)
+    def test_scan_requires_path(self):
+        self.assertEqual(self.app.post("/api/split/scan", json={}).status_code, 400)
 
-    def test_preview_missing_headings_asks_for_pattern(self):
+    def test_scan_missing_headings_asks_for_pattern(self):
         flat = self.tmp / "flat.txt"
         flat.write_text("Ни одного заголовка.\n", encoding="utf-8")
-        res = self.app.post("/api/split/preview", json={"path": str(flat)})
+        res = self.app.post("/api/split/scan", json={"path": str(flat)})
         self.assertEqual(res.status_code, 422)
         body = res.get_json()
         self.assertTrue(body["need_pattern"])
-        self.assertEqual(body["pattern"], booksplit.DEFAULT_PATTERN)
+        self.assertEqual(body["pattern"], corehead.DEFAULT_PATTERN)
 
     def test_browse_lists_book_files(self):
         data = self.app.get(
