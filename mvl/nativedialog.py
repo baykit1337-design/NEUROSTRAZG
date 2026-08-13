@@ -1,4 +1,6 @@
-"""Системный диалог выбора папки и файла (проводник Windows).
+"""Системный диалог выбора папки и файла.
+
+Проводник Windows, Finder на macOS, диалог рабочего стола на Linux.
 
 Tk запускается **отдельным процессом**, а не потоком. Причина простая: Tk
 плохо переносит жизнь вне главного потока, а повторное создание корневого
@@ -23,9 +25,9 @@ TIMEOUT = 600
 # Скрипт для дочернего процесса. Печатает JSON — так пути с пробелами и
 # кириллицей доезжают без сюрпризов.
 _SCRIPT = r"""
-import json, sys
+import json, os, subprocess, sys
 
-mode, title, initial = sys.argv[1], sys.argv[2], sys.argv[3]
+mode, title, initial, patterns = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
     import tkinter as tk
     from tkinter import filedialog
@@ -38,9 +40,28 @@ try:
     root.withdraw()
     # Поверх браузера, иначе окно теряется за ним.
     root.attributes("-topmost", True)
+
+    if sys.platform == "darwin":
+        # На macOS одного -topmost мало: процесс без иконки в Dock не
+        # считается активным, и окно открывается позади браузера. Просим
+        # систему вывести нас вперёд явно.
+        try:
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to set frontmost of '
+                 'the first process whose unix id is %d to true' % os.getpid()],
+                capture_output=True, timeout=5)
+        except Exception:
+            pass
+        root.lift()
+        root.focus_force()
     root.update()
 
-    types = [("Книги и тексты", "*.epub *.docx *.txt *.md"), ("Все файлы", "*.*")]
+    # Расширения списком, а не одной строкой через пробел: на macOS
+    # строка «*.epub *.docx» не разбирается и фильтр не показывает ничего.
+    # «Все файлы» там же — «*», а не «*.*».
+    known = tuple(patterns.split(","))
+    types = [("Книги и тексты", known), ("Все файлы", "*")]
     if mode == "dir":
         paths = [filedialog.askdirectory(title=title, initialdir=initial or None)]
     elif mode == "files":
@@ -65,10 +86,17 @@ class DialogUnavailable(RuntimeError):
     """Системный диалог показать не удалось — работаем встроенным обзором."""
 
 
+def _patterns() -> str:
+    """Расширения, которые умеет читать ядро. Список один на весь проект."""
+    from core.formats import READABLE
+
+    return ",".join(f"*{suffix}" for suffix in READABLE)
+
+
 def _ask(mode: str, title: str, initial: str = "") -> list[str]:
     try:
         result = subprocess.run(
-            [sys.executable, "-c", _SCRIPT, mode, title, initial or ""],
+            [sys.executable, "-c", _SCRIPT, mode, title, initial or "", _patterns()],
             capture_output=True,
             text=True,
             timeout=TIMEOUT,
