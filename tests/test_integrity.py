@@ -532,6 +532,12 @@ class TestNeurostrazhStyles(unittest.TestCase):
         self.assertIn("flex-wrap:nowrap", block[:600])
         self.assertNotIn("flex-wrap:wrap", block[:600])
 
+    def test_open_dropdown_covers_the_next_card(self):
+        """Карточка размывает фон и делает свой слой: без подъёма самой
+        карточки раскрытый список уходил под следующую."""
+        self.assertIn(".card:has(.dropdown-menu:not([hidden])){z-index:40}",
+                      self.html)
+
     def test_threads_field_present(self):
         self.assertIn('id="dlThreads"', self.html)
 

@@ -15,6 +15,7 @@ from core.readers.base import ReadError
 SERVICE_FILES = frozenset({
     "replacements.txt",   # словарь автозамен книги
     "whitelist.txt",      # исключения проверки латиницы
+    "spelling.txt",       # свои слова для проверки орфографии
     "errors.log",
 })
 

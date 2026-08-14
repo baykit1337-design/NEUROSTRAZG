@@ -2186,6 +2186,437 @@ async function sgStart(){
   }
 }
 
+/* =============== Читалка и очередь задач (4.4 и 4.6) ===============
+ *
+ * Читалка показывает главу в том оформлении, в каком она уйдёт в файл, —
+ * иначе смотреть в ней было бы бессмысленно. Очередь склеивает операции
+ * в цепочку: папка результата одного шага становится входом следующего.
+ */
+
+let rdPage = null, rdList = [], rdMenu = null;
+
+function rdKinds(){
+  // Список проверок берём тот же, что отмечен на вкладке «Проверка»:
+  // подсвечивать в читалке то, что человек проверять не просил, незачем.
+  return $('rdMarks').checked ? (ckSelected ? ckSelected() : null) : [];
+}
+
+async function rdOpen(index){
+  showError('');
+  const targets = rpTargets();
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('rdOpen').disabled = true;
+  try{
+    if(!rdList.length || index === undefined){
+      const data = await call('/api/reader/list', {targets});
+      rdList = data.chapters || [];
+      if(!rdList.length){ showError('Глав не нашлось'); return; }
+      rdFillPick();
+    }
+    const page = await call('/api/reader/open',
+      {targets, index: index || 0, kinds: rdKinds()});
+    rdShow(page);
+    $('rdBox').hidden = false;
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('rdOpen').disabled = false;
+  }
+}
+
+function rdFillPick(){
+  // Список глав приходит с сервера, поэтому меню пересобирается целиком —
+  // тем же способом, что и список моделей.
+  const box = $('rdPick');
+  box.dataset.options = JSON.stringify(rdList.map(chapter => [
+    String(chapter.index),
+    chapter.title || chapter.label || `Глава ${chapter.index + 1}`,
+  ]));
+  box.innerHTML = '';
+  rdMenu = makeDropdown(box, value => rdOpen(Number(value)));
+}
+
+function rdShow(page){
+  rdPage = page;
+  if(rdMenu) rdMenu.set(String(page.index));
+  $('rdPrev').disabled = !page.has_prev;
+  $('rdNext').disabled = !page.has_next;
+  $('rdNote').textContent =
+    `Глава ${page.index + 1} из ${page.total}. Абзацев ${page.paragraphs.length}.`
+    + (page.findings.length ? ` Находок проверки: ${page.findings.length}.` : '');
+
+  // Абзац с находкой подсвечивается целиком: точное место всё равно видно
+  // по тексту, а подсветка внутри абзаца ломалась бы на подготовке.
+  const marked = new Set(page.findings.map(f => (f.context || '').trim()));
+  const box = $('rdText');
+  box.innerHTML = '';
+  for(const paragraph of page.paragraphs){
+    const row = document.createElement('p');
+    if(marked.has(paragraph.trim())) row.className = 'mark';
+    row.textContent = paragraph;
+    box.append(row);
+  }
+  rdEditMode(false);
+}
+
+function rdEditMode(on){
+  $('rdText').hidden = on;
+  $('rdEdit').hidden = !on;
+  $('rdEditBtn').hidden = on;
+  $('rdSave').hidden = !on;
+  $('rdCancel').hidden = !on;
+  if(on) $('rdEdit').value = rdPage ? rdPage.text : '';
+}
+
+async function rdSave(){
+  showError('');
+  if(!rdPage) return;
+  if(!confirm('Правка запишется поверх файла ' + rdPage.source
+              + '\n\nКопия уйдёт в корзину. Продолжить?')) return;
+
+  $('rdSave').disabled = true;
+  try{
+    const data = await call('/api/reader/save',
+      {source: rdPage.source, text: $('rdEdit').value});
+    // Сначала перечитываем главу, потом пишем итог: иначе перечитывание
+    // затирает сообщение и человек не видит, сохранилось ли что-нибудь.
+    await rdOpen(rdPage.index);
+    $('rdNote').textContent =
+      `Сохранено: ${data.saved}. Абзацев ${data.paragraphs}.`
+      + (data.backup ? ' Копия в корзине.' : '');
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('rdSave').disabled = false;
+  }
+}
+
+$('rdOpen').onclick = () => { rdList = []; rdOpen(0); };
+$('rdPrev').onclick = () => rdPage && rdPage.has_prev && rdOpen(rdPage.index - 1);
+$('rdNext').onclick = () => rdPage && rdPage.has_next && rdOpen(rdPage.index + 1);
+$('rdEditBtn').onclick = () => rdEditMode(true);
+$('rdCancel').onclick = () => rdEditMode(false);
+$('rdSave').onclick = rdSave;
+
+/* ------------------------------------------------------ орфография */
+
+let orfJob = null, orfFindings = [];
+
+async function orfStart(){
+  showError('');
+  const targets = rpTargets();
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('orfStart').disabled = true;
+  $('orfNote').innerHTML = '<span class="spin"></span>Читаем словарь…';
+  try{
+    const {job} = await call('/api/spelling/start',
+      {targets, use_registry: $('orfReg').checked});
+    orfJob = job.id;
+    $('orfProgress').hidden = false;
+    $('orfStop').hidden = false;
+
+    pollJob(job.id,
+      job => drawResult(job.progress || {}, 'orfFill', 'orfStatus', null),
+      job => {
+        $('orfStop').hidden = true;
+        orfJob = null;
+        if(job.error){ showError(job.error); $('orfNote').textContent = ''; return; }
+        orfRender(job.report || {});
+      });
+  }catch(err){
+    // Пакет не поставлен — это не поломка, а недостающий словарь.
+    showError(err.message);
+    $('orfNote').textContent = '';
+    $('orfProgress').hidden = true;
+  }finally{
+    $('orfStart').disabled = false;
+  }
+}
+
+function orfRender(report){
+  orfFindings = report.findings || [];
+  $('orfNote').textContent =
+    `Незнакомых слов ${report.total} на ${ru(report.words)} слов текста`
+    + `, глав ${report.chapters}. В словаре книги и реестре: ${report.known}.`
+    + (report.total > report.shown ? ` Показаны первые ${report.shown}.` : '');
+
+  const box = $('orfFindings');
+  box.innerHTML = '';
+  if(!orfFindings.length){
+    box.innerHTML = '<div class="tr"><span class="grow hint">'
+      + 'Незнакомых слов не нашлось.</span></div>';
+    return;
+  }
+
+  for(const finding of orfFindings){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const word = document.createElement('b');
+    word.textContent = finding.word;
+    row.append(word);
+
+    const count = document.createElement('span');
+    count.className = 'num';
+    count.textContent = `×${finding.count}`;
+    row.append(count);
+
+    const quote = document.createElement('span');
+    quote.className = 'grow';
+    quote.title = finding.quote;
+    quote.textContent = finding.quote;
+    row.append(quote);
+
+    if(finding.suggestions.length){
+      const hint = document.createElement('span');
+      hint.className = 'tag';
+      hint.textContent = finding.suggestions.join(', ');
+      row.append(hint);
+    }
+
+    const known = document.createElement('button');
+    known.className = 'ghost';
+    known.textContent = 'это имя';
+    known.title = 'Внести в словарь книги — больше не спрашивать';
+    known.style.padding = '4px 10px';
+    known.onclick = () => orfKnown(finding, row);
+    row.append(known);
+
+    const open = document.createElement('button');
+    open.className = 'ghost';
+    open.textContent = 'открыть';
+    open.style.padding = '4px 10px';
+    open.onclick = () => call('/api/open', {path: finding.path})
+      .catch(err => showError(err.message));
+    row.append(open);
+
+    box.append(row);
+  }
+}
+
+async function orfKnown(finding, row){
+  try{
+    const data = await call('/api/spelling/known',
+      {targets: rpTargets(), words: [finding.word]});
+    // Строка убирается сразу: вернуть её можно повторной проверкой, а
+    // держать на экране слово, которое уже признано именем, незачем.
+    row.remove();
+    $('orfNote').textContent =
+      `«${finding.word}» внесено в словарь книги. Всего своих слов: ${data.count}.`;
+  }catch(err){ showError(err.message); }
+}
+
+$('orfStart').onclick = orfStart;
+$('orfStop').onclick = () => orfJob && stopJob(orfJob);
+
+/* ---------------------------------------------------- очередь задач */
+
+let qSteps = [], qKinds = [], qJob = null, qKindMenu = null, qSavedMenu = null;
+
+async function qLoadState(){
+  try{
+    const data = await call('/api/queue/state');
+    qKinds = data.kinds || [];
+
+    const kind = $('qKind');
+    kind.dataset.options = JSON.stringify(qKinds.map(i => [i.key, i.name]));
+    kind.innerHTML = '';
+    qKindMenu = makeDropdown(kind);
+
+    const saved = $('qSaved');
+    saved.dataset.options = JSON.stringify(
+      [['', '— сохранённые очереди —']].concat(
+        (data.queues || []).map(q => [q.name, `${q.name} (шагов ${q.total})`])));
+    saved.innerHTML = '';
+    qSavedMenu = makeDropdown(saved);
+    return data;
+  }catch(err){ showError(err.message); return {queues: []}; }
+}
+
+function qKindName(key){
+  const found = qKinds.find(k => k.key === key);
+  return found ? found.name : key;
+}
+
+/** Какие поля нужны шагу. Спрашиваем только их: лишние поля мешают. */
+function qNeedsOutput(kind){
+  // Проверки ничего не пишут — папка результата им не нужна.
+  return !['check', 'spelling', 'stats'].includes(kind);
+}
+
+function qRender(){
+  const box = $('qSteps');
+  box.innerHTML = '';
+  if(!qSteps.length){
+    box.innerHTML = '<div class="tr"><span class="grow hint">'
+      + 'Шагов пока нет. Добавьте первый — он возьмёт на вход то, '
+      + 'что указано выше.</span></div>';
+    return;
+  }
+
+  qSteps.forEach((step, index) => {
+    const row = document.createElement('div');
+    row.className = 'tr ' + (step.state || 'waiting');
+
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    row.append(dot);
+
+    const name = document.createElement('span');
+    name.className = 'num';
+    name.textContent = `${index + 1}.`;
+    row.append(name);
+
+    const title = document.createElement('span');
+    title.className = 'grow';
+    title.textContent = step.title || qKindName(step.kind);
+    row.append(title);
+
+    if(qNeedsOutput(step.kind)){
+      const base = document.createElement('input');
+      base.type = 'text';
+      base.className = 'rowname';
+      base.placeholder = 'куда сохранить';
+      base.value = step.params.base || '';
+      base.oninput = () => { step.params.base = base.value.trim(); };
+      base.style.flex = '1';
+      row.append(base);
+
+      const folder = document.createElement('input');
+      folder.type = 'text';
+      folder.className = 'rowname';
+      folder.placeholder = 'имя папки';
+      folder.value = step.params.folder || '';
+      folder.oninput = () => { step.params.folder = folder.value.trim(); };
+      row.append(folder);
+    }
+
+    const up = document.createElement('button');
+    up.className = 'ghost';
+    up.textContent = '↑';
+    up.title = 'Выше';
+    up.style.padding = '4px 9px';
+    up.onclick = () => qMove(index, -1);
+    row.append(up);
+
+    const drop = document.createElement('button');
+    drop.className = 'ghost';
+    drop.textContent = '✕';
+    drop.title = 'Убрать шаг';
+    drop.style.padding = '4px 9px';
+    drop.onclick = () => { qSteps.splice(index, 1); qRender(); };
+    row.append(drop);
+
+    if(step.message){
+      const said = document.createElement('span');
+      said.className = 'said';
+      said.textContent = step.message;
+      row.append(said);
+    }
+    box.append(row);
+  });
+}
+
+function qMove(index, shift){
+  const to = index + shift;
+  if(to < 0 || to >= qSteps.length) return;
+  [qSteps[index], qSteps[to]] = [qSteps[to], qSteps[index]];
+  qRender();
+}
+
+function qAdd(){
+  const kind = qKindMenu ? qKindMenu.value : '';
+  if(!kind) return;
+  qSteps.push({kind, params: {}, title: qKindName(kind), state: 'waiting',
+               message: ''});
+  qRender();
+}
+
+function qPayload(){
+  return {name: $('qName').value.trim(), steps: qSteps};
+}
+
+async function qSave(){
+  showError('');
+  if(!$('qName').value.trim()){ showError('Дайте очереди имя'); return; }
+  if(!qSteps.length){ showError('В очереди нет ни одного шага'); return; }
+  try{
+    await call('/api/queue/save', {queue: qPayload()});
+    await qLoadState();
+    if(qSavedMenu) qSavedMenu.set($('qName').value.trim());
+    $('qNote').textContent = 'Очередь сохранена — её можно запускать снова.';
+  }catch(err){ showError(err.message); }
+}
+
+async function qLoad(){
+  const name = qSavedMenu ? qSavedMenu.value : '';
+  if(!name) return;
+  const data = await qLoadState();
+  const queue = (data.queues || []).find(q => q.name === name);
+  if(!queue) return;
+  $('qName').value = queue.name;
+  qSteps = queue.steps.map(s => ({...s, params: {...s.params}}));
+  qRender();
+}
+
+async function qDrop(){
+  const name = qSavedMenu ? qSavedMenu.value : '';
+  if(!name) return;
+  try{
+    await call('/api/queue/remove', {name});
+    await qLoadState();
+    $('qNote').textContent = `Очередь «${name}» удалена.`;
+  }catch(err){ showError(err.message); }
+}
+
+async function qRun(){
+  showError('');
+  if(!qSteps.length){ showError('В очереди нет ни одного шага'); return; }
+
+  $('qRun').disabled = true;
+  try{
+    const {job} = await call('/api/queue/start', {
+      queue: qPayload(),
+      start_from: $('qStart').value.trim(),
+    });
+    qJob = job.id;
+    $('qProgress').hidden = false;
+    $('qStop').hidden = false;
+
+    pollJob(job.id,
+      job => {
+        const progress = job.progress || {};
+        if(progress.queue){ qSteps = progress.queue.steps; qRender(); }
+        return drawResult(progress, 'qFill', 'qStatus', null);
+      },
+      job => {
+        $('qStop').hidden = true;
+        qJob = null;
+        if(job.error){ showError(job.error); return; }
+        const report = job.report || {};
+        if(report.steps){ qSteps = report.steps; qRender(); }
+        $('qNote').textContent = job.progress.message || '';
+      });
+  }catch(err){
+    showError(err.message);
+    $('qStop').hidden = true;
+  }finally{
+    $('qRun').disabled = false;
+  }
+}
+
+$('qAdd').onclick = qAdd;
+$('qSave').onclick = qSave;
+$('qLoad').onclick = qLoad;
+$('qDrop').onclick = qDrop;
+$('qRun').onclick = qRun;
+$('qStop').onclick = () => qJob && stopJob(qJob);
+qRender();
+qLoadState();
+
+
 $('stStart').onclick = stStart;
 $('sgPreview').onclick = sgPreview;
 $('sgStart').onclick = sgStart;

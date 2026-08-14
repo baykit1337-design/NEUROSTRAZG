@@ -182,6 +182,32 @@ def backup(folder: Path, operation: str = "") -> str:
     return str(target)
 
 
+def backup_file(path: Path, operation: str = "") -> str:
+    """Копирует один файл в корзину.
+
+    Правка одной главы в читалке не повод копировать всю папку: на книге в
+    пятьсот глав это полгигабайта ради одного абзаца. В корзине копия
+    выглядит как папка с одним файлом — восстановление работает так же.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return ""
+
+    stamp = datetime.now().strftime(STAMP)
+    name = f"{stamp}_{operation}".strip("_") or stamp
+    target = BACKUP_DIR / name
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target / path.name)
+    except OSError as exc:
+        log.warning("Не удалось скопировать %s: %s", path, exc)
+        return ""
+
+    trim()
+    return str(target)
+
+
 def backups() -> list[Path]:
     """Копии в корзине, свежие первыми."""
     if not BACKUP_DIR.is_dir():

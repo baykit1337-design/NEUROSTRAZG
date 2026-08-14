@@ -249,6 +249,11 @@
     box-shadow:0 8px 24px rgba(0,0,0,.6), 0 0 14px rgba(140,84,255,.25);
   }
   .dropdown-menu[hidden]{display:none}
+  /* Карточка размывает фон, а это создаёт свой слой: z-index списка внутри
+     неё соседнюю карточку уже не перебивает, и раскрытый список уходил под
+     следующую. Поднимаем саму карточку, пока в ней открыт список. */
+  .card{position:relative;z-index:1}
+  .card:has(.dropdown-menu:not([hidden])){z-index:40}
   .dropdown-item{
     padding:8px 12px;
     border-radius:7px;
@@ -644,6 +649,29 @@
 
   .diff-head{padding:6px 10px;background:rgba(140,84,255,.12);
     color:#c084fc;font-size:12px}
+
+  /* Читалка. Ширина строки ограничена: на весь экран текст не читается,
+     глаз теряет начало следующей строки. */
+  .reader{max-height:460px;overflow:auto;padding:14px 18px;border-radius:10px;
+    background:rgba(255,255,255,.02);border:1px solid var(--stroke-soft);
+    font-size:14.5px;line-height:1.7}
+  .reader p{margin:0 0 .85em;max-width:68ch;text-indent:1.2em}
+  .reader p:last-child{margin-bottom:0}
+  .reader p.mark{background:rgba(255,196,92,.10);
+    box-shadow:inset 3px 0 0 rgba(255,196,92,.55);
+    border-radius:3px;padding:2px 6px 2px 8px}
+
+  /* Очередь: состояние шага видно по точке слева. */
+  #qSteps .tr .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;
+    background:var(--muted)}
+  #qSteps .tr.running .dot{background:#c084fc;
+    box-shadow:0 0 8px rgba(192,132,252,.7)}
+  #qSteps .tr.done .dot{background:#5ee0a0}
+  #qSteps .tr.failed .dot{background:#ff5c5c}
+  #qSteps .tr.skipped{opacity:.5}
+  #qSteps .tr{flex-wrap:wrap;row-gap:6px}
+  #qSteps .tr .said{flex:1 1 100%;color:var(--muted);font-size:12px;
+    white-space:normal}
 
   #anFindings .tr{flex-wrap:wrap;row-gap:8px}
   #anFindings .tr .grow{flex:1 1 100%;white-space:normal;overflow:visible}
@@ -1540,6 +1568,111 @@
     </div>
     <p class="hint" id="cmpNote"></p>
     <div class="table" id="cmpFindings" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.4 Читалка -->
+  <div class="card">
+    <label>Читалка</label>
+    <p class="hint">Глава показывается в том оформлении, в каком уйдёт в
+       файл. Правка пишется поверх исходника — копия уходит в корзину.
+       Читается то, что выбрано в блоке «Что правим» выше.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="rdOpen" class="ghost" style="flex:1">Открыть выбранное</button>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="rdMarks" checked> подсветить находки</label>
+    </div>
+
+    <div id="rdBox" hidden style="margin-top:12px">
+      <div class="row" style="align-items:center">
+        <button id="rdPrev" class="ghost" style="flex:0 0 auto"
+                title="Предыдущая глава">←</button>
+        <div class="dropdown" id="rdPick" style="flex:1" data-options='[]'></div>
+        <button id="rdNext" class="ghost" style="flex:0 0 auto"
+                title="Следующая глава">→</button>
+      </div>
+      <p class="hint" id="rdNote" style="margin-top:8px"></p>
+      <div class="reader" id="rdText" style="margin-top:10px"></div>
+      <textarea id="rdEdit" rows="14" spellcheck="false" hidden
+                style="margin-top:10px"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="rdEditBtn" class="ghost" style="flex:1">Править</button>
+        <button id="rdSave" class="primary" style="flex:1" hidden>Сохранить
+          поверх файла</button>
+        <button id="rdCancel" class="ghost" style="flex:1" hidden>Отменить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4.9 Орфография -->
+  <div class="card">
+    <label>Орфография</label>
+    <p class="hint">Опечатки вроде «превет»: правила проверки их не ловят —
+       слово оформлено верно, его просто нет. Работает офлайн. Имена из
+       реестра сущностей подхватываются сами, остальное вносится кнопкой
+       «это имя» — свой словарь книги лежит рядом с ней в
+       <code>spelling.txt</code>. Слово считается известным по морфологии,
+       а не по списку: «усмехнулся» и «длинной» ошибками не считаются.</p>
+    <label class="chk" style="margin-top:10px">
+      <input type="checkbox" id="orfReg" checked> считать имена из реестра
+      известными
+      <i class="hint-icon" data-tip="Реестр заполняется на вкладке «Анализ». Без него каждое имя героя будет считаться опечаткой.">?</i></label>
+    <div class="row" style="margin-top:12px">
+      <button id="orfStart" class="primary" style="flex:1">Проверить
+        орфографию</button>
+      <button id="orfStop" class="ghost" style="flex:0 0 auto" hidden>Остановить</button>
+    </div>
+    <div class="card lit" id="orfProgress" hidden style="margin-top:12px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="orfStatus"></span></div>
+      <div class="bar"><i id="orfFill"></i></div>
+    </div>
+    <p class="hint" id="orfNote"></p>
+    <div class="table" id="orfFindings" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.6 Очередь задач -->
+  <div class="card">
+    <label>Очередь задач</label>
+    <p class="hint">Несколько операций подряд, без участия человека:
+       разбить → переименовать → проверить. Шаг без своего выбора берёт на
+       вход папку, которую сделал предыдущий, — цепочка складывается сама.
+       При ошибке очередь останавливается: следующий шаг ждёт результата.</p>
+
+    <div class="row" style="margin-top:10px">
+      <div class="dropdown" id="qSaved" style="flex:1" data-options='[]'></div>
+      <button id="qLoad" class="ghost" style="flex:0 0 auto">Загрузить</button>
+      <button id="qDrop" class="ghost" style="flex:0 0 auto">Удалить</button>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <input id="qStart" type="text" autocomplete="off"
+             placeholder="что взять на вход первому шагу (папка)">
+      <button class="ghost browse" data-target="qStart" data-kind="folder">Обзор…</button>
+    </div>
+
+    <div class="table" id="qSteps" style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:10px">
+      <div class="dropdown" id="qKind" style="flex:1" data-options='[]'></div>
+      <button id="qAdd" class="ghost" style="flex:0 0 auto">Добавить шаг</button>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <input id="qName" type="text" placeholder="имя очереди" autocomplete="off">
+      <button id="qSave" class="ghost" style="flex:0 0 auto">Сохранить</button>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="qRun" class="primary" style="flex:1">Запустить очередь</button>
+      <button id="qStop" class="ghost" style="flex:0 0 auto" hidden>Остановить</button>
+    </div>
+
+    <div class="card lit" id="qProgress" hidden style="margin-top:12px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="qStatus"></span></div>
+      <div class="bar"><i id="qFill"></i></div>
+    </div>
+    <p class="hint" id="qNote"></p>
   </div>
 
   <!-- 4.5 Что изменилось -->

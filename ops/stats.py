@@ -107,6 +107,9 @@ class Report:
 
 
 def _human_time(minutes: int) -> str:
+    if minutes < 1:
+        # «0 мин» читается как сбой счёта, а не как короткий текст.
+        return "меньше минуты"
     if minutes < 60:
         return f"{minutes} мин"
     hours, rest = divmod(minutes, 60)

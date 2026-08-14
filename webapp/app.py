@@ -35,8 +35,11 @@ from ops import glossary as glossary_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import history as history_op  # noqa: E402
+from ops import queue as queue_op  # noqa: E402
+from ops import reader as reader_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
 from ops import signature as signature_op  # noqa: E402
+from ops import spelling as spelling_op  # noqa: E402
 from ops import stats as stats_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
@@ -1411,6 +1414,373 @@ def api_signature_start():
         ), "Записано")
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+# ------------------------------------------------ читалка (4.4)
+
+
+@app.post("/api/reader/list")
+def api_reader_list():
+    """Список глав — по нему интерфейс строит переход стрелками."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**reader_op.listing(targets))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/reader/open")
+def api_reader_open():
+    """Одна глава в том виде, в каком уйдёт в файл."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+
+    # Пустой список сохраняем как есть: это снятая галочка «подсветить
+    # находки», а не просьба проверить всё подряд.
+    kinds = payload.get("kinds")
+    if isinstance(kinds, list):
+        kinds = [k for k in kinds if k in textcheck.ALL_KINDS]
+
+    try:
+        page = reader_op.open_at(
+            targets,
+            index=payload.get("index") or 0,
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            kinds=kinds,
+        )
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(**page.as_dict())
+
+
+@app.post("/api/reader/save")
+def api_reader_save():
+    """Правка поверх исходного файла — единственное такое место."""
+    payload = request.json or {}
+    source = (payload.get("source") or "").strip()
+    if not source:
+        return jsonify(error="Не указана глава"), 400
+    try:
+        return jsonify(**reader_op.save(source, payload.get("text") or ""))
+    except reader_op.SaveError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+# ------------------------------------------------ орфография (4.9)
+
+
+def _spell_root(payload: dict, targets: list[str]) -> Path:
+    """Где лежит книга: оттуда свой словарь и реестр имён."""
+    folder = (payload.get("folder") or "").strip()
+    if folder:
+        return Path(folder).expanduser()
+    first = Path(targets[0]).expanduser()
+    return first if first.is_dir() else first.parent
+
+
+@app.post("/api/spelling/state")
+def api_spelling_state():
+    """Есть ли словарь и что уже внесено в свой список."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    folder = _spell_root(payload, targets) if targets else ""
+    return jsonify(**spelling_op.state(folder))
+
+
+@app.post("/api/spelling/start")
+def api_spelling_start():
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not spelling_op.available():
+        return jsonify(
+            error="Словарь не установлен. Поставьте пакеты: "
+                  "pip install pymorphy3 pymorphy3-dicts-ru",
+            need_package=True), 422
+
+    root = _spell_root(payload, targets)
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="spelling",
+        meta={"targets": targets},
+        output_dir=str(root),
+    )
+    job.progress = {"stage": "spelling", "message": "Читаем словарь…",
+                    "done": 0, "total": 0}
+
+    def work(job: Job):
+        report = spelling_op.check(
+            targets, folder=root,
+            use_registry=bool(payload.get("use_registry", True)),
+            progress=_progress(job, "Глава"),
+        )
+        job.report = report.as_dict()
+        job.progress.update(
+            stage="done",
+            message=(f"Готово. Незнакомых слов {len(report.findings)} "
+                     f"на {report.words} слов текста"))
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/spelling/known")
+def api_spelling_known():
+    """Кнопка «это имя»: слово уходит в свой словарь книги."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    words = [str(w) for w in (payload.get("words") or []) if str(w).strip()]
+    if not words:
+        return jsonify(error="Нечего добавлять"), 400
+
+    root = _spell_root(payload, targets) if targets else None
+    if root is None:
+        return jsonify(error="Не понятно, к какой книге относить слово"), 400
+    try:
+        spelling_op.add_words(root, words)
+    except OSError as exc:
+        return jsonify(error=f"Не удалось записать словарь: {exc}"), 400
+    return jsonify(**spelling_op.state(root))
+
+
+# ------------------------------------------------ очередь задач (4.6)
+
+#: Что умеет очередь. Ключ — вид шага, значение — как его назвать.
+QUEUE_KINDS = {
+    "split": "Разбить на главы",
+    "merge": "Объединить в один файл",
+    "rename": "Переименовать",
+    "clean": "Очистить текст",
+    "replace": "Замена по словарю",
+    "signature": "Шапка и подпись",
+    "check": "Проверить текст",
+    "spelling": "Проверить орфографию",
+    "stats": "Статистика",
+}
+
+
+def _step_targets(step, previous: str) -> list[str]:
+    """Что берём на вход.
+
+    Пустой список — значит «то, что вышло из предыдущего шага». На этом
+    держится вся цепочка: разбить → переименовать → проверить.
+    """
+    targets = _targets(step.params)
+    if targets:
+        return targets
+    if not previous:
+        raise ValueError("Шагу нечего обрабатывать: нет ни выбора, ни "
+                         "результата предыдущего шага")
+    return [previous]
+
+
+def _step_output(step, kind: str) -> Path:
+    base = (step.params.get("base") or "").strip()
+    folder = (step.params.get("folder") or "").strip()
+    if not base or not folder:
+        raise ValueError("Укажите, куда сохранить результат шага")
+    return _prepare(base, folder, kind)
+
+
+def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
+    """Выполняет один шаг очереди. Возвращает (итог, папка результата).
+
+    Шаги делают ровно то же, что кнопки на вкладках, — те же функции из
+    `ops`. Иначе очередь начала бы жить своей жизнью и расходиться с ними.
+    """
+    kind = step.kind
+    params = step.params
+    targets = _step_targets(step, previous)
+    progress = Progress(cancel=cancel)
+
+    if kind == "split":
+        out = _step_output(step, kind)
+        report = split_op.run(
+            targets, out, out_format=_out_format(params),
+            parts=_parts(params), pattern=_pattern(params),
+            prep=PrepOptions.from_dict(params.get("prep")),
+            encoding=_encoding(params), progress=progress)
+        return f"Записано {report.written} из {report.total}", str(out)
+
+    if kind == "merge":
+        base = (params.get("base") or "").strip()
+        name = (params.get("folder") or params.get("name") or "книга").strip()
+        if not base:
+            raise ValueError("Укажите, куда сохранить результат шага")
+        out = Path(base).expanduser() / f"{name}{_out_format(params)}"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        report = merge_op.run(
+            targets, out, order=_order(params),
+            headings=bool(params.get("headings", True)),
+            encoding=_encoding(params),
+            prep=PrepOptions.from_dict(params.get("prep")),
+            progress=progress)
+        return f"Собрано {report.written} глав в {out.name}", str(out)
+
+    if kind == "rename":
+        out = _step_output(step, kind)
+        chapters = rename.scan(targets[0], _pattern(params))
+        rows = rename.make_plan(
+            chapters, rename.NameFormat.from_dict(params.get("format")))
+        report = rename.apply_plan(
+            rows, out, fmt=(params.get("out_format") or "txt").strip().lower(),
+            cancel=cancel)
+        return f"Переименовано {report.written} из {report.total}", str(out)
+
+    if kind == "clean":
+        out = _step_output(step, kind)
+        kinds = params.get("kinds")
+        kinds = list(cleanup.ALL_KINDS) if kinds is None else kinds
+        cleanup._validate(kinds)
+        fixed = written = 0
+        for target in targets:
+            report = cleanup.clean(target, kinds, out, cancel=cancel)
+            fixed += sum(report.counts.values())
+            written += report.written
+        return f"Исправлено {fixed} мест в {written} файлах", str(out)
+
+    if kind == "replace":
+        out = _step_output(step, kind)
+        rules = params.get("rules") or []
+        report = replace_op.run(
+            targets, out, rules, out_format=(params.get("format") or ""),
+            encoding=_encoding(params), progress=progress)
+        return f"Записано {report.written} из {report.total}", str(out)
+
+    if kind == "signature":
+        out = _step_output(step, kind)
+        report = signature_op.run(
+            targets, out, signature_op.Template.from_dict(params.get("template")),
+            prep=PrepOptions.from_dict(params.get("prep")),
+            encoding=_encoding(params), progress=progress)
+        return f"Записано {report.written} из {report.total}", str(out)
+
+    if kind == "check":
+        kinds = params.get("kinds") or list(textcheck.ALL_KINDS)
+        report = textcheck.check(targets, kinds=kinds, cancel=cancel)
+        # Проверка ничего не пишет — следующий шаг работает с тем же входом.
+        return (f"Находок {len(report.findings)} в {report.files_with_findings} "
+                f"файлах из {report.files_checked}"), previous
+
+    if kind == "spelling":
+        report = spelling_op.check(targets, progress=progress)
+        return (f"Незнакомых слов {len(report.findings)} "
+                f"на {report.words} слов текста"), previous
+
+    if kind == "stats":
+        report = stats_op.collect(targets).as_dict()
+        return (f"Глав {report['chapters']}, символов {report['characters']}, "
+                f"чтения примерно {report['reading_time']}"), previous
+
+    raise ValueError(f"Неизвестный шаг очереди: {kind}")
+
+
+@app.get("/api/queue/state")
+def api_queue_state():
+    """Сохранённые очереди и виды шагов, из которых их собирают."""
+    return jsonify(
+        queues=[q.as_dict() for q in queue_op.all_queues()],
+        kinds=[{"key": k, "name": v} for k, v in QUEUE_KINDS.items()],
+    )
+
+
+@app.post("/api/queue/save")
+def api_queue_save():
+    payload = request.json or {}
+    queue = queue_op.Queue.from_dict(payload.get("queue"))
+    unknown = [s.kind for s in queue.steps if s.kind not in QUEUE_KINDS]
+    if unknown:
+        return jsonify(error=f"Неизвестный шаг: {', '.join(unknown)}"), 400
+    if not queue.steps:
+        return jsonify(error="В очереди нет ни одного шага"), 400
+
+    for step in queue.steps:
+        step.title = step.title or QUEUE_KINDS[step.kind]
+    try:
+        queue_op.save(queue)
+    except queue_op.QueueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(queues=[q.as_dict() for q in queue_op.all_queues()])
+
+
+@app.post("/api/queue/remove")
+def api_queue_remove():
+    payload = request.json or {}
+    queue_op.remove((payload.get("name") or "").strip())
+    return jsonify(queues=[q.as_dict() for q in queue_op.all_queues()])
+
+
+@app.post("/api/queue/start")
+def api_queue_start():
+    """Запускает очередь целиком — ради этого она и заводилась."""
+    payload = request.json or {}
+    name = (payload.get("name") or "").strip()
+    queue = queue_op.get(name) if name else queue_op.Queue.from_dict(
+        payload.get("queue"))
+    if queue is None or not queue.steps:
+        return jsonify(error="Очередь не найдена или пуста"), 400
+
+    unknown = [s.kind for s in queue.steps if s.kind not in QUEUE_KINDS]
+    if unknown:
+        return jsonify(error=f"Неизвестный шаг: {', '.join(unknown)}"), 400
+    queue.reset()
+    for step in queue.steps:
+        step.title = step.title or QUEUE_KINDS[step.kind]
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="queue",
+        meta={"queue": queue.name},
+        output_dir="",
+    )
+    job.progress = {"stage": "queue", "message": "Запускаем очередь…",
+                    "done": 0, "total": len(queue.steps),
+                    "queue": queue.as_dict()}
+
+    def work(job: Job):
+        # Папка результата передаётся из шага в шаг: цепочка «разбить →
+        # переименовать» иначе требовала бы вписывать пути руками.
+        chain = {"previous": (payload.get("start_from") or "").strip()}
+
+        def perform(step):
+            message, output = _run_step(step, chain["previous"], job.cancel)
+            chain["previous"] = output or chain["previous"]
+            job.output_dir = chain["previous"]
+            return message
+
+        def changed(current):
+            job.progress.update(done=current.done, total=len(current.steps),
+                                queue=current.as_dict(),
+                                message=_queue_message(current))
+
+        done = queue_op.run(queue, perform, on_change=changed, cancel=job.cancel)
+        job.report = done.as_dict()
+        job.progress.update(stage="done", message=_queue_message(done))
+        history_op.add(operation="очередь задач", source=done.name,
+                       output=chain["previous"], files=done.done,
+                       failed=sum(1 for s in done.steps
+                                  if s.state == queue_op.FAILED))
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+def _queue_message(queue) -> str:
+    if queue.state == queue_op.FAILED:
+        broken = next((s for s in queue.steps if s.state == queue_op.FAILED), None)
+        return f"Остановились на шаге «{broken.title}»: {broken.message}" if broken \
+            else "Очередь остановилась"
+    if queue.state == queue_op.DONE:
+        return f"Готово. Выполнено шагов: {queue.done} из {len(queue.steps)}"
+    if queue.state == queue_op.SKIPPED:
+        return "Очередь остановлена"
+    current = queue.steps[queue.current] if 0 <= queue.current < len(queue.steps) else None
+    return f"Шаг {queue.current + 1} из {len(queue.steps)}: {current.title}" \
+        if current else "Запускаем очередь…"
 
 
 # ------------------------------------------------ вкладка «Проверка текста»
