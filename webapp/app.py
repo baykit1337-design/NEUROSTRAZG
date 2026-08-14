@@ -26,6 +26,7 @@ from core.readers.base import ReadError  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
+from ops import headers as headers_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
 from ops.base import Progress  # noqa: E402
@@ -662,6 +663,66 @@ def api_rename_apply():
             message=(f"Готово. Записано {report.written} из {report.total}"
                      + (f", ошибок {report.failed}" if report.failed else "")),
         )
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+# --------------------------------------------- очистка мусорной шапки
+
+
+@app.post("/api/headers/scan")
+def api_headers_scan():
+    """Что похоже на шапку и в скольких файлах встретилось."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**headers_op.scan(targets))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/headers/clean")
+def api_headers_clean():
+    """Пишет очищенные главы в новую папку. Оригиналы не трогаются."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+    texts = payload.get("texts")
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите папку, где создать каталог"), 400
+    if not folder:
+        return jsonify(error="Введите имя папки"), 400
+    # Пустой список — это «ничего не отмечено», а не «убрать всё».
+    if not isinstance(texts, list) or not texts:
+        return jsonify(error="Отметьте, что убрать"), 400
+
+    try:
+        output_dir = prepare_output_dir(base, folder)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="headers",
+        meta={"targets": targets},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "headers", "message": "Чистим шапки…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    def work(job: Job):
+        _finish(job, headers_op.run(
+            targets, Path(job.output_dir), texts,
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            style=Style.from_dict(payload.get("style")),
+            progress=_progress(job, "Файл"),
+        ), "Очищено")
 
     return jsonify(job=start_job(job, work).snapshot())
 

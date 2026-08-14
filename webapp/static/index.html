@@ -641,6 +641,45 @@
 
   <div class="card err" id="error" hidden></div>
 
+<!-- ============== Очистка шапок: один блок на три вкладки ============== -->
+<div class="card" id="hdCard" hidden>
+  <label>Мусорная шапка в начале файлов</label>
+  <p class="hint" id="hdIntro"></p>
+  <div class="table" id="hdList"></div>
+
+  <div id="hdPlace" hidden>
+    <div style="margin-top:14px">
+      <label>Куда сохранить очищенное</label>
+      <div class="row">
+        <input id="hdBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="hdBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="hdFolder">имя папки</label>
+        <input id="hdFolder" type="text" placeholder="Без шапок" autocomplete="off">
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="hdClean" class="primary" style="flex:1">Удалить отмеченное</button>
+      <button id="hdClose" class="ghost">Закрыть</button>
+    </div>
+    <p class="hint">Оригиналы не трогаются — результат ложится в новую папку.</p>
+  </div>
+
+  <div class="card lit" id="hdProgress" hidden>
+    <div class="status result-block"><span class="result-dot"></span>
+      <span class="result-text" id="hdStatus"></span></div>
+    <div class="bar"><i id="hdFill"></i></div>
+    <div class="stats">
+      <span>очищено <b id="hdWritten">0</b></span>
+      <span>ошибок <b id="hdFailed">0</b></span>
+      <span id="hdPct"></span>
+    </div>
+    <p class="result-path" id="hdSummary"></p>
+  </div>
+</div>
+
+
 <section id="tab-download">
 
   <!-- 0. Прокси -->
@@ -761,6 +800,10 @@
     </div>
     <div class="chosen" id="spList"></div>
     <p class="hint" id="spScanned">Файлы читаются сразу после выбора.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost hdOpen" data-source="spList"
+              style="flex:1">Очистить шапки…</button>
+    </div>
   </div>
 
   <!-- 2. Свой шаблон заголовка, если не нашлись -->
@@ -896,6 +939,10 @@
       <button class="ghost browse" data-target="rnIn" data-kind="folder">Выбрать…</button>
     </div>
     <p class="hint" id="rnScanned">Папка читается сразу после выбора.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost hdOpen" data-source="rnIn"
+              style="flex:1">Очистить шапки…</button>
+    </div>
   </div>
 
   <div class="card" id="rnPatternCard" hidden>
@@ -1023,6 +1070,10 @@
     </div>
     <div class="chosen" id="mgList"></div>
     <p class="hint" id="mgScanned">Файлы читаются сразу после выбора.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost hdOpen" data-source="mgList"
+              style="flex:1">Очистить шапки…</button>
+    </div>
   </div>
 
   <div class="card" id="mgOpts" hidden>

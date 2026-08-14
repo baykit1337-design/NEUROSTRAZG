@@ -347,6 +347,7 @@ async function rnScan(){
     rnRenderList();
     rnUpdateExample();
     await rnBuildPreview();
+    hdOffer('rnIn');
   }catch(err){
     showError(err.message);
     $('rnPatternCard').hidden = false;
@@ -678,6 +679,8 @@ async function spScan(){
       $('spFolder').value = name.replace(/\.[^.]+$/, '');
     }
     spUpdateFinal();
+    // Находка есть — предлагаем очистку сами, не дожидаясь кнопки.
+    hdOffer('spList');
   }catch(err){
     $('spScanned').textContent = '';
     $('spOpts').hidden = true;
@@ -768,6 +771,7 @@ async function mgScan(){
     $('mgPlace').hidden = false;
     if(!$('mgName').value) $('mgName').value = 'Книга';
     mgUpdateFinal();
+    hdOffer('mgList');
   }catch(err){
     showError(err.message);
     $('mgOpts').hidden = true;
@@ -864,6 +868,156 @@ call('/api/formats').then(data => {
 spUpdateFinal();
 mgUpdateFinal();
 
+
+
+/* ===================== Очистка мусорной шапки =====================
+ *
+ * Один блок на три вкладки: «Разбить», «Объединить», «Переименовать».
+ * Жёстких правил нет — сервер считает повторы и присылает находки, а
+ * решает человек галочками.
+ */
+
+let hdSource = null, hdFindings = [], hdChosen = new Set(), hdJob = null;
+
+/** Пути, с которыми работает вызвавшая вкладка. */
+function hdTargets(){
+  if(!hdSource) return [];
+  // «Переименовать» держит путь в поле, остальные — в списке выбранного.
+  const field = document.getElementById(hdSource);
+  if(field && field.tagName === 'INPUT'){
+    const value = field.value.trim();
+    return value ? [value] : [];
+  }
+  return CHOSEN[hdSource] || [];
+}
+
+function hdRender(){
+  const list = $('hdList');
+  list.innerHTML = '';
+  for(const finding of hdFindings){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = hdChosen.has(finding.text);
+    box.onchange = () => {
+      box.checked ? hdChosen.add(finding.text) : hdChosen.delete(finding.text);
+      hdUpdate();
+    };
+
+    const text = document.createElement('span');
+    text.className = 'grow';
+    // У дубля названия своей строки нет: она у каждого файла своя.
+    text.textContent = finding.kind === 'title'
+      ? 'название главы, продублированное в тексте' : finding.text;
+    text.title = text.textContent;
+
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = `${finding.count} из ${finding.total}`;
+
+    row.append(box, text, tag);
+    list.append(row);
+  }
+  hdUpdate();
+}
+
+function hdUpdate(){
+  $('hdClean').disabled = hdChosen.size === 0;
+  $('hdClean').textContent = hdChosen.size
+    ? `Удалить отмеченное (${hdChosen.size})` : 'Удалить отмеченное';
+}
+
+async function hdScan(source, quiet){
+  hdSource = source;
+  const targets = hdTargets();
+  if(!targets.length){
+    if(!quiet) showError('Сначала выберите файлы или папку');
+    return 0;
+  }
+
+  if(!quiet){
+    $('hdCard').hidden = false;
+    $('hdIntro').innerHTML = '<span class="spin"></span>Читаем начала файлов…';
+    $('hdList').innerHTML = '';
+    $('hdPlace').hidden = true;
+  }
+  try{
+    const data = await call('/api/headers/scan', {targets});
+    hdFindings = data.findings || [];
+    hdChosen = new Set(hdFindings.map(f => f.text));
+
+    if(!hdFindings.length){
+      if(!quiet){
+        $('hdCard').hidden = false;
+        $('hdIntro').textContent =
+          `Файлов: ${data.file_count}. Повторяющихся строк в начале не нашлось.`;
+        $('hdPlace').hidden = true;
+      }
+      return 0;
+    }
+
+    $('hdCard').hidden = false;
+    $('hdIntro').textContent =
+      `Файлов: ${data.file_count}. Строки ниже повторяются почти в каждом — `
+      + 'это шапка, а не содержание. Снимите галочку, если строка нужна.';
+    $('hdPlace').hidden = false;
+    if(!$('hdFolder').value) $('hdFolder').value = 'Без шапок';
+    hdRender();
+    return hdFindings.length;
+  }catch(err){
+    if(!quiet) showError(err.message);
+    return 0;
+  }
+}
+window.hdScan = hdScan;
+
+/** Предлагается сама при чтении папки, если находка есть. */
+async function hdOffer(source){
+  const found = await hdScan(source, true);
+  if(found) toast(`В начале файлов нашлась шапка: находок ${found}. `
+                  + 'Блок «Мусорная шапка» открыт выше.');
+}
+window.hdOffer = hdOffer;
+
+async function hdClean(){
+  showError('');
+  $('hdClean').disabled = true;
+  try{
+    const {job} = await call('/api/headers/clean', {
+      targets: hdTargets(),
+      base: $('hdBase').value.trim(),
+      folder: $('hdFolder').value.trim(),
+      texts: [...hdChosen],
+    });
+    hdJob = job.id;
+    $('hdProgress').hidden = false;
+    $('hdSummary').textContent = 'Папка: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('hdWritten').textContent = p.written || p.done || 0;
+        $('hdFailed').textContent = p.failed || 0;
+        return drawResult(p, 'hdFill', 'hdStatus', 'hdPct');
+      },
+      job => {
+        if(job.error){ showError(job.error); return; }
+        $('hdSummary').textContent = 'Папка: ' + (job.report?.output || job.output_dir);
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    hdUpdate();
+  }
+}
+
+document.querySelectorAll('.hdOpen').forEach(button => {
+  button.onclick = () => hdScan(button.dataset.source, false);
+});
+$('hdClean').onclick = hdClean;
+$('hdClose').onclick = () => { $('hdCard').hidden = true; };
 
 /* ========================== Проверка текста ========================== */
 

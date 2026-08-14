@@ -708,3 +708,125 @@ class TestCheckCounts(unittest.TestCase):
             "нужна хотя бы одна находка по книге целиком")
         self.assertEqual(report.files_checked, 2)
         self.assertLessEqual(report.files_with_findings, report.files_checked)
+
+
+class TestHeaders(unittest.TestCase):
+    """1.2: мусорная шапка определяется по повторам, без жёстких правил."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def book(self, count=10, book_name="Genetic Ascension"):
+        """Папка в том виде, в каком её отдаёт парсер: с шапкой."""
+        folder = self.tmp / "книга"
+        folder.mkdir(exist_ok=True)
+        for n in range(2250, 2250 + count):
+            name = f"Chapter {n}_ Handsome [Bonus]"
+            body = "\n\n".join([
+                book_name,
+                name,
+                f"Первый настоящий абзац главы {n}, у каждой свой.",
+                f"Второй абзац главы {n}. " * 6,
+            ])
+            (folder / f"{name}.txt").write_text(body, encoding="utf-8")
+        return folder
+
+    def findings(self, folder):
+        from ops import headers
+
+        return headers.scan([str(folder)])["findings"]
+
+    def test_book_name_is_found_by_repetition(self):
+        """Название книги вычисляется само: оно есть почти в каждом файле."""
+        found = [f for f in self.findings(self.book()) if f["kind"] == "repeat"]
+        self.assertEqual([f["text"] for f in found], ["Genetic Ascension"])
+        self.assertEqual(found[0]["count"], 10)
+        self.assertIn("в 10 файлах из 10", found[0]["label"])
+
+    def test_title_echo_is_found_separately(self):
+        found = [f for f in self.findings(self.book()) if f["kind"] == "title"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["count"], 10)
+
+    def test_title_echo_survives_different_separators(self):
+        """`Chapter 243_ …` и `Chapter 243: …` — одна и та же строка."""
+        folder = self.tmp / "разделители"
+        folder.mkdir()
+        for n in range(240, 250):
+            name = f"Chapter {n}_ Finding the Culprit (Bonus)"
+            (folder / f"{name}.txt").write_text("\n\n".join([
+                name,
+                f"Chapter {n}: Finding the Culprit (Bonus)",
+                f"Текст главы {n}, у каждой свой.",
+            ]), encoding="utf-8")
+        found = [f for f in self.findings(folder) if f["kind"] == "title"]
+        self.assertEqual(found[0]["count"], 10)
+
+    def test_rare_line_is_not_a_header(self):
+        """Строка из одного файла — содержание, а не шапка."""
+        folder = self.book()
+        first = sorted(folder.iterdir())[0]
+        first.write_text("Особая строка только здесь.\n\nТекст.", encoding="utf-8")
+        texts = [f["text"] for f in self.findings(folder)]
+        self.assertNotIn("Особая строка только здесь.", texts)
+
+    def test_long_paragraph_is_never_a_header(self):
+        """Абзац на три экрана шапкой не бывает, даже если повторился."""
+        folder = self.tmp / "длинные"
+        folder.mkdir()
+        long_line = "Очень длинный повторяющийся абзац. " * 12
+        for n in range(1, 11):
+            (folder / f"Глава {n}.txt").write_text(
+                f"{long_line}\n\nТекст главы {n}.", encoding="utf-8")
+        self.assertEqual(self.findings(folder), [])
+
+    def test_clean_removes_only_the_header(self):
+        from ops import headers
+
+        folder = self.book()
+        out = self.tmp / "чисто"
+        report = headers.run([str(folder)], out,
+                             ["Genetic Ascension", ""])
+        self.assertEqual(report.written, 10)
+
+        body = (out / "Chapter 2250_ Handsome [Bonus].txt").read_text(encoding="utf-8")
+        self.assertNotIn("Genetic Ascension", body)
+        # Название главы осталось ровно одно — его пишет писатель.
+        self.assertEqual(body.count("Handsome [Bonus]"), 1)
+        self.assertIn("Первый настоящий абзац", body)
+
+    def test_originals_are_untouched(self):
+        from ops import headers
+
+        folder = self.book()
+        before = {p.name: p.read_text(encoding="utf-8") for p in folder.iterdir()}
+        headers.run([str(folder)], self.tmp / "out2", ["Genetic Ascension"])
+        after = {p.name: p.read_text(encoding="utf-8") for p in folder.iterdir()}
+        self.assertEqual(before, after)
+
+    def test_same_line_deeper_in_the_text_is_kept(self):
+        """Чистим только зону шапки: дальше это уже содержание."""
+        paragraphs = ["Genetic Ascension", "Абзац.", "Абзац.", "Абзац.",
+                      "Абзац.", "Genetic Ascension"]
+        kept = text.strip_headers(paragraphs, "Глава 1", ["Genetic Ascension"])
+        self.assertEqual(kept[-1], "Genetic Ascension")
+        self.assertNotIn("Genetic Ascension", kept[:1])
+
+    def test_clean_works_in_every_format(self):
+        """Живёт в ядре, поэтому формат значения не имеет."""
+        from ops import headers
+
+        for suffix in (".txt", ".md", ".docx", ".fb2", ".rtf", ".odt"):
+            with self.subTest(suffix=suffix):
+                folder = self.tmp / f"ф{suffix}"
+                folder.mkdir()
+                for n in range(1, 6):
+                    formats.write(
+                        folder / f"Глава {n}{suffix}",
+                        [Chapter(number=n, title=f"Глава {n}", paragraphs=[
+                            "Название книги", f"Текст главы {n}, у каждой свой."])],
+                        headings=False)
+                found = [f["text"] for f in self.findings(folder)]
+                self.assertIn("Название книги", found, suffix)

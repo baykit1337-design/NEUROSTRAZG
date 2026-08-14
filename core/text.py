@@ -107,6 +107,156 @@ def normalize_title(text: str) -> str:
     return text.casefold()
 
 
+#: Сколько первых строк файла считаем зоной шапки. Дальше идёт текст.
+HEAD_LINES = 5
+
+#: Доля файлов, в которых строка должна встретиться, чтобы считаться
+#: шапкой. Название книги стоит почти в каждом файле, содержание — нет.
+HEAD_SHARE = 0.8
+
+#: Шапка — это название книги или главы, то есть строка короткая. Абзац на
+#: три экрана шапкой не бывает, даже если повторился во всех файлах.
+HEAD_MAX = 120
+
+#: Разделители и скобки, которые при сверке шапок не значат ничего.
+#: «Chapter 243_ Finding the Culprit (Bonus)» и «Chapter 243: Finding the
+#: Culprit (Bonus)» — одна и та же строка, набранная по-разному.
+LOOSE_NOISE = re.compile(r"[_:.,;!?()\[\]{}«»\"'—–\-]+")
+
+#: Что это за находка: строка повторяется по всей папке или дублирует
+#: название главы из имени файла.
+HEAD_REPEAT = "repeat"
+HEAD_TITLE = "title"
+
+
+def normalize_loose(text: str) -> str:
+    """Грубая нормализация для сверки шапок.
+
+    `normalize_title` бережёт скобки: в названии бывает «(1)», и обрезка
+    сделала бы из «паука (1)» несимметричное «паука (1». Здесь наоборот —
+    сравниваем строки, набранные с разными разделителями, поэтому все
+    знаки убираем.
+    """
+    text = unicodedata.normalize("NFKC", text or "").strip().casefold()
+    text = LOOSE_NOISE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+@dataclass
+class HeaderFinding:
+    """Строка, похожая на шапку, и в скольких файлах она встретилась."""
+
+    text: str
+    count: int
+    total: int
+    kind: str = HEAD_REPEAT
+
+    @property
+    def share(self) -> float:
+        return self.count / self.total if self.total else 0.0
+
+    @property
+    def label(self) -> str:
+        if self.kind == HEAD_TITLE:
+            return f"Дубль названия главы: в {self.count} файлах из {self.total}"
+        return f"Найдено в {self.count} файлах из {self.total}"
+
+    def as_dict(self) -> dict:
+        return {"text": self.text, "count": self.count, "total": self.total,
+                "kind": self.kind, "label": self.label}
+
+
+def find_headers(samples) -> list[HeaderFinding]:
+    """Ищет мусорную шапку по началу файлов.
+
+    `samples` — пары «название главы, первые абзацы». Жёстких правил нет:
+    строка, встретившаяся почти во всех файлах, содержанием быть не может,
+    поэтому название книги вычисляется само.
+    """
+    samples = [(title, list(lines)) for title, lines in samples]
+    total = len(samples)
+    if not total:
+        return []
+
+    seen: dict[str, tuple[str, int]] = {}
+    duplicates = 0
+
+    for title, lines in samples:
+        head = [line.strip() for line in lines[:HEAD_LINES] if line.strip()]
+        # Один и тот же файл не должен считаться дважды за одну строку.
+        counted: set[str] = set()
+        title_hit = False
+
+        for line in head:
+            if _is_title_echo(line, title):
+                title_hit = True
+                continue
+            if len(line) > HEAD_MAX:
+                continue
+            key = normalize_loose(line)
+            if not key or key in counted:
+                continue
+            counted.add(key)
+            text, count = seen.get(key, (line, 0))
+            seen[key] = (text, count + 1)
+
+        if title_hit:
+            duplicates += 1
+
+    findings = [
+        HeaderFinding(text=text, count=count, total=total)
+        for text, count in seen.values()
+        if count / total > HEAD_SHARE
+    ]
+    if duplicates:
+        findings.append(HeaderFinding(text="", count=duplicates, total=total,
+                                      kind=HEAD_TITLE))
+
+    findings.sort(key=lambda f: (-f.count, f.text))
+    return findings
+
+
+def _is_title_echo(line: str, title: str) -> bool:
+    """Строка повторяет название главы из имени файла."""
+    from .naming import parse
+
+    wanted = normalize_loose(title)
+    if not wanted:
+        return False
+    if normalize_loose(line) == wanted:
+        return True
+    # «Chapter 243: Finding the Culprit» против названия без номера.
+    return normalize_loose(parse(line).title) == wanted
+
+
+def strip_headers(paragraphs: list[str], title: str, texts) -> list[str]:
+    """Убирает шапку из начала главы.
+
+    Чистим только зону шапки: та же строка дальше по тексту — уже
+    содержание, и трогать её нельзя.
+    """
+    wanted = {normalize_loose(t) for t in texts if str(t).strip()}
+    drop_title = any(not str(t).strip() for t in texts)
+
+    result = list(paragraphs)
+    kept: list[str] = []
+    checked = 0
+
+    for index, line in enumerate(result):
+        if checked >= HEAD_LINES:
+            kept.extend(result[index:])
+            break
+        if not line.strip():
+            continue
+        checked += 1
+        if normalize_loose(line) in wanted:
+            continue
+        if drop_title and _is_title_echo(line, title):
+            continue
+        kept.append(line)
+    return kept
+
+
 def is_scene_break(text: str) -> bool:
     stripped = (text or "").strip()
     return bool(stripped) and bool(SCENE_BREAK.match(stripped))
