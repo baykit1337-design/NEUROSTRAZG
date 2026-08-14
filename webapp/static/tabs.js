@@ -627,9 +627,12 @@ $('rnRenumber').onchange = () => {
 });
 const rnSepMenu = makeDropdown($('rnSep'), () => { rnUpdateExample(); rnBuildPreview(); });
 $('rnPattern').addEventListener('keydown', e => { if(e.key === 'Enter') rnScan(); });
-document.querySelectorAll('.pick2').forEach(btn => {
+// Кнопки формата на выходе. Переключаем в пределах своей строки: тот же
+// класс носят кнопки режима в качалке, и общий обработчик их затирал.
+document.querySelectorAll('.pick2[data-fmt]').forEach(btn => {
   btn.onclick = () => {
-    document.querySelectorAll('.pick2').forEach(b => b.classList.toggle('on', b === btn));
+    btn.parentNode.querySelectorAll('.pick2[data-fmt]')
+       .forEach(b => b.classList.toggle('on', b === btn));
     rnFmtOut = btn.dataset.fmt;
   };
 });

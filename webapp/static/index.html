@@ -580,6 +580,11 @@
     align-items:center;gap:10px}
   .schema b{color:var(--neon);font-weight:600}
   .schema .arrow{color:#6d6d7a}
+  .pick2{flex:1;padding:9px 14px;border-radius:10px;cursor:pointer;
+    background:rgba(255,255,255,.03);border:1px solid rgba(168,85,247,.28);
+    color:var(--text);font:inherit;font-size:13px;transition:.18s}
+  .pick2:hover{border-color:rgba(168,85,247,.6)}
+  .pick2.on{background:rgba(140,84,255,.18);border-color:var(--neon);color:#c084fc}
   .schema .act{padding:2px 10px;border-radius:999px;
     background:rgba(168,85,247,.16);color:#c084fc;font-size:12px}
 
@@ -774,6 +779,15 @@
         <input id="dlThreads" type="number" value="3" min="1" max="6">
       </div>
     </div>
+
+    <div style="margin-top:14px">
+      <label>режим многопоточности</label>
+      <div class="row">
+        <button class="pick2 pickmode on" data-mode="auto">Автоматически</button>
+        <button class="pick2 pickmode" data-mode="manual">Всегда N потоков</button>
+      </div>
+      <p class="hint" id="dlModeNote"></p>
+    </div>
     <p class="hint" id="estimate"></p>
   </div>
 
@@ -787,6 +801,10 @@
       <span>ошибок <b id="sFail">0</b></span>
       <span id="sPct"></span>
     </div>
+    <details id="probeBox" hidden style="margin-top:12px">
+      <summary style="cursor:pointer;color:var(--neon);font-size:13px">Подробности пробы</summary>
+      <div class="table" id="probeTable" style="margin-top:10px"></div>
+    </details>
     <div class="pnow" id="sProxy"></div>
     <!-- Способ скачивания, подобранный автопробой: «3 потока · 3 прокси». -->
     <div class="pnow" id="sMethod"></div>
@@ -1372,6 +1390,69 @@ const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16"
 let novel = null, basePath = null, jobId = null, poll = null;
 //: Уведомление о способе скачивания — одно на прогон.
 let probeShown = false;
+//: «auto» подбирает способ пробой, «manual» её пропускает.
+let dlMode = 'auto';
+
+const DL_MODE_NOTES = {
+  auto: 'Перед прогоном подбирается рабочий способ: 5 глав в 3 потока. '
+      + 'Не вышло ни одним — качаем по очереди.',
+  manual: 'Проба пропускается, берётся указанное число потоков. '
+        + 'Сколько заняло — видно по времени, это надёжнее любой эвристики.',
+};
+
+/** Таблица по каждому методу: что пробовали и почему не вышло. */
+function drawProbe(probe){
+  const box = document.getElementById('probeBox');
+  const table = document.getElementById('probeTable');
+  if(!probe || !probe.attempts?.length){ box.hidden = true; return; }
+
+  box.hidden = false;
+  table.innerHTML = '';
+  for(const a of probe.attempts){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = a.name;
+
+    const verdict = document.createElement('span');
+    verdict.className = 'tag' + (a.ok ? '' : ' warn');
+    verdict.textContent = a.ok ? 'выбран' : 'не прошёл';
+
+    const time = document.createElement('span');
+    time.className = 'num';
+    time.textContent = a.seconds ? `${a.seconds} с` : '—';
+
+    // Сколько потоков реально работало: без этого «способ не помог» не
+    // отличить от «потоки не создались вовсе».
+    const threads = document.createElement('span');
+    threads.className = 'num';
+    threads.textContent = a.concurrent ? `${a.concurrent} одновр.` : '—';
+
+    const why = document.createElement('span');
+    why.className = 'grow';
+    why.textContent = a.reason || '';
+    why.title = why.textContent;
+
+    row.append(name, verdict, time, threads, why);
+    table.append(row);
+  }
+
+  // Последовательный не пробуется — он работает всегда.
+  if(!probe.parallel){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = 'последовательно';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = 'выбран';
+    row.append(name, tag);
+    table.append(row);
+  }
+}
 
 //: Сколько уведомление висит на экране, прежде чем уйти само.
 const TOAST_LIFETIME = 6000;
@@ -1566,6 +1647,7 @@ async function exportLinks(){
       last: Number($('last').value) || novel.total_chapters,
       timeout: Number($('tmRead').value) || 120,
       threads: Number($('dlThreads').value) || 1,
+      mode: dlMode,
       connect_timeout: Number($('tmConnect').value) || 15
     });
     const blob = new Blob([data.links.join('\n') + '\n'], {type:'text/plain'});
@@ -1637,6 +1719,7 @@ async function tick(){
     if(p.probe?.message && !probeShown){
       probeShown = true;
       toast(p.probe.message);
+      drawProbe(p.probe);
       $('sMethod').textContent = p.probe.parallel
         ? `${p.probe.threads} потока` +
           (p.probe.proxies ? ` · ${p.probe.proxies} прокси` : '')
@@ -1680,12 +1763,26 @@ function reset(){
   jobId = null;
   probeShown = false;
   $('sMethod').textContent = '';
+  $('probeBox').hidden = true;
   $('progress').hidden = true;
   $('place').hidden = false;
   $('status').classList.remove('ok');
   $('summary').textContent = '';
   showError('');
 }
+
+// Только .pickmode и только в своей строке: класс .pick2 занят ещё и
+// кнопками формата на вкладке «Переименовать», а общий обработчик на весь
+// документ затирал бы соседний и сбивал подсветку на чужой вкладке.
+document.querySelectorAll('.pickmode').forEach(btn => {
+  btn.onclick = () => {
+    btn.parentNode.querySelectorAll('.pickmode')
+       .forEach(b => b.classList.toggle('on', b === btn));
+    dlMode = btn.dataset.mode;
+    $('dlModeNote').textContent = DL_MODE_NOTES[dlMode] || '';
+  };
+});
+$('dlModeNote').textContent = DL_MODE_NOTES.auto;
 
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });

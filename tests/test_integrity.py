@@ -408,6 +408,13 @@ class TestAutoprobeRun(_DownloadCase):
             probe.message,
             "Многопоточность недоступна. Скачивание идёт по очереди.")
 
+    def test_manual_mode_skips_the_probe(self):
+        """Ручной режим берёт указанное число потоков без пробы."""
+        downloader, report = self.run_download(3, probe=False)
+        self.assertIsNone(downloader.probe_report)
+        self.assertEqual(report.threads, 3)
+        self.assertEqual(report.downloaded, 8)
+
     def test_probe_skipped_for_single_thread(self):
         downloader, _ = self.run_download(1, probe=True)
         self.assertIsNone(downloader.probe_report)
@@ -463,6 +470,16 @@ class TestNeurostrazhWebApi(unittest.TestCase):
             "targets": [str(self.src)], "base": str(self.tmp),
             "name": "К", "format": "txt", "encoding": "koi8-r"})
         self.assertEqual(res.status_code, 400)
+
+    def test_manual_mode_reaches_the_downloader(self):
+        """Переключатель режима должен доходить до качалки, а не теряться."""
+        import inspect
+
+        from webapp import app as webapp_app
+
+        source = inspect.getsource(webapp_app.api_start)
+        self.assertIn('payload.get("mode")', source)
+        self.assertIn("probe=probe", source)
 
     def test_download_rejects_too_many_threads(self):
         res = self.app.post("/api/start", json={

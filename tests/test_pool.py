@@ -83,12 +83,43 @@ class TestProbeMethod(unittest.TestCase):
         self.assertTrue(attempt.ok, attempt.reason)
         self.assertGreaterEqual(attempt.speedup, 1.7)
 
-    def test_one_thread_is_too_slow(self):
-        """Один поток не обгоняет сам себя — способ отбраковывается."""
+    def test_one_thread_is_reported_as_no_parallelism(self):
+        """Один поток — это не «медленно», а «параллельности не было».
+
+        Разница принципиальна: по первой формулировке непонятно, ломается
+        проба или сам параллельный режим.
+        """
         attempt = pool.probe_method(
             pool.OWN_SESSION, CHAPTERS, maker(), slow(0.05), threads=1)
         self.assertFalse(attempt.ok)
-        self.assertIn("быстрее лишь", attempt.reason)
+        self.assertEqual(attempt.concurrent, 1)
+        self.assertFalse(attempt.parallel_ran)
+        self.assertIn("по очереди", attempt.reason)
+
+    def test_slow_but_parallel_is_reported_by_the_ratio(self):
+        """Потоки были, но выигрыша нет — причина в цифрах, а не в догадках."""
+        attempt = pool.probe_method(
+            pool.OWN_SESSION, CHAPTERS, maker(), slow(0.05), threads=3,
+            speedup=99.0)
+        self.assertFalse(attempt.ok)
+        self.assertTrue(attempt.parallel_ran)
+        self.assertIn("ускорение", attempt.reason)
+        self.assertIn("пороге", attempt.reason)
+
+    def test_warmup_is_measured_and_excluded(self):
+        """Первый запрос дольше — рукопожатие TLS и кука Cloudflare."""
+        attempt = pool.probe_method(
+            pool.OWN_SESSION, CHAPTERS, maker(), slow(0.05), threads=3)
+        self.assertGreater(attempt.warmup, 0)
+        # Прогрев в замер не входит: иначе способ тормозит сам себя.
+        self.assertLess(attempt.seconds, attempt.warmup * len(CHAPTERS))
+
+    def test_real_concurrency_is_counted(self):
+        attempt = pool.probe_method(
+            pool.OWN_SESSION, CHAPTERS, maker(), slow(0.05), threads=3)
+        self.assertGreater(attempt.concurrent, 1)
+        self.assertLessEqual(attempt.concurrent, 3)
+        self.assertGreaterEqual(attempt.workers, 2)
 
     def test_empty_chapter_fails(self):
         attempt = pool.probe_method(

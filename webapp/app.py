@@ -431,6 +431,10 @@ def api_start():
             error=f"Потоков: от 1 до {downloader_mod.MAX_THREADS}"
         ), 400
 
+    # Ручной режим пропускает пробу: пользователь сам увидит по времени,
+    # работает многопоточность или нет, — это надёжнее любой эвристики.
+    probe = str(payload.get("mode") or "auto").strip() != "manual"
+
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
         downloader = Downloader(
@@ -439,6 +443,7 @@ def api_start():
             on_progress=lambda p: job.progress.update(p.as_dict()),
             cancel_event=job.cancel,
             threads=threads,
+            probe=probe,
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()

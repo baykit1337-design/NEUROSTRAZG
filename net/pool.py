@@ -58,16 +58,31 @@ class Attempt:
     expected: float = 0.0
     speedup: float = 0.0
     proxies: int = 0
+    #: Сколько времени ушло на прогрев — в замер оно не входит.
+    warmup: float = 0.0
+    #: Сколько разных потоков реально работало и сколько запросов шло
+    #: одновременно в пике. Без этого не отличить «способ не помог» от
+    #: «потоки не создались вовсе».
+    workers: int = 0
+    concurrent: int = 0
 
     @property
     def name(self) -> str:
         return NAMES.get(self.method, self.method)
+
+    @property
+    def parallel_ran(self) -> bool:
+        """Параллельность вообще случилась, а не только заявлена."""
+        return self.concurrent > 1
 
     def as_dict(self) -> dict:
         return {
             "method": self.method, "name": self.name, "ok": self.ok,
             "reason": self.reason, "seconds": round(self.seconds, 2),
             "speedup": round(self.speedup, 2), "proxies": self.proxies,
+            "warmup": round(self.warmup, 2),
+            "workers": self.workers, "concurrent": self.concurrent,
+            "parallel_ran": self.parallel_ran,
         }
 
 
@@ -239,23 +254,37 @@ def probe_method(method: str, chapters, make_client, fetch, threads: int,
 
     fetcher = Fetcher(method, make_client, proxies)
     durations: list[float] = []
-    started = time.monotonic()
+
+    # Кто и сколько работал одновременно. Без этого «способ не помог» не
+    # отличить от «потоки не создались вовсе» — а это разные поломки.
+    watch = _Concurrency()
 
     def one(chapter):
         if cancel is not None and cancel.is_set():
             raise ProbeFailed("остановлено")
-        begin = time.monotonic()
-        text = fetch(fetcher.client(), chapter)
-        spent = time.monotonic() - begin
+        with watch:
+            begin = time.monotonic()
+            text = fetch(fetcher.client(), chapter)
+            spent = time.monotonic() - begin
         if not (text or "").strip():
             raise ProbeFailed(f"глава {getattr(chapter, 'number', '?')} пришла пустой")
         return spent
 
     try:
         if method == ASYNC:
-            durations = _run_async(chapters, one, threads)
+            started, attempt.warmup = _run_async(chapters, one, threads, durations)
         else:
+            # Пул создаём один на прогрев и на замер: прогретый поток
+            # переиспользуется, лишних клиентов и адресов не появляется.
             with ThreadPoolExecutor(max_workers=threads) as pool:
+                # Прогрев: первый запрос всегда дольше — рукопожатие TLS,
+                # кука Cloudflare. В замер он не идёт, иначе тормозит сам себя.
+                warmed = time.monotonic()
+                pool.submit(one, chapters[0]).result()
+                attempt.warmup = time.monotonic() - warmed
+                watch.reset()
+
+                started = time.monotonic()
                 futures = [pool.submit(one, chapter) for chapter in chapters]
                 for future in as_completed(futures):
                     durations.append(future.result())
@@ -269,6 +298,8 @@ def probe_method(method: str, chapters, make_client, fetch, threads: int,
         fetcher.close()
 
     attempt.seconds = time.monotonic() - started
+    attempt.workers = watch.workers
+    attempt.concurrent = watch.peak
     if not durations:
         attempt.reason = "нечего было качать"
         return attempt
@@ -277,13 +308,50 @@ def probe_method(method: str, chapters, make_client, fetch, threads: int,
     # что обходится один запрос без соседей.
     attempt.expected = min(durations) * len(durations)
     attempt.speedup = attempt.expected / attempt.seconds if attempt.seconds else 0.0
+
+    if not attempt.parallel_ran:
+        # Запросы шли по одному: дело не в скорости сайта, а в том, что
+        # параллельность не состоялась. Это надо назвать прямо.
+        attempt.reason = "запросы шли по очереди, параллельности не было"
+        return attempt
     if attempt.speedup < speedup:
-        attempt.reason = (f"быстрее лишь в {attempt.speedup:.1f} раза, "
-                          f"нужно от {speedup:g}")
+        attempt.reason = (f"ускорение {attempt.speedup:.1f}× при пороге {speedup:g}×")
         return attempt
 
     attempt.ok = True
     return attempt
+
+
+class _Concurrency:
+    """Считает, сколько запросов шло одновременно и в скольких потоках."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._now = 0
+        self.peak = 0
+        self._seen: set[int] = set()
+
+    def __enter__(self):
+        with self._lock:
+            self._now += 1
+            self.peak = max(self.peak, self._now)
+            self._seen.add(threading.get_ident())
+        return self
+
+    def __exit__(self, *exc):
+        with self._lock:
+            self._now -= 1
+        return False
+
+    def reset(self) -> None:
+        """Прогрев в счёт не идёт."""
+        with self._lock:
+            self.peak = 0
+            self._seen.clear()
+
+    @property
+    def workers(self) -> int:
+        return len(self._seen)
 
 
 def _reason(exc: BaseException) -> str:
@@ -296,21 +364,36 @@ def _reason(exc: BaseException) -> str:
     return scrub(f"{type(exc).__name__}: {exc}")
 
 
-def _run_async(chapters, one, threads: int) -> list[float]:
-    """Асинхронный прогон. Ограничение — семафором, а не числом задач."""
+def _run_async(chapters, one, threads: int, durations: list[float]):
+    """Асинхронный прогон. Ограничение — семафором, а не числом задач.
+
+    Возвращает момент начала замера и время прогрева: прогрев идёт в том же
+    исполнителе, что и замер, поэтому лишних клиентов не появляется.
+    """
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor as Pool
+
+    result = {}
 
     async def main():
-        limit = asyncio.Semaphore(threads)
         loop = asyncio.get_running_loop()
+        limit = asyncio.Semaphore(threads)
 
-        async def task(chapter):
-            async with limit:
-                return await loop.run_in_executor(None, one, chapter)
+        with Pool(max_workers=threads) as pool:
+            warmed = time.monotonic()
+            await loop.run_in_executor(pool, one, chapters[0])
+            result["warmup"] = time.monotonic() - warmed
+            result["reset"] = True
+            result["started"] = time.monotonic()
 
-        return await asyncio.gather(*(task(c) for c in chapters))
+            async def task(chapter):
+                async with limit:
+                    return await loop.run_in_executor(pool, one, chapter)
 
-    return list(asyncio.run(main()))
+            durations.extend(await asyncio.gather(*(task(c) for c in chapters)))
+
+    asyncio.run(main())
+    return result["started"], result["warmup"]
 
 
 def autoprobe(chapters, make_client, fetch, threads: int | None = None,
