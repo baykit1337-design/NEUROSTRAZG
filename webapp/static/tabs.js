@@ -274,7 +274,9 @@ function rnPayload(){
     splits: rnSplits,
     renumber: $('rnRenumber').checked,
     renumber_from: $('rnStart').value,
-    skip_service: $('rnSkipService').checked,
+    // Отмеченные строки. Понятия «служебный файл», который выпадает сам,
+    // больше нет: что не нужно, человек снимает галочкой.
+    chosen: [...rnChosen],
   };
 }
 
@@ -290,7 +292,7 @@ function safeFilename(name){
 
 /** Живой пример имени на первой главе из папки. */
 function rnUpdateExample(){
-  const first = rnChapters.find(c => !c.service);
+  const first = rnChapters.find(c => rnChosen.has(c.path)) || rnChapters[0];
   const fmt = rnFormat();
   if(!first){ $('rnExample').textContent = '—'; return; }
 
@@ -330,11 +332,15 @@ async function rnScan(){
     rnChosen.clear();
     Object.keys(rnSplits).forEach(k => delete rnSplits[k]);
 
+    // По умолчанию отмечены все: ни один файл не исключается сам.
+    rnChapters.forEach(c => rnChosen.add(c.path));
+
     $('rnScanned').textContent =
-      `Файлов: ${data.total}` + (data.service ? `, служебных: ${data.service}` : '');
-    $('rnServiceNote').textContent = data.service
-      ? `Служебных файлов: ${data.service}. Снимите галочку, чтобы переименовать их вручную.`
-      : 'Служебных файлов не найдено.';
+      `Файлов: ${data.total}` + (data.suspect ? `, проверьте: ${data.suspect}` : '');
+    $('rnServiceNote').textContent = data.suspect
+      ? `Разбор ${data.suspect} имён вызывает сомнения — они помечены значком. `
+        + 'Файлы переименуются наравне с остальными; снимите галочку, если лишние.'
+      : 'Все имена разобраны.';
     ['rnPatternCard','rnFormat','rnListCard','rnPlace'].forEach(id => { $(id).hidden = false; });
     if(!$('rnOut').value) $('rnOut').value = 'Готово';
 
@@ -352,12 +358,11 @@ function rnRenderList(){
   list.innerHTML = '';
   for(const chapter of rnChapters){
     const row = document.createElement('div');
-    row.className = 'tr' + (chapter.service ? ' service' : '');
+    row.className = 'tr' + (chapter.suspect ? ' suspect' : '');
 
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = rnChosen.has(chapter.path);
-    box.disabled = chapter.service;
     box.onchange = () => {
       box.checked ? rnChosen.add(chapter.path) : rnChosen.delete(chapter.path);
       rnUpdateChosen();
@@ -372,11 +377,20 @@ function rnRenderList(){
     size.textContent = chapter.size.toLocaleString('ru') + ' симв.';
 
     row.append(box, name);
-    if(chapter.service){
+    if(chapter.suspect){
+      // Помечаем, но не отбираем: решает человек.
       const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = 'служебный';
+      tag.className = 'tag warn';
+      tag.textContent = '⚠ проверьте';
+      if(chapter.suspect_reason) attachTip(tag, chapter.suspect_reason);
       row.append(tag);
+    }
+    if(chapter.number != null){
+      const num = document.createElement('span');
+      num.className = 'tag';
+      num.textContent = chapter.assigned ? `№${chapter.number} по порядку`
+                                         : `№${chapter.number}`;
+      row.append(num);
     }
     if(rnSplits[chapter.path] > 1){
       const tag = document.createElement('span');
@@ -391,7 +405,9 @@ function rnRenderList(){
 }
 
 function rnUpdateChosen(){
-  $('rnSelected').textContent = rnChosen.size ? `— отмечено ${rnChosen.size}` : '';
+  $('rnSelected').textContent =
+    `— отмечено ${rnChosen.size} из ${rnChapters.length}`;
+  rnBuildPreview();
 }
 
 async function rnBuildPreview(){
@@ -506,7 +522,7 @@ $('rnIn').addEventListener('input', () => {
   rnScanTimer = setTimeout(() => { if($('rnIn').value.trim()) rnScan(); }, 400);
 });
 $('rnAll').onclick = () => {
-  rnChapters.filter(c => !c.service).forEach(c => rnChosen.add(c.path));
+  rnChapters.forEach(c => rnChosen.add(c.path));
   rnRenderList();
 };
 $('rnNone').onclick = () => { rnChosen.clear(); rnRenderList(); };
@@ -516,7 +532,7 @@ $('rnRenumber').onchange = () => {
   $('rnStart').disabled = !$('rnRenumber').checked;
   rnBuildPreview();
 };
-['rnNum','rnPart','rnTitle','rnSkipService'].forEach(id => {
+['rnNum','rnPart','rnTitle'].forEach(id => {
   $(id).onchange = () => { rnUpdateExample(); rnBuildPreview(); };
 });
 ['rnPrefix','rnStart'].forEach(id => {

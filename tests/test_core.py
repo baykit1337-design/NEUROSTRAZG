@@ -72,10 +72,49 @@ class TestNaming(unittest.TestCase):
                     (parts.seq, parts.number, parts.part, parts.title), expected
                 )
 
-    def test_service_file_has_no_number(self):
+    def test_name_without_a_second_number_keeps_the_leading_one(self):
+        """Отбрасывать порядковый номер можно, только если есть замена."""
         parts = naming.parse("0001 - Информация")
-        self.assertTrue(parts.service)
+        self.assertEqual(parts.number, 1)
+        self.assertEqual(parts.title, "Информация")
+
+    def test_examples_from_the_spec(self):
+        """Разбор не привязан ни к языку, ни к слову «глава»."""
+        cases = {
+            "0001 - Chapter 241_ Panicking Count Ashton": (241, "Panicking Count Ashton"),
+            "0002 - Глава 242. Улика": (242, "Улика"),
+            "Chapter 243) Finding the Culprit": (243, "Finding the Culprit"),
+            "第 244 章 标题": (244, "标题"),
+            "глава244безпробелов": (244, "безпробелов"),
+            "ЮЮЮ 245 ЮЮЮ": (245, "ЮЮЮ"),
+        }
+        for stem, (number, title) in cases.items():
+            with self.subTest(stem=stem):
+                parts = naming.parse(stem)
+                self.assertEqual((parts.number, parts.title), (number, title))
+
+    def test_name_without_digits_keeps_the_whole_name(self):
+        parts = naming.parse("Пролог")
         self.assertIsNone(parts.number)
+        self.assertEqual(parts.title, "Пролог")
+
+    def test_long_digit_runs_are_not_chapter_numbers(self):
+        """Шесть цифр — это дата или внутренний код, но не номер главы."""
+        parts = naming.parse("20240101 - Название")
+        self.assertIsNone(parts.number)
+
+    def test_part_needs_digits_right_after_the_dot(self):
+        self.assertEqual(naming.parse("Глава 361.2").part, 2)
+        # «Глава 5. 100 дней» — точка с пробелом это разделитель, не часть.
+        parts = naming.parse("Глава 5. 100 дней")
+        self.assertEqual((parts.number, parts.part, parts.title), (5, None, "100 дней"))
+
+    def test_outliers_are_flagged(self):
+        """Из даты в имени выйдет «глава 2024» посреди двухсот обычных."""
+        self.assertEqual(naming.suspects([201, 202, 203, 204, 2024, 205, 206]), {2024})
+        self.assertEqual(naming.suspects(list(range(1, 501))), set())
+        # Данных мало — судить не о чем.
+        self.assertEqual(naming.suspects([1, 2]), set())
 
     def test_build_round_trip(self):
         """Собрали имя — разобрали обратно, номер и название на месте."""

@@ -45,12 +45,16 @@ class TestParseName(unittest.TestCase):
             parts = rename.parse_name(stem)
             self.assertEqual((parts.seq, parts.number, parts.title), (seq, number, title), stem)
 
-    def test_service_file_has_no_chapter_number(self):
-        """`0001 - Информация` — служебный файл, а не «глава 1»."""
+    def test_name_without_a_second_number_keeps_the_leading_one(self):
+        """`0001 - Информация`: дальше числа нет, значит 0001 — это номер.
+
+        Порядковый номер отбрасывается только тогда, когда есть что взять
+        вместо него. Понятия «служебный файл» больше нет — из списка не
+        выпадает ни один текстовый файл.
+        """
         parts = rename.parse_name("0001 - Информация")
-        self.assertIsNone(parts.number)
-        self.assertTrue(parts.service)
-        self.assertEqual(parts.seq, 1)
+        self.assertEqual(parts.number, 1)
+        self.assertEqual(parts.title, "Информация")
 
     def test_sequence_number_is_not_the_chapter_number(self):
         parts = rename.parse_name("0010 - Глава 209. Название")
@@ -174,14 +178,15 @@ class RenameFolderTest(unittest.TestCase):
 
 
 class TestScanAndPlan(RenameFolderTest):
-    def test_scan_finds_files_and_marks_service(self):
+    def test_scan_keeps_every_file(self):
+        """Ни один текстовый файл из списка не выпадает."""
         chapters = rename.scan(self.folder)
         self.assertEqual(len(chapters), 4)
-        self.assertEqual(sum(c.service for c in chapters), 1)
+        self.assertTrue(all(c.number is not None for c in chapters))
 
     def test_scan_sorts_by_chapter_number(self):
-        numbers = [c.number for c in rename.scan(self.folder) if not c.service]
-        self.assertEqual(numbers, [201, 202, 203])
+        numbers = [c.number for c in rename.scan(self.folder)]
+        self.assertEqual(numbers, [1, 201, 202, 203])
 
     def test_scan_reports_size_in_characters(self):
         chapter = next(c for c in rename.scan(self.folder) if c.number == 201)
@@ -193,23 +198,26 @@ class TestScanAndPlan(RenameFolderTest):
         with self.assertRaises(rename.RenameError):
             rename.scan(empty)
 
-    def test_plan_skips_service_by_default(self):
+    def test_plan_takes_every_file_by_default(self):
+        """По умолчанию отмечены все — ничего не пропускается само."""
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
-        self.assertEqual(len(rows), 3)
-        self.assertFalse(any(r.service for r in rows))
-
-    def test_plan_can_keep_service_files(self):
-        rows = rename.make_plan(rename.scan(self.folder), NameFormat(), skip_service=False)
         self.assertEqual(len(rows), 4)
-        self.assertTrue(any(r.service for r in rows))
+
+    def test_plan_honours_the_checkboxes(self):
+        chapters = rename.scan(self.folder)
+        chosen = {str(c.path) for c in chapters if c.number != 1}
+        rows = rename.make_plan(chapters, NameFormat(), chosen=chosen)
+        self.assertEqual([r.number for r in rows], [201, 202, 203])
 
     def test_renumber_from_ignores_numbers_in_names(self):
         rows = rename.make_plan(rename.scan(self.folder), NameFormat(), renumber_from=1)
-        self.assertEqual([r.number for r in rows], [1, 2, 3])
+        self.assertEqual([r.number for r in rows], [1, 2, 3, 4])
 
     def test_without_renumber_numbers_come_from_names(self):
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
-        self.assertEqual([r.number for r in rows], [201, 202, 203])
+        # 1 — это «0001 - Информация»: дальше по имени числа нет, значит
+        # порядковый номер и есть номер главы.
+        self.assertEqual([r.number for r in rows], [1, 201, 202, 203])
 
     def test_split_produces_numbered_parts(self):
         chapters = rename.scan(self.folder)
@@ -234,14 +242,14 @@ class TestApplyPlan(RenameFolderTest):
         out = self.tmp / "готово"
         report = rename.apply_plan(rows, out)
 
-        self.assertEqual(report.written, 3)
+        self.assertEqual(report.written, 4)
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), before)
 
     def test_docx_output(self):
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
         out = self.tmp / "docx"
         rename.apply_plan(rows, out, fmt="docx")
-        self.assertEqual(len(list(out.glob("*.docx"))), 3)
+        self.assertEqual(len(list(out.glob("*.docx"))), 4)
 
     def test_duplicate_names_stop_the_run(self):
         """Совпадение имён — ошибка логики, а не повод дописать «(2)»."""
@@ -276,7 +284,8 @@ class TestApplyPlan(RenameFolderTest):
                                 splits={str(target.path): 2})
         out = self.tmp / "parts"
         report = rename.apply_plan(rows, out)
-        self.assertEqual(report.written, 4)
+        # Четыре главы, из них 202 разрезана надвое, — итого пять файлов.
+        self.assertEqual(report.written, 5)
         self.assertTrue((out / "Глава 202.1 - Название 202.txt").is_file())
         self.assertTrue((out / "Глава 202.2 - Название 202.txt").is_file())
         # Ни одного имени с «(2)» — Windows разруливать конфликт не должен.
@@ -293,7 +302,7 @@ class TestApplyPlan(RenameFolderTest):
         seen = []
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
         rename.apply_plan(rows, self.tmp / "p", on_progress=lambda d, t: seen.append((d, t)))
-        self.assertEqual(seen, [(1, 3), (2, 3), (3, 3)])
+        self.assertEqual(seen, [(1, 4), (2, 4), (3, 4), (4, 4)])
 
     def test_split_parts_together_hold_the_whole_chapter(self):
         chapters = rename.scan(self.folder)
@@ -317,7 +326,7 @@ class TestRenameWebApi(RenameFolderTest):
         self.assertEqual(res.status_code, 200)
         body = res.get_json()
         self.assertEqual(body["total"], 4)
-        self.assertEqual(body["service"], 1)
+        self.assertEqual(body["suspect"], 0)
 
     def test_scan_requires_folder(self):
         self.assertEqual(self.app.post("/api/rename/scan", json={}).status_code, 400)
@@ -325,7 +334,7 @@ class TestRenameWebApi(RenameFolderTest):
     def test_plan_endpoint(self):
         res = self.app.post("/api/rename/plan", json={"folder_in": str(self.folder)})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json()["total"], 3)
+        self.assertEqual(res.get_json()["total"], 4)
 
     def test_plan_warns_about_forbidden_separator(self):
         res = self.app.post("/api/rename/plan", json={
@@ -342,14 +351,15 @@ class TestRenameWebApi(RenameFolderTest):
 
         res = self.app.post("/api/rename/apply", json={
             "folder_in": str(self.folder), "base": str(self.tmp), "folder_out": "Правки",
-            "names": ["Своё имя A", "Своё имя B", "Своё имя C"],
+            "names": ["Своё имя A", "Своё имя B", "Своё имя C", "Своё имя D"],
         })
         self.assertEqual(res.status_code, 200)
         job_id = res.get_json()["job"]["id"]
         JOBS[job_id].thread.join(timeout=60)
 
         names = sorted(p.stem for p in (self.tmp / "Правки").glob("*.txt"))
-        self.assertEqual(names, ["Своё имя A", "Своё имя B", "Своё имя C"])
+        self.assertEqual(
+            names, ["Своё имя A", "Своё имя B", "Своё имя C", "Своё имя D"])
 
     def test_apply_requires_destination(self):
         res = self.app.post("/api/rename/apply", json={"folder_in": str(self.folder)})

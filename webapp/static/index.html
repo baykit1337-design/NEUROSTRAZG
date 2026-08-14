@@ -572,6 +572,11 @@
     animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
   @keyframes sp{to{transform:rotate(360deg)}}
 
+  /* Разбор имени вызывает сомнения. Строка помечена, но не отключена:
+     решает человек, а не программа. */
+  .tr.suspect{background:rgba(255,200,107,.05)}
+  .tag.warn{color:#ffc86b;border-color:rgba(255,200,107,.45)}
+
   /* Уведомление внизу справа: не модальное окно и не ошибка. Сообщает и
      исчезает само, прогон при этом продолжается. */
   #toasts{position:fixed;right:20px;bottom:20px;z-index:60;
@@ -934,8 +939,6 @@
     </div>
 
     <div style="margin-top:14px">
-      <label class="chk"><input type="checkbox" id="rnSkipService" checked>
-        пропускать служебные файлы</label>
       <p class="hint" id="rnServiceNote"></p>
     </div>
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..models import Chapter
-from ..naming import clean_title, parse
+from ..naming import clean_title, heading_number, parse
 
 
 class ReadError(Exception):
@@ -61,7 +61,7 @@ class Reader:
         first = paragraphs[0].strip()
         looks_like_heading = (
             len(first) <= self.heading_limit
-            and (parse(first).number is not None
+            and (heading_number(first) is not None
                  or normalize_title(first) == normalize_title(fallback))
         )
         if looks_like_heading:

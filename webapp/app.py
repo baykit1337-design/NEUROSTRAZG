@@ -561,14 +561,16 @@ def _plan_from_payload(payload: dict):
         rename.NameFormat.from_dict(payload.get("format")),
         splits={str(k): int(v) for k, v in (payload.get("splits") or {}).items()},
         renumber_from=renumber_from,
-        skip_service=bool(payload.get("skip_service", True)),
+        # Отмеченные галочками пути. Пусто — значит, все: понятия
+        # «служебный файл», который выпадает сам, больше нет.
+        chosen={str(p) for p in (payload.get("chosen") or [])} or None,
     )
     return chapters, rows
 
 
 @app.post("/api/rename/scan")
 def api_rename_scan():
-    """Список глав в папке: имя, номер, объём, признак служебного файла."""
+    """Список глав в папке: имя, номер, объём, пометка сомнительного разбора."""
     payload = request.json or {}
     folder = (payload.get("folder_in") or "").strip()
     if not folder:
@@ -580,7 +582,7 @@ def api_rename_scan():
 
     return jsonify(
         chapters=[c.as_dict() for c in chapters],
-        service=sum(1 for c in chapters if c.service),
+        suspect=sum(1 for c in chapters if c.suspect),
         total=len(chapters),
     )
 

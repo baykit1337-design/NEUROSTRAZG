@@ -74,18 +74,24 @@ class Chapter:
     size: int = 0
     part: int | None = None
     text_parts: list[str] = field(default_factory=list)
+    #: Номер, присвоенный по порядку в папке, когда в имени числа не было.
+    assigned: int | None = None
+    #: Разбор вызывает сомнения: номера нет или он выбивается из диапазона.
+    #: Строка помечается значком, но из списка не исчезает — решает человек.
+    suspect: bool = False
+    #: Почему помечена — текст для подсказки в интерфейсе.
+    suspect_reason: str = ""
 
     @property
     def number(self) -> int | None:
-        return self.parts_of_name.number
+        """Номер из имени, а если его там не было — присвоенный по порядку."""
+        if self.parts_of_name.number is not None:
+            return self.parts_of_name.number
+        return self.assigned
 
     @property
     def title(self) -> str:
         return self.parts_of_name.title
-
-    @property
-    def service(self) -> bool:
-        return self.parts_of_name.service
 
     def as_dict(self) -> dict:
         return {
@@ -95,7 +101,10 @@ class Chapter:
             "part": self.part,
             "title": self.title,
             "size": self.size,
-            "service": self.service,
+            "suspect": self.suspect,
+            "suspect_reason": self.suspect_reason,
+            # Номер не из имени, а присвоен по порядку в папке.
+            "assigned": self.parts_of_name.number is None,
         }
 
 
@@ -105,7 +114,13 @@ def read_paragraphs(path: Path) -> list[str]:
 
 
 def scan(folder: str | Path, pattern: str | None = None) -> list[Chapter]:
-    """Читает папку и раскладывает имена. Сортировка — по номеру главы."""
+    """Читает папку и раскладывает имена. Сортировка — по номеру главы.
+
+    Ни один текстовый файл из списка не выпадает. Файлу без числа в имени
+    номер присваивается по порядку в папке, а сомнительный разбор
+    помечается значком «проверьте» — но галочка остаётся доступной, снять
+    её может только человек.
+    """
     directory = Path(folder).expanduser()
     if not directory.is_dir():
         raise RenameError(f"Папка не найдена: {directory}")
@@ -131,20 +146,46 @@ def scan(folder: str | Path, pattern: str | None = None) -> list[Chapter]:
         )
 
     if not chapters:
-        raise RenameError("В папке нет файлов .txt, .md или .docx")
+        raise RenameError(
+            "В папке нет файлов поддерживаемых форматов: "
+            + ", ".join(READABLE)
+        )
 
-    return sort_chapters(chapters)
+    chapters = sort_chapters(chapters)
+    _mark(chapters)
+    return chapters
+
+
+def _mark(chapters: list[Chapter]) -> None:
+    """Присваивает номера безномерным и помечает сомнительный разбор."""
+    outliers = naming.suspects(c.parts_of_name.number for c in chapters)
+
+    # Номер по порядку в папке — только тем, у кого числа в имени не было.
+    order = 0
+    for chapter in chapters:
+        if chapter.parts_of_name.number is None:
+            order += 1
+            chapter.assigned = order
+            chapter.suspect = True
+            chapter.suspect_reason = (
+                f"числа в имени нет, присвоен номер {order} по порядку в папке")
+        elif chapter.parts_of_name.number in outliers:
+            chapter.suspect = True
+            chapter.suspect_reason = (
+                f"номер {chapter.parts_of_name.number} выбивается из "
+                f"общего диапазона — проверьте разбор")
 
 
 def sort_chapters(chapters: list[Chapter]) -> list[Chapter]:
-    """Сначала главы по номеру, служебные — в конец, но не теряются."""
+    """По номеру главы; файлы без номера в имени — в конец, но не теряются."""
     return sorted(
         chapters,
         key=lambda c: (
-            c.service,
-            c.number if c.number is not None else 0,
+            c.parts_of_name.number is None,
+            c.parts_of_name.number or 0,
             c.part if c.part is not None else 0,
             c.parts_of_name.seq if c.parts_of_name.seq is not None else 0,
+            c.path.name.lower(),
         ),
     )
 
@@ -244,7 +285,8 @@ class PlanRow:
     part: int | None
     title: str
     size: int
-    service: bool
+    #: Разбор вызывает сомнения — строка помечается, но переименовывается.
+    suspect: bool = False
     paragraphs: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -256,7 +298,7 @@ class PlanRow:
             "part": self.part,
             "title": self.title,
             "size": self.size,
-            "service": self.service,
+            "suspect": self.suspect,
         }
 
 
@@ -283,33 +325,23 @@ def make_plan(
     fmt: NameFormat,
     splits: dict[str, int] | None = None,
     renumber_from: int | None = None,
-    skip_service: bool = True,
+    chosen: set[str] | None = None,
 ) -> list[PlanRow]:
     """Строит предпросмотр «старое имя → новое имя».
 
     `splits` — сколько частей сделать из главы, ключ это путь к файлу.
     `renumber_from` — нумеровать заново подряд, игнорируя номер из имени.
+    `chosen` — пути отмеченных галочками файлов; None означает «все».
+
+    Понятия «служебный файл» нет: из списка сам по себе не выпадает ни один
+    файл. Что не нужно, человек снимает галочкой.
     """
     splits = splits or {}
     rows: list[PlanRow] = []
     next_number = renumber_from
 
     for chapter in sort_chapters(chapters):
-        if chapter.service and skip_service:
-            continue
-
-        if chapter.service:
-            # Служебный файл переименованию не поддаётся — оставляем как есть.
-            rows.append(
-                PlanRow(
-                    source=str(chapter.path),
-                    old_name=chapter.path.name,
-                    new_name=safe_filename(chapter.path.stem),
-                    number=None, part=None, title=chapter.title,
-                    size=chapter.size, service=True,
-                    paragraphs=chapter.text_parts,
-                )
-            )
+        if chosen is not None and str(chapter.path) not in chosen:
             continue
 
         if renumber_from is not None:
@@ -331,7 +363,7 @@ def make_plan(
                         old_name=chapter.path.name,
                         new_name=build_name(number, index, chapter.title, part_fmt),
                         number=number, part=index, title=chapter.title,
-                        size=sum(len(p) for p in piece), service=False,
+                        size=sum(len(p) for p in piece), suspect=chapter.suspect,
                         paragraphs=piece,
                     )
                 )
@@ -342,7 +374,7 @@ def make_plan(
                     old_name=chapter.path.name,
                     new_name=build_name(number, chapter.part, chapter.title, fmt),
                     number=number, part=chapter.part, title=chapter.title,
-                    size=chapter.size, service=False,
+                    size=chapter.size, suspect=chapter.suspect,
                     paragraphs=chapter.text_parts,
                 )
             )
