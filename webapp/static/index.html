@@ -703,7 +703,7 @@
     </div>
     <div class="row" style="margin-top:10px;align-items:flex-end">
       <div style="flex:0 0 170px">
-        <label for="pxTimeout">таймаут проверки, с<i class="hint-icon" data-tip="Сколько ждать ответа от прокси при проверке. Десяти секунд не хватало — прокси не успевал подключиться.">?</i></label>
+        <label for="pxTimeout">таймаут проверки прокси, с<i class="hint-icon" data-tip="Сколько ждать ответа от каждого прокси при проверке списка. Медленные адреса лучше отсеять сразу: десяти секунд не хватало — прокси не успевал подключиться.">?</i></label>
         <input id="pxTimeout" type="number" value="60" min="1" max="300">
       </div>
       <p class="hint" style="flex:1">Формат строки: <code>ip:port:username:password</code>.
@@ -762,11 +762,11 @@
     <p class="hint" id="finalPath"></p>
     <div class="row" style="margin-top:14px">
       <div style="flex:1">
-        <label for="tmRead">таймаут чтения, с</label>
+        <label for="tmRead">таймаут чтения, с<i class="hint-icon" data-tip="Сколько ждать, пока сервер отдаст страницу главы целиком. Страница весит около 220 КБ; при 30 секундах она не успевала дойти и обрывалась. Рабочее значение — 120.">?</i></label>
         <input id="tmRead" type="number" value="120" min="5" max="600">
       </div>
       <div style="flex:1">
-        <label for="tmConnect">таймаут соединения, с</label>
+        <label for="tmConnect">таймаут соединения, с<i class="hint-icon" data-tip="Сколько ждать установки связи с сервером. Если он не отвечает за это время, адрес считается недоступным.">?</i></label>
         <input id="tmConnect" type="number" value="15" min="1" max="300">
       </div>
       <div style="flex:1">
@@ -774,8 +774,6 @@
         <input id="dlThreads" type="number" value="3" min="1" max="6">
       </div>
     </div>
-    <p class="hint">Страница главы весит около 220 КБ: при 30 секундах она не
-       успевала дойти и обрывалась. 120 секунд — рабочее значение.</p>
     <p class="hint" id="estimate"></p>
   </div>
 
@@ -1623,13 +1621,11 @@ async function tick(){
     const p = job.progress || {};
     const busy = !TERMINAL.includes(p.stage);
 
-    $('status').innerHTML = (busy ? '<span class="spin"></span>' : '') +
-      (STAGES[p.stage] || p.stage || '') + (p.message ? ' — ' + p.message : '');
-
-    const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
-    $('fill').style.width = pct + '%';
-    $('fill').classList.toggle('active', busy);
-    $('sPct').textContent = p.total ? pct + '%' : '';
+    // Через общий блок результата, как на остальных вкладках: раньше
+    // качалка писала текст сама и кружок-индикатор не загорался вовсе.
+    const label = (STAGES[p.stage] || p.stage || '')
+      + (p.message ? ' — ' + p.message : '');
+    drawResult({...p, message: label}, 'fill', 'status', 'sPct');
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
     $('sFail').textContent = p.failed || 0;
@@ -1651,10 +1647,7 @@ async function tick(){
       clearInterval(poll);
       $('stop').hidden = true;
       $('again').hidden = false;
-      if(p.stage === 'done'){
-        $('status').classList.add('ok');
-        $('fill').style.width = '100%';
-      }
+      if(p.stage === 'done') $('fill').style.width = '100%';
       if(job.report){
         const r = job.report;
         let text = `Папка: ${r.output_dir}`;
