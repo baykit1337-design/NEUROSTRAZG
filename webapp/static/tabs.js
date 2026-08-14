@@ -3258,3 +3258,224 @@ async function sbTick(){
 
 sbTick();
 sbTimer = setInterval(sbTick, 1000);
+
+/* ================= Источники и рейтинг Фанкью (часть 5) =================
+ *
+ * Источник — отдельный модуль на сервере, здесь только выбор. Меню
+ * строится по ответу `/api/sources`, а не по зашитому списку: иначе новый
+ * источник пришлось бы вписывать в двух местах.
+ *
+ * Живёт в этом файле, а не в разметке: `makeDropdown` объявлена здесь, и
+ * вызывать её раньше было бы полаганием на то, что ответ сервера придёт
+ * позже загрузки скрипта.
+ */
+
+async function loadSources(){
+  try{
+    const data = await call('/api/sources');
+    const box = $('srcPick');
+    if(!box) return;
+    box.dataset.options = JSON.stringify(
+      (data.sources || []).map(s => [s.key, s.name]));
+    box.innerHTML = '';
+    srcMenu = makeDropdown(box, key => {
+      const found = (data.sources || []).find(s => s.key === key);
+      // Подсказка под полем меняется вместе с источником: у Фанкью в
+      // ссылке не слаг, а числовой код, и вводить надо другое.
+      if(found) $('srcHint').textContent = found.hint;
+    });
+    const first = (data.sources || [])[0];
+    if(first) $('srcHint').textContent = first.hint;
+  }catch(err){ /* источники не список вкладок — молча оставляем как есть */ }
+}
+loadSources();
+
+/* ------------------------------------------------ рейтинг (5.3) */
+
+let rkRows = [], rkTitles = {}, rkBoardMenu = null, rkPicked = null;
+
+function rkMove(value){
+  if(value === null || value === undefined) return {text: '—', cls: 'flat'};
+  if(value > 0) return {text: '▲ ' + value, cls: 'up'};
+  if(value < 0) return {text: '▼ ' + Math.abs(value), cls: 'down'};
+  return {text: '=', cls: 'flat'};
+}
+
+function rkRender(){
+  const box = $('rkTable');
+  box.innerHTML = '';
+  const filter = $('rkFilter').value.trim().toLowerCase();
+  const shown = rkRows.filter(row => !filter
+    || (row.name || '').toLowerCase().includes(filter)
+    || (rkTitles[row.book_id] || '').toLowerCase().includes(filter)
+    || (row.category || '').toLowerCase().includes(filter));
+
+  if(!shown.length){
+    box.innerHTML = '<div class="tr"><span class="grow hint">'
+      + (rkRows.length ? 'Ничего не подошло под фильтр.'
+                       : 'Срезов пока нет — нажмите «Обновить срез».')
+      + '</span></div>';
+    return;
+  }
+
+  for(const row of shown){
+    const tr = document.createElement('div');
+    tr.className = 'tr';
+
+    const place = document.createElement('span');
+    place.className = 'place';
+    place.textContent = row.place;
+    tr.append(place);
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.name;
+    name.title = row.author ? 'автор: ' + row.author : '';
+    tr.append(name);
+
+    const readers = document.createElement('span');
+    readers.className = 'num';
+    readers.textContent = ru(row.readers);
+    readers.title = 'читающих';
+    tr.append(readers);
+
+    for(const [value, label] of [[row.day, 'за сутки'], [row.week, 'за неделю']]){
+      const move = rkMove(value);
+      const span = document.createElement('span');
+      span.className = 'num ' + move.cls;
+      span.textContent = move.text;
+      span.title = label;
+      tr.append(span);
+    }
+
+    if(row.is_new){
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = 'новая';
+      tr.append(tag);
+    }else if(row.holding > 1){
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = `${row.holding} дн.`;
+      tag.title = 'дней подряд в топе';
+      tr.append(tag);
+    }
+
+    const get = document.createElement('button');
+    get.className = 'ghost';
+    get.textContent = 'скачать';
+    get.style.padding = '4px 10px';
+    get.onclick = () => rkPick(row);
+    tr.append(get);
+
+    if(rkTitles[row.book_id]){
+      const ru_ = document.createElement('span');
+      ru_.className = 'ru';
+      ru_.textContent = rkTitles[row.book_id];
+      tr.append(ru_);
+    }
+    box.append(tr);
+  }
+}
+
+function rkShow(data){
+  rkRows = data.rows || [];
+  if(data.titles) rkTitles = data.titles;
+  $('rkNote').textContent = rkRows.length
+    ? `Срез за ${data.day}, строк ${rkRows.length}. Дней в истории: ${data.days}.`
+      + (data.note ? ' ' + data.note : '')
+    : (data.note || 'Срезов пока нет.');
+  rkRender();
+}
+
+async function rkState(){
+  try{
+    const board = rkBoardMenu ? rkBoardMenu.value : 'all';
+    const data = await call('/api/rank/state?board=' + encodeURIComponent(board));
+    if(data.boards && rkBoardMenu === null) rkBoards(data.boards);
+    rkShow(data);
+  }catch(err){ showError(err.message); }
+}
+
+function rkBoards(boards){
+  const box = $('rkBoard');
+  box.dataset.options = JSON.stringify(boards.map(b => [b.key, b.name]));
+  box.innerHTML = '';
+  rkBoardMenu = makeDropdown(box, () => rkState());
+}
+
+async function rkRefresh(){
+  showError('');
+  $('rkRefresh').disabled = true;
+  $('rkNote').innerHTML = '<span class="spin"></span>Запрашиваем рейтинг…';
+  try{
+    const data = await call('/api/rank/refresh',
+      {board: rkBoardMenu ? rkBoardMenu.value : 'all'});
+    rkShow(data);
+  }catch(err){
+    showError(err.message);
+    $('rkNote').textContent = '';
+  }finally{
+    $('rkRefresh').disabled = false;
+  }
+}
+
+async function rkTranslate(){
+  showError('');
+  $('rkTranslate').disabled = true;
+  try{
+    const data = await call('/api/rank/translate', {
+      board: rkBoardMenu ? rkBoardMenu.value : 'all',
+      model: llmMenu ? llmMenu.value : '',
+    });
+    rkTitles = data.titles || {};
+    $('rkNote').textContent =
+      `Переведено ${data.translated}, из кэша ${data.cached}.`;
+    rkRender();
+  }catch(err){ showError(err.message); }
+  finally{ $('rkTranslate').disabled = false; }
+}
+
+/** Книга выбрана — качаем её через общий путь качалки. */
+function rkPick(row){
+  rkPicked = row;
+  $('rkPlace').hidden = false;
+  $('rkChosen').textContent = `${row.name} · код ${row.book_id}`;
+  $('rkFolder').value = rkTitles[row.book_id] || row.name;
+  $('rkStartNote').textContent = '';
+  $('rkPlace').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function rkStart(){
+  showError('');
+  if(!rkPicked) return;
+  const base = $('rkBase').value.trim();
+  if(!base){ showError('Укажите, куда сохранить'); return; }
+
+  $('rkStart').disabled = true;
+  try{
+    // Ищем книгу тем же запросом, что и в качалке: код уже известен,
+    // копировать ничего не нужно.
+    const found = await call('/api/find',
+      {query: rkPicked.book_id, source: 'fanqie'});
+    const {job} = await call('/api/start', {
+      novel: found.novel,
+      source: 'fanqie',
+      base,
+      folder: $('rkFolder').value.trim() || found.novel.name,
+    });
+    $('rkStartNote').textContent =
+      `Качаем в ${job.output_dir}. Ход виден на вкладке «Качалка».`;
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('rkStart').disabled = false;
+  }
+}
+
+$('rkRefresh').onclick = rkRefresh;
+$('rkTranslate').onclick = rkTranslate;
+$('rkFilter').addEventListener('input', rkRender);
+$('rkStart').onclick = rkStart;
+$('rkCancel').onclick = () => { $('rkPlace').hidden = true; rkPicked = null; };
+rkState();

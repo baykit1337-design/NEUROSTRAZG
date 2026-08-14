@@ -168,8 +168,16 @@ class Downloader:
         cancel_event: threading.Event | None = None,
         threads: int = 1,
         probe: bool = True,
+        source=None,
     ):
         self.client = client or Client()
+        #: Откуда качаем. По умолчанию тот сайт, с которого всё начиналось,
+        #: — иначе прежние вызовы пришлось бы править все разом.
+        if source is None:
+            from net.sources.mvlempyr import MvlempyrSource
+
+            source = MvlempyrSource()
+        self.source = source
         # Если сессию витрины передали снаружи, закрывать её мы не должны.
         self.site_client = site_client
         self.pool = pool
@@ -215,7 +223,7 @@ class Downloader:
 
     def find(self, query: str) -> api.Novel:
         self._emit(stage="search", message=f"Ищем книгу: {query}")
-        novel = api.find_novel(self.client, query)
+        novel = self.source.find(self.client, query)
         self._emit(message=f"Найдено: {novel.name} ({novel.total_chapters} глав)")
         return novel
 
@@ -234,7 +242,7 @@ class Downloader:
         last = last or novel.total_chapters
         self._emit(stage="toc", message="Собираем оглавление…", done=0, total=last - first + 1)
 
-        toc = api.fetch_toc(
+        toc = self.source.toc(
             self.client,
             novel,
             first=first,
@@ -511,7 +519,7 @@ class Downloader:
                               max_attempts=settings.threads.probe_attempts)
 
         def fetch(client, chapter):
-            return api.fetch_chapter(client, chapter)[1]
+            return self.source.chapter(client, chapter)[1]
 
         self._emit(stage="probe", message="Подбираем способ скачивания…")
         report = netpool.autoprobe(
@@ -559,6 +567,7 @@ class Downloader:
             done=0, total=len(pending),
         )
 
+        paid = 0
         for start in range(0, len(pending), self.threads):
             self._check_cancel()
             batch = pending[start:start + self.threads]
@@ -575,6 +584,14 @@ class Downloader:
 
                     if error is None:
                         downloaded += 1
+                    elif _is_paid(error):
+                        # Платную главу мы не трогаем. Это не осечка: она
+                        # не станет доступной от повторной попытки, и в
+                        # «не скачано» ей не место.
+                        paid += 1
+                        with self._state_lock:
+                            state.mark_failed(chapter.number, str(error))
+                        self._log_error(output_dir, chapter.number, str(error))
                     elif _is_refusal(error):
                         # Первый же отказ останавливает весь прогон, в каком
                         # бы потоке он ни случился.
@@ -594,10 +611,11 @@ class Downloader:
                         failed.append(chapter.number)
 
                     self._emit(
-                        done=downloaded + len(failed),
+                        done=downloaded + len(failed) + paid,
                         downloaded=downloaded,
                         failed=len(failed),
-                        message=f"Глава {chapter.number} из {last}",
+                        message=(f"Глава {chapter.number} из {last}"
+                                 + (f" · платных пропущено {paid}" if paid else "")),
                     )
 
             with self._state_lock:
@@ -660,7 +678,7 @@ class Downloader:
         state: State,
     ) -> None:
         """Скачивает и сохраняет одну главу. Ошибки пробрасывает наверх."""
-        title, text = api.fetch_chapter(site, chapter)
+        title, text = self.source.chapter(site, chapter)
         if not text.strip():
             raise ValueError("пустой текст главы")
 
@@ -668,6 +686,13 @@ class Downloader:
         write_chapter(output_dir / filename, novel.name, title or chapter.title, chapter.number, text)
         with self._state_lock:
             state.mark_done(chapter.number, filename)
+
+
+def _is_paid(error: BaseException) -> bool:
+    """Глава платная. Отдельно от осечек: повтор её не откроет."""
+    from net.sources.fanqie import PaidChapter
+
+    return isinstance(error, PaidChapter)
 
 
 def _is_refusal(error: BaseException) -> bool:

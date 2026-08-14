@@ -302,7 +302,7 @@
     scrollbar-width:none;-ms-overflow-style:none;
     /* Колонка карточек узкая (660px), а меню ей следовать не обязано:
        выносим его на ширину окна, чтобы вкладки помещались подольше. */
-    width:min(100vw - 24px, 1200px);
+    width:min(100vw - 24px, 1340px);
     position:relative;left:50%;transform:translateX(-50%);
     /* Края растворяются — видно, что строка продолжается вбок. */
     -webkit-mask-image:linear-gradient(90deg,transparent,#000 18px,
@@ -320,7 +320,9 @@
   }
   .tabs button svg{flex:none}
   /* Совсем узкий экран: значки уходят, названия остаются читаемыми. */
-  @media (max-width:560px){ .tabs button svg{display:none} }
+  /* Значки — роскошь: когда вкладок девять, важнее, чтобы все подписи
+     влезли без прокрутки. Уходят они первыми. */
+  @media (max-width:1240px){ .tabs button svg{display:none} }
   .tabs button.on{
     border-color:var(--neon);background:rgba(176,108,255,.16);
     box-shadow:0 0 20px rgba(176,108,255,.28);
@@ -688,6 +690,14 @@
     box-shadow:inset 3px 0 0 rgba(255,196,92,.55);
     border-radius:3px;padding:2px 6px 2px 8px}
 
+  /* Рейтинг: движение вверх и вниз разными цветами. */
+  #rkTable .tr{flex-wrap:wrap;row-gap:6px}
+  #rkTable .place{width:34px;color:var(--muted);font-variant-numeric:tabular-nums}
+  #rkTable .up{color:#9be8c0}
+  #rkTable .down{color:#ff9d9d}
+  #rkTable .flat{color:var(--muted)}
+  #rkTable .ru{flex:1 1 100%;color:#c084fc;font-size:12px}
+
   /* Очередь: состояние шага видно по точке слева. */
   #qSteps .tr .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;
     background:var(--muted)}
@@ -735,6 +745,12 @@
         <path d="M12 6.5v6m0 0 2.5-2.5M12 12.5 9.5 10" stroke="#8c54ff" stroke-width="1.8"
               stroke-linecap="round" stroke-linejoin="round"/>
       </svg>Качалка</button>
+    <button data-tab="rank">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M4 20V12m6 8V5m6 15v-6" stroke="#c084fc" stroke-width="1.8"
+              stroke-linecap="round"/>
+        <path d="M3 20h18" stroke="#8c54ff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>Рейтинг</button>
     <button data-tab="split">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <circle cx="6" cy="18" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
@@ -854,12 +870,17 @@
 
   <!-- 1. Поиск книги -->
   <div class="card lit">
-    <label for="q">Ссылка на книгу, слаг или код</label>
+    <label>Источник</label>
+    <div class="row">
+      <div class="dropdown" id="srcPick" style="flex:1" data-options='[]'></div>
+    </div>
+    <label for="q" style="margin-top:12px;display:block">Ссылка на книгу, слаг или код</label>
     <div class="row">
       <input id="q" type="text" placeholder="insect-tamers-ascension" autocomplete="off">
       <button id="find" class="primary">Найти</button>
     </div>
-    <p class="hint">Можно вставить ссылку с сайта, слаг или числовой код книги.</p>
+    <p class="hint" id="srcHint">Можно вставить ссылку с сайта, слаг или
+       числовой код книги.</p>
   </div>
 
   <!-- 2. Книга найдена -->
@@ -1923,6 +1944,47 @@
   </div>
 </section>
 
+<!-- ====================== Рейтинг ====================== -->
+<section id="tab-rank" hidden>
+  <div class="card lit">
+    <label>Рейтинг Фанкью</label>
+    <p class="hint">Сайт отдаёт только суточный срез: рейтингов «за неделю»
+       и «за месяц» у него нет. Срезы складываются к себе, и движение
+       считается уже по своей истории — видно не просто популярное, а то,
+       что набирает обороты. По расписанию ничего не запрашивается: срез
+       снимается кнопкой.</p>
+    <div class="row" style="margin-top:12px">
+      <div class="dropdown" id="rkBoard" style="flex:1" data-options='[]'></div>
+      <button id="rkRefresh" class="primary" style="flex:0 0 auto">Обновить срез</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="rkFilter" type="text" placeholder="фильтр по названию или категории"
+             autocomplete="off">
+      <button id="rkTranslate" class="ghost" style="flex:0 0 auto">Перевести названия</button>
+    </div>
+    <p class="hint" id="rkNote"></p>
+    <div class="table" id="rkTable" style="margin-top:10px;max-height:520px"></div>
+  </div>
+
+  <div class="card" id="rkPlace" hidden>
+    <label>Куда скачать</label>
+    <p class="hint" id="rkChosen"></p>
+    <div class="row" style="margin-top:8px">
+      <input id="rkBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="rkBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="rkFolder">имя папки</label>
+      <input id="rkFolder" type="text" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="rkStart" class="primary" style="flex:1">Скачать</button>
+      <button id="rkCancel" class="ghost" style="flex:0 0 auto">Отмена</button>
+    </div>
+    <p class="hint" id="rkStartNote"></p>
+  </div>
+</section>
+
 <!-- ====================== Оформление ====================== -->
 <section id="tab-looks" hidden>
   <div class="card lit">
@@ -2015,6 +2077,9 @@ const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" width="16" height="16"
   <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
         stroke="#c084fc" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 let novel = null, basePath = null, jobId = null, poll = null;
+//: Выбранный источник. Меню строится по ответу сервера, а не по
+//: зашитому списку: иначе новый источник пришлось бы вписывать дважды.
+let srcMenu = null;
 //: Уведомление о способе скачивания — одно на прогон.
 let probeShown = false;
 //: «auto» подбирает способ пробой, «manual» её пропускает.
@@ -2191,7 +2256,8 @@ async function find(){
   $('find').disabled = true;
   $('find').textContent = 'Ищем…';
   try{
-    const data = await call('/api/find', {query});
+    const data = await call('/api/find',
+      {query, source: srcMenu ? srcMenu.value : ''});
     novel = data.novel;
     $('bookName').textContent = novel.name;
     $('bookMeta').textContent = [
@@ -2297,6 +2363,7 @@ async function start(){
   try{
     const data = await call('/api/start', {
       novel,
+      source: srcMenu ? srcMenu.value : '',
       base: basePath,
       folder: $('folder').value.trim(),
       first: Number($('first').value) || 1,
@@ -2422,6 +2489,7 @@ $('links').onclick = exportLinks;
 $('checkProxies').onclick = () => proxyAction('/api/proxies/check', $('checkProxies'), 'Проверяем…');
 $('reloadProxies').onclick = () => proxyAction('/api/proxies/reload', $('reloadProxies'), '…');
 loadProxyState();
+
 
 /* ================================ вкладки ================================ */
 

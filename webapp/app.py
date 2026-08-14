@@ -27,7 +27,11 @@ from core.readers.base import ReadError  # noqa: E402
 from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
+from net import sources  # noqa: E402
 from net import traffic  # noqa: E402
+from net.sources import rank as rank_net  # noqa: E402
+from ops import rank as rank_op  # noqa: E402
+from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
@@ -279,16 +283,31 @@ def index():
 # ------------------------------------------------------------------- API
 
 
+@app.get("/api/sources")
+def api_sources():
+    """Откуда можно качать. Интерфейс строит список по этому ответу."""
+    return jsonify(sources=[s.as_dict() for s in sources.all_sources()])
+
+
 @app.post("/api/find")
 def api_find():
-    query = (request.json or {}).get("query", "").strip()
+    payload = request.json or {}
+    query = (payload.get("query") or "").strip()
     if not query:
         return jsonify(error="Введите ссылку, слаг или код книги"), 400
 
+    try:
+        source = sources.get(payload.get("source") or "")
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 400
+
     client = Client()
     try:
-        novel = api.find_novel(client, query)
-        return jsonify(novel=novel.to_dict())
+        novel = source.find(client, query)
+        return jsonify(novel=novel.to_dict(), source=source.key)
+    except sources.SourceBroken as exc:
+        # «Источник изменился» — не «не нашли»: жать «повторить» бесполезно.
+        return jsonify(error=str(exc)), 502
     except api.StrippedResponse as exc:
         # Не «не найдено», а испорченный запрос — сообщаем отдельно.
         return jsonify(error=str(exc)), 502
@@ -508,6 +527,11 @@ def api_start():
     # работает многопоточность или нет, — это надёжнее любой эвристики.
     probe = str(payload.get("mode") or "auto").strip() != "manual"
 
+    try:
+        source = sources.get(payload.get("source") or "")
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 400
+
     # Нижней строке нужен режим операции и чистый счётчик трафика.
     job.meta["threads"] = threads
     traffic.reset()
@@ -521,6 +545,7 @@ def api_start():
             cancel_event=job.cancel,
             threads=threads,
             probe=probe,
+            source=source,
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
@@ -1178,6 +1203,82 @@ def api_analyze_cards():
     return jsonify(cards=glossary_op.cards(registry, kind),
                    text=glossary_op.cards_text(registry, kind))
 
+
+
+# ------------------------------------------- рейтинг Фанкью (5.3)
+
+
+@app.get("/api/rank/state")
+def api_rank_state():
+    """Разделы, дни истории и последний срез — из своей истории."""
+    board = (request.args.get("board") or "all").strip()
+    try:
+        moved = rank_op.movement(board)
+    except rank_op.RankError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(
+        boards=[{"key": k, "name": v} for k, v in rank_net.BOARDS.items()],
+        titles=titles_op.known(),
+        **moved,
+    )
+
+
+@app.post("/api/rank/refresh")
+def api_rank_refresh():
+    """Запрашивает рейтинг и дописывает сегодняшний день.
+
+    Только по кнопке: по расписанию сайт не опрашивается.
+    """
+    payload = request.json or {}
+    board = (payload.get("board") or "all").strip()
+
+    with POOL_LOCK:
+        pool = POOL
+    proxy = pool.current().url if pool and pool.usable_count else None
+    client = Client(proxy_url=proxy)
+    try:
+        rows = rank_net.fetch(client, board)
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 502
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except HttpError as exc:
+        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    finally:
+        client.close()
+
+    rank_op.save(rows, board)
+    return jsonify(saved=len(rows), **rank_op.movement(board))
+
+
+@app.post("/api/rank/translate")
+def api_rank_translate():
+    """Прогоняет китайские названия через модель. Кэш по book_id."""
+    payload = request.json or {}
+    board = (payload.get("board") or "all").strip()
+    day = (payload.get("day") or "").strip()
+
+    snapshot = rank_op.load(day, board) if day else None
+    if snapshot is None:
+        found = rank_op.days(board)
+        snapshot = rank_op.load(found[0], board) if found else None
+    if snapshot is None:
+        return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
+
+    with POOL_LOCK:
+        pool = POOL
+    client = LlmClient(pool=pool)
+    try:
+        return jsonify(**titles_op.translate(
+            snapshot.rows, client,
+            model=(payload.get("model") or "").strip(),
+            force=bool(payload.get("force"))))
+    except BadKey as exc:
+        return jsonify(error=str(exc)), 401
+    except LlmError as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        client.close()
 
 
 # ------------------------------------------- пересказ и выгрузка (3.5)

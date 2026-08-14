@@ -532,6 +532,11 @@ class TestNeurostrazhStyles(unittest.TestCase):
         self.assertIn("flex-wrap:nowrap", block[:600])
         self.assertNotIn("flex-wrap:wrap", block[:600])
 
+    def test_icons_give_way_to_labels(self):
+        """Девять вкладок в строку влезают только без значков."""
+        self.assertIn("@media (max-width:1240px){ .tabs button svg{display:none} }",
+                      self.html)
+
     def test_open_dropdown_covers_the_next_card(self):
         """Карточка размывает фон и делает свой слой: без подъёма самой
         карточки раскрытый список уходил под следующую."""
