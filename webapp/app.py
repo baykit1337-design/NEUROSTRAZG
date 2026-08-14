@@ -36,6 +36,8 @@ from ops import diff as diff_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import history as history_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
+from ops import signature as signature_op  # noqa: E402
+from ops import stats as stats_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
 from ops.base import Progress  # noqa: E402
@@ -1332,6 +1334,83 @@ def api_diff():
         return jsonify(**diff_op.compare(before, after).as_dict())
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
+
+
+
+# ------------------------------- статистика, шапка и подпись
+
+
+@app.post("/api/stats")
+def api_stats():
+    """Сколько глав, символов, слов и сколько это читать."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**stats_op.collect(targets).as_dict())
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.get("/api/signature/placeholders")
+def api_signature_placeholders():
+    return jsonify(placeholders=[{"key": k, "name": v}
+                                 for k, v in signature_op.PLACEHOLDERS.items()])
+
+
+@app.post("/api/signature/preview")
+def api_signature_preview():
+    """Как будет выглядеть первая глава. На диск ничего не пишется."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        template = signature_op.Template.from_dict(payload.get("template"))
+        return jsonify(**signature_op.preview(targets, template))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/signature/start")
+def api_signature_start():
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+    template = signature_op.Template.from_dict(payload.get("template"))
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base or not folder:
+        return jsonify(error="Укажите, куда сохранить"), 400
+    if template.empty:
+        return jsonify(error="Шаблоны пусты: нечего добавлять"), 400
+
+    try:
+        output_dir = _prepare(base, folder, "signature")
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="signature",
+        meta={"targets": targets},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "signature", "message": "Дописываем…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    def work(job: Job):
+        _finish(job, signature_op.run(
+            targets, Path(job.output_dir), template,
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            style=Style.from_dict(payload.get("style")),
+            progress=_progress(job, "Глава"),
+        ), "Записано")
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 # ------------------------------------------------ вкладка «Проверка текста»

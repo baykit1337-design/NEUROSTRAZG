@@ -634,6 +634,14 @@
   .diff .ln.removed::before{content:"− ";opacity:.7}
   .diff .ln.added{background:rgba(120,255,170,.08);color:#9be8c0}
   .diff .ln.added::before{content:"+ ";opacity:.7}
+  /* Распределение объёма по главам: столбик на группу глав. */
+  .chart{display:flex;align-items:flex-end;gap:2px;height:90px;
+    padding:8px 10px;border-radius:10px;
+    background:rgba(255,255,255,.02);border:1px solid var(--stroke-soft)}
+  .chart i{flex:1;min-width:2px;border-radius:2px 2px 0 0;
+    background:linear-gradient(180deg,#c084fc,#6d28d9);opacity:.85}
+  .chart i:hover{opacity:1;box-shadow:0 0 8px rgba(192,132,252,.6)}
+
   .diff-head{padding:6px 10px;background:rgba(140,84,255,.12);
     color:#c084fc;font-size:12px}
 
@@ -1563,6 +1571,70 @@
       <button id="hsLoad" class="ghost" style="flex:1">Показать</button>
     </div>
     <div class="table" id="hsRecords" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.7 Статистика книги -->
+  <div class="card">
+    <label>Статистика книги</label>
+    <div class="row" style="margin-top:10px">
+      <button id="stStart" class="ghost" style="flex:1">Посчитать по выбранному</button>
+    </div>
+    <p class="hint" id="stNote">Считается по тому, что выбрано в блоке
+       «Что правим» выше.</p>
+    <div class="stats" id="stNumbers" hidden style="margin-top:10px"></div>
+    <div id="stChart" hidden style="margin-top:12px"></div>
+    <p class="hint" id="stEdges"></p>
+  </div>
+
+  <!-- 4.8 Шапка и подпись -->
+  <div class="card">
+    <label>Шапка и подпись в главах</label>
+    <p class="hint">Дописываются при экспорте, в исходных файлах не
+       сохраняются. Подстановки: <code>{номер}</code>,
+       <code>{название}</code>, <code>{всего_глав}</code>,
+       <code>{дата}</code>.</p>
+    <div style="margin-top:10px">
+      <label for="sgHead">в начало главы</label>
+      <textarea id="sgHead" rows="2" spellcheck="false"
+                placeholder="Перевод: имя · канал"></textarea>
+    </div>
+    <div style="margin-top:10px">
+      <label for="sgFoot">в конец главы</label>
+      <textarea id="sgFoot" rows="2" spellcheck="false"
+                placeholder="Глава {номер} из {всего_глав} · {дата}"></textarea>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="sgEdges"> не добавлять в первую и последнюю главу
+      <i class="hint-icon" data-tip="В первой и последней главе обычно своё оформление: аннотация и послесловие.">?</i></label>
+
+    <div style="margin-top:14px">
+      <label>Куда сохранить копию</label>
+      <div class="row">
+        <input id="sgBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="sgBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="sgFolder">имя папки</label>
+        <input id="sgFolder" type="text" placeholder="С подписью" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="sgPreview" class="ghost" style="flex:1">Показать пример</button>
+      <button id="sgStart" class="primary" style="flex:1">Дописать в копию</button>
+    </div>
+
+    <div class="card lit" id="sgProgress" hidden style="margin-top:12px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="sgStatus"></span></div>
+      <div class="bar"><i id="sgFill"></i></div>
+      <div class="stats">
+        <span>записано <b id="sgWritten">0</b></span>
+        <span id="sgPct"></span>
+      </div>
+    </div>
+    <p class="hint" id="sgNote"></p>
+    <div class="diff" id="sgSample" hidden style="margin-top:10px"></div>
   </div>
 </section>
 

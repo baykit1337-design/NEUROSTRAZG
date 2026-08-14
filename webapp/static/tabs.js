@@ -2038,6 +2038,158 @@ async function hsRestore(record, button){
 $('dfStart').onclick = dfStart;
 $('hsLoad').onclick = hsLoad;
 
+
+/* ============== Статистика книги, шапка и подпись ============== */
+
+/** Число с разделителями разрядов: «1 578» читается, «1578» — хуже. */
+function ru(value){
+  return Number(value || 0).toLocaleString('ru');
+}
+
+async function stStart(){
+  showError('');
+  const targets = rpTargets();
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('stStart').disabled = true;
+  $('stNote').innerHTML = '<span class="spin"></span>Считаем…';
+  try{
+    const data = await call('/api/stats', {targets});
+    if(!data.chapters){
+      $('stNote').textContent = 'Глав не нашлось.';
+      return;
+    }
+
+    $('stNote').textContent = `Время чтения: примерно ${data.reading_time}.`;
+    const numbers = $('stNumbers');
+    numbers.hidden = false;
+    numbers.innerHTML = '';
+    for(const [name, value] of [
+      ['глав', ru(data.chapters)],
+      ['символов', ru(data.characters)],
+      ['слов', ru(data.words)],
+      ['абзацев', ru(data.paragraphs)],
+      ['среднее на главу', ru(data.average)],
+      ['медиана', ru(data.median)],
+    ]){
+      const span = document.createElement('span');
+      span.innerHTML = `${name} <b>${value}</b>`;
+      numbers.append(span);
+    }
+
+    $('stEdges').textContent =
+      `Самая короткая: ${data.shortest.label || data.shortest.title} `
+      + `(${ru(data.shortest.characters)} симв.). `
+      + `Самая длинная: ${data.longest.label || data.longest.title} `
+      + `(${ru(data.longest.characters)} симв.).`;
+
+    stChart(data.buckets || []);
+  }catch(err){
+    showError(err.message);
+    $('stNote').textContent = '';
+  }finally{
+    $('stStart').disabled = false;
+  }
+}
+
+/** Столбики распределения объёма: видно, какие главы стоит поделить. */
+function stChart(buckets){
+  const box = $('stChart');
+  box.innerHTML = '';
+  if(!buckets.length){ box.hidden = true; return; }
+
+  box.hidden = false;
+  const chart = document.createElement('div');
+  chart.className = 'chart';
+  const peak = Math.max(...buckets.map(b => b.characters)) || 1;
+
+  for(const bucket of buckets){
+    const bar = document.createElement('i');
+    bar.style.height = Math.max(3, Math.round(bucket.characters / peak * 100)) + '%';
+    bar.title = bucket.from === bucket.to
+      ? `Глава ${bucket.from}: ${ru(bucket.characters)} симв.`
+      : `Главы ${bucket.from}–${bucket.to}: в среднем ${ru(bucket.characters)} симв.`;
+    chart.append(bar);
+  }
+  box.append(chart);
+}
+
+/* ------------------------------------------------ шапка и подпись */
+
+function sgTemplate(){
+  return {head: $('sgHead').value, foot: $('sgFoot').value,
+          skip_edges: $('sgEdges').checked};
+}
+
+async function sgPreview(){
+  showError('');
+  const targets = rpTargets();
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  try{
+    const data = await call('/api/signature/preview',
+      {targets, template: sgTemplate()});
+    $('sgNote').textContent =
+      `Пример на главе «${data.chapter}», всего глав ${data.total}.`;
+
+    const box = $('sgSample');
+    box.hidden = false;
+    box.innerHTML = '';
+    const head = new Set(data.head), foot = new Set(data.foot);
+    for(const line of data.paragraphs){
+      const row = document.createElement('div');
+      // Дописанное выделяем — видно, что именно добавится.
+      row.className = 'ln ' + (head.has(line) || foot.has(line) ? 'added' : 'same');
+      row.textContent = line;
+      box.append(row);
+    }
+  }catch(err){
+    showError(err.message);
+    $('sgSample').hidden = true;
+  }
+}
+
+async function sgStart(){
+  showError('');
+  // Свои поля, а не из блока замены: тот скрыт, пока не сделан
+  // предпросмотр, и отсылать к невидимому полю нельзя.
+  if(!$('sgBase').value.trim()){ showError('Укажите, куда сохранить копию'); return; }
+  if(!rpTargets().length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('sgStart').disabled = true;
+  try{
+    const {job} = await call('/api/signature/start', {
+      targets: rpTargets(),
+      template: sgTemplate(),
+      base: $('sgBase').value.trim(),
+      folder: ($('sgFolder').value.trim() || 'С подписью'),
+    });
+    $('sgProgress').hidden = false;
+    $('sgNote').textContent = 'Пишем в: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('sgWritten').textContent = p.written || p.done || 0;
+        return drawResult(p, 'sgFill', 'sgStatus', 'sgPct');
+      },
+      job => {
+        if(job.error){ showError(job.error); return; }
+        const r = job.report || {};
+        $('sgNote').textContent =
+          `Готово. Записано ${r.written} из ${r.total}. Папка: ${r.output}`;
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('sgStart').disabled = false;
+  }
+}
+
+$('stStart').onclick = stStart;
+$('sgPreview').onclick = sgPreview;
+$('sgStart').onclick = sgStart;
+
 /* ========================== Проверка текста ========================== */
 
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;
