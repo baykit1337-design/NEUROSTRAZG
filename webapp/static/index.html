@@ -697,6 +697,13 @@
         <path d="M12 3v4M21 12h-4" stroke="#8c54ff" stroke-width="1.8"
               stroke-linecap="round"/>
       </svg>Анализ</button>
+    <button data-tab="tools">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M14.5 3.5a4 4 0 0 0 5 5L21 7v3l-8 8-3-3 8-8h-3l-1.5-1.5Z"
+              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="m7 13-4 4 3 3 4-4" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linejoin="round"/>
+      </svg>Инструменты</button>
   </nav>
 
   <div class="card err" id="error" hidden></div>
@@ -1405,6 +1412,113 @@
       <button id="anCards" class="ghost" style="flex:1">Карточки персонажей</button>
       <button id="anSaveReport" class="ghost" style="flex:1">Сохранить отчёт</button>
     </div>
+  </div>
+</section>
+
+
+<!-- ===================== Инструменты редактора ===================== -->
+<section id="tab-tools" hidden>
+
+  <!-- 4.1 Пакетная замена -->
+  <div class="card lit">
+    <label>Что правим</label>
+    <div class="row">
+      <button class="ghost pickany" data-list="rpList" style="flex:1">Выбрать…</button>
+    </div>
+    <div class="row" id="rpListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="rpCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="rpList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="rpList"></div>
+  </div>
+
+  <div class="card" id="rpCard">
+    <label>Найти и заменить по всей книге</label>
+    <div class="row" style="margin-top:8px">
+      <input id="rpFind" type="text" placeholder="найти" autocomplete="off"
+             spellcheck="false">
+      <input id="rpReplace" type="text" placeholder="заменить на" autocomplete="off"
+             spellcheck="false">
+    </div>
+    <div class="checks" style="margin-top:12px">
+      <label class="chk"><input type="checkbox" id="rpRegex"> регулярное выражение
+        <i class="hint-icon" data-tip="Без галочки текст ищется как есть: «т.е.» не совпадёт с «тхей». С галочкой работают группы: найти «Глава (\d+)», заменить на «Chapter \1».">?</i></label>
+      <label class="chk"><input type="checkbox" id="rpCase"> учитывать регистр</label>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="rpPreview" class="ghost" style="flex:1">Показать совпадения</button>
+    </div>
+    <p class="hint" id="rpNote"></p>
+    <div class="table" id="rpMatches" style="margin-top:10px"></div>
+
+    <div id="rpPlace" hidden style="margin-top:14px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="rpBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="rpBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="rpFolder">имя папки</label>
+        <input id="rpFolder" type="text" placeholder="Правлено" autocomplete="off">
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="rpStart" class="primary" style="flex:1">Заменить</button>
+      </div>
+      <p class="hint">Оригиналы не трогаются — результат ложится в новую папку.</p>
+    </div>
+
+    <div class="card lit" id="rpProgress" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="rpStatus"></span></div>
+      <div class="bar"><i id="rpFill"></i></div>
+      <div class="stats">
+        <span>записано <b id="rpWritten">0</b></span>
+        <span>ошибок <b id="rpFailed">0</b></span>
+        <span id="rpPct"></span>
+      </div>
+      <p class="result-path" id="rpSummary"></p>
+    </div>
+  </div>
+
+  <!-- 4.2 Словарь автозамен -->
+  <div class="card">
+    <label>Словарь автозамен</label>
+    <p class="hint">Формат «было = стало», по правилу в строке. Строка с
+       приставкой <code>re:</code> — регулярное выражение. Словарь свой у
+       каждой книги: лежит рядом с ней в <code>replacements.txt</code>.</p>
+    <textarea id="dcText" rows="5" spellcheck="false"
+              placeholder="Элиас = Элайас&#10;re:Глава (\d+) = Глава \1"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="dcLoad" class="ghost" style="flex:1">Загрузить</button>
+      <button id="dcSave" class="ghost" style="flex:1">Сохранить</button>
+      <button id="dcSummary" class="ghost" style="flex:1">Сводка</button>
+      <button id="dcApply" class="primary" style="flex:1">Применить</button>
+    </div>
+    <p class="hint" id="dcNote"></p>
+    <div class="table" id="dcRules" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.3 Сверка оригинала и перевода -->
+  <div class="card">
+    <label>Сверка оригинала и перевода</label>
+    <p class="hint">Главы сопоставляются по номерам. Ничего не исправляется —
+       только показывается, где смотреть.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="cmpLeft" type="text" placeholder="папка оригинала" autocomplete="off">
+      <button class="ghost browse" data-target="cmpLeft" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="cmpRight" type="text" placeholder="папка перевода" autocomplete="off">
+      <button class="ghost browse" data-target="cmpRight" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="checks" id="cmpKinds" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="cmpStart" class="primary" style="flex:1">Сверить</button>
+    </div>
+    <p class="hint" id="cmpNote"></p>
+    <div class="table" id="cmpFindings" style="margin-top:10px"></div>
   </div>
 </section>
 

@@ -1593,6 +1593,312 @@ anKindMenu = makeDropdown($('anKind'), () => anRenderEntities());
 anGlossMenu = makeDropdown($('anGlossFmt'));
 anLoadKinds();
 
+
+/* ===================== Инструменты редактора =====================
+ *
+ * Замена по всей книге, словарь автозамен и сверка оригинала с
+ * переводом. Общее у всех трёх: ничего не пишется поверх оригиналов, а
+ * перед записью показывается, что именно изменится.
+ */
+
+let rpMatches = [], rpSkip = new Set(), rpJob = null, cmpKinds = [];
+
+function rpRules(){
+  const find = $('rpFind').value;
+  if(!find) return [];
+  return [{find, replace: $('rpReplace').value,
+           regex: $('rpRegex').checked, case: $('rpCase').checked}];
+}
+
+function rpTargets(){ return CHOSEN.rpList || []; }
+
+/** Совпадение знает только имя файла — путь достраиваем по выбранному. */
+function rpFullPath(name){
+  const targets = rpTargets();
+  const folder = targets.find(t => !/\.[^./\\]+$/.test(t));
+  if(folder) return folder.replace(/[/\\]$/, '') + '/' + name;
+  return targets.find(t => t.endsWith(name)) || name;
+}
+
+/** Ключ снятого совпадения.
+ *
+ * Через JSON, а не склейкой через разделитель: в имени файла бывает и
+ * пробел, и точка, и дефис — любой выбранный символ рано или поздно
+ * встретится внутри имени и развалит ключ. На «Глава 1.txt» так и вышло.
+ */
+function rpKey(match){
+  return JSON.stringify([match.file, match.paragraph, match.rule, match.index]);
+}
+
+/** Снятые галочки — четвёрками «файл, абзац, правило, номер совпадения».
+ *  Номер обязателен: без него снятая галочка отменяла бы замену во всём
+ *  абзаце, а не в одном месте. */
+function rpSkipList(){
+  return [...rpSkip].map(key => {
+    const [file, paragraph, rule, index] = JSON.parse(key);
+    return [rpFullPath(file), paragraph, rule, index];
+  });
+}
+
+async function rpPreview(){
+  showError('');
+  if(!rpTargets().length){ showError('Сначала выберите файлы или папку'); return; }
+  if(!$('rpFind').value){ showError('Введите, что искать'); return; }
+
+  $('rpPreview').disabled = true;
+  $('rpNote').innerHTML = '<span class="spin"></span>Ищем…';
+  try{
+    const data = await call('/api/replace/preview',
+      {targets: rpTargets(), rules: rpRules()});
+    rpMatches = data.matches || [];
+    rpSkip.clear();
+
+    $('rpNote').textContent =
+      `Совпадений: ${data.total} в ${data.touched} файлах из ${data.files}.`
+      + (data.shown < data.total ? ` Показаны первые ${data.shown}.` : '');
+    $('rpPlace').hidden = data.total === 0;
+    if(!$('rpFolder').value) $('rpFolder').value = 'Правлено';
+    rpRenderMatches();
+  }catch(err){
+    showError(err.message);
+    $('rpNote').textContent = '';
+    $('rpPlace').hidden = true;
+  }finally{
+    $('rpPreview').disabled = false;
+  }
+}
+
+function rpRenderMatches(){
+  const table = $('rpMatches');
+  table.innerHTML = '';
+  if(!rpMatches.length){
+    table.innerHTML = '<div class="tr"><span class="grow">Совпадений нет.</span></div>';
+    return;
+  }
+
+  for(const match of rpMatches.slice(0, 400)){
+    const key = rpKey(match);
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = true;
+    box.title = 'Снимите, чтобы это совпадение не заменялось';
+    box.onchange = () => {
+      if(box.checked) rpSkip.delete(key); else rpSkip.add(key);
+      row.style.opacity = box.checked ? '1' : '.45';
+      $('rpNote').textContent =
+        `Совпадений: ${rpMatches.length}. Снято: ${rpSkip.size}.`;
+    };
+
+    const where = document.createElement('span');
+    where.className = 'num';
+    where.textContent = `${match.chapter} · абз. ${match.paragraph}`;
+
+    const before = document.createElement('span');
+    before.className = 'grow';
+    before.textContent = match.before;
+    before.title = match.before;
+
+    const after = document.createElement('span');
+    after.className = 'tag';
+    after.textContent = '→ ' + match.after;
+
+    row.append(box, where, before, after);
+    table.append(row);
+  }
+}
+
+async function rpStart(rules, note){
+  showError('');
+  $('rpStart').disabled = true;
+  try{
+    const {job} = await call('/api/replace/start', {
+      targets: rpTargets(),
+      rules: rules || rpRules(),
+      skip: rules ? [] : rpSkipList(),
+      base: $('rpBase').value.trim(),
+      folder: $('rpFolder').value.trim(),
+    });
+    rpJob = job.id;
+    $('rpProgress').hidden = false;
+    $('rpSummary').textContent = 'Папка: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('rpWritten').textContent = p.written || p.done || 0;
+        $('rpFailed').textContent = p.failed || 0;
+        return drawResult(p, 'rpFill', 'rpStatus', 'rpPct');
+      },
+      job => {
+        if(job.error){ showError(job.error); return; }
+        const r = job.report || {};
+        $('rpSummary').textContent =
+          `Папка: ${r.output || job.output_dir}` +
+          (r.replaced != null ? ` · замен: ${r.replaced}` : '');
+        if(note) $(note).textContent = `Готово, замен: ${r.replaced ?? 0}.`;
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('rpStart').disabled = false;
+  }
+}
+
+/* --------------------------------------------------- словарь автозамен */
+
+/** Папка книги: словарь ведётся отдельно для каждой. */
+function dcRoot(){
+  const targets = rpTargets();
+  if(!targets.length) return '';
+  const folder = targets.find(t => !/\.[^./\\]+$/.test(t));
+  return folder || targets[0].replace(/[/\\][^/\\]*$/, '');
+}
+
+async function dcCall(path, extra){
+  return call(path, {targets: rpTargets(), root: dcRoot(), ...(extra || {})});
+}
+
+async function dcLoad(){
+  try{
+    const data = await dcCall('/api/dictionary/load');
+    $('dcText').value = data.text || '';
+    $('dcNote').textContent = data.text
+      ? `Загружено правил: ${data.rules}. Файл: ${data.path}`
+      : `Словаря пока нет. Он будет создан здесь: ${data.path}`;
+  }catch(err){ showError(err.message); }
+}
+
+async function dcSave(){
+  try{
+    const data = await dcCall('/api/dictionary/save', {text: $('dcText').value});
+    $('dcNote').textContent = `Сохранено правил: ${data.rules}. Файл: ${data.path}`;
+  }catch(err){ showError(err.message); }
+}
+
+async function dcSummary(){
+  showError('');
+  if(!rpTargets().length){ showError('Сначала выберите файлы или папку'); return; }
+  $('dcNote').innerHTML = '<span class="spin"></span>Считаем…';
+  try{
+    const data = await dcCall('/api/dictionary/summary',
+                              {dictionary: $('dcText').value});
+    $('dcNote').textContent =
+      `Всего замен: ${data.total} в ${data.touched} файлах из ${data.files}.`;
+
+    const table = $('dcRules');
+    table.innerHTML = '';
+    for(const rule of data.rules){
+      const row = document.createElement('div');
+      row.className = 'tr';
+      const text = document.createElement('span');
+      text.className = 'grow';
+      text.textContent = `${rule.find} → ${rule.replace}`;
+      const tag = document.createElement('span');
+      tag.className = 'tag' + (rule.count ? '' : ' warn');
+      tag.textContent = rule.count ? String(rule.count) : 'ни разу';
+      row.append(text, tag);
+      table.append(row);
+    }
+  }catch(err){
+    showError(err.message);
+    $('dcNote').textContent = '';
+  }
+}
+
+async function dcApply(){
+  const text = $('dcText').value.trim();
+  if(!text){ showError('Словарь пуст'); return; }
+  if(!$('rpBase').value.trim()){
+    showError('Укажите, куда сохранить — поле выше, в блоке замены');
+    return;
+  }
+  $('rpPlace').hidden = false;
+  // Правила берём из словаря, а не из полей поиска.
+  const data = await dcCall('/api/dictionary/summary', {dictionary: text});
+  await rpStart(data.rules.map(r => ({find: r.find, replace: r.replace,
+                                      regex: r.regex})), 'dcNote');
+}
+
+/* ------------------------------------------ сверка оригинала и перевода */
+
+async function cmpLoadKinds(){
+  try{
+    const data = await call('/api/compare/kinds');
+    cmpKinds = data.kinds || [];
+    const box = $('cmpKinds');
+    box.innerHTML = '';
+    for(const kind of cmpKinds){
+      const label = document.createElement('label');
+      label.className = 'chk';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = true;
+      input.dataset.kind = kind.key;
+      label.append(input, document.createTextNode(' ' + kind.name));
+      box.append(label);
+    }
+  }catch(err){ /* вкладка может быть ещё не нужна */ }
+}
+
+async function cmpStart(){
+  showError('');
+  const left = $('cmpLeft').value.trim(), right = $('cmpRight').value.trim();
+  if(!left || !right){ showError('Укажите обе папки'); return; }
+
+  $('cmpStart').disabled = true;
+  $('cmpNote').innerHTML = '<span class="spin"></span>Сверяем…';
+  try{
+    const kinds = [...document.querySelectorAll('#cmpKinds input:checked')]
+      .map(i => i.dataset.kind);
+    const data = await call('/api/compare/start',
+      {original: [left], translated: [right], kinds});
+
+    $('cmpNote').textContent =
+      `Глав в оригинале ${data.original}, в переводе ${data.translated}, `
+      + `сопоставлено ${data.matched}. Находок: ${data.total}.`;
+
+    const table = $('cmpFindings');
+    table.innerHTML = '';
+    if(!data.findings.length){
+      table.innerHTML = '<div class="tr"><span class="grow">Расхождений нет.</span></div>';
+      return;
+    }
+    for(const finding of data.findings.slice(0, 400)){
+      const row = document.createElement('div');
+      row.className = 'tr';
+      const where = document.createElement('span');
+      where.className = 'num';
+      where.textContent = finding.chapter;
+      const kind = document.createElement('span');
+      kind.className = 'tag warn';
+      kind.textContent = finding.kind_name;
+      const text = document.createElement('span');
+      text.className = 'grow';
+      text.textContent = finding.message;
+      text.title = finding.source || finding.message;
+      row.append(where, kind, text);
+      table.append(row);
+    }
+  }catch(err){
+    showError(err.message);
+    $('cmpNote').textContent = '';
+  }finally{
+    $('cmpStart').disabled = false;
+  }
+}
+
+$('rpPreview').onclick = rpPreview;
+$('rpStart').onclick = () => rpStart();
+$('dcLoad').onclick = dcLoad;
+$('dcSave').onclick = dcSave;
+$('dcSummary').onclick = dcSummary;
+$('dcApply').onclick = dcApply;
+$('cmpStart').onclick = cmpStart;
+cmpLoadKinds();
+
 /* ========================== Проверка текста ========================== */
 
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;

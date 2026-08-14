@@ -29,9 +29,11 @@ from core.writers.txt import ENCODINGS  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
+from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
+from ops import replace as replace_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
 from ops.base import Progress  # noqa: E402
@@ -1109,6 +1111,151 @@ def api_analyze_cards():
     kind = (payload.get("type") or "персонаж").strip()
     return jsonify(cards=glossary_op.cards(registry, kind),
                    text=glossary_op.cards_text(registry, kind))
+
+
+
+# ------------------------------------------- вкладка «Инструменты»
+
+
+def _rules(payload: dict) -> list:
+    """Правила замены из запроса либо из словаря книги."""
+    rules = payload.get("rules")
+    if isinstance(rules, list) and rules:
+        return [replace_op.Rule.from_dict(r) for r in rules]
+    text = payload.get("dictionary")
+    if isinstance(text, str) and text.strip():
+        return replace_op.parse_dictionary(text)
+    return []
+
+
+@app.post("/api/replace/preview")
+def api_replace_preview():
+    """Все совпадения с контекстом. На диск ничего не пишется."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**replace_op.preview(targets, _rules(payload)).as_dict())
+    except replace_op.ReplaceError as exc:
+        return jsonify(error=str(exc)), 400
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/replace/start")
+def api_replace_start():
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите папку, где создать каталог"), 400
+    if not folder:
+        return jsonify(error="Введите имя папки"), 400
+
+    try:
+        rules = _rules(payload)
+        if not rules:
+            return jsonify(error="Нечего заменять: правило пустое"), 400
+        output_dir = prepare_output_dir(base, folder)
+    except replace_op.ReplaceError as exc:
+        return jsonify(error=str(exc)), 400
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    # Снятые галочки приходят четвёрками «файл, абзац, правило, номер».
+    skip = {(str(s[0]), int(s[1]), int(s[2]), int(s[3]))
+            for s in (payload.get("skip") or []) if len(s) == 4}
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="replace",
+        meta={"targets": targets, "rules": len(rules)},
+        output_dir=str(output_dir),
+    )
+    job.progress = {"stage": "replace", "message": "Заменяем…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    def work(job: Job):
+        _finish(job, replace_op.run(
+            targets, Path(job.output_dir), rules, skip=skip,
+            progress=_progress(job, "Файл"),
+        ), "Записано")
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/dictionary/load")
+def api_dictionary_load():
+    """Словарь автозамен книги. Свой у каждой — лежит рядом с ней."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    path = replace_op.dictionary_path(root)
+    text = ""
+    if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return jsonify(error=f"Не удалось прочитать словарь: {exc}"), 400
+    return jsonify(text=text, path=str(path),
+                   rules=len(replace_op.parse_dictionary(text)))
+
+
+@app.post("/api/dictionary/save")
+def api_dictionary_save():
+    payload = request.json or {}
+    root = _book_root(payload)
+    try:
+        path = replace_op.save_dictionary(root, payload.get("text") or "")
+    except OSError as exc:
+        return jsonify(error=f"Не удалось сохранить словарь: {exc}"), 400
+    return jsonify(path=str(path),
+                   rules=len(replace_op.parse_dictionary(payload.get("text") or "")))
+
+
+@app.post("/api/dictionary/summary")
+def api_dictionary_summary():
+    """Сколько замен даст каждое правило — сводка до применения."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    rules = _rules(payload)
+    if not rules:
+        return jsonify(error="Словарь пуст"), 400
+    try:
+        return jsonify(**replace_op.dictionary_summary(targets, rules))
+    except replace_op.ReplaceError as exc:
+        return jsonify(error=str(exc)), 400
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/compare/start")
+def api_compare_start():
+    """Сверка оригинала и перевода по номерам глав."""
+    payload = request.json or {}
+    original = _targets({"targets": payload.get("original")})
+    translated = _targets({"targets": payload.get("translated")})
+
+    if not original or not translated:
+        return jsonify(error="Выберите обе папки: оригинал и перевод"), 400
+
+    kinds = payload.get("kinds")
+    kinds = [k for k in kinds if k in compare_op.KINDS] if isinstance(kinds, list) else None
+    try:
+        return jsonify(**compare_op.check(original, translated, kinds).as_dict())
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.get("/api/compare/kinds")
+def api_compare_kinds():
+    return jsonify(kinds=[{"key": k, "name": v} for k, v in compare_op.KINDS.items()])
 
 
 # ------------------------------------------------ вкладка «Проверка текста»

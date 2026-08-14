@@ -101,6 +101,9 @@ class OpReport:
     written: int = 0
     failed: int = 0
     failures: list[Failure] = field(default_factory=list)
+    #: Числа, своеобразные для операции: сколько замен сделано, сколько
+    #: строк убрано. Общие поля от них не разрастаются.
+    extra: dict = field(default_factory=dict)
 
     def fail(self, file: str, step: str, error: str) -> None:
         self.failures.append(Failure(file, step, error))
@@ -114,4 +117,5 @@ class OpReport:
             "failed": self.failed,
             "failures": [f.as_dict() for f in self.failures],
             "failed_files": [f.as_text() for f in self.failures],
+            **self.extra,
         }

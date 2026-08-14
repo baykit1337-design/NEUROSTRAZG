@@ -9,6 +9,15 @@ from core import formats
 from core.models import Chapter, OpReport
 from core.readers.base import ReadError
 
+#: Служебные файлы, которые программа кладёт рядом с книгой. Формат у них
+#: читаемый, но содержанием они не являются: словарь автозамен попадал в
+#: сверку отдельной «главой».
+SERVICE_FILES = frozenset({
+    "replacements.txt",   # словарь автозамен книги
+    "whitelist.txt",      # исключения проверки латиницы
+    "errors.log",
+})
+
 
 class Cancelled(Exception):
     """Пользователь остановил операцию."""
@@ -56,7 +65,8 @@ def collect_files(targets) -> list[Path]:
         path = Path(str(target)).expanduser()
         if path.is_dir():
             found = [p for p in sorted(path.iterdir())
-                     if p.is_file() and formats.is_readable(p)]
+                     if p.is_file() and formats.is_readable(p)
+                     and p.name.lower() not in SERVICE_FILES]
         elif path.is_file():
             # Через reader_for, а не по расширению: он же решает спор
             # расширения с сигнатурой, и epub, названный .dat, пройдёт.
