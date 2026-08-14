@@ -1,0 +1,40 @@
+/* 6.8 Переход между вкладками — содержимое вырастает из нажатой кнопки.
+ *
+ * Точка роста совпадает с кнопкой, поэтому видно, откуда взялось то, что
+ * появилось: при семи вкладках это единственная связь между нажатием
+ * наверху и сменой всего экрана внизу.
+ *
+ * Начало трансформации ставит скрипт переменной --fx-origin: положение
+ * кнопки известно только во время нажатия.
+ */
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-tab-grow section:not([hidden]).fx-enter{
+    transform-origin:var(--fx-origin, 50%) top;
+    animation:fx-tab-grow .28s ease-out 1;
+  }
+
+  /* Блоки внутри проявляются каскадом — глаз успевает за появлением. */
+  .fx-tab-grow section:not([hidden]).fx-enter > .card{
+    animation:fx-card-rise .3s ease-out both;
+  }
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(1){animation-delay:0s}
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(2){animation-delay:.04s}
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(3){animation-delay:.08s}
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(4){animation-delay:.12s}
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(5){animation-delay:.16s}
+  /* Дальше пятого блока задержку не наращиваем: на вкладке
+     «Инструменты» их больше десяти, и последний появлялся бы через
+     полсекунды после первого. */
+  .fx-tab-grow section:not([hidden]).fx-enter > .card:nth-child(n+6){animation-delay:.2s}
+}
+
+@keyframes fx-tab-grow{
+  0%   {opacity:0; transform:scale(.96) translateY(-8px)}
+  100% {opacity:1; transform:scale(1) translateY(0)}
+}
+
+@keyframes fx-card-rise{
+  0%   {opacity:0; transform:translateY(6px)}
+  100% {opacity:1; transform:translateY(0)}
+}

@@ -1,0 +1,81 @@
+/* 6.5 Название программы — глитч и инверсия.
+ *
+ * Глитч здесь работает как момент переключения, а инверсия — как
+ * результат: короткий сбой, и текст остаётся в другом состоянии. Поэтому
+ * глитч только на наведение и не циклический: постоянно дёргающееся
+ * название читать невозможно.
+ *
+ * Эффект включается классом на корне страницы, чтобы его можно было снять
+ * в «Оформлении», не задевая остальное.
+ */
+
+.fx-title-glitch .app-title{
+  position:relative;
+  display:inline-block;
+  padding:2px 14px;
+  border-radius:10px;
+  /* Инверсия — это фон под буквами, а не смена цвета текста: цвет и
+     свечение заданы в базовых стилях, и перебивать их нельзя. */
+  background:transparent;
+  transition:background .32s ease, color .32s ease, text-shadow .32s ease;
+}
+
+/* Обёртка нужна, чтобы центрирование заголовка не поехало от
+   inline-block. */
+.fx-title-glitch h1.app-title{
+  margin-left:auto;
+  margin-right:auto;
+}
+
+.fx-title-glitch .app-title:hover{
+  background:var(--neon, #b06cff);
+  color:#12101a;
+  text-shadow:none;
+}
+
+/* Двойники — красный и голубой. Скрыты, пока не наведён курсор. */
+.fx-title-glitch .app-title::before,
+.fx-title-glitch .app-title::after{
+  content:attr(data-text);
+  position:absolute;
+  inset:2px 14px;
+  pointer-events:none;
+  opacity:0;
+}
+.fx-title-glitch .app-title::before{color:#ff3b6b;}
+.fx-title-glitch .app-title::after{color:#3bf0ff;}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-title-glitch .app-title:hover::before{
+    animation:fx-glitch-left .25s steps(2, end) 1;
+  }
+  .fx-title-glitch .app-title:hover::after{
+    animation:fx-glitch-right .25s steps(2, end) 1;
+  }
+  /* Дёргается и сам текст — иначе двойники выглядят наклейкой поверх. */
+  .fx-title-glitch .app-title:hover{
+    animation:fx-glitch-shake .25s steps(3, end) 1;
+  }
+}
+
+/* Уход курсора — обратный переход без повторного глитча: двойники просто
+   не запускаются, а фон уезжает по transition. */
+
+@keyframes fx-glitch-left{
+  0%   {opacity:.9; transform:translate(-4px, -1px)}
+  40%  {opacity:.75; transform:translate(3px, 1px)}
+  70%  {opacity:.6; transform:translate(-2px, 0)}
+  100% {opacity:0; transform:translate(0, 0)}
+}
+@keyframes fx-glitch-right{
+  0%   {opacity:.9; transform:translate(4px, 1px)}
+  40%  {opacity:.75; transform:translate(-3px, -1px)}
+  70%  {opacity:.6; transform:translate(2px, 0)}
+  100% {opacity:0; transform:translate(0, 0)}
+}
+@keyframes fx-glitch-shake{
+  0%   {transform:translateX(0)}
+  30%  {transform:translateX(-2px)}
+  60%  {transform:translateX(2px)}
+  100% {transform:translateX(0)}
+}

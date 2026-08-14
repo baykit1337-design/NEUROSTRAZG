@@ -1,0 +1,32 @@
+/* 6.8 Подсветка строк таблицы — градиент слева направо при наведении.
+ *
+ * В таблице находок на четыре тысячи строк взгляд теряет строку между
+ * первым и последним столбцом. Движение слева направо ведёт его по строке
+ * в ту сторону, в которую она читается.
+ *
+ * Существующая подсветка (`.table .tr:hover`) остаётся: она даёт фон, а
+ * этот эффект — только бегущий блик поверх.
+ */
+
+.fx-row-sweep .table .tr{position:relative;overflow:hidden}
+
+.fx-row-sweep .table .tr::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  opacity:0;
+  background:linear-gradient(90deg,
+    transparent 0%, rgba(176,108,255,.16) 45%, transparent 100%);
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-row-sweep .table .tr:hover::before{
+    animation:fx-row-sweep .55s ease-out 1;
+  }
+}
+
+@keyframes fx-row-sweep{
+  0%   {opacity:1; transform:translateX(-100%)}
+  100% {opacity:0; transform:translateX(100%)}
+}

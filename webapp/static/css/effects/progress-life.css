@@ -1,0 +1,42 @@
+/* 6.7 Живой прогресс-бар: дыхание свечения и искры на переднем крае.
+ *
+ * Существующий блик остаётся как есть — он и так показывает, что работа
+ * идёт. Добавляется только то, чего не хватало: понимание, что полоса
+ * живая, когда процент долго не меняется.
+ *
+ * Искры рисуются на переднем крае, а не по всей полосе: край — это место,
+ * где происходит движение, туда и смотрят.
+ */
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-progress-life .bar > i.active{
+    animation:fx-bar-breath 2.4s ease-in-out infinite;
+  }
+
+  /* Искра. Собственный слой поверх заливки: ::after уже занят бликом. */
+  .fx-progress-life .bar > i.active::before{
+    content:"";
+    position:absolute;
+    top:50%;
+    right:-1px;
+    width:8px;
+    height:8px;
+    margin-top:-4px;
+    border-radius:50%;
+    background:#f3e8ff;
+    box-shadow:0 0 10px 2px rgba(216,180,254,.9),
+               0 0 18px 6px rgba(168,85,247,.5);
+    animation:fx-bar-spark 1.1s ease-in-out infinite;
+    pointer-events:none;
+  }
+}
+
+@keyframes fx-bar-breath{
+  0%, 100% {box-shadow:0 0 10px rgba(140,84,255,.7), 0 0 20px rgba(140,84,255,.35)}
+  50%      {box-shadow:0 0 16px rgba(168,85,247,.95), 0 0 34px rgba(140,84,255,.6)}
+}
+
+@keyframes fx-bar-spark{
+  0%, 100% {opacity:.55; transform:scale(.8)}
+  50%      {opacity:1;   transform:scale(1.15)}
+}

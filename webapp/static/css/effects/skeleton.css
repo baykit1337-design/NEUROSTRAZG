@@ -1,0 +1,31 @@
+/* 6.7 Скелетоны — заготовки строк вместо пустоты, пока список грузится.
+ *
+ * Пустая таблица во время чтения пятисот файлов выглядит как «ничего не
+ * нашлось», а не как «идёт работа». Заготовки убирают эту двусмысленность.
+ *
+ * Ширина строк разная и заданная, а не случайная: одинаковые полоски
+ * читаются как разметка, а не как текст, который вот-вот появится.
+ */
+
+.fx-skeleton .skel{
+  height:14px;
+  margin:11px 12px;
+  border-radius:7px;
+  background:linear-gradient(90deg,
+    rgba(255,255,255,.04) 0%,
+    rgba(176,108,255,.14) 50%,
+    rgba(255,255,255,.04) 100%);
+  background-size:220% 100%;
+}
+.fx-skeleton .skel:nth-child(3n)  {width:72%}
+.fx-skeleton .skel:nth-child(3n+1){width:88%}
+.fx-skeleton .skel:nth-child(3n+2){width:61%}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-skeleton .skel{animation:fx-skel-pulse 1.3s ease-in-out infinite}
+}
+
+@keyframes fx-skel-pulse{
+  0%   {background-position:120% 0}
+  100% {background-position:-20% 0}
+}

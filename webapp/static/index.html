@@ -44,13 +44,40 @@
     color:var(--text);
     font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     min-height:100vh;
-    padding:48px 20px 80px;
+    padding:48px 20px 96px;
     background-image:
       radial-gradient(680px 420px at 50% -12%, rgba(176,108,255,.16), transparent 70%),
       radial-gradient(420px 300px at 88% 100%, rgba(122,63,208,.10), transparent 70%);
     background-attachment:fixed;
   }
   .wrap{max-width:660px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+  /* 6.10 Нижняя строка состояния. Тусклая в покое, текст загорается при
+     наведении — как остальные подписи в программе. */
+  .statusbar{
+    position:fixed;left:0;right:0;bottom:0;height:28px;z-index:60;
+    display:flex;align-items:center;justify-content:center;gap:14px;
+    padding:0 14px;
+    background:rgba(8,8,12,.86);
+    border-top:1px solid rgba(140,84,255,.22);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    color:#6d6d7a;font-size:12px;line-height:1;
+    white-space:nowrap;overflow:hidden;
+    transition:color .25s ease, border-color .25s ease, opacity .35s ease;
+  }
+  .statusbar:hover{color:#a9a4b8;border-color:rgba(140,84,255,.42)}
+  /* В покое полоса гаснет, но остаётся на месте: пропадающая насовсем
+     дёргала бы страницу на 28 пикселей при каждом запуске. */
+  .statusbar.idle{opacity:.55}
+  .sb-item{display:inline-flex;align-items:center;gap:5px}
+  .sb-item b{color:#9a6dd7;font-weight:600;font-variant-numeric:tabular-nums}
+  .statusbar:hover .sb-item b{color:#c084fc}
+  /* Разделители — точки между пунктами, а не рамки. Соседство считается
+     по разметке, а не по видимости, поэтому первый видимый пункт помечает
+     скрипт: иначе точка висела бы в начале строки. */
+  .sb-item::before{content:"·";margin-right:9px;opacity:.5}
+  .sb-item.first::before{content:none;margin-right:0}
+  .sb-item[hidden]{display:none}
 
   h1,.app-title{
     font-family:'Exo 2', system-ui, sans-serif;
@@ -753,6 +780,14 @@
         <path d="m7 13-4 4 3 3 4-4" stroke="#8c54ff" stroke-width="1.8"
               stroke-linejoin="round"/>
       </svg>Инструменты</button>
+    <button data-tab="looks">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.3 0 2-.8 2-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.1 0-.9.7-1.6 1.6-1.6h1.3A4.6 4.6 0 0 0 20.5 11c0-4.1-3.8-7.5-8.5-7.5Z"
+              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <circle cx="8" cy="10" r="1.2" fill="#8c54ff"/>
+        <circle cx="12" cy="7.6" r="1.2" fill="#8c54ff"/>
+        <circle cx="16" cy="10" r="1.2" fill="#8c54ff"/>
+      </svg>Оформление</button>
   </nav>
 
   <div class="card err" id="error" hidden></div>
@@ -1857,7 +1892,31 @@
     </div>
   </div>
 </section>
+
+<!-- ====================== Оформление ====================== -->
+<section id="tab-looks" hidden>
+  <div class="card lit">
+    <label>Эффекты интерфейса</label>
+    <p class="hint">Каждый эффект отдельный и снимается сам по себе. Со
+       снятыми галочками программа выглядит и работает так же, как без
+       оформления вовсе. Выбор запоминается в браузере.</p>
+    <div class="checks" id="fxList" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="fxAll" class="ghost" style="flex:1">Включить все</button>
+      <button id="fxNone" class="ghost" style="flex:1">Выключить все</button>
+    </div>
+    <p class="hint" id="fxNote"></p>
+  </div>
+</section>
 </div>
+
+<!-- 6.10 Нижняя строка состояния. Всегда на месте, тусклая в покое. -->
+<footer class="statusbar" id="statusBar">
+  <span class="sb-item" id="sbSpeed" hidden>↓ <b id="sbSpeedNum">—</b></span>
+  <span class="sb-item" id="sbElapsed" hidden>прошло <b id="sbElapsedNum">00:00</b></span>
+  <span class="sb-item" id="sbLeft" hidden>осталось <b id="sbLeftNum">—</b></span>
+  <span class="sb-item" id="sbMode"></span>
+</footer>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -2351,6 +2410,21 @@ $('again').onclick = reset;
 </script>
 <!-- Вкладки «Разбить», «Объединить», «Переименовать» и «Проверка» —
      общие помощники объявлены выше, поэтому файл подключается следом. -->
+<link rel="stylesheet" href="/static/css/effects/title-glitch.css">
+<link rel="stylesheet" href="/static/css/effects/button-press.css">
+<link rel="stylesheet" href="/static/css/effects/progress-life.css">
+<link rel="stylesheet" href="/static/css/effects/done-flash.css">
+<link rel="stylesheet" href="/static/css/effects/skeleton.css">
+<link rel="stylesheet" href="/static/css/effects/aurora.css">
+<link rel="stylesheet" href="/static/css/effects/grain.css">
+<link rel="stylesheet" href="/static/css/effects/spotlight.css">
+<link rel="stylesheet" href="/static/css/effects/cursor.css">
+<link rel="stylesheet" href="/static/css/effects/row-sweep.css">
+<link rel="stylesheet" href="/static/css/effects/tab-grow.css">
+<link rel="stylesheet" href="/static/css/effects/static-cards.css">
 <script src="/static/tabs.js"></script>
+<script src="/static/js/effects/settings.js"></script>
+<script src="/static/js/effects/feedback.js"></script>
+<script src="/static/js/effects/pointer.js"></script>
 </body>
 </html>

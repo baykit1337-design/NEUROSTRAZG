@@ -326,11 +326,38 @@ function drawResult(p, fillId, statusId, pctId){
   return busy;
 }
 
+/** Сколько заняла операция, словами: «18 мин 42 с». */
+function tookText(seconds){
+  seconds = Math.round(seconds);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if(h) return `${h} ч ${m} мин`;
+  if(m) return `${m} мин ${s} с`;
+  return `${s} с`;
+}
+
+/** Дописывает время в итог операции.
+ *
+ *  Здесь, а не в каждой вкладке: через pollJob проходит любая задача, и
+ *  «заняло столько-то» должно появляться одинаково везде. Нижняя строка к
+ *  этому моменту уже погасла, и время иначе потерялось бы.
+ */
+function addTook(job){
+  const progress = job.progress || {};
+  const done = progress.stage === 'done' || progress.stage === 'error'
+    || progress.stage === 'cancelled';
+  if(!done || job.running || !job.elapsed || job.elapsed < 1) return;
+  if(!progress.message || / · заняло /.test(progress.message)) return;
+  progress.message += ' · заняло ' + tookText(job.elapsed);
+}
+
 /** Опрашивает задачу до конца. onDone получает готовый job. */
 function pollJob(jobId, draw, onDone){
   const timer = setInterval(async () => {
     try{
       const {job} = await call('/api/job/' + jobId);
+      addTook(job);
       if(!draw(job)){
         clearInterval(timer);
         onDone(job);
@@ -1964,6 +1991,8 @@ function dfRender(chapters){
 
 async function hsLoad(){
   showError('');
+  // Пока журнал и корзина читаются, таблица не должна выглядеть пустой.
+  if(typeof fxSkeleton === 'function') fxSkeleton('hsRecords', 5);
   try{
     const data = await call('/api/history/state');
     hsRender(data);
@@ -2310,6 +2339,7 @@ async function orfStart(){
 
   $('orfStart').disabled = true;
   $('orfNote').innerHTML = '<span class="spin"></span>Читаем словарь…';
+  if(typeof fxSkeleton === 'function') fxSkeleton('orfFindings', 6);
   try{
     const {job} = await call('/api/spelling/start',
       {targets, use_registry: $('orfReg').checked});
@@ -3073,3 +3103,90 @@ $('ckClean').onclick = ckClean;
 
 // Раздел 3: свои стрелки у всех числовых полей приложения.
 addSpinners();
+
+/* ================= Нижняя строка состояния (6.10) =================
+ *
+ * Отвечает на вопрос «оно вообще шевелится?». По числу готовых глав этого
+ * не видно: одна глава может тянуться минуту, и всё это время на экране
+ * ничего не меняется.
+ *
+ * Прогноз считается по последним замерам, а не по средней с начала: в
+ * начале операции средняя врёт, а после смены прокси устаревает.
+ */
+
+const SB_SAMPLES = 20;
+let sbHistory = [], sbJob = null, sbTimer = null;
+
+function sbSize(bytes){
+  if(bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' МБ/с';
+  if(bytes >= 1024) return Math.round(bytes / 1024) + ' КБ/с';
+  return Math.round(bytes) + ' Б/с';
+}
+
+function sbClock(seconds){
+  seconds = Math.max(0, Math.round(seconds));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const pad = n => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** Прогноз по скорости обработки последних элементов. */
+function sbLeft(done, total, now){
+  sbHistory.push({at: now, done});
+  if(sbHistory.length > SB_SAMPLES) sbHistory.shift();
+  if(sbHistory.length < 3 || !total || done >= total) return '';
+
+  const first = sbHistory[0];
+  const seconds = (now - first.at) / 1000;
+  const made = done - first.done;
+  // Пока не сделано ни одного шага, прогнозировать нечего — прочерк
+  // честнее выдуманного числа.
+  if(seconds <= 0 || made <= 0) return '';
+  return sbClock((total - done) / (made / seconds));
+}
+
+function sbShow(id, text){
+  const box = $(id);
+  box.hidden = !text;
+  if(text) $(id + 'Num').textContent = text;
+}
+
+/** Помечает первый видимый пункт: перед ним точки быть не должно. */
+function sbFirst(){
+  let first = true;
+  for(const item of document.querySelectorAll('#statusBar .sb-item')){
+    item.classList.toggle('first', first && !item.hidden);
+    if(!item.hidden) first = false;
+  }
+}
+
+async function sbTick(){
+  try{
+    const data = await call('/api/status');
+    const bar = $('statusBar');
+    bar.classList.toggle('idle', !data.busy);
+
+    if(data.job !== sbJob){ sbJob = data.job; sbHistory = []; }
+
+    sbShow('sbSpeed', data.busy && data.network ? sbSize(data.speed) : '');
+    sbShow('sbElapsed', data.busy ? sbClock(data.elapsed) : '');
+    sbShow('sbLeft', data.busy ? sbLeft(data.done, data.total, Date.now()) : '');
+
+    const mode = [];
+    if(data.busy && data.threads) mode.push(`${data.threads} потока`);
+    if(data.proxies) mode.push(`${data.proxies} прокси`);
+    // Пустой пункт всё равно рисовал бы разделитель — точку в никуда.
+    $('sbMode').hidden = !mode.length;
+    $('sbMode').textContent = mode.join(' · ');
+
+    sbFirst();
+  }catch(err){
+    // Сервер закрыли — строка просто гаснет, ошибку показывать незачем.
+    $('statusBar').classList.add('idle');
+  }
+}
+
+sbTick();
+sbTimer = setInterval(sbTick, 1000);

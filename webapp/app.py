@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ from core.readers.base import ReadError  # noqa: E402
 from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
+from net import traffic  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
@@ -84,6 +86,18 @@ class Job:
     error: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+    #: Когда началась и когда закончилась. Время меряет сервер, а не
+    #: страница: перезагрузка вкладки не должна сбрасывать секундомер.
+    started: float = field(default_factory=time.monotonic)
+    finished: float = 0.0
+
+    @property
+    def elapsed(self) -> float:
+        return (self.finished or time.monotonic()) - self.started
+
+    @property
+    def running(self) -> bool:
+        return not self.finished
 
     def snapshot(self) -> dict:
         return {
@@ -95,6 +109,8 @@ class Job:
             "report": self.report,
             "error": self.error,
             "cancelled": self.cancel.is_set(),
+            "elapsed": round(self.elapsed, 1),
+            "running": self.running,
         }
 
 
@@ -115,6 +131,8 @@ def start_job(job: Job, work) -> Job:
             job.error = scrub(f"{type(exc).__name__}: {exc}")
             job.progress["stage"] = "error"
             job.progress["message"] = job.error
+        finally:
+            job.finished = time.monotonic()
 
     job.thread = threading.Thread(target=runner, daemon=True)
     with JOBS_LOCK:
@@ -487,6 +505,10 @@ def api_start():
     # Ручной режим пропускает пробу: пользователь сам увидит по времени,
     # работает многопоточность или нет, — это надёжнее любой эвристики.
     probe = str(payload.get("mode") or "auto").strip() != "manual"
+
+    # Нижней строке нужен режим операции и чистый счётчик трафика.
+    job.meta["threads"] = threads
+    traffic.reset()
 
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
@@ -1992,6 +2014,43 @@ def api_check_report(job_id: str):
         text,
         mimetype="text/plain; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="check-report.txt"'},
+    )
+
+
+@app.get("/api/status")
+def api_status():
+    """Нижняя строка состояния (6.10).
+
+    Одна точка на всё: скорость, секундомер и режим. Считать это на
+    странице нельзя — скорость знает только клиент качалки, а секундомер
+    переживает перезагрузку вкладки лишь на сервере.
+    """
+    with JOBS_LOCK:
+        running = [job for job in JOBS.values() if job.running]
+    # Показываем самую свежую: одновременно операций почти не бывает, а
+    # если бывают — интересна та, которую только что запустили.
+    job = max(running, key=lambda j: j.started) if running else None
+
+    with POOL_LOCK:
+        pool = POOL
+
+    progress = job.progress if job else {}
+    return jsonify(
+        busy=bool(job),
+        job=job.id if job else "",
+        kind=job.kind if job else "",
+        elapsed=round(job.elapsed, 1) if job else 0,
+        done=int(progress.get("done") or 0),
+        total=int(progress.get("total") or 0),
+        # Сеть идёт только в качалке и проверке прокси — в остальных
+        # операциях строка скорость не показывает, а не рисует ноль.
+        network=bool(job and job.kind == "download"),
+        threads=int((job.meta.get("threads") if job else 0) or 0),
+        proxies=pool.usable_count if pool else 0,
+        # Не через traffic.state(): его «total» — это байты, а «total» выше
+        # — число элементов операции.
+        speed=round(traffic.speed()),
+        received=traffic.total(),
     )
 
 

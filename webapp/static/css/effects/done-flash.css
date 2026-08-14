@@ -1,0 +1,30 @@
+/* 6.7 Вспышка по завершении — одна волна свечения от центра к краям.
+ *
+ * Именно один раз, а не пульсация: пульсация означала бы «идёт», а здесь
+ * смысл ровно обратный — работа кончилась. Класс снимается скриптом после
+ * анимации, иначе вспышка не повторилась бы на следующей операции.
+ */
+
+.fx-done-flash .result-block{position:relative;overflow:hidden}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-done-flash .result-block.fx-flash::after{
+    content:"";
+    position:absolute;
+    left:50%;
+    top:50%;
+    width:8px;
+    height:8px;
+    margin:-4px 0 0 -4px;
+    border-radius:50%;
+    background:radial-gradient(circle,
+      rgba(216,180,254,.55) 0%, rgba(140,84,255,.25) 45%, transparent 70%);
+    pointer-events:none;
+    animation:fx-done-wave .62s ease-out 1;
+  }
+}
+
+@keyframes fx-done-wave{
+  0%   {opacity:.9; transform:scale(1)}
+  100% {opacity:0;  transform:scale(90)}
+}

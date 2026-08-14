@@ -1,0 +1,31 @@
+/* 6.9 Статичные формы.
+ *
+ * Карточка со сводкой сейчас не отзывается на наведение, и на фоне
+ * остальных это читается не как «здесь ничего не нажимается», а как
+ * «здесь что-то сломалось».
+ *
+ * Подсветка та же, что у прочих карточек, а курсор остаётся стрелкой:
+ * форма и правда не редактируется, и обещать обратное нельзя.
+ */
+
+.fx-static-cards .card,
+.fx-static-cards .status,
+.fx-static-cards .stats{
+  transition:border-color .22s ease, box-shadow .22s ease, color .22s ease;
+}
+
+/* Подписи внутри разгораются так же, как у остальных блоков. */
+.fx-static-cards .card:hover .hint,
+.fx-static-cards .card:hover .stats,
+.fx-static-cards .card:hover > label{
+  color:#a9a4b8;
+}
+
+.fx-static-cards .card:hover .stats b{color:#ffffff}
+
+/* Курсор — обычная стрелка: ложного ощущения кликабельности быть не
+   должно. */
+.fx-static-cards .card{cursor:default}
+.fx-static-cards .card :is(button, input, textarea, select, .dropdown-item){
+  cursor:revert;
+}
