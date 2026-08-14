@@ -32,7 +32,9 @@ from ops import analyze as analyze_op  # noqa: E402
 from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
+from ops import diff as diff_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
+from ops import history as history_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
@@ -185,13 +187,48 @@ def _progress(job: Job, unit: str) -> Progress:
     return Progress(on_progress, job.cancel)
 
 
+def _prepare(base: str, folder: str, operation: str) -> Path:
+    """Папка для результата, с копией прежнего содержимого в корзину.
+
+    Существующая папка используется как есть — на это опирается докачка,
+    — поэтому перезапись возможна. Если в папке уже что-то лежит, старая
+    версия сперва уходит в корзину: иначе восстанавливать будет нечего.
+    """
+    output_dir = prepare_output_dir(base, folder)
+    saved = history_op.backup(output_dir, operation)
+    if saved:
+        log.info("Прежнее содержимое %s скопировано в %s", output_dir, saved)
+    BACKUPS[str(output_dir)] = saved
+    return output_dir
+
+
+#: Куда легла копия перед перезаписью — чтобы записать это в журнал.
+BACKUPS: dict[str, str] = {}
+
+
 def _finish(job: Job, report, verb: str) -> None:
-    """Итог операции в задачу — одинаково для всех вкладок."""
+    """Итог операции в задачу — одинаково для всех вкладок.
+
+    Здесь же строка журнала: через `_finish` проходит каждая пишущая
+    операция, поэтому вести журнал в одном месте достаточно.
+    """
     job.report = report.as_dict()
     job.progress.update(
         stage="done", written=report.written, failed=report.failed,
         message=(f"Готово. {verb} {report.written} из {report.total}"
                  + (f", ошибок {report.failed}" if report.failed else "")),
+    )
+
+    sources = job.meta.get("targets") or job.meta.get("source") or ""
+    if isinstance(sources, list):
+        sources = "; ".join(str(s) for s in sources[:3])
+    history_op.add(
+        operation=job.kind,
+        source=str(sources),
+        output=job.output_dir,
+        files=report.written,
+        failed=report.failed,
+        backup=BACKUPS.pop(job.output_dir, ""),
     )
 
 
@@ -395,7 +432,7 @@ def api_start():
     novel = _novel_from_payload(novel_data)
 
     try:
-        output_dir = prepare_output_dir(base, folder)
+        output_dir = _prepare(base, folder, "download")
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -523,7 +560,7 @@ def api_split_start():
         return jsonify(error=str(exc)), 400
 
     try:
-        output_dir = prepare_output_dir(base, folder)
+        output_dir = _prepare(base, folder, "split")
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -652,7 +689,7 @@ def api_rename_apply():
             rows[index].new_name = str(name).strip()
 
     try:
-        output_dir = prepare_output_dir(base, out_name)
+        output_dir = _prepare(base, out_name, "rename")
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -788,7 +825,7 @@ def api_headers_clean():
         return jsonify(error="Отметьте, что убрать"), 400
 
     try:
-        output_dir = prepare_output_dir(base, folder)
+        output_dir = _prepare(base, folder, "headers")
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -1161,7 +1198,7 @@ def api_replace_start():
         rules = _rules(payload)
         if not rules:
             return jsonify(error="Нечего заменять: правило пустое"), 400
-        output_dir = prepare_output_dir(base, folder)
+        output_dir = _prepare(base, folder, "replace")
     except replace_op.ReplaceError as exc:
         return jsonify(error=str(exc)), 400
     except (OSError, ValueError) as exc:
@@ -1256,6 +1293,45 @@ def api_compare_start():
 @app.get("/api/compare/kinds")
 def api_compare_kinds():
     return jsonify(kinds=[{"key": k, "name": v} for k, v in compare_op.KINDS.items()])
+
+
+
+# ------------------------------- журнал, корзина и сравнение версий
+
+
+@app.get("/api/history/state")
+def api_history_state():
+    """Что делалось и что можно вернуть."""
+    return jsonify(**history_op.state())
+
+
+@app.post("/api/history/restore")
+def api_history_restore():
+    """Возвращает файлы из копии на место."""
+    payload = request.json or {}
+    backup = (payload.get("backup") or "").strip()
+    target = (payload.get("target") or "").strip()
+    if not backup or not target:
+        return jsonify(error="Нужны и копия, и папка, куда возвращать"), 400
+    try:
+        count = history_op.restore(Path(backup), Path(target))
+    except history_op.RestoreError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(restored=count, **history_op.state())
+
+
+@app.post("/api/diff")
+def api_diff():
+    """Что изменилось: до операции и после."""
+    payload = request.json or {}
+    before = (payload.get("before") or "").strip()
+    after = (payload.get("after") or "").strip()
+    if not before or not after:
+        return jsonify(error="Укажите обе стороны сравнения"), 400
+    try:
+        return jsonify(**diff_op.compare(before, after).as_dict())
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
 
 
 # ------------------------------------------------ вкладка «Проверка текста»
@@ -1377,7 +1453,7 @@ def api_clean_start():
         return jsonify(error=str(exc)), 400
 
     try:
-        output_dir = prepare_output_dir(base, folder)
+        output_dir = _prepare(base, folder, "clean")
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 

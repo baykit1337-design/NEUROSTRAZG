@@ -1899,6 +1899,145 @@ $('dcApply').onclick = dcApply;
 $('cmpStart').onclick = cmpStart;
 cmpLoadKinds();
 
+
+/* ============= Сравнение версий, журнал и корзина =============
+ *
+ * Обе вещи — страховка. Автоматическая очистка иногда портит текст, и без
+ * сравнения это обнаруживается поздно и случайно; без корзины
+ * восстанавливать нечего вовсе.
+ */
+
+async function dfStart(){
+  showError('');
+  const before = $('dfBefore').value.trim(), after = $('dfAfter').value.trim();
+  if(!before || !after){ showError('Укажите обе стороны сравнения'); return; }
+
+  $('dfStart').disabled = true;
+  $('dfNote').innerHTML = '<span class="spin"></span>Сравниваем…';
+  try{
+    const data = await call('/api/diff', {before, after});
+    $('dfNote').textContent =
+      `Глав сопоставлено ${data.total}, изменено ${data.changed}. `
+      + `Добавлено строк ${data.added}, убрано ${data.removed}.`
+      + (data.only_left.length ? ` Только слева: ${data.only_left.join(', ')}.` : '')
+      + (data.only_right.length ? ` Только справа: ${data.only_right.join(', ')}.` : '');
+    dfRender(data.chapters || []);
+  }catch(err){
+    showError(err.message);
+    $('dfNote').textContent = '';
+    $('dfResult').innerHTML = '';
+  }finally{
+    $('dfStart').disabled = false;
+  }
+}
+
+function dfRender(chapters){
+  const box = $('dfResult');
+  box.innerHTML = '';
+  if(!chapters.length){
+    box.innerHTML = '<p class="hint">Различий нет.</p>';
+    return;
+  }
+
+  for(const chapter of chapters.slice(0, 40)){
+    const block = document.createElement('div');
+    block.className = 'diff';
+    block.style.marginBottom = '12px';
+
+    const head = document.createElement('div');
+    head.className = 'diff-head';
+    head.textContent =
+      `Глава ${chapter.chapter} · добавлено ${chapter.added}, убрано ${chapter.removed}`;
+    block.append(head);
+
+    for(const line of chapter.lines){
+      const row = document.createElement('div');
+      row.className = 'ln ' + line.kind;
+      row.textContent = line.text;
+      block.append(row);
+    }
+    box.append(block);
+  }
+}
+
+/* ------------------------------------------------- журнал и корзина */
+
+async function hsLoad(){
+  showError('');
+  try{
+    const data = await call('/api/history/state');
+    hsRender(data);
+  }catch(err){ showError(err.message); }
+}
+
+function hsRender(data){
+  $('hsNote').textContent =
+    `Записей: ${data.records.length}. Копий в корзине: ${data.backups.length} `
+    + `(хранится последних ${data.keep}). Папка: ${data.dir}`;
+
+  const table = $('hsRecords');
+  table.innerHTML = '';
+  if(!data.records.length){
+    table.innerHTML = '<div class="tr"><span class="grow">Журнал пуст.</span></div>';
+    return;
+  }
+
+  for(const record of data.records.slice(0, 100)){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const when = document.createElement('span');
+    when.className = 'num';
+    when.textContent = record.when;
+
+    const what = document.createElement('span');
+    what.className = 'tag';
+    what.textContent = record.operation;
+
+    const where = document.createElement('span');
+    where.className = 'grow';
+    where.textContent = record.output || record.source;
+    where.title = `Источник: ${record.source}\nРезультат: ${record.output}`;
+
+    const counts = document.createElement('span');
+    counts.className = 'num';
+    counts.textContent = `${record.files} файл.`
+      + (record.failed ? ` · ошибок ${record.failed}` : '');
+
+    row.append(when, what, where, counts);
+
+    if(record.restorable){
+      const button = document.createElement('button');
+      button.className = 'ghost';
+      button.style.cssText = 'padding:3px 10px;font-size:11px';
+      button.textContent = 'Восстановить';
+      button.title = `Вернуть файлы из копии ${record.backup}`;
+      button.onclick = () => hsRestore(record, button);
+      row.append(button);
+    }
+    table.append(row);
+  }
+}
+
+async function hsRestore(record, button){
+  // Текущее состояние тоже уйдёт в корзину — на сервере, до записи.
+  button.disabled = true;
+  button.textContent = 'Возвращаем…';
+  try{
+    const data = await call('/api/history/restore',
+      {backup: record.backup, target: record.output});
+    hsRender(data);
+    toast(`Восстановлено файлов: ${data.restored}.`);
+  }catch(err){
+    showError(err.message);
+    button.disabled = false;
+    button.textContent = 'Восстановить';
+  }
+}
+
+$('dfStart').onclick = dfStart;
+$('hsLoad').onclick = hsLoad;
+
 /* ========================== Проверка текста ========================== */
 
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;

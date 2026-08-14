@@ -624,6 +624,19 @@
 
   /* Находка анализа: сообщение читается целиком, действия переносятся
      под него. Обрезать текст кнопками нельзя — в нём вся суть. */
+  /* Сравнение версий: удалённое и добавленное разными цветами. */
+  .diff{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px;line-height:1.55;border-radius:10px;overflow:hidden;
+    border:1px solid var(--stroke-soft)}
+  .diff .ln{padding:3px 10px;white-space:pre-wrap;word-break:break-word}
+  .diff .ln.same{color:#8b8699}
+  .diff .ln.removed{background:rgba(255,92,92,.10);color:#ff9d9d}
+  .diff .ln.removed::before{content:"− ";opacity:.7}
+  .diff .ln.added{background:rgba(120,255,170,.08);color:#9be8c0}
+  .diff .ln.added::before{content:"+ ";opacity:.7}
+  .diff-head{padding:6px 10px;background:rgba(140,84,255,.12);
+    color:#c084fc;font-size:12px}
+
   #anFindings .tr{flex-wrap:wrap;row-gap:8px}
   #anFindings .tr .grow{flex:1 1 100%;white-space:normal;overflow:visible}
   #anFindings .tr .actions{margin-left:auto;display:flex;gap:6px}
@@ -1519,6 +1532,37 @@
     </div>
     <p class="hint" id="cmpNote"></p>
     <div class="table" id="cmpFindings" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.5 Что изменилось -->
+  <div class="card">
+    <label>Что изменилось</label>
+    <p class="hint">Сравнение двух версий одной книги: до операции и после.
+       Сравниваются абзацы, а не байты — перенос строки правкой не считается.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="dfBefore" type="text" placeholder="папка до" autocomplete="off">
+      <button class="ghost browse" data-target="dfBefore" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="dfAfter" type="text" placeholder="папка после" autocomplete="off">
+      <button class="ghost browse" data-target="dfAfter" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="dfStart" class="primary" style="flex:1">Сравнить</button>
+    </div>
+    <p class="hint" id="dfNote"></p>
+    <div id="dfResult" style="margin-top:10px"></div>
+  </div>
+
+  <!-- 4.10 Журнал и корзина -->
+  <div class="card">
+    <label>Журнал операций и корзина</label>
+    <p class="hint" id="hsNote">Перед перезаписью старая версия папки
+       копируется в корзину. Хранятся последние копии, старые удаляются сами.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="hsLoad" class="ghost" style="flex:1">Показать</button>
+    </div>
+    <div class="table" id="hsRecords" style="margin-top:10px"></div>
   </div>
 </section>
 
