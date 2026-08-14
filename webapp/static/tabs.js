@@ -171,7 +171,41 @@ function renderChosen(listId){
     row.append(name, drop);
     box.append(row);
   }
+  updateListBar(listId);
 }
+
+/** Счётчик и кнопка «Очистить список» у списка выбранных путей.
+ *
+ * Панель есть не у всех списков (у «Проверки» свой вид), поэтому её
+ * отсутствие — не ошибка.
+ */
+function updateListBar(listId, files){
+  const prefix = listId.replace(/List$/, '');
+  const bar = document.getElementById(prefix + 'ListBar');
+  if(!bar) return;
+
+  const paths = (CHOSEN[listId] || []).length;
+  bar.hidden = paths === 0;
+  const label = document.getElementById(prefix + 'Count');
+  if(!label) return;
+
+  // Пока папку не прочитали, известно только число путей. После чтения
+  // берём настоящее число файлов: выбрана одна папка, а в ней их тысяча.
+  const count = files == null ? paths : files;
+  label.textContent = `выбрано: ${count} ${plural(count, 'файл', 'файла', 'файлов')}`
+    + (files != null && paths > 1 ? ` в ${paths} ${plural(paths, 'пути', 'путях', 'путях')}` : '');
+}
+
+document.querySelectorAll('.clearlist').forEach(button => {
+  button.onclick = () => {
+    // Выбрал по ошибке папку с тысячами файлов — снимается разом.
+    const listId = button.dataset.list;
+    CHOSEN[listId] = [];
+    renderChosen(listId);
+    const handler = $(listId).dataset.onchange;
+    if(handler && window[handler]) window[handler]();
+  };
+});
 
 document.querySelectorAll('.pickany').forEach(button => {
   button.onclick = async () => {
@@ -199,6 +233,58 @@ document.querySelectorAll('.pickany').forEach(button => {
     }
   };
 });
+
+
+/** Склонение: «1 файл», «2 файла», «5 файлов». */
+function plural(count, one, few, many){
+  const tail = count % 10, hundred = count % 100;
+  if(hundred >= 11 && hundred <= 14) return many;
+  if(tail === 1) return one;
+  if(tail >= 2 && tail <= 4) return few;
+  return many;
+}
+
+/** Расширения выбранного, по убыванию частоты: «.txt», «.txt и .docx». */
+function extensions(files){
+  const seen = new Map();
+  for(const path of files || []){
+    const match = /\.[^./\\]+$/.exec(path);
+    const suffix = match ? match[0].toLowerCase() : '';
+    if(suffix) seen.set(suffix, (seen.get(suffix) || 0) + 1);
+  }
+  const list = [...seen.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  if(!list.length) return '';
+  return list.length <= 2 ? list.join(' и ') : `${list[0]} и ещё ${list.length - 1}`;
+}
+
+/**
+ * Строка-схема «что на входе → что делаем → что на выходе».
+ *
+ * Собирается из фактического выбора, а не из задуманного: если выбрана
+ * не та папка, это видно до запуска, а не после.
+ */
+function drawSchema(id, input, action, output){
+  const box = $(id);
+  if(!input.count){ box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = '';
+
+  const left = document.createElement('span');
+  left.innerHTML = `<b>${input.count}</b> ${plural(input.count, 'файл', 'файла', 'файлов')}`
+    + (input.formats ? ` ${input.formats}` : '');
+
+  const act = document.createElement('span');
+  act.className = 'act';
+  act.textContent = action;
+
+  const right = document.createElement('span');
+  right.innerHTML = `<b>${output.count}</b> ${plural(output.count, 'файл', 'файла', 'файлов')}`
+    + ` ${output.format}`;
+
+  const a1 = document.createElement('span'); a1.className = 'arrow'; a1.textContent = '→';
+  const a2 = document.createElement('span'); a2.className = 'arrow'; a2.textContent = '→';
+  box.append(left, a1, act, a2, right);
+}
 
 /* ------------------------------------------------------ общий прогресс */
 
@@ -641,20 +727,33 @@ function toggleOptions(p, format){
 
 /* ------------------------------------------------------------ Разбить */
 
-const spState = {format: '.txt', job: null, menus: {}};
+const spState = {format: '.txt', job: null, menus: {}, scan: null};
 
 function spUpdateFinal(){
   const base = $('spBase').value.trim(), name = $('spFolder').value.trim();
   $('spFinal').textContent = base && name
     ? `Главы лягут в: ${base}/${name}  (${spState.format})` : '';
   toggleOptions('sp', spState.format);
+  spDrawSchema();
+}
+
+/** «1 файл .epub → разбить → 5 файлов .docx». */
+function spDrawSchema(){
+  const data = spState.scan;
+  if(!data){ $('spSchema').hidden = true; return; }
+  const parts = Math.max(1, Number($('spParts').value) || 1);
+  drawSchema('spSchema',
+    {count: data.file_count, formats: extensions(data.files)},
+    'разбить',
+    {count: data.total * parts, format: spState.format});
 }
 
 /** Читается сразу после выбора — отдельной кнопки «Прочитать» нет. */
 async function spScan(){
   const targets = CHOSEN.spList || [];
   if(!targets.length){
-    ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard']
+    spState.scan = null;
+    ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard', 'spSchema']
       .forEach(id => { $(id).hidden = true; });
     $('spScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
@@ -667,6 +766,8 @@ async function spScan(){
       pattern: $('spPattern').value.trim(),
       parts: Number($('spParts').value) || 1,
     });
+    spState.scan = data;
+    updateListBar('spList', data.file_count);
     $('spScanned').textContent =
       `Файлов: ${data.file_count}, глав: ${data.total}. ` +
       (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
@@ -740,19 +841,32 @@ async function spStart(){
 
 /* --------------------------------------------------------- Объединить */
 
-const mgState = {format: '.txt', job: null, menus: {}};
+const mgState = {format: '.txt', job: null, menus: {}, scan: null};
 
 function mgUpdateFinal(){
   const base = $('mgBase').value.trim(), name = $('mgName').value.trim();
   $('mgFinal').textContent = base && name
     ? `Файл: ${base}/${name}${mgState.format}` : '';
   toggleOptions('mg', mgState.format);
+  mgDrawSchema();
+}
+
+/** «5 файлов .txt → объединить → 1 файл .epub». */
+function mgDrawSchema(){
+  const data = mgState.scan;
+  if(!data){ $('mgSchema').hidden = true; return; }
+  drawSchema('mgSchema',
+    {count: data.file_count, formats: extensions(data.files)},
+    'объединить',
+    {count: 1, format: mgState.format});
 }
 
 async function mgScan(){
   const targets = CHOSEN.mgList || [];
   if(!targets.length){
-    ['mgOpts', 'mgPlace', 'mgStyle', 'mgPrep'].forEach(id => { $(id).hidden = true; });
+    mgState.scan = null;
+    ['mgOpts', 'mgPlace', 'mgStyle', 'mgPrep', 'mgSchema']
+      .forEach(id => { $(id).hidden = true; });
     $('mgScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
   }
@@ -763,6 +877,8 @@ async function mgScan(){
       targets,
       order: mgState.menus.order ? mgState.menus.order.value : 'number',
     });
+    mgState.scan = data;
+    updateListBar('mgList', data.file_count);
     $('mgScanned').textContent =
       `Файлов: ${data.file_count}, глав: ${data.total}. ` +
       (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
