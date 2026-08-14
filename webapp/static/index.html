@@ -253,12 +253,36 @@
   .dropdown-item:hover{background:rgba(140,84,255,.18);color:#e9d5ff}
   .dropdown-item.selected{background:rgba(140,84,255,.32);color:#fff}
 
-  .tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+  /* Меню всегда в одну строку, сколько бы вкладок ни было. Переноса нет:
+     вместо него сжимаются отступы и кегль, а если и этого мало — полоса
+     прокручивается вбок. «safe center» нужен, чтобы при прокрутке не
+     срезало первую кнопку: обычное центрирование её прячет. */
+  .tabs{
+    display:flex;gap:clamp(4px,.6vw,8px);flex-wrap:nowrap;
+    justify-content:center;justify-content:safe center;
+    overflow-x:auto;overscroll-behavior-x:contain;
+    scrollbar-width:none;-ms-overflow-style:none;
+    /* Колонка карточек узкая (660px), а меню ей следовать не обязано:
+       выносим его на ширину окна, чтобы вкладки помещались подольше. */
+    width:min(100vw - 24px, 1200px);
+    position:relative;left:50%;transform:translateX(-50%);
+    /* Края растворяются — видно, что строка продолжается вбок. */
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 18px,
+                       #000 calc(100% - 18px),transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 18px,
+               #000 calc(100% - 18px),transparent);
+  }
+  .tabs::-webkit-scrollbar{height:0;display:none}
   .tabs button{
-    padding:9px 16px;font-size:13px;border-color:var(--stroke-soft);
-    display:inline-flex;align-items:center;gap:7px;
+    flex:0 0 auto;white-space:nowrap;
+    padding:9px clamp(8px,1.3vw,16px);
+    font-size:clamp(11.5px,1.05vw,13px);
+    border-color:var(--stroke-soft);
+    display:inline-flex;align-items:center;gap:clamp(4px,.5vw,7px);
   }
   .tabs button svg{flex:none}
+  /* Совсем узкий экран: значки уходят, названия остаются читаемыми. */
+  @media (max-width:560px){ .tabs button svg{display:none} }
   .tabs button.on{
     border-color:var(--neon);background:rgba(176,108,255,.16);
     box-shadow:0 0 20px rgba(176,108,255,.28);

@@ -524,6 +524,14 @@ class TestNeurostrazhStyles(unittest.TestCase):
         self.assertIn(".result-block.done   {animation:mvl-glow 1.9s", self.html)
         self.assertIn("var(--glow)", self.html)
 
+    def test_tabs_never_wrap_to_a_second_line(self):
+        """Меню в одну строку при любом числе вкладок — переноса быть не должно."""
+        self.assertIn("flex-wrap:nowrap", self.html)
+        # Именно у меню, а не где-то ещё.
+        block = self.html[self.html.index(".tabs{"):]
+        self.assertIn("flex-wrap:nowrap", block[:600])
+        self.assertNotIn("flex-wrap:wrap", block[:600])
+
     def test_threads_field_present(self):
         self.assertIn('id="dlThreads"', self.html)
 
