@@ -1497,6 +1497,36 @@
       <button id="anSaveReport" class="ghost" style="flex:1">Сохранить отчёт</button>
     </div>
   </div>
+
+  <!-- 3.5 Пересказ и выгрузка -->
+  <div class="card" id="anRetell" hidden>
+    <label>Пересказ и выгрузка</label>
+    <p class="hint">Пересказ по главам собирается из уже разобранных фактов
+       — без единого запроса к модели и без выдумки: в нём ровно то, что
+       нашлось в тексте. Аннотация книги — один запрос: связный текст из
+       разрозненных фактов сам не соберётся.</p>
+
+    <div class="row" style="margin-top:12px">
+      <button id="rtChapters" class="ghost" style="flex:1">Пересказ по главам</button>
+      <button id="rtAnnotation" class="primary" style="flex:1">Аннотация книги</button>
+    </div>
+    <p class="hint" id="rtNote"></p>
+    <textarea id="rtText" rows="8" spellcheck="false" hidden
+              style="margin-top:10px"></textarea>
+
+    <div style="margin-top:14px">
+      <label>Выгрузить в файл</label>
+      <div class="row" style="margin-top:8px">
+        <div class="dropdown" id="rtWhat" style="flex:1"
+             data-options='[["cards","Карточки персонажей"],["retell","Пересказ по главам"],["glossary","Глоссарий"],["text","То, что в поле выше"]]'></div>
+        <div class="dropdown" id="rtFormat" style="flex:0 0 130px"
+             data-options='[[".md","Markdown"],[".docx","Word"],[".txt","Текст"]]'></div>
+        <button id="rtExport" class="ghost" style="flex:0 0 auto">Выгрузить</button>
+      </div>
+      <p class="hint" id="rtSaved">Файл ляжет рядом с реестром, в папку
+         <code>analysis</code>.</p>
+    </div>
+  </div>
 </section>
 
 

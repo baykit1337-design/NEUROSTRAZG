@@ -1287,7 +1287,8 @@ function anPayload(extra){
 async function anScan(){
   const targets = CHOSEN.anList || [];
   if(!targets.length){
-    ['anStage1','anStage2','anStage3','anGlossary'].forEach(id => { $(id).hidden = true; });
+    ['anStage1','anStage2','anStage3','anGlossary','anRetell']
+      .forEach(id => { $(id).hidden = true; });
     $('anScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
   }
@@ -1367,7 +1368,7 @@ async function anLoadRegistry(){
         + `глав разобрано ${s.chapters}. Подтверждено вручную: ${s.confirmed}.`
       : 'Реестр пуст — сначала разберите главы.';
 
-    ['anStage2','anGlossary','anStage3'].forEach(id => {
+    ['anStage2','anGlossary','anStage3','anRetell'].forEach(id => {
       $(id).hidden = s.entities === 0;
     });
     anRenderEntities();
@@ -1619,6 +1620,73 @@ $('anSaveReport').onclick = anSaveReport;
 anKindMenu = makeDropdown($('anKind'), () => anRenderEntities());
 anGlossMenu = makeDropdown($('anGlossFmt'));
 anLoadKinds();
+
+/* -------------------------------- пересказ и выгрузка (3.5) */
+
+let rtWhatMenu = null, rtFormatMenu = null;
+
+async function rtChapters(){
+  showError('');
+  $('rtChapters').disabled = true;
+  $('rtNote').innerHTML = '<span class="spin"></span>Собираем…';
+  try{
+    const data = await call('/api/retell/chapters', anPayload());
+    $('rtText').hidden = false;
+    $('rtText').value = data.text || 'Событий в реестре нет.';
+    $('rtNote').textContent = data.total
+      ? `Пересказ по ${data.total} главам. Запросов к модели не было.`
+      : 'Событий в реестре нет — сначала разберите главы.';
+  }catch(err){
+    showError(err.message);
+    $('rtNote').textContent = '';
+  }finally{
+    $('rtChapters').disabled = false;
+  }
+}
+
+async function rtAnnotation(){
+  showError('');
+  $('rtAnnotation').disabled = true;
+  $('rtNote').innerHTML = '<span class="spin"></span>Спрашиваем модель…';
+  try{
+    const data = await call('/api/retell/annotation',
+      anPayload({model: llmMenu ? llmMenu.value : ''}));
+    $('rtText').hidden = false;
+    $('rtText').value = data.text;
+    // Про объём говорим, но текст не режем: обрезанная на полуслове
+    // аннотация хуже длинной.
+    $('rtNote').textContent =
+      `Аннотация на ${data.length} символов по ${data.chapters} главам.`
+      + (data.within ? '' : ' Это вне рамок 1000–1500 — можно перезапросить.');
+  }catch(err){
+    showError(err.message);
+    $('rtNote').textContent = '';
+  }finally{
+    $('rtAnnotation').disabled = false;
+  }
+}
+
+async function rtExport(){
+  showError('');
+  const what = rtWhatMenu ? rtWhatMenu.value : 'cards';
+  try{
+    const data = await call('/api/export', anPayload({
+      what,
+      format: rtFormatMenu ? rtFormatMenu.value : '.md',
+      type: anKindMenu ? anKindMenu.value : 'персонаж',
+      glossary_format: anGlossMenu ? anGlossMenu.value : 'txt',
+      text: $('rtText').value,
+    }));
+    $('rtSaved').textContent = `Записано: ${data.saved} (${data.length} символов).`;
+  }catch(err){ showError(err.message); }
+}
+
+$('rtChapters').onclick = rtChapters;
+$('rtAnnotation').onclick = rtAnnotation;
+$('rtExport').onclick = rtExport;
+rtWhatMenu = makeDropdown($('rtWhat'));
+rtFormatMenu = makeDropdown($('rtFormat'));
+
 
 
 /* ===================== Инструменты редактора =====================

@@ -35,6 +35,8 @@ from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
+from ops import docs as docs_op  # noqa: E402
+from ops import retell as retell_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import history as history_op  # noqa: E402
 from ops import queue as queue_op  # noqa: E402
@@ -1176,6 +1178,85 @@ def api_analyze_cards():
     return jsonify(cards=glossary_op.cards(registry, kind),
                    text=glossary_op.cards_text(registry, kind))
 
+
+
+# ------------------------------------------- пересказ и выгрузка (3.5)
+
+
+def _export_path(payload: dict, root: Path, default: str) -> Path:
+    """Куда писать выгрузку. По умолчанию — рядом с реестром."""
+    chosen = (payload.get("path") or "").strip()
+    if chosen:
+        return Path(chosen).expanduser()
+    fmt = (payload.get("format") or ".md").strip().lower()
+    if not fmt.startswith("."):
+        fmt = "." + fmt
+    return root / "analysis" / f"{default}{fmt}"
+
+
+@app.post("/api/retell/chapters")
+def api_retell_chapters():
+    """Пересказ по главам. Из собранных фактов, без новых запросов."""
+    payload = request.json or {}
+    registry = analyze_op.load_registry(_book_root(payload))
+    items = retell_op.chapters(registry)
+    return jsonify(chapters=[i.as_dict() for i in items],
+                   total=len(items),
+                   text=retell_op.chapters_text(registry))
+
+
+@app.post("/api/retell/annotation")
+def api_retell_annotation():
+    """Аннотация книги. Один запрос к модели."""
+    payload = request.json or {}
+    registry = analyze_op.load_registry(_book_root(payload))
+    with POOL_LOCK:
+        pool = POOL
+    client = LlmClient(pool=pool)
+    try:
+        return jsonify(**retell_op.annotation(
+            registry, client, model=(payload.get("model") or "").strip()))
+    except retell_op.RetellError as exc:
+        return jsonify(error=str(exc)), 400
+    except BadKey as exc:
+        return jsonify(error=str(exc)), 401
+    except LlmError as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        client.close()
+
+
+@app.post("/api/export")
+def api_export():
+    """Выгрузка карточек, пересказа или аннотации в .md или .docx."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    what = (payload.get("what") or "cards").strip()
+    registry = analyze_op.load_registry(root)
+
+    if what == "cards":
+        kind = (payload.get("type") or "персонаж").strip()
+        text = glossary_op.cards_text(registry, kind)
+        default = f"карточки-{kind}"
+    elif what == "retell":
+        text = retell_op.chapters_text(registry)
+        default = "пересказ"
+    elif what == "glossary":
+        text = glossary_op.dump(registry, (payload.get("glossary_format") or "txt"))
+        default = "глоссарий"
+    elif what == "text":
+        # Аннотация уже показана на экране — второй раз её не запрашиваем.
+        text = str(payload.get("text") or "")
+        default = "аннотация"
+    else:
+        return jsonify(error=f"Нечего выгружать: {what}"), 400
+
+    try:
+        saved = docs_op.save(text, _export_path(payload, root, default),
+                             style=Style.from_dict(payload.get("style")))
+    except docs_op.ExportError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(saved=saved, length=len(text))
 
 
 # ------------------------------------------- вкладка «Инструменты»
