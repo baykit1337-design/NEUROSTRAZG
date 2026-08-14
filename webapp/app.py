@@ -26,6 +26,7 @@ from core.readers.base import ReadError  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
+from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
@@ -43,6 +44,7 @@ from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
 from mvl import proxies as proxies_mod  # noqa: E402
 from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
 from mvl.word import Style  # noqa: E402
+from config import settings  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -670,6 +672,75 @@ def api_rename_apply():
         )
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+# ------------------------------------------------------ модель и ключ
+
+
+def _llm_client(payload: dict) -> LlmClient:
+    """Клиент с ключом из запроса либо из настроек, через общий пул прокси."""
+    with POOL_LOCK:
+        pool = POOL
+    return LlmClient(key=(payload.get("key") or "").strip(), pool=pool)
+
+
+@app.get("/api/llm/state")
+def api_llm_state():
+    """Что уже настроено. Ключ отдаётся только замаскированным."""
+    key = settings.llm_key
+    return jsonify(
+        configured=bool(key),
+        key=mask(key) if key else "",
+        model=settings.llm.model,
+        use_proxies=settings.llm.use_proxies,
+        provider=settings.llm.provider,
+    )
+
+
+@app.post("/api/llm/check")
+def api_llm_check():
+    """Проверяет ключ и отдаёт список моделей.
+
+    Зовётся сразу при вводе ключа: недействительный ключ должен быть виден
+    здесь, а не при первом разборе главы.
+    """
+    payload = request.json or {}
+    client = _llm_client(payload)
+    try:
+        return jsonify(**client.check())
+    except BadKey as exc:
+        return jsonify(error=str(exc)), 400
+    except LlmError as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        client.close()
+
+
+@app.post("/api/llm/save")
+def api_llm_save():
+    """Сохраняет ключ и модель в config.json — он в .gitignore."""
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    model = (payload.get("model") or "").strip()
+
+    if key:
+        settings.llm.api_key = key
+    if model:
+        settings.llm.model = model
+    if "use_proxies" in payload:
+        settings.llm.use_proxies = bool(payload.get("use_proxies"))
+
+    try:
+        settings.save()
+    except OSError as exc:
+        return jsonify(error=f"Не удалось сохранить настройки: {exc}"), 500
+
+    return jsonify(
+        saved=True,
+        key=mask(settings.llm_key) if settings.llm_key else "",
+        model=settings.llm.model,
+        use_proxies=settings.llm.use_proxies,
+    )
 
 
 # --------------------------------------------- очистка мусорной шапки

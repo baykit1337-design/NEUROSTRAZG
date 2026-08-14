@@ -73,12 +73,20 @@ class Output:
 
 @dataclass
 class Llm:
-    """Смысловой анализ. Ключ здесь не хранится в репозитории."""
+    """Смысловой анализ. Ключ хранится здесь, файл — в .gitignore."""
 
     api_key: str = ""
-    model: str = "gemini-2.0-flash"
+    #: Пусто — модель подбирается сама по списку доступных для ключа.
+    model: str = ""
+    #: Провайдер пока один, но адрес вынесен: второй не потребует
+    #: переписывания клиента.
+    provider: str = "gemini"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    #: Запросы к модели идут через тот же прокси-слой, что и парсер.
+    use_proxies: bool = True
     concurrency: int = 3
     max_retries: int = 2
+    timeout: int = 120
     #: Пауза между запросами, чтобы не упереться в лимиты ключа.
     rate_limit_pause: float = 0.0
 

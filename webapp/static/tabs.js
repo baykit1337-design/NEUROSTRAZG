@@ -141,7 +141,20 @@ function makeDropdown(node, onChange){
 
   label();
   node.append(toggle, menu);
-  return {get value(){ return value; }};
+
+  /** Выбрать пункт из кода: список моделей приходит с сервера, и
+      подобранную по умолчанию надо отметить уже после отрисовки. */
+  function set(key){
+    if(!options.some(o => o[0] === key)) return false;
+    value = key;
+    menu.querySelectorAll('.dropdown-item').forEach((item, index) => {
+      item.classList.toggle('selected', options[index][0] === key);
+    });
+    label();
+    return true;
+  }
+
+  return {get value(){ return value; }, set};
 }
 
 /* -------------------------------------- одна кнопка «Выбрать…» на всё */
@@ -1137,6 +1150,96 @@ document.querySelectorAll('.hdOpen').forEach(button => {
 });
 $('hdClean').onclick = hdClean;
 $('hdClose').onclick = () => { $('hdCard').hidden = true; };
+
+
+/* ===================== Настройки модели (часть 2) =====================
+ *
+ * Пользователь вводит только ключ: список моделей и выбор по умолчанию
+ * программа получает сама. Недействительный ключ виден сразу, при вводе,
+ * а не при первом разборе главы.
+ */
+
+let llmMenu = null, llmModels = [];
+
+/** Ключ в поле показывается точками, пока не нажали «Показать». */
+$('llmShow').onclick = () => {
+  const field = $('llmKey');
+  const hidden = field.type === 'password';
+  field.type = hidden ? 'text' : 'password';
+  $('llmShow').textContent = hidden ? 'Скрыть' : 'Показать';
+};
+
+function llmFillModels(models, suggested){
+  llmModels = models;
+  const options = models.map(m => [
+    m.short,
+    m.short + (m.flash ? '  · дешёвая' : '') +
+      (m.input_limit ? `  · до ${Math.round(m.input_limit / 1000)}k токенов` : ''),
+  ]);
+  const box = $('llmModel');
+  box.dataset.options = JSON.stringify(options);
+  box.innerHTML = '';
+  llmMenu = makeDropdown(box);
+  if(suggested) llmMenu.set(suggested);
+
+  $('llmModelNote').textContent = suggested
+    ? `Подобрана сама: ${suggested}. Для разбора глав этого достаточно, `
+      + 'а на пятистах главах разница в цене существенная.'
+    : '';
+}
+
+async function llmCheck(){
+  showError('');
+  $('llmCheck').disabled = true;
+  const note = $('llmKeyNote');
+  const original = note.textContent;
+  note.innerHTML = '<span class="spin"></span>Спрашиваем список моделей…';
+  try{
+    const data = await call('/api/llm/check', {key: $('llmKey').value.trim()});
+    note.textContent = `Ключ рабочий: ${data.key}. Моделей доступно: ${data.models.length}.`;
+    $('llmSetup').hidden = false;
+    llmFillModels(data.models, data.suggested);
+  }catch(err){
+    note.textContent = original;
+    $('llmSetup').hidden = true;
+    showError(err.message);
+  }finally{
+    $('llmCheck').disabled = false;
+  }
+}
+
+async function llmSave(){
+  showError('');
+  $('llmSave').disabled = true;
+  try{
+    const data = await call('/api/llm/save', {
+      key: $('llmKey').value.trim(),
+      model: llmMenu ? llmMenu.value : '',
+      use_proxies: $('llmProxy').checked,
+    });
+    $('llmSaved').textContent =
+      `Сохранено: ключ ${data.key}, модель ${data.model}.`;
+    $('llmKey').value = '';
+    $('llmKey').placeholder = data.key;
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('llmSave').disabled = false;
+  }
+}
+
+$('llmCheck').onclick = llmCheck;
+$('llmSave').onclick = llmSave;
+
+// Что уже настроено — показываем при запуске. Ключ только маскированный.
+call('/api/llm/state').then(data => {
+  if(!data.configured) return;
+  $('llmKey').placeholder = data.key;
+  $('llmProxy').checked = data.use_proxies;
+  $('llmKeyNote').textContent =
+    `Ключ уже сохранён: ${data.key}` + (data.model ? `, модель ${data.model}.` : '.')
+    + ' Введите новый, чтобы заменить.';
+}).catch(() => {});
 
 /* ========================== Проверка текста ========================== */
 
