@@ -1241,6 +1241,358 @@ call('/api/llm/state').then(data => {
     + ' Введите новый, чтобы заменить.';
 }).catch(() => {});
 
+
+/* ======================= Анализ: три этапа =======================
+ *
+ * Этап 1 — разбор глав моделью, этап 2 — реестр, этап 3 — сверка. Реестр
+ * между этапами лежит на диске рядом с книгой, поэтому вкладку можно
+ * закрыть и вернуться.
+ */
+
+let anRoot = '', anJob = null, anKindMenu = null, anGlossMenu = null;
+let anEntities = [], anFindings = [], anKinds = [];
+
+/** Папка книги: рядом с ней ляжет analysis/. */
+function anPayload(extra){
+  return {targets: CHOSEN.anList || [], root: anRoot, ...(extra || {})};
+}
+
+async function anScan(){
+  const targets = CHOSEN.anList || [];
+  if(!targets.length){
+    ['anStage1','anStage2','anStage3','anGlossary'].forEach(id => { $(id).hidden = true; });
+    $('anScanned').textContent = 'Файлы читаются сразу после выбора.';
+    return;
+  }
+  showError('');
+  $('anScanned').innerHTML = '<span class="spin"></span>Читаем…';
+  try{
+    const data = await call('/api/analyze/scan', anPayload());
+    anRoot = data.root;
+    updateListBar('anList', data.file_count);
+    $('anScanned').textContent =
+      `Файлов: ${data.file_count}, глав: ${data.total}. Папка разбора: ${data.root}/analysis`;
+
+    const e = data.estimate;
+    $('anEstimate').textContent =
+      `К отправке ${e.to_send} из ${e.chapters} глав` +
+      (e.cached ? `, ${e.cached} уже в кэше` : '') +
+      `. Объём: ${e.characters.toLocaleString('ru')} символов, ` +
+      `примерно ${e.tokens.toLocaleString('ru')} токенов.`;
+
+    $('anStage1').hidden = false;
+    await anLoadRegistry();
+  }catch(err){
+    showError(err.message);
+    $('anScanned').textContent = '';
+  }
+}
+window.anScan = anScan;
+
+async function anStart(){
+  showError('');
+  $('anStart').disabled = true;
+  try{
+    const {job} = await call('/api/analyze/start',
+      anPayload({force: $('anForce').checked}));
+    anJob = job.id;
+    $('anProgress').hidden = false;
+    $('anStop').hidden = false;
+    $('anSummary').textContent = 'Папка: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('anWritten').textContent = p.written || p.done || 0;
+        $('anFailed').textContent = p.failed || 0;
+        return drawResult(p, 'anFill', 'anStatus', 'anPct');
+      },
+      async job => {
+        $('anStop').hidden = true;
+        if(job.error){ showError(job.error); return; }
+        const r = job.report || {};
+        let text = `Папка: ${r.output || job.output_dir}`;
+        if(r.failed_files?.length){
+          text += '\n' + r.failed_files.slice(0, 20).join('\n');
+        }
+        $('anSummary').style.whiteSpace = 'pre-line';
+        $('anSummary').textContent = text;
+        await anLoadRegistry();
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('anStart').disabled = false;
+  }
+}
+
+/* ------------------------------------------------------------- реестр */
+
+async function anLoadRegistry(){
+  try{
+    const data = await call('/api/registry/state', anPayload());
+    anRoot = data.root;
+    anEntities = data.entities || [];
+
+    const s = data.stats;
+    $('anStats').textContent = s.entities
+      ? `Сущностей ${s.entities}, связей ${s.links}, событий ${s.events}, `
+        + `глав разобрано ${s.chapters}. Подтверждено вручную: ${s.confirmed}.`
+      : 'Реестр пуст — сначала разберите главы.';
+
+    ['anStage2','anGlossary','anStage3'].forEach(id => {
+      $(id).hidden = s.entities === 0;
+    });
+    anRenderEntities();
+    anRenderDupes(data.duplicates || []);
+  }catch(err){
+    showError(err.message);
+  }
+}
+
+function anRenderEntities(){
+  const kind = anKindMenu ? anKindMenu.value : 'персонаж';
+  const list = kind === '__all__' ? anEntities
+                                  : anEntities.filter(e => e.type === kind);
+  const table = $('anEntities');
+  table.innerHTML = '';
+
+  if(!list.length){
+    table.innerHTML = '<div class="tr"><span class="grow">Записей этого типа нет.</span></div>';
+    return;
+  }
+
+  for(const entity of list.slice(0, 300)){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'grow';
+    name.value = entity.name;
+    name.title = 'Правка делает запись подтверждённой — модель её больше не перепишет';
+    name.onchange = () => anEdit(entity.id, {name: name.value});
+
+    const aliases = document.createElement('span');
+    aliases.className = 'grow';
+    aliases.textContent = entity.aliases.join(', ');
+    aliases.title = 'Варианты имени';
+
+    const tag = document.createElement('span');
+    tag.className = 'tag' + (entity.confirmed ? '' : ' warn');
+    tag.textContent = entity.confirmed ? 'подтверждено' : 'от модели';
+
+    const where = document.createElement('span');
+    where.className = 'num';
+    where.textContent = entity.first_chapter != null ? `с гл. ${entity.first_chapter}` : '';
+
+    row.append(name, aliases, tag, where);
+    table.append(row);
+  }
+}
+
+function anRenderDupes(pairs){
+  $('anDupes').hidden = pairs.length === 0;
+  const table = $('anDupeList');
+  table.innerHTML = '';
+  for(const pair of pairs){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = `${pair.keep_name} ← ${pair.drop_name}`;
+    const button = document.createElement('button');
+    button.className = 'ghost';
+    button.style.cssText = 'padding:4px 10px;font-size:12px';
+    button.textContent = 'Объединить';
+    button.onclick = async () => {
+      button.disabled = true;
+      try{
+        await call('/api/registry/merge',
+                   anPayload({keep: pair.keep, drop: pair.drop}));
+        await anLoadRegistry();
+      }catch(err){ showError(err.message); button.disabled = false; }
+    };
+    row.append(text, button);
+    table.append(row);
+  }
+}
+
+async function anEdit(id, changes){
+  try{
+    await call('/api/registry/edit', anPayload({id, ...changes}));
+    await anLoadRegistry();
+  }catch(err){ showError(err.message); }
+}
+
+/* --------------------------------------------------------- глоссарий */
+
+async function anGlossImport(){
+  const text = $('anGlossText').value;
+  if(!text.trim()){ showError('Вставьте глоссарий в поле'); return; }
+  try{
+    const data = await call('/api/glossary/import', anPayload({text}));
+    $('anGlossNote').textContent =
+      `Разобрано строк: ${data.total}, новых записей: ${data.added}.`;
+    await anLoadRegistry();
+  }catch(err){ showError(err.message); }
+}
+
+async function anGlossExport(){
+  try{
+    const data = await call('/api/glossary/export',
+      anPayload({format: anGlossMenu ? anGlossMenu.value : 'txt'}));
+    $('anGlossText').value = data.text;
+    $('anGlossNote').textContent =
+      `Выгружено в формате ${data.format}. Скопируйте и отдайте переводчику.`;
+  }catch(err){ showError(err.message); }
+}
+
+/* ---------------------------------------------------- противоречия */
+
+async function anLoadKinds(){
+  try{
+    const data = await call('/api/analyze/kinds');
+    anKinds = data.kinds || [];
+    const box = $('anKinds');
+    box.innerHTML = '';
+    for(const kind of anKinds){
+      const label = document.createElement('label');
+      label.className = 'chk';
+      const box2 = document.createElement('input');
+      box2.type = 'checkbox';
+      box2.checked = true;
+      box2.dataset.kind = kind.key;
+      label.append(box2, document.createTextNode(' ' + kind.name));
+      box.append(label);
+    }
+  }catch(err){ /* вкладка ещё может быть не нужна */ }
+}
+
+function anChosenKinds(){
+  return [...document.querySelectorAll('#anKinds input:checked')]
+    .map(i => i.dataset.kind);
+}
+
+async function anCheck(){
+  showError('');
+  const kinds = anChosenKinds();
+  if(!kinds.length){ showError('Отметьте хотя бы одну проверку'); return; }
+
+  $('anCheck').disabled = true;
+  $('anCheckNote').innerHTML = '<span class="spin"></span>Сверяем факты с реестром…';
+  try{
+    const data = await call('/api/analyze/check', anPayload({kinds}));
+    anFindings = data.findings || [];
+    $('anCheckNote').textContent =
+      `Проверено глав: ${data.chapters}. Находок: ${data.total}.`;
+    $('anExportRow').hidden = false;
+    anRenderFindings();
+  }catch(err){
+    showError(err.message);
+    $('anCheckNote').textContent = '';
+  }finally{
+    $('anCheck').disabled = false;
+  }
+}
+
+function anRenderFindings(){
+  const table = $('anFindings');
+  table.innerHTML = '';
+  if(!anFindings.length){
+    table.innerHTML = '<div class="tr"><span class="grow">Противоречий не нашлось.</span></div>';
+    return;
+  }
+
+  anFindings.forEach((finding, index) => {
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const where = document.createElement('span');
+    where.className = 'num';
+    where.textContent = finding.chapter != null ? `гл. ${finding.chapter}` : '—';
+
+    const kind = document.createElement('span');
+    kind.className = 'tag warn';
+    kind.textContent = finding.kind_name;
+
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = finding.message;
+    text.title = finding.quote || finding.message;
+
+    // Три действия из ТЗ: ошибка, верно, пропустить.
+    const actions = document.createElement('span');
+    actions.className = 'actions';
+    for(const [label, mark] of [['Это ошибка', 'error'],
+                                ['Это верно', 'right'],
+                                ['Пропустить', 'skip']]){
+      const button = document.createElement('button');
+      button.className = 'ghost';
+      button.style.cssText = 'padding:3px 10px;font-size:11px';
+      button.textContent = label;
+      button.onclick = () => anDecide(index, mark, row);
+      actions.append(button);
+    }
+
+    row.append(where, kind, text, actions);
+    table.append(row);
+  });
+}
+
+async function anDecide(index, mark, row){
+  const finding = anFindings[index];
+  finding.decision = mark;
+  row.style.opacity = mark === 'skip' ? '.45' : '1';
+
+  if(mark === 'right' && finding.entity){
+    // «Это верно» — реестр ошибался, запись подтверждаем как есть.
+    await anEdit(finding.entity, {});
+  }
+  const kept = anFindings.filter(f => f.decision === 'error').length;
+  $('anCheckNote').textContent =
+    `Находок: ${anFindings.length}. Помечено ошибками: ${kept}.`;
+}
+
+async function anCards(){
+  try{
+    const data = await call('/api/analyze/cards', anPayload({type: 'персонаж'}));
+    $('anGlossText').value = data.text || 'Персонажей в реестре нет.';
+    $('anGlossNote').textContent =
+      `Карточек: ${data.cards.length}. Текст в поле глоссария — скопируйте.`;
+  }catch(err){ showError(err.message); }
+}
+
+/** Отчёт по находкам, помеченным ошибками. */
+function anSaveReport(){
+  const errors = anFindings.filter(f => f.decision === 'error');
+  const rows = (errors.length ? errors : anFindings).map(f =>
+    `Глава ${f.chapter ?? '—'} · ${f.kind_name}\n${f.message}` +
+    (f.quote ? `\nЦитата: ${f.quote}` : '') + '\n');
+  $('anGlossText').value = rows.join('\n');
+  $('anGlossNote').textContent =
+    `Отчёт на ${rows.length} находок — в поле выше, скопируйте.`;
+}
+
+$('anList').dataset.onchange = 'anScan';
+$('anStart').onclick = anStart;
+$('anStop').onclick = () => stopJob(anJob);
+$('anRebuild').onclick = async () => {
+  try{
+    await call('/api/registry/rebuild', anPayload());
+    await anLoadRegistry();
+  }catch(err){ showError(err.message); }
+};
+$('anGlossImport').onclick = anGlossImport;
+$('anGlossExport').onclick = anGlossExport;
+$('anCheck').onclick = anCheck;
+$('anCards').onclick = anCards;
+$('anSaveReport').onclick = anSaveReport;
+
+anKindMenu = makeDropdown($('anKind'), () => anRenderEntities());
+anGlossMenu = makeDropdown($('anGlossFmt'));
+anLoadKinds();
+
 /* ========================== Проверка текста ========================== */
 
 let ckJob = null, ckFindings = [], ckFilter = null, ckCleanJob = null;

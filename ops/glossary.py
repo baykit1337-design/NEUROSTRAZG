@@ -158,15 +158,32 @@ def load_into(registry: Registry, text: str, kind: str = "термин") -> int:
 
 
 def _rows(registry: Registry, types=None) -> list[tuple[str, str]]:
+    """Пары «как встретилось → как писать».
+
+    Смысл выгрузки в том, чтобы имена перестали плавать, поэтому слева
+    стоит любой встреченный вариант, а справа — тот, которого держаться.
+    Обратное («Тео = Тэо») велело бы переводчику писать вариант, то есть
+    ровно то, от чего уходим.
+    """
     wanted = set(types) if types else None
     rows = []
     for entity in sorted(registry.entities.values(), key=lambda e: e.name.lower()):
         if wanted and entity.type not in wanted:
             continue
-        value = str(entity.attributes.get("перевод") or "")
-        if not value and entity.aliases:
-            value = entity.aliases[0]
-        rows.append((entity.name, value))
+
+        canonical = str(entity.attributes.get("перевод") or "").strip()
+        if canonical:
+            # Перевод задан — к нему и сводим все написания, включая имя.
+            rows.append((entity.name, canonical))
+            rows.extend((alias, canonical) for alias in entity.aliases
+                        if alias.strip() and alias.strip() != canonical)
+        elif entity.aliases:
+            # Перевода нет, но варианты есть: сводим их к основному имени.
+            rows.extend((alias, entity.name) for alias in entity.aliases
+                        if alias.strip())
+        else:
+            # Ни перевода, ни вариантов — строка на заполнение переводчику.
+            rows.append((entity.name, ""))
     return rows
 
 

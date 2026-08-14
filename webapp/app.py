@@ -23,10 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import formats, naming, platform  # noqa: E402
 from core.headings import HeadingsNotFound  # noqa: E402
 from core.readers.base import ReadError  # noqa: E402
+from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
+from ops import analyze as analyze_op  # noqa: E402
+from ops import contradictions as contra_op  # noqa: E402
+from ops import glossary as glossary_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
@@ -50,6 +54,9 @@ log = logging.getLogger(__name__)
 
 #: Потолок таймаута из ТЗ: прокси иногда подключается очень долго.
 MAX_TIMEOUT = 300
+
+#: Событий в книге тысячи — в интерфейс отдаём только начало.
+MAX_EVENTS = 500
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
@@ -878,7 +885,233 @@ def api_merge_start():
     return jsonify(job=start_job(job, work).snapshot())
 
 
-# -------------------------------------------------- вкладка «Проверка текста»
+
+# ------------------------------------------------ вкладка «Анализ»
+
+
+def _book_root(payload: dict) -> Path:
+    """Папка книги: рядом с ней лежит analysis/."""
+    root = (payload.get("root") or "").strip()
+    if root:
+        return Path(root).expanduser()
+    targets = _targets(payload)
+    first = Path(targets[0]).expanduser() if targets else Path.cwd()
+    return first.parent if first.is_file() else first
+
+
+@app.post("/api/analyze/scan")
+def api_analyze_scan():
+    """Сколько глав предстоит разобрать и во что это обойдётся."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**analyze_op.scan(targets, _book_root(payload)))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/analyze/start")
+def api_analyze_start():
+    """Этап 1: разбор глав моделью."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not settings.llm_key:
+        return jsonify(error="Сначала введите ключ модели в настройках"), 400
+
+    root = _book_root(payload)
+    try:
+        info = analyze_op.scan(targets, root)
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="analyze",
+        meta={"targets": targets, "total": info["total"]},
+        output_dir=str(root / "analysis"),
+    )
+    job.progress = {"stage": "analyze", "message": "Разбираем главы…",
+                    "done": 0, "total": info["total"], "written": 0, "failed": 0}
+
+    def work(job: Job):
+        with POOL_LOCK:
+            pool = POOL
+        client = LlmClient(pool=pool)
+        try:
+            report = analyze_op.collect(
+                targets, client, root=root,
+                model=(payload.get("model") or "").strip(),
+                force=bool(payload.get("force")),
+                progress=_progress(job, "Глава"),
+            )
+            # Реестр пересобираем сразу: без него разбор бесполезен.
+            registry = analyze_op.rebuild(root)
+            job.report = {**report.as_dict(), "registry": registry.stats()}
+            job.progress.update(
+                stage="done", written=report.parsed + report.cached,
+                failed=report.failed,
+                message=(f"Готово. Разобрано {report.parsed}, из кэша "
+                         f"{report.cached}"
+                         + (f", не вышло {report.failed}" if report.failed else "")),
+            )
+        finally:
+            client.close()
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/registry/state")
+def api_registry_state():
+    """Реестр целиком: сущности, связи, события."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+    return jsonify(
+        root=str(root),
+        stats=registry.stats(),
+        entities=[e.as_dict() for e in registry.entities.values()],
+        links=[l.as_dict() for l in registry.links],
+        events=[e.as_dict() for e in registry.events[:MAX_EVENTS]],
+        duplicates=[
+            {"keep": a, "drop": b,
+             "keep_name": registry.entities[a].name,
+             "drop_name": registry.entities[b].name}
+            for a, b in registry.duplicates()
+        ],
+        types=list(ENTITY_TYPES),
+    )
+
+
+@app.post("/api/registry/edit")
+def api_registry_edit():
+    """Правка записи вручную. Отредактированная считается истиной."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+
+    entity = registry.entities.get((payload.get("id") or "").strip())
+    if entity is None:
+        return jsonify(error="Запись не найдена"), 404
+
+    for field_name in ("name", "type", "status"):
+        if field_name in payload:
+            setattr(entity, field_name, str(payload[field_name]).strip()
+                    or getattr(entity, field_name))
+    if "aliases" in payload:
+        entity.aliases = [str(a).strip() for a in payload["aliases"] if str(a).strip()]
+    if "attributes" in payload and isinstance(payload["attributes"], dict):
+        entity.attributes = {str(k): v for k, v in payload["attributes"].items()}
+    # Правка руками — значит, модель больше эту запись не переписывает.
+    entity.confirmed = True
+
+    analyze_op.save_registry(root, registry)
+    return jsonify(entity=entity.as_dict())
+
+
+@app.post("/api/registry/merge")
+def api_registry_merge():
+    """Слияние двух записей: вторая уходит в варианты имени первой."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+
+    keep = (payload.get("keep") or "").strip()
+    drop = (payload.get("drop") or "").strip()
+    if keep not in registry.entities or drop not in registry.entities:
+        return jsonify(error="Запись не найдена"), 404
+
+    merged = registry.merge(keep, drop)
+    if merged is not None:
+        merged.confirmed = True
+    analyze_op.save_registry(root, registry)
+    return jsonify(entity=merged.as_dict() if merged else None,
+                   stats=registry.stats())
+
+
+@app.post("/api/registry/rebuild")
+def api_registry_rebuild():
+    """Пересобрать реестр из кэша, сохранив подтверждённое."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.rebuild(root)
+    return jsonify(stats=registry.stats())
+
+
+@app.post("/api/glossary/import")
+def api_glossary_import():
+    """Глоссарий от переводчика. Записи сразу подтверждённые."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    text = payload.get("text") or ""
+    path = (payload.get("path") or "").strip()
+
+    if not text and path:
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8",
+                                                     errors="replace")
+        except OSError as exc:
+            return jsonify(error=f"Не удалось прочитать файл: {exc}"), 400
+    if not text.strip():
+        return jsonify(error="Глоссарий пуст"), 400
+
+    registry = analyze_op.load_registry(root)
+    added = glossary_op.load_into(registry, text)
+    analyze_op.save_registry(root, registry)
+    return jsonify(added=added, total=len(glossary_op.parse(text)),
+                   stats=registry.stats())
+
+
+@app.post("/api/glossary/export")
+def api_glossary_export():
+    """Выгрузка глоссария в формате переводчика."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    fmt = (payload.get("format") or "txt").strip().lower().lstrip(".")
+    if fmt not in glossary_op.FORMATS:
+        return jsonify(error=f"Неизвестный формат: {fmt}"), 400
+
+    registry = analyze_op.load_registry(root)
+    text = glossary_op.dump(registry, fmt, payload.get("types"))
+    return jsonify(text=text, format=fmt, lines=text.count("\n"))
+
+
+@app.post("/api/analyze/check")
+def api_analyze_check():
+    """Этап 3: поиск противоречий по реестру."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+    if not registry.entities:
+        return jsonify(error="Реестр пуст — сначала разберите главы"), 400
+
+    kinds = payload.get("kinds")
+    kinds = [k for k in kinds if k in contra_op.KINDS] if isinstance(kinds, list) else None
+    report = contra_op.check(registry, root, kinds=kinds)
+    return jsonify(**report.as_dict())
+
+
+@app.get("/api/analyze/kinds")
+def api_analyze_kinds():
+    return jsonify(kinds=[{"key": k, "name": v} for k, v in contra_op.KINDS.items()],
+                   formats=list(glossary_op.FORMATS))
+
+
+@app.post("/api/analyze/cards")
+def api_analyze_cards():
+    """Карточки персонажей."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+    kind = (payload.get("type") or "персонаж").strip()
+    return jsonify(cards=glossary_op.cards(registry, kind),
+                   text=glossary_op.cards_text(registry, kind))
+
+
+# ------------------------------------------------ вкладка «Проверка текста»
 
 
 @app.get("/api/check/rules")

@@ -469,6 +469,29 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(registry.find("Тео").name, "Тео")
         self.assertIn("Theo", registry.find("Тео").aliases)
 
+    def test_export_points_variants_at_the_canonical_name(self):
+        """«Тэо = Тео», а не наоборот.
+
+        Смысл выгрузки — чтобы имена перестали плавать. Обратная запись
+        велела бы переводчику писать вариант, то есть ровно то, от чего
+        уходим.
+        """
+        registry = Registry()
+        registry.add_entity(Entity(name="Тео", type="персонаж",
+                                   aliases=["Тэо"]), merge=False)
+        text = glossary.dump(registry, "txt")
+        self.assertIn("Тэо = Тео", text)
+        self.assertNotIn("Тео = Тэо", text)
+
+    def test_export_prefers_the_translation(self):
+        registry = Registry()
+        registry.add_entity(Entity(name="богомол", type="существо",
+                                   aliases=["мантис"],
+                                   attributes={"перевод": "Mantis"}), merge=False)
+        text = glossary.dump(registry, "txt")
+        self.assertIn("богомол = Mantis", text)
+        self.assertIn("мантис = Mantis", text)
+
     def test_export_round_trip(self):
         registry = Registry()
         glossary.load_into(registry, "Тео = Theo\nЭлиас = Elias")

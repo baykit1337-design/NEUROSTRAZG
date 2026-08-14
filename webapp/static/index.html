@@ -93,15 +93,21 @@
 
   label{display:block;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
 
-  input[type=text],input[type=number]{
+  input[type=text],input[type=number],input[type=password],textarea{
     width:100%;padding:12px 14px;
     background:rgba(255,255,255,.04);
     border:1px solid var(--stroke-soft);
     border-radius:14px;color:var(--text);font:inherit;outline:none;
     transition:border-color .18s, box-shadow .18s;
   }
-  input:focus{border-color:var(--neon);box-shadow:0 0 0 3px rgba(176,108,255,.16)}
-  input::placeholder{color:#5d5872}
+  input:focus,textarea:focus{
+    border-color:var(--neon);box-shadow:0 0 0 3px rgba(176,108,255,.16)}
+  input::placeholder,textarea::placeholder{color:#5d5872}
+  /* Глоссарий и отчёт: моноширинный, чтобы столбцы не расползались. */
+  textarea{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px;line-height:1.5;resize:vertical;min-height:90px;
+  }
 
   /* Раздел 3: системные стрелки выбиваются из палитры — рисуем свои. */
   input[type=number]::-webkit-inner-spin-button,
@@ -615,6 +621,12 @@
   /* Разбор имени вызывает сомнения. Строка помечена, но не отключена:
      решает человек, а не программа. */
   .tr.suspect{background:rgba(255,200,107,.05)}
+
+  /* Находка анализа: сообщение читается целиком, действия переносятся
+     под него. Обрезать текст кнопками нельзя — в нём вся суть. */
+  #anFindings .tr{flex-wrap:wrap;row-gap:8px}
+  #anFindings .tr .grow{flex:1 1 100%;white-space:normal;overflow:visible}
+  #anFindings .tr .actions{margin-left:auto;display:flex;gap:6px}
   .tag.warn{color:#ffc86b;border-color:rgba(255,200,107,.45)}
 
   /* Уведомление внизу справа: не модальное окно и не ошибка. Сообщает и
@@ -1296,6 +1308,103 @@
       <button id="llmSave" class="primary" style="flex:1">Сохранить</button>
     </div>
     <p class="hint" id="llmSaved"></p>
+  </div>
+
+  <!-- Этап 1: сбор фактов -->
+  <div class="card lit" id="anSourceCard">
+    <label>Главы книги</label>
+    <div class="row">
+      <button class="ghost pickany" data-list="anList" style="flex:1">Выбрать…</button>
+    </div>
+    <div class="row" id="anListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="anCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="anList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="anList"></div>
+    <p class="hint" id="anScanned">Файлы читаются сразу после выбора.</p>
+  </div>
+
+  <div class="card" id="anStage1" hidden>
+    <label>Этап 1 — сбор фактов</label>
+    <p class="hint" id="anEstimate"></p>
+    <label class="chk" style="margin-top:10px">
+      <input type="checkbox" id="anForce"> разобрать заново, не глядя в кэш
+      <i class="hint-icon" data-tip="Обычно повторный запуск шлёт только новые и изменённые главы. Эта галочка заставляет переразобрать всё — и заплатить за это.">?</i></label>
+    <div class="row" style="margin-top:14px">
+      <button id="anStart" class="primary" style="flex:1">Разобрать главы</button>
+      <button id="anStop" class="ghost" hidden>Остановить</button>
+    </div>
+
+    <div class="card lit" id="anProgress" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="anStatus"></span></div>
+      <div class="bar"><i id="anFill"></i></div>
+      <div class="stats">
+        <span>разобрано <b id="anWritten">0</b></span>
+        <span>ошибок <b id="anFailed">0</b></span>
+        <span id="anPct"></span>
+      </div>
+      <p class="result-path" id="anSummary"></p>
+    </div>
+  </div>
+
+  <!-- Этап 2: реестр -->
+  <div class="card" id="anStage2" hidden>
+    <label>Этап 2 — реестр</label>
+    <p class="hint" id="anStats"></p>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>показать</label>
+        <div class="dropdown" id="anKind"
+             data-options='[["персонаж","персонажи"],["существо","существа"],["предмет","предметы"],["способность","способности"],["локация","локации"],["организация","организации"],["титул","титулы"],["термин","термины"],["__all__","все типы"]]'></div>
+      </div>
+      <div style="flex:1;display:flex;align-items:flex-end;gap:8px">
+        <button id="anRebuild" class="ghost" style="flex:1">Пересобрать</button>
+      </div>
+    </div>
+
+    <div class="table" id="anEntities" style="margin-top:12px"></div>
+
+    <div id="anDupes" hidden style="margin-top:14px">
+      <label>Похожие записи</label>
+      <p class="hint">Вероятно, это одно и то же под разными написаниями.
+         Слияние переносит второе имя в варианты первого.</p>
+      <div class="table" id="anDupeList"></div>
+    </div>
+  </div>
+
+  <!-- Глоссарий -->
+  <div class="card" id="anGlossary" hidden>
+    <label>Глоссарий переводчика</label>
+    <p class="hint">Принимаются «ключ = значение», JSON, CSV и Markdown —
+       формат определяется по содержимому. Записи считаются подтверждёнными
+       сразу: их писал человек.</p>
+    <textarea id="anGlossText" rows="4" spellcheck="false"
+              placeholder="Тео = Theo&#10;Элиас = Elias"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="anGlossImport" class="ghost" style="flex:1">Внести в реестр</button>
+      <div class="dropdown" id="anGlossFmt" style="flex:1"
+           data-options='[["txt","ключ = значение"],["json","JSON"],["csv","CSV"],["md","Markdown"]]'></div>
+      <button id="anGlossExport" class="ghost" style="flex:1">Выгрузить</button>
+    </div>
+    <p class="hint" id="anGlossNote"></p>
+  </div>
+
+  <!-- Этап 3: противоречия -->
+  <div class="card" id="anStage3" hidden>
+    <label>Этап 3 — поиск противоречий</label>
+    <div class="checks" id="anKinds" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="anCheck" class="primary" style="flex:1">Найти противоречия</button>
+    </div>
+    <p class="hint" id="anCheckNote"></p>
+    <div class="table" id="anFindings" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:12px" id="anExportRow" hidden>
+      <button id="anCards" class="ghost" style="flex:1">Карточки персонажей</button>
+      <button id="anSaveReport" class="ghost" style="flex:1">Сохранить отчёт</button>
+    </div>
   </div>
 </section>
 
