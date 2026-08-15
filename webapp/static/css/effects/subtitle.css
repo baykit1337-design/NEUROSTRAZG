@@ -1,0 +1,59 @@
+/* 1.3 Подзаголовок: блик по тексту и искры.
+ *
+ * Строка под названием была единственным местом наверху, которое на
+ * курсор не отзывалось вовсе, — на фоне остального это читалось как
+ * недоделка.
+ *
+ * Блик идёт по самим буквам через `background-clip: text`: подсветка
+ * прямоугольником поверх строки выглядела бы наклейкой.
+ */
+
+.fx-subtitle .sub{
+  display:inline-block;
+  background:linear-gradient(100deg,
+    #8a8a99 0%, #8a8a99 40%,
+    #e9d5ff 50%,
+    #8a8a99 60%, #8a8a99 100%);
+  background-size:250% 100%;
+  background-position:100% 0;
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+
+/* Строка узкая, а поле наведения должно совпадать с текстом: иначе блик
+   запускался бы от движения курсора в пустоте рядом. */
+.fx-subtitle p.sub{
+  margin-left:auto;
+  margin-right:auto;
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-subtitle .sub:hover{
+    animation:fx-subtitle-sweep .6s ease-out 1;
+  }
+}
+
+@keyframes fx-subtitle-sweep{
+  from {background-position:100% 0}
+  to   {background-position:-50% 0}
+}
+
+/* Искры. Живут поверх строки и нажатий не ловят. */
+.fx-subtitle .spark{
+  position:fixed;
+  width:2px;
+  height:2px;
+  border-radius:50%;
+  pointer-events:none;
+  z-index:5;
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-subtitle .spark{animation:fx-spark-rise var(--life, 800ms) ease-out 1}
+}
+
+@keyframes fx-spark-rise{
+  0%   {opacity:.9; transform:translate(0, 0)}
+  100% {opacity:0; transform:translate(var(--dx, 0), var(--dy, -16px))}
+}

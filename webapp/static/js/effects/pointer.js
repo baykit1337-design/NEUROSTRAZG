@@ -1,9 +1,8 @@
-/* 6.4 и 6.8: то, что должен считать скрипт — положение курсора и точка
- * роста вкладки. Всё остальное в этих эффектах делает CSS.
+/* То, что в эффектах нельзя сделать одними стилями: притяжение кнопок к
+ * курсору и точка, из которой вырастает вкладка.
  *
- * Позиция курсора пишется в переменные один раз за кадр. Обработчик
- * mousemove срабатывает сотню раз в секунду, а перерисовок за это время
- * бывает шестьдесят: считать чаще, чем рисуется, — впустую греть процессор.
+ * Прожектор и свой курсор отсюда убраны вместе с самими эффектами: они не
+ * прижились, а мёртвый код хуже отсутствующего — он выглядит рабочим.
  */
 
 /** Насколько кнопка тянется к курсору. Больше четырёх пикселей — и
@@ -20,31 +19,6 @@ const FX_MAGNET_MIN = 90;
 function fxHas(key){
   return document.documentElement.classList.contains('fx-' + key);
 }
-
-/* --------------------------------------------------- прожектор (6.4) */
-
-(function fxSpotlight(){
-  const root = document.documentElement;
-  let x = 0, y = 0, waiting = false;
-
-  function paint(){
-    waiting = false;
-    root.style.setProperty('--mx', x + 'px');
-    root.style.setProperty('--my', y + 'px');
-  }
-
-  document.addEventListener('mousemove', event => {
-    x = event.clientX;
-    y = event.clientY;
-    root.classList.remove('fx-away');
-    if(waiting) return;
-    waiting = true;
-    requestAnimationFrame(paint);
-  });
-
-  // Курсор ушёл за пределы окна — пятно гаснет, а не застывает у края.
-  document.addEventListener('mouseleave', () => root.classList.add('fx-away'));
-})();
 
 /* ------------------------------------------- магнитные кнопки (6.4) */
 

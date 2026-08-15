@@ -71,17 +71,21 @@ class TestStructure(Base):
 
 
 class TestTitleGlitch(Base):
-    """6.5: глитч как момент переключения, инверсия как результат."""
+    """3.3: глитч как момент переключения, градиент как состояние после."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.css = (CSS / "title-glitch.css").read_text(encoding="utf-8")
 
-    def test_glitch_only_on_hover_never_looping(self):
+    def test_glitch_only_on_hover(self):
         self.assertIn(":hover::before", self.css)
-        # Один проход, а не бесконечный цикл.
-        self.assertNotIn("infinite", self.css)
+
+    def test_glitch_runs_once(self):
+        """Постоянно дёргающееся название читать невозможно."""
+        for line in self.css.splitlines():
+            if "fx-glitch-" in line and "animation:" in line:
+                self.assertNotIn("infinite", line, line)
 
     def test_two_coloured_twins(self):
         self.assertIn("#ff3b6b", self.css)
@@ -90,19 +94,108 @@ class TestTitleGlitch(Base):
     def test_glitch_is_short(self):
         self.assertIn(".25s", self.css)
 
-    def test_inversion_is_the_resting_state(self):
-        block = self.css[self.css.index(".fx-title-glitch .app-title:hover{"):]
-        block = block[:block.index("}")]
-        self.assertIn("background:var(--neon", block)
-        self.assertIn("color:#12101a", block)
+    def test_inversion_is_gone(self):
+        """Тёмные буквы на ярком фоне читались как выделенный текст."""
+        self.assertNotIn("color:#12101a", self.css)
+        self.assertNotIn("background:var(--neon", self.css)
 
-    def test_return_is_smooth_and_without_a_second_glitch(self):
-        """Обратный переход — по transition, анимация назад не запускается."""
-        self.assertIn("transition:background", self.css)
+    def test_gradient_flows_by_the_letters(self):
+        self.assertIn("background-clip:text", self.css)
+        self.assertIn("@keyframes fx-title-flow", self.css)
+
+    def test_gradient_cycle_is_three_seconds(self):
+        self.assertIn("fx-title-flow 3s", self.css)
+
+    def test_gradient_starts_after_the_glitch(self):
+        """Иначе перетекание и дёрганье накладываются друг на друга."""
+        self.assertIn("fx-title-flow 3s linear .25s", self.css)
 
     def test_title_carries_its_text_for_the_twins(self):
         self.assertIn("content:attr(data-text)", self.css)
         self.assertIn("dataset.text", self.settings)
+
+
+class TestSubtitle(Base):
+    """1.3: блик по строке под названием и искры."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "subtitle.css").read_text(encoding="utf-8")
+        cls.js = (JS / "subtitle.js").read_text(encoding="utf-8")
+
+    def test_sweep_runs_over_the_letters(self):
+        """Подсветка прямоугольником поверх строки выглядела бы наклейкой."""
+        self.assertIn("background-clip:text", self.css)
+        self.assertIn("@keyframes fx-subtitle-sweep", self.css)
+
+    def test_sweep_lasts_six_tenths(self):
+        self.assertIn("fx-subtitle-sweep .6s", self.css)
+
+    def test_sparks_are_small_and_purple(self):
+        self.assertIn("width:2px", self.css)
+        self.assertIn("#c084fc", self.js)
+
+    def test_sparks_do_not_catch_clicks(self):
+        block = self.css[self.css.index(".fx-subtitle .spark{"):]
+        self.assertIn("pointer-events:none", block[:block.index("}")])
+
+    def test_a_dozen_at_most(self):
+        self.assertIn("SPARK_MIN = 8", self.js)
+        self.assertIn("SPARK_MAX = 12", self.js)
+
+    def test_once_per_hover_not_in_a_stream(self):
+        """Непрерывный фонтанчик мельтешит и тянет взгляд на себя."""
+        self.assertIn("if(inside || !sparksOn()) return", self.js)
+        self.assertIn("mouseleave", self.js)
+
+    def test_sparks_are_removed_afterwards(self):
+        """Иначе за вечер в теле страницы накопятся тысячи точек."""
+        self.assertIn("spark.remove()", self.js)
+
+
+class TestStars(Base):
+    """3.2: звёздное поле с параллаксом."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "stars.css").read_text(encoding="utf-8")
+        cls.js = (JS / "stars.js").read_text(encoding="utf-8")
+
+    def test_count_is_from_the_spec(self):
+        self.assertIn("STARS_MIN = 120", self.js)
+        self.assertIn("STARS_MAX = 180", self.js)
+
+    def test_no_twinkling(self):
+        """Мельтешение на фоне отвлекает от текста."""
+        self.assertNotIn("@keyframes", self.css)
+        self.assertNotIn("animation", self.css)
+
+    def test_parallax_is_gentle(self):
+        """На тысяче пикселей прокрутки это несколько десятков."""
+        self.assertIn("STARS_PARALLAX = 0.035", self.js)
+
+    def test_moved_by_transform_not_by_top(self):
+        self.assertIn("translate3d(0,", self.js)
+        self.assertNotIn("style.top =", self.js.split("function paint")[1])
+
+    def test_recomputed_once_per_frame(self):
+        self.assertIn("requestAnimationFrame(paint)", self.js)
+
+    def test_placed_once_and_not_reshuffled(self):
+        """Звёзды, прыгающие при прокрутке, выглядят поломкой."""
+        self.assertIn("if(layer) return layer", self.js)
+
+    def test_layer_is_behind_and_deaf(self):
+        block = self.css[self.css.index(".fx-stars .starfield{"):]
+        block = block[:block.index("}")]
+        self.assertIn("z-index:-1", block)
+        self.assertIn("pointer-events:none", block)
+
+    def test_every_tenth_is_violet(self):
+        self.assertIn("STARS_VIOLET = 10", self.js)
+        self.assertIn(".violet", self.css)
 
 
 class TestButtonPress(Base):
@@ -181,78 +274,56 @@ class TestFeedback(Base):
         self.assertIn("classList.remove('fx-flash')", self.js)
 
 
-class TestBackground(Base):
-    """6.3: аврора, зерно, и оба — под содержимым."""
+class TestRemovedEffects(Base):
+    """3.1: неприжившиеся эффекты убраны, а не просто выключены."""
 
-    def test_layers_do_not_fight_for_one_pseudo_element(self):
-        """У элемента их два, а фоновых слоёв больше."""
-        used = {}
-        for name in ("aurora", "grain", "spotlight"):
-            text = (CSS / f"{name}.css").read_text(encoding="utf-8")
-            head = [line for line in text.splitlines() if line.startswith(".fx-")][0]
-            self.assertNotIn(head, used, f"{name} и {used.get(head)} на одном слое")
-            used[head] = name
+    GONE = ("aurora", "grain", "spotlight", "cursor")
 
-    def test_background_layers_are_behind_and_deaf(self):
-        for name in ("aurora", "grain", "spotlight"):
-            text = (CSS / f"{name}.css").read_text(encoding="utf-8")
-            self.assertIn("z-index:-", text, name)
-            self.assertIn("pointer-events:none", text, name)
+    def test_files_are_deleted(self):
+        for name in self.GONE:
+            self.assertFalse((CSS / f"{name}.css").exists(), name)
 
-    def test_aurora_animates_only_transform(self):
-        """Иначе браузер пересчитывал бы раскладку двадцать раз в секунду."""
-        css = (CSS / "aurora.css").read_text(encoding="utf-8")
-        block = css[css.index("@keyframes fx-aurora-drift"):]
-        for line in block.splitlines():
-            if ":" in line and "{" in line:
-                self.assertIn("transform:", line)
+    def test_not_in_the_registry(self):
+        for name in self.GONE:
+            self.assertNotIn(f"key: '{name}'", self.settings, name)
 
-    def test_aurora_cycle_is_long(self):
-        css = (CSS / "aurora.css").read_text(encoding="utf-8")
-        self.assertRegex(css, r"fx-aurora-drift (2[5-9]|30)s")
+    def test_not_linked_from_the_page(self):
+        for name in self.GONE:
+            self.assertNotIn(f"effects/{name}.css", self.html, name)
 
-    def test_grain_is_barely_there(self):
-        css = (CSS / "grain.css").read_text(encoding="utf-8")
-        self.assertIn("opacity:.03", css)
-        # Картинка внутри стиля, а не отдельным запросом.
-        self.assertIn("data:image/svg+xml", css)
+    def test_no_dead_code_left(self):
+        """Мёртвый код хуже отсутствующего — он выглядит рабочим."""
+        pointer = (JS / "pointer.js").read_text(encoding="utf-8")
+        for mark in ("fxSpotlight", "--mx", "fx-away"):
+            self.assertNotIn(mark, pointer, mark)
+
+    def test_the_rest_survived(self):
+        stayed = ("title-glitch", "button-press", "progress-life", "done-flash",
+                  "counter", "skeleton", "magnetic", "row-sweep", "tab-grow",
+                  "static-cards")
+        for name in stayed:
+            self.assertIn(f"key: '{name}'", self.settings, name)
 
 
-class TestCursor(Base):
-    """6.4: прожектор, свой курсор, магнитные кнопки."""
+class TestMagnetic(Base):
+    """6.4: магнитные кнопки остаются."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.js = (JS / "pointer.js").read_text(encoding="utf-8")
 
-    def test_spotlight_position_comes_from_variables(self):
-        css = (CSS / "spotlight.css").read_text(encoding="utf-8")
-        self.assertIn("var(--mx", css)
-        self.assertIn("var(--my", css)
-
-    def test_spotlight_repaints_once_per_frame(self):
-        """mousemove приходит чаще, чем экран перерисовывается."""
-        self.assertIn("requestAnimationFrame", self.js)
-
-    def test_cursor_keeps_system_ones_where_they_mean_something(self):
-        css = (CSS / "cursor.css").read_text(encoding="utf-8")
-        self.assertIn("cursor:text", css)
-        self.assertIn("cursor:not-allowed", css)
-
-    def test_cursor_is_an_arrow_without_a_trailing_ring(self):
-        css = (CSS / "cursor.css").read_text(encoding="utf-8")
-        self.assertIn("cursor:url(", css)
-        self.assertNotIn("@keyframes", css)
-
-    def test_magnet_pull_is_small(self):
+    def test_pull_is_small(self):
         self.assertIn("FX_MAGNET = 4", self.js)
 
-    def test_magnet_skips_small_buttons(self):
-        """Строки списков не магнитим: кнопки там мелкие и стоят вплотную."""
+    def test_vertical_pull_is_smaller(self):
+        """Кнопки верхней панели стоят вплотную к краю строки."""
+        self.assertIn("FX_MAGNET_Y = 3", self.js)
+
+    def test_small_buttons_are_skipped(self):
         self.assertIn("FX_MAGNET_MIN", self.js)
 
-    def test_magnet_returns_with_a_spring(self):
+    def test_returns_with_a_spring(self):
         self.assertIn("cubic-bezier(.34,1.56,.64,1)", self.js)
 
 
