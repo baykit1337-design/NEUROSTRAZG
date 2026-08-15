@@ -85,7 +85,10 @@ class PaidChapter(Exception):
 class FanqieSource(Source):
     key = "fanqie"
     name = "Fanqie"
-    hint = "ссылка вида fanqienovel.com/page/7143038691944959011 или её код"
+    placeholder = "7143038691944959011"
+    hint = ("Числовой код книги или ссылка вида "
+            "fanqienovel.com/page/7143038691944959011 — код это часть "
+            "после /page/.")
     #: Сайт китайский и из России открывается через раз.
     needs_proxy = True
 

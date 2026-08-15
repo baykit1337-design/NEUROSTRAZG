@@ -15,7 +15,9 @@ from .base import Chapter, Novel, Source, Toc
 class MvlempyrSource(Source):
     key = "mvlempyr"
     name = "MVLEMPYR"
-    hint = "ссылка, слаг (insect-tamers-ascension) или код (6615)"
+    placeholder = "insect-tamers-ascension"
+    hint = ("Можно вставить ссылку на книгу, слаг "
+            "(insect-tamers-ascension) или числовой код (6615).")
     #: Витрину режет провайдер, без прокси текст глав не приходит.
     needs_proxy = True
 

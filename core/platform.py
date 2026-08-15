@@ -41,6 +41,14 @@ def open_file(path: str | Path) -> Path:
             subprocess.Popen(["open", str(target)])
         else:
             subprocess.Popen(["xdg-open", str(target)])
+    except FileNotFoundError as exc:
+        # Нечем открывать: на голой системе без окружения рабочего стола
+        # `xdg-open` не поставлен. Это не поломка программы, и говорить об
+        # этом надо человеческими словами.
+        helper = "open" if MACOS else "xdg-open"
+        raise OpenError(
+            f"В системе нет «{helper}» — открывать файлы нечем. "
+            f"Путь: {target}") from exc
     except Exception as exc:
         raise OpenError(f"{type(exc).__name__}: {exc}") from exc
     return target

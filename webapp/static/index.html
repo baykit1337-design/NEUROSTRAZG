@@ -1222,10 +1222,9 @@
     </div>
     <div style="margin-top:14px">
       <label>Формат</label>
-      <div class="row">
-        <button class="pick2 on" data-fmt="txt">.txt</button>
-        <button class="pick2" data-fmt="docx">.docx</button>
-      </div>
+      <!-- Кнопки строит скрипт по ответу сервера: список форматов один на
+           все вкладки, и своего перечня здесь быть не должно. -->
+      <div class="row" id="rnFormats"></div>
     </div>
     <div class="row" style="margin-top:16px">
       <button id="rnApply" class="primary" style="flex:1" disabled>Переименовать</button>

@@ -31,7 +31,10 @@ class Source:
     key = ""
     #: Как называется на экране.
     name = ""
-    #: Что можно ввести в поле поиска — подсказка под ним.
+    #: Что писать в самом поле, серым. У источников оно разное: у одного
+    #: слаг, у другого числовой код, и общий заполнитель сбивал бы с толку.
+    placeholder = ""
+    #: Пояснение под полем.
     hint = ""
     #: Нужен ли этому источнику прокси-пул.
     needs_proxy = False
@@ -51,6 +54,7 @@ class Source:
 
     def as_dict(self) -> dict:
         return {"key": self.key, "name": self.name, "hint": self.hint,
+                "placeholder": self.placeholder or self.hint,
                 "needs_proxy": self.needs_proxy}
 
 

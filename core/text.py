@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 #: Абзац-разделитель сцен: только звёздочки, точки или тире в любом числе.
 SCENE_CHARS = "*＊※·•—–-_"
@@ -150,6 +150,9 @@ class HeaderFinding:
     count: int
     total: int
     kind: str = HEAD_REPEAT
+    #: Файлы, где строка встретилась. Нужны, чтобы её можно было открыть
+    #: и посмотреть, о чём речь, до удаления.
+    files: list = field(default_factory=list)
 
     @property
     def share(self) -> float:
@@ -163,25 +166,34 @@ class HeaderFinding:
 
     def as_dict(self) -> dict:
         return {"text": self.text, "count": self.count, "total": self.total,
-                "kind": self.kind, "label": self.label}
+                "kind": self.kind, "label": self.label,
+                # Показываем несколько: открывается первый, остальные —
+                # чтобы было видно, что находка не единичная.
+                "files": list(self.files[:20])}
 
 
 def find_headers(samples) -> list[HeaderFinding]:
     """Ищет мусорную шапку по началу файлов.
 
-    `samples` — пары «название главы, первые абзацы». Жёстких правил нет:
-    строка, встретившаяся почти во всех файлах, содержанием быть не может,
-    поэтому название книги вычисляется само.
+    `samples` — тройки «название главы, первые абзацы, файл» либо пары без
+    файла. Жёстких правил нет: строка, встретившаяся почти во всех файлах,
+    содержанием быть не может, поэтому название книги вычисляется само.
     """
-    samples = [(title, list(lines)) for title, lines in samples]
+    prepared = []
+    for sample in samples:
+        title, lines, *rest = sample
+        prepared.append((title, list(lines), str(rest[0]) if rest else ""))
+    samples = prepared
     total = len(samples)
     if not total:
         return []
 
     seen: dict[str, tuple[str, int]] = {}
+    where: dict[str, list] = {}
+    title_files: list = []
     duplicates = 0
 
-    for title, lines in samples:
+    for title, lines, source in samples:
         head = [line.strip() for line in lines[:HEAD_LINES] if line.strip()]
         # Один и тот же файл не должен считаться дважды за одну строку.
         counted: set[str] = set()
@@ -199,18 +211,23 @@ def find_headers(samples) -> list[HeaderFinding]:
             counted.add(key)
             text, count = seen.get(key, (line, 0))
             seen[key] = (text, count + 1)
+            if source:
+                where.setdefault(key, []).append(source)
 
         if title_hit:
             duplicates += 1
+            if source:
+                title_files.append(source)
 
     findings = [
-        HeaderFinding(text=text, count=count, total=total)
-        for text, count in seen.values()
+        HeaderFinding(text=text, count=count, total=total,
+                      files=where.get(key, []))
+        for key, (text, count) in seen.items()
         if count / total > HEAD_SHARE
     ]
     if duplicates:
         findings.append(HeaderFinding(text="", count=duplicates, total=total,
-                                      kind=HEAD_TITLE))
+                                      kind=HEAD_TITLE, files=title_files))
 
     findings.sort(key=lambda f: (-f.count, f.text))
     return findings

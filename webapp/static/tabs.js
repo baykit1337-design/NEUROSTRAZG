@@ -413,7 +413,7 @@ function stopJob(jobId){
 
 /* ========================== Переименовать ========================== */
 
-let rnChapters = [], rnRows = [], rnFmtOut = 'txt', rnJob = null, rnTimer = null;
+let rnChapters = [], rnRows = [], rnJob = null, rnTimer = null;
 //: Ввод пути руками не должен дёргать сервер на каждой букве.
 let rnScanTimer = null;
 const rnSplits = {};      // путь к файлу -> на сколько частей
@@ -646,7 +646,7 @@ async function rnApply(){
       ...rnPayload(),
       base: $('rnBase').value.trim(),
       folder_out: $('rnOut').value.trim(),
-      out_format: rnFmtOut,
+      out_format: rnState.format.replace('.', ''),
       names: rnRows.map(r => r.new_name),
     });
     rnJob = job.id;
@@ -705,15 +705,9 @@ $('rnRenumber').onchange = () => {
 });
 const rnSepMenu = makeDropdown($('rnSep'), () => { rnUpdateExample(); rnBuildPreview(); });
 $('rnPattern').addEventListener('keydown', e => { if(e.key === 'Enter') rnScan(); });
-// Кнопки формата на выходе. Переключаем в пределах своей строки: тот же
-// класс носят кнопки режима в качалке, и общий обработчик их затирал.
-document.querySelectorAll('.pick2[data-fmt]').forEach(btn => {
-  btn.onclick = () => {
-    btn.parentNode.querySelectorAll('.pick2[data-fmt]')
-       .forEach(b => b.classList.toggle('on', b === btn));
-    rnFmtOut = btn.dataset.fmt;
-  };
-});
+//: Формат на выходе у «Переименовать». Хранится так же, как у остальных
+//: вкладок, чтобы кнопки строились общей функцией.
+const rnState = {format: '.txt'};
 const rnPartsMenu = makeDropdown($('rnParts'));
 $('rnPartsOk').onclick = () => {
   $('rnDialog').hidden = true;
@@ -1055,14 +1049,16 @@ mgState.menus.separator = makeDropdown($('mgSeparator'), value => {
 });
 
 // Списки форматов строятся по ответу сервера, а не по своему перечню.
+function buildAllFormats(){
+  buildFormats('spFormats', spState, spUpdateFinal);
+  buildFormats('mgFormats', mgState, mgUpdateFinal);
+  buildFormats('rnFormats', rnState, () => {});
+}
+
 call('/api/formats').then(data => {
   FORMATS = data;
-  buildFormats('spFormats', spState, spUpdateFinal);
-  buildFormats('mgFormats', mgState, mgUpdateFinal);
-}).catch(() => {
-  buildFormats('spFormats', spState, spUpdateFinal);
-  buildFormats('mgFormats', mgState, mgUpdateFinal);
-});
+  buildAllFormats();
+}).catch(buildAllFormats);
 
 spUpdateFinal();
 mgUpdateFinal();
@@ -1112,14 +1108,62 @@ function hdRender(){
       ? 'название главы, продублированное в тексте' : finding.text;
     text.title = text.textContent;
 
+    // Клик по фрагменту открывает файл, где он встречается: посмотреть,
+    // о чём речь, надо до удаления, а не после.
+    const files = finding.files || [];
+    if(files.length){
+      text.style.cursor = 'pointer';
+      text.title = `Открыть ${files[0]}`
+        + (files.length > 1 ? `\nВстречается в ${finding.count} файлах` : '');
+      text.onclick = () => call('/api/open', {path: files[0]})
+        .catch(err => showError(err.message));
+    }
+
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = `${finding.count} из ${finding.total}`;
+    tag.title = files.length > 1
+      ? `Встречается в ${finding.count} файлах` : '';
 
     row.append(box, text, tag);
+
+    if(finding.kind !== 'title' && finding.text){
+      const copy = document.createElement('button');
+      copy.className = 'ghost';
+      copy.style.padding = '4px 10px';
+      copy.textContent = 'скопировать';
+      copy.title = 'Чтобы найти место поиском внутри документа';
+      copy.onclick = () => hdCopy(finding.text, copy);
+      row.append(copy);
+    }
     list.append(row);
   }
   hdUpdate();
+}
+
+/** Копирует фрагмент. Без буфера обмена — старым способом. */
+async function hdCopy(text, button){
+  const said = button.textContent;
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text);
+    }else{
+      // http://127.0.0.1 защищённым не считается, а программа живёт
+      // именно там — поэтому запасной путь обязателен.
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.append(field);
+      field.select();
+      document.execCommand('copy');
+      field.remove();
+    }
+    button.textContent = 'скопировано';
+  }catch(err){
+    button.textContent = 'не вышло';
+  }
+  setTimeout(() => { button.textContent = said; }, 1500);
 }
 
 function hdUpdate(){
@@ -1128,8 +1172,21 @@ function hdUpdate(){
     ? `Удалить отмеченное (${hdChosen.size})` : 'Удалить отмеченное';
 }
 
+/** Переносит блок в раздел вкладки, которая его вызвала.
+ *
+ *  Раньше он лежал над всеми разделами сразу и потому висел на каждой
+ *  вкладке, даже там, где ничего не выбрано.
+ */
+function hdPlaceCard(source){
+  const field = document.getElementById(source);
+  const section = field && field.closest('section');
+  const card = $('hdCard');
+  if(section && card.parentNode !== section) section.append(card);
+}
+
 async function hdScan(source, quiet){
   hdSource = source;
+  hdPlaceCard(source);
   const targets = hdTargets();
   if(!targets.length){
     if(!quiet) showError('Сначала выберите файлы или папку');
@@ -3594,3 +3651,227 @@ function drawTimers(statusId, job){
   if(mode) parts.push(`<span class="mode">${mode}</span>`);
   box.innerHTML = parts.join(' · ');
 }
+
+/* ================= Источники и рейтинг Фанкью (часть 5) =================
+ *
+ * Источник — отдельный модуль на сервере, здесь только выбор. Меню
+ * строится по ответу `/api/sources`, а не по зашитому списку: иначе новый
+ * источник пришлось бы вписывать в двух местах.
+ *
+ * Живёт в этом файле, а не в разметке: `makeDropdown` объявлена здесь, и
+ * вызывать её раньше было бы полаганием на то, что ответ сервера придёт
+ * позже загрузки скрипта.
+ */
+
+async function loadSources(){
+  try{
+    const data = await call('/api/sources');
+    const box = $('srcPick');
+    if(!box) return;
+    box.dataset.options = JSON.stringify(
+      (data.sources || []).map(s => [s.key, s.name]));
+    box.innerHTML = '';
+    const show = key => {
+      const found = (data.sources || []).find(s => s.key === key);
+      if(!found) return;
+      // И заполнитель в поле, и пояснение под ним меняются вместе с
+      // источником: у Фанкью в ссылке не слаг, а числовой код.
+      $('q').placeholder = found.placeholder || '';
+      $('srcHint').textContent = found.hint || '';
+    };
+    srcMenu = makeDropdown(box, show);
+    const first = (data.sources || [])[0];
+    if(first) show(first.key);
+  }catch(err){ /* источники не список вкладок — молча оставляем как есть */ }
+}
+loadSources();
+
+/* ------------------------------------------------ рейтинг (5.3) */
+
+let rkRows = [], rkTitles = {}, rkBoardMenu = null, rkPicked = null;
+
+function rkMove(value){
+  if(value === null || value === undefined) return {text: '—', cls: 'flat'};
+  if(value > 0) return {text: '▲ ' + value, cls: 'up'};
+  if(value < 0) return {text: '▼ ' + Math.abs(value), cls: 'down'};
+  return {text: '=', cls: 'flat'};
+}
+
+function rkRender(){
+  const box = $('rkTable');
+  box.innerHTML = '';
+  const filter = $('rkFilter').value.trim().toLowerCase();
+  const shown = rkRows.filter(row => !filter
+    || (row.name || '').toLowerCase().includes(filter)
+    || (rkTitles[row.book_id] || '').toLowerCase().includes(filter)
+    || (row.category || '').toLowerCase().includes(filter));
+
+  if(!shown.length){
+    box.innerHTML = '<div class="tr"><span class="grow hint">'
+      + (rkRows.length ? 'Ничего не подошло под фильтр.'
+                       : 'Срезов пока нет — нажмите «Обновить срез».')
+      + '</span></div>';
+    return;
+  }
+
+  for(const row of shown){
+    const tr = document.createElement('div');
+    tr.className = 'tr';
+
+    const place = document.createElement('span');
+    place.className = 'place';
+    place.textContent = row.place;
+    tr.append(place);
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.name;
+    name.title = row.author ? 'автор: ' + row.author : '';
+    tr.append(name);
+
+    const readers = document.createElement('span');
+    readers.className = 'num';
+    readers.textContent = ru(row.readers);
+    readers.title = 'читающих';
+    tr.append(readers);
+
+    for(const [value, label] of [[row.day, 'за сутки'], [row.week, 'за неделю']]){
+      const move = rkMove(value);
+      const span = document.createElement('span');
+      span.className = 'num ' + move.cls;
+      span.textContent = move.text;
+      span.title = label;
+      tr.append(span);
+    }
+
+    if(row.is_new){
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = 'новая';
+      tr.append(tag);
+    }else if(row.holding > 1){
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = `${row.holding} дн.`;
+      tag.title = 'дней подряд в топе';
+      tr.append(tag);
+    }
+
+    const get = document.createElement('button');
+    get.className = 'ghost';
+    get.textContent = 'скачать';
+    get.style.padding = '4px 10px';
+    get.onclick = () => rkPick(row);
+    tr.append(get);
+
+    if(rkTitles[row.book_id]){
+      const ru_ = document.createElement('span');
+      ru_.className = 'ru';
+      ru_.textContent = rkTitles[row.book_id];
+      tr.append(ru_);
+    }
+    box.append(tr);
+  }
+}
+
+function rkShow(data){
+  rkRows = data.rows || [];
+  if(data.titles) rkTitles = data.titles;
+  $('rkNote').textContent = rkRows.length
+    ? `Срез за ${data.day}, строк ${rkRows.length}. Дней в истории: ${data.days}.`
+      + (data.note ? ' ' + data.note : '')
+    : (data.note || 'Срезов пока нет.');
+  rkRender();
+}
+
+async function rkState(){
+  try{
+    const board = rkBoardMenu ? rkBoardMenu.value : 'all';
+    const data = await call('/api/rank/state?board=' + encodeURIComponent(board));
+    if(data.boards && rkBoardMenu === null) rkBoards(data.boards);
+    rkShow(data);
+  }catch(err){ showError(err.message); }
+}
+
+function rkBoards(boards){
+  const box = $('rkBoard');
+  box.dataset.options = JSON.stringify(boards.map(b => [b.key, b.name]));
+  box.innerHTML = '';
+  rkBoardMenu = makeDropdown(box, () => rkState());
+}
+
+async function rkRefresh(){
+  showError('');
+  $('rkRefresh').disabled = true;
+  $('rkNote').innerHTML = '<span class="spin"></span>Запрашиваем рейтинг…';
+  try{
+    const data = await call('/api/rank/refresh',
+      {board: rkBoardMenu ? rkBoardMenu.value : 'all'});
+    rkShow(data);
+  }catch(err){
+    showError(err.message);
+    $('rkNote').textContent = '';
+  }finally{
+    $('rkRefresh').disabled = false;
+  }
+}
+
+async function rkTranslate(){
+  showError('');
+  $('rkTranslate').disabled = true;
+  try{
+    const data = await call('/api/rank/translate', {
+      board: rkBoardMenu ? rkBoardMenu.value : 'all',
+      model: llmMenu ? llmMenu.value : '',
+    });
+    rkTitles = data.titles || {};
+    $('rkNote').textContent =
+      `Переведено ${data.translated}, из кэша ${data.cached}.`;
+    rkRender();
+  }catch(err){ showError(err.message); }
+  finally{ $('rkTranslate').disabled = false; }
+}
+
+/** Книга выбрана — качаем её через общий путь качалки. */
+function rkPick(row){
+  rkPicked = row;
+  $('rkPlace').hidden = false;
+  $('rkChosen').textContent = `${row.name} · код ${row.book_id}`;
+  $('rkFolder').value = rkTitles[row.book_id] || row.name;
+  $('rkStartNote').textContent = '';
+  $('rkPlace').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function rkStart(){
+  showError('');
+  if(!rkPicked) return;
+  const base = $('rkBase').value.trim();
+  if(!base){ showError('Укажите, куда сохранить'); return; }
+
+  $('rkStart').disabled = true;
+  try{
+    // Ищем книгу тем же запросом, что и в качалке: код уже известен,
+    // копировать ничего не нужно.
+    const found = await call('/api/find',
+      {query: rkPicked.book_id, source: 'fanqie'});
+    const {job} = await call('/api/start', {
+      novel: found.novel,
+      source: 'fanqie',
+      base,
+      folder: $('rkFolder').value.trim() || found.novel.name,
+    });
+    $('rkStartNote').textContent =
+      `Качаем в ${job.output_dir}. Ход виден на вкладке «Качалка».`;
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('rkStart').disabled = false;
+  }
+}
+
+$('rkRefresh').onclick = rkRefresh;
+$('rkTranslate').onclick = rkTranslate;
+$('rkFilter').addEventListener('input', rkRender);
+$('rkStart').onclick = rkStart;
+$('rkCancel').onclick = () => { $('rkPlace').hidden = true; rkPicked = null; };
+rkState();

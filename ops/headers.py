@@ -26,8 +26,11 @@ def scan(targets, progress: Progress | None = None) -> dict:
     files = collect_files(targets)
     chapters = read_all(files, report, progress)
 
+    # Файл передаём вместе с текстом: без него находку нельзя открыть и
+    # посмотреть, о чём речь, до удаления.
     findings = text.find_headers(
-        (chapter.title, chapter.paragraphs) for chapter in chapters
+        (chapter.title, chapter.paragraphs, chapter.source)
+        for chapter in chapters
     )
     return {
         "files": [str(path) for path in files],

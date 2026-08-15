@@ -59,6 +59,48 @@ class TestRegistry(unittest.TestCase):
             self.assertTrue(data["hint"], source.key)
 
 
+class TestSourceHints(unittest.TestCase):
+    """5.1: подсказка и заполнитель зависят от источника."""
+
+    def test_placeholder_differs_by_source(self):
+        seen = {s.key: s.as_dict()["placeholder"] for s in sources.all_sources()}
+        self.assertEqual(seen["mvlempyr"], "insect-tamers-ascension")
+        self.assertEqual(seen["fanqie"], "7143038691944959011")
+
+    def test_explanation_differs_too(self):
+        hints = {s.key: s.as_dict()["hint"] for s in sources.all_sources()}
+        self.assertIn("слаг", hints["mvlempyr"])
+        self.assertIn("/page/", hints["fanqie"])
+
+    def test_placeholder_falls_back_to_the_hint(self):
+        """Источник без своего заполнителя не остаётся с пустым полем."""
+        from net.sources.base import Source
+
+        class Bare(Source):
+            key, name, hint = "голый", "Голый", "что-нибудь"
+
+        self.assertEqual(Bare().as_dict()["placeholder"], "что-нибудь")
+
+
+class TestRankScreenIsWired(unittest.TestCase):
+    """Разметка рейтинга без своего кода — мёртвая."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parent.parent / "webapp" / "static"
+        cls.html = (root / "index.html").read_text(encoding="utf-8")
+        cls.js = (root / "tabs.js").read_text(encoding="utf-8")
+
+    def test_every_control_has_a_handler(self):
+        for name in ("rkRefresh", "rkTranslate", "rkStart", "rkFilter"):
+            self.assertIn(f'id="{name}"', self.html, name)
+            self.assertIn(f"$('{name}')", self.js, name)
+
+    def test_source_picker_is_filled_by_the_server(self):
+        self.assertIn("function loadSources(", self.js)
+        self.assertIn("call('/api/sources')", self.js)
+
+
 class TestFanqieCode(unittest.TestCase):
     """Код книги из ссылки или из самого кода."""
 

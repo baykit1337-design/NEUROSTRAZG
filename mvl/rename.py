@@ -16,6 +16,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from core import formats, naming
+#: Под именем `Chapter` в этом модуле живёт своя запись — файл на диске.
+#: Ядровая глава нужна только для записи, поэтому берётся под своим именем.
+from core.models import Chapter as OutChapter
 
 from .booksplit import Cancelled, safe_name
 from .source import read_paragraphs as read_source_paragraphs
@@ -405,6 +408,8 @@ def apply_plan(
     fmt: str = "txt",
     style: Style | None = None,
     prep: PrepOptions | None = None,
+    headings: bool = True,
+    encoding: str = "utf-8",
     on_progress=None,
     cancel: threading.Event | None = None,
 ) -> RenameReport:
@@ -413,7 +418,12 @@ def apply_plan(
     Сбой на одном файле не останавливает остальные, но совпадение имён
     останавливает всё: иначе файлы молча затрут друг друга.
     """
-    suffix = fmt if fmt in ("txt", "docx") else "txt"
+    # Список форматов один на всю программу — тот же, что у «Разбить» и
+    # «Объединить». Раньше эта вкладка писала файлы сама и умела только
+    # два формата, из-за чего в одной программе их было три разных набора.
+    suffix = str(fmt or "txt").lstrip(".").lower()
+    if f".{suffix}" not in formats.WRITABLE:
+        suffix = "txt"
     clashes = find_collisions(rows, suffix)
     if clashes:
         raise NameCollision(
@@ -431,16 +441,14 @@ def apply_plan(
         name = f"{safe_filename(row.new_name) or f'{index:04d}'}.{suffix}"
         try:
             target = output_dir / name
-            # Та же подготовка текста, что и в остальных путях вывода.
-            blocks = prepare(row.paragraphs, row.title, prep)
-            if suffix == "docx":
-                from .word import add_blocks, new_document
-
-                document = new_document(style)
-                add_blocks(document, blocks, style, prep)
-                document.save(str(target))
-            else:
-                target.write_text(to_text(blocks) + "\n", encoding="utf-8")
+            # Пишем через общий слой: он знает все форматы и применяет ту
+            # же подготовку текста, что и остальные пути вывода.
+            formats.write(
+                target,
+                [OutChapter(number=row.number, part=row.part, title=row.title,
+                            paragraphs=list(row.paragraphs), source=row.source)],
+                prep=prep, style=style, headings=headings, encoding=encoding,
+            )
             report.written += 1
         except Exception as exc:
             log.warning("Не записан %s: %s", name, exc)

@@ -723,13 +723,18 @@ def api_rename_apply():
     payload = request.json or {}
     base = (payload.get("base") or "").strip()
     out_name = (payload.get("folder_out") or "").strip()
-    fmt = (payload.get("out_format") or "txt").strip().lower()
+    fmt = (payload.get("out_format") or "txt").strip().lower().lstrip(".")
+    try:
+        encoding = _encoding(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
     if not base:
         return jsonify(error="Выберите папку, где создать каталог"), 400
     if not out_name:
         return jsonify(error="Введите имя новой папки"), 400
-    if fmt not in ("txt", "docx"):
+    # Список форматов один на все вкладки и берётся из `core/formats.py`.
+    if f".{fmt}" not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {fmt}"), 400
 
     try:
@@ -763,6 +768,9 @@ def api_rename_apply():
     def work(job: Job):
         report = rename.apply_plan(
             rows, Path(job.output_dir), fmt=fmt, style=style,
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            headings=bool(payload.get("headings", True)),
+            encoding=encoding,
             on_progress=lambda done, total: job.progress.update(
                 done=done, total=total, message=f"Файл {done} из {total}"),
             cancel=job.cancel,
@@ -2372,7 +2380,9 @@ def api_open():
     try:
         opened = platform.open_file(path)
     except platform.OpenError as exc:
-        return jsonify(error=f"Не удалось открыть: {exc}"), 500
+        # Не поломка сервера: файл есть, а открыть его нечем. 500 здесь
+        # пугал бы зря.
+        return jsonify(error=str(exc)), 400
 
     return jsonify(opened=str(opened))
 
