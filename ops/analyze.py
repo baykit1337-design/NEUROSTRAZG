@@ -21,6 +21,7 @@ from core.models import OpReport
 from core.registry import Entity, Event, Link, Registry, slug
 from llm import prompts
 from llm.cache import Entry, FactsCache, fingerprint, parse_json
+from llm.client import CHARS_PER_TOKEN, NoKeysLeft
 
 from .base import Progress, collect_files, read_all
 
@@ -96,6 +97,7 @@ def collect(
     retries: int | None = None,
     progress: Progress | None = None,
     force: bool = False,
+    log_to=None,
 ) -> FactsReport:
     """Разбирает главы моделью и складывает факты в кэш.
 
@@ -131,6 +133,12 @@ def collect(
     total = len(chapters)
     progress.step(done, total, f"В кэше {done} из {total}")
 
+    def say(text: str, kind: str = "info") -> None:
+        if log_to is not None:
+            log_to.add(text, kind)
+
+    say(f"глав всего {total}, из кэша {report.cached}, к разбору {len(pending)}")
+
     def one(chapter):
         nonlocal done
         progress.check()
@@ -155,16 +163,29 @@ def collect(
                     done += 1
                     progress.step(done, total,
                                   f"Глава {chapter.label or '?'} разобрана")
+                spent = int(len(chapter.text) / CHARS_PER_TOKEN)
+                whose = getattr(getattr(client, "current", None), "name", "")
+                say(f"глава {chapter.label or '?'} разобрана · ~{spent} токенов"
+                    + (f" · ключ «{whose}»" if whose else ""))
                 return
+            except NoKeysLeft:
+                # Ключи кончились — это не осечка главы. Работа встаёт, а
+                # разобранное остаётся в кэше и продолжится потом.
+                say("ключи исчерпаны, работа остановлена", "stop")
+                raise
             except Exception as exc:  # noqa: BLE001 — причину показываем целиком
                 error = f"{type(exc).__name__}: {exc}"
                 log.warning("Глава %s, попытка %s: %s",
                             chapter.label, attempt + 1, error)
+                if attempt < retries:
+                    say(f"глава {chapter.label or '?'} — {error}, "
+                        f"повтор {attempt + 1} из {retries}", "warn")
 
         with lock:
             report.fail(chapter.label or chapter.title, error)
             done += 1
             progress.step(done, total, f"Глава {chapter.label or '?'} не разобрана")
+        say(f"глава {chapter.label or '?'} не разобрана: {error}", "error")
 
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:

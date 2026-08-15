@@ -213,6 +213,10 @@ document.querySelectorAll('.clearlist').forEach(button => {
   button.onclick = () => {
     // Выбрал по ошибке папку с тысячами файлов — снимается разом.
     const listId = button.dataset.list;
+    // Снять выбор и оставить работу идти нельзя: она продолжит тратить
+    // ключи на файлы, которые человек только что убрал с экрана.
+    const tab = button.closest('section');
+    if(tab) cancelTab(tab.id.replace('tab-', ''));
     CHOSEN[listId] = [];
     renderChosen(listId);
     const handler = $(listId).dataset.onchange;
@@ -323,6 +327,10 @@ function drawResult(p, fillId, statusId, pctId){
     // Состояние ставится на родителя — кружок и текст в такт.
     markResult(statusId, busy, p.stage);
   }
+  // Секундомер и прогноз — рядом со счётчиками той же операции (2.1).
+  // `LAST_JOB` выставляется прямо перед отрисовкой, поэтому здесь это
+  // всегда та задача, чей прогресс сейчас и рисуется.
+  drawTimers(statusId, LAST_JOB);
   return busy;
 }
 
@@ -337,27 +345,56 @@ function tookText(seconds){
   return `${s} с`;
 }
 
-/** Дописывает время в итог операции.
+
+/* ---------- какая задача чьей вкладке принадлежит (7.8) ----------
  *
- *  Здесь, а не в каждой вкладке: через pollJob проходит любая задача, и
- *  «заняло столько-то» должно появляться одинаково везде. Нижняя строка к
- *  этому моменту уже погасла, и время иначе потерялось бы.
+ * Раньше «Очистить список» просто снимал выбор, а задача продолжала идти:
+ * таймер шёл, запросы к модели уходили, ключи тратились. Поэтому теперь у
+ * каждой длительной работы есть хозяин — вкладка, — и всё, что задачу
+ * отменяет, обращается сюда.
  */
-function addTook(job){
-  const progress = job.progress || {};
-  const done = progress.stage === 'done' || progress.stage === 'error'
-    || progress.stage === 'cancelled';
-  if(!done || job.running || !job.elapsed || job.elapsed < 1) return;
-  if(!progress.message || / · заняло /.test(progress.message)) return;
-  progress.message += ' · заняло ' + tookText(job.elapsed);
+
+const TAB_JOBS = {};
+
+/** Задача началась и принадлежит этой вкладке. */
+function ownJob(tab, jobId){
+  TAB_JOBS[tab] = jobId;
 }
+
+/** Задача кончилась сама. */
+function dropJob(tab){
+  delete TAB_JOBS[tab];
+}
+
+/** Отменяет работу вкладки. Возвращает true, если было что отменять.
+ *
+ *  Качалка сюда намеренно не записывается: скачивание идёт часами, у него
+ *  своя кнопка «Остановить» и своя докачка, и обрывать его переходом на
+ *  соседнюю вкладку значило бы наказывать за любопытство. Правило про
+ *  отмену появилось из-за ключей модели — их и бережём.
+ */
+function cancelTab(tab){
+  const jobId = TAB_JOBS[tab];
+  if(!jobId) return false;
+  dropJob(tab);
+  stopJob(jobId);
+  return true;
+}
+
+/** Задача, которую сейчас рисуют.
+ *
+ *  Нужна `drawResult`: та получает от вкладок только прогресс, а таймерам
+ *  нужны секундомер и признак завершения, которые лежат на самой задаче.
+ *  Передавать job во все десять вызовов значило бы править каждый.
+ */
+let LAST_JOB = null;
 
 /** Опрашивает задачу до конца. onDone получает готовый job. */
 function pollJob(jobId, draw, onDone){
   const timer = setInterval(async () => {
     try{
       const {job} = await call('/api/job/' + jobId);
-      addTook(job);
+      LAST_JOB = job;
       if(!draw(job)){
         clearInterval(timer);
         onDone(job);
@@ -613,6 +650,7 @@ async function rnApply(){
       names: rnRows.map(r => r.new_name),
     });
     rnJob = job.id;
+    ownJob('rename', job.id);
     $('rnProgress').hidden = false;
     $('rnStop').hidden = false;
     $('rnSummary').textContent = 'Папка: ' + job.output_dir;
@@ -857,6 +895,7 @@ async function spStart(){
       prep: prepOf('sp', spState.menus),
     });
     spState.job = job.id;
+    ownJob('split', job.id);
     $('spProgress').hidden = false;
     $('spStop').hidden = false;
     $('spSummary').textContent = 'Папка: ' + job.output_dir;
@@ -959,6 +998,7 @@ async function mgStart(){
       prep: prepOf('mg', mgState.menus),
     });
     mgState.job = job.id;
+    ownJob('merge', job.id);
     $('mgProgress').hidden = false;
     $('mgStop').hidden = false;
     $('mgSummary').textContent = 'Файл: ' + job.output_dir;
@@ -1188,13 +1228,9 @@ $('hdClose').onclick = () => { $('hdCard').hidden = true; };
 
 let llmMenu = null, llmModels = [];
 
-/** Ключ в поле показывается точками, пока не нажали «Показать». */
-$('llmShow').onclick = () => {
-  const field = $('llmKey');
-  const hidden = field.type === 'password';
-  field.type = hidden ? 'text' : 'password';
-  $('llmShow').textContent = hidden ? 'Скрыть' : 'Показать';
-};
+/* Поле ввода ключей — многострочное: их вставляют пачкой из блокнота, и
+   прятать точками то, что человек прямо сейчас вставляет, бессмысленно.
+   В списке ниже и в логах ключ показывается только сокращённым. */
 
 function llmFillModels(models, suggested){
   llmModels = models;
@@ -1245,9 +1281,9 @@ async function llmSave(){
       use_proxies: $('llmProxy').checked,
     });
     $('llmSaved').textContent =
-      `Сохранено: ключ ${data.key}, модель ${data.model}.`;
+      `Сохранено. Ключей: ${data.total}, модель ${data.model}.`;
     $('llmKey').value = '';
-    $('llmKey').placeholder = data.key;
+    llmRenderKeys(data);
   }catch(err){
     showError(err.message);
   }finally{
@@ -1255,17 +1291,173 @@ async function llmSave(){
   }
 }
 
+/* ------------------------------------------- список ключей (7.1–7.4) */
+
+/** Сколько ждать до сброса, словами. */
+function llmWait(seconds){
+  if(seconds === null || seconds === undefined) return '';
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60);
+  if(h) return `${h} ч ${m} мин`;
+  return m ? `${m} мин` : 'меньше минуты';
+}
+
+function llmRenderKeys(data){
+  const box = $('llmKeys');
+  box.innerHTML = '';
+  const keys = (data && data.keys) || [];
+  if(!keys.length){
+    box.innerHTML = '<div class="tr"><span class="grow hint">'
+      + 'Ключей пока нет. Добавьте хотя бы один.</span></div>';
+    return;
+  }
+
+  for(const key of keys){
+    const row = document.createElement('div');
+    row.className = 'tr ' + key.state;
+
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'rowname';
+    name.value = key.name || '';
+    // Заполнителем — сокращённый ключ: имя может быть и пустым, и
+    // подставлять его в само поле нельзя, оно сохранится как имя.
+    name.placeholder = key.label || 'название';
+    name.title = 'Метка, чтобы различать ключи';
+    name.onchange = () => llmUpdate(key.id, {name: name.value.trim()});
+    row.append(name);
+
+    const shown = document.createElement('span');
+    shown.className = 'num';
+    shown.textContent = key.key;
+    shown.title = 'Ключ целиком не показывается никогда';
+    row.append(shown);
+
+    const used = document.createElement('span');
+    used.className = 'grow';
+    used.textContent = key.limit
+      ? `использовано ${key.used} из ${key.limit}`
+      : `использовано ${key.used}`;
+    row.append(used);
+
+    const limit = document.createElement('input');
+    limit.type = 'number';
+    limit.min = '0';
+    limit.className = 'rowname';
+    limit.style.flex = '0 0 90px';
+    limit.value = key.limit || '';
+    limit.placeholder = 'лимит';
+    limit.title = 'Сколько запросов разрешено. Пусто — без ограничения';
+    limit.onchange = () => llmUpdate(key.id, {limit: Number(limit.value) || 0});
+    row.append(limit);
+
+    const state = document.createElement('span');
+    state.className = 'state';
+    state.textContent = key.state === 'active' ? 'активен' : 'исчерпан';
+    if(key.state !== 'active' && key.resets_in !== null){
+      state.textContent += ` · через ${llmWait(key.resets_in)}`;
+      state.title = 'Столько до сброса квоты';
+    }
+    row.append(state);
+
+    const flip = document.createElement('button');
+    flip.className = 'ghost';
+    flip.style.padding = '4px 10px';
+    flip.textContent = key.state === 'active' ? 'отложить' : 'вернуть';
+    flip.title = key.state === 'active'
+      ? 'Пометить исчерпанным, чтобы не трогать'
+      : 'Снять пометку и попробовать снова';
+    flip.onclick = () => llmUpdate(key.id,
+      {state: key.state === 'active' ? 'exhausted' : 'active'});
+    row.append(flip);
+
+    const drop = document.createElement('button');
+    drop.className = 'ghost';
+    drop.style.padding = '4px 10px';
+    drop.textContent = '✕';
+    drop.title = 'Убрать ключ';
+    drop.onclick = () => llmRemove(key.id);
+    row.append(drop);
+
+    box.append(row);
+  }
+}
+
+async function llmKeysState(){
+  try{
+    llmRenderKeys(await call('/api/llm/state'));
+  }catch(err){ /* список ключей не повод показывать ошибку на весь экран */ }
+}
+
+async function llmAdd(){
+  showError('');
+  const text = $('llmKey').value.trim();
+  if(!text){ showError('Введите ключ'); return; }
+  try{
+    const data = await call('/api/llm/keys/add', {
+      key: text,
+      name: $('llmName').value.trim(),
+      limit: Number($('llmLimit').value) || 0,
+    });
+    $('llmKey').value = '';
+    $('llmName').value = '';
+    llmRenderKeys(data);
+  }catch(err){ showError(err.message); }
+}
+
+async function llmUpdate(id, fields){
+  try{
+    llmRenderKeys(await call('/api/llm/keys/update', {id, ...fields}));
+  }catch(err){ showError(err.message); }
+}
+
+async function llmRemove(id){
+  try{
+    llmRenderKeys(await call('/api/llm/keys/remove', {id}));
+  }catch(err){ showError(err.message); }
+}
+
+/** 7.2: «Оценить расход» — объём работы и сколько класть на ключ. */
+async function llmEstimate(){
+  showError('');
+  const targets = CHOSEN.anList || [];
+  if(!targets.length){
+    showError('Сначала выберите файлы на этой вкладке');
+    return;
+  }
+  $('llmEstimate').disabled = true;
+  try{
+    const data = await call('/api/llm/estimate', {targets, root: anRoot});
+    $('llmEstimateNote').textContent =
+      `Глав ${data.chapters}, к отправке ${data.to_send}`
+      + (data.cached ? `, в кэше ${data.cached}` : '')
+      + `. Средняя глава ${ru(data.average)} токенов, всего ~${ru(data.tokens)}.`
+      + ` На ключ рекомендуется ${data.per_key} запросов`
+      + (data.keys > 1 ? ` (ключей ${data.keys})` : '')
+      + '. Значение подставлено в поля лимита — его можно изменить.';
+    // Подставляем, но не навязываем: у платных планов потолок другой.
+    for(const row of document.querySelectorAll('#llmKeys .tr')){
+      const limit = row.querySelectorAll('input')[1];
+      if(limit && !Number(limit.value)) limit.value = data.per_key;
+    }
+  }catch(err){ showError(err.message); }
+  finally{ $('llmEstimate').disabled = false; }
+}
+
 $('llmCheck').onclick = llmCheck;
 $('llmSave').onclick = llmSave;
+$('llmAdd').onclick = llmAdd;
+$('llmEstimate').onclick = llmEstimate;
+llmKeysState();
 
-// Что уже настроено — показываем при запуске. Ключ только маскированный.
+// Что уже настроено — показываем при запуске. Сами ключи не показываются
+// нигде и никогда: список ниже рисует только сокращения.
 call('/api/llm/state').then(data => {
-  if(!data.configured) return;
-  $('llmKey').placeholder = data.key;
   $('llmProxy').checked = data.use_proxies;
+  if(!data.configured) return;
   $('llmKeyNote').textContent =
-    `Ключ уже сохранён: ${data.key}` + (data.model ? `, модель ${data.model}.` : '.')
-    + ' Введите новый, чтобы заменить.';
+    `Ключей сохранено: ${data.total}, из них активны ${data.active}`
+    + (data.model ? `. Модель: ${data.model}.` : '.')
+    + ' Новые добавляются полем выше.';
 }).catch(() => {});
 
 
@@ -1286,6 +1478,9 @@ function anPayload(extra){
 
 async function anScan(){
   const targets = CHOSEN.anList || [];
+  // Смена папки — тоже отмена: разбор пошёл бы по старому выбору, а
+  // человек уже смотрит на новый.
+  cancelTab('analyze');
   if(!targets.length){
     ['anStage1','anStage2','anStage3','anGlossary','anRetell']
       .forEach(id => { $(id).hidden = true; });
@@ -1317,16 +1512,129 @@ async function anScan(){
 }
 window.anScan = anScan;
 
-async function anStart(){
+/* --------------------- сессия, журнал и результат (7.5–7.7) ---------- */
+
+//: Сколько строк журнала уже показано — дозапрашиваем только хвост.
+let anLogSeen = 0, anLogTimer = null;
+
+function anLogDraw(lines){
+  const box = $('anLog');
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  for(const line of lines){
+    const row = document.createElement('div');
+    row.className = 'ln ' + (line.kind || 'info');
+    const at = document.createElement('span');
+    at.className = 'at';
+    at.textContent = line.at;
+    row.append(at, document.createTextNode(line.text));
+    box.append(row);
+  }
+  // Автопрокрутка только если человек и так смотрит на конец: иначе
+  // нельзя было бы прочитать то, что уехало выше.
+  if(stick) box.scrollTop = box.scrollHeight;
+}
+
+async function anLogTick(jobId){
+  try{
+    const data = await call(`/api/job/${jobId}/log?since=${anLogSeen}`);
+    if(data.lines?.length){
+      anLogDraw(data.lines);
+      anLogSeen = data.total;
+    }
+  }catch(err){ /* журнал не повод ронять экран */ }
+}
+
+function anLogStart(jobId){
+  anLogSeen = 0;
+  $('anLog').innerHTML = '';
+  $('anLogBox').hidden = false;
+  clearInterval(anLogTimer);
+  anLogTimer = setInterval(() => anLogTick(jobId), 900);
+  $('anLogSave').onclick = () => {
+    window.location = `/api/job/${jobId}/log.txt`;
+  };
+}
+
+function anLogStop(jobId){
+  clearInterval(anLogTimer);
+  anLogTimer = null;
+  // Последний кусок: между опросами могло набежать.
+  if(jobId) anLogTick(jobId);
+}
+
+/** 7.5: блок результата. Он показывается в любом исходе. */
+function anShowResult(result, title){
+  if(!result) { $('anResult').hidden = true; return; }
+  $('anResult').hidden = false;
+  $('anResultTitle').textContent = title;
+  markResult('anResultTitle', false,
+             result.can_continue ? 'cancelled' : 'done');
+
+  const rows = [
+    ['Обработано', `${result.done} из ${result.total} глав`],
+    ['Ошибок', String(result.failed)],
+    ['Ключи', `${result.keys_exhausted} из ${result.keys_total} исчерпаны`],
+  ];
+  if(result.resets_in !== null && result.resets_in !== undefined){
+    rows.push(['Следующий сброс', 'через ' + llmWait(result.resets_in)]);
+  }
+  rows.push(['Папка', result.output]);
+
+  const box = $('anResultRows');
+  box.innerHTML = '';
+  for(const [name, value] of rows){
+    const span = document.createElement('span');
+    span.innerHTML = `${name}: <b>${value}</b>`;
+    box.append(span);
+  }
+  // «Продолжить» имеет смысл, только когда есть чем продолжать.
+  $('anContinue').disabled = !result.can_continue;
+}
+
+/** 7.6: если по этой папке осталась незавершённая работа — предложить. */
+async function anCheckSession(){
+  try{
+    const data = await call('/api/analyze/sessions', anPayload());
+    const found = (data.sessions || [])[0];
+    if(!found){ $('anSession').hidden = true; return false; }
+
+    $('anSession').hidden = false;
+    const box = $('anSessionRows');
+    box.innerHTML = '';
+    for(const [name, value] of [
+      ['Папка', found.root],
+      ['Обработано', `${found.done} из ${found.total}`],
+      ['Начата', found.when],
+      ['Остановлена', found.reason || '—'],
+    ]){
+      const span = document.createElement('span');
+      span.innerHTML = `${name}: <b>${value}</b>`;
+      box.append(span);
+    }
+    return true;
+  }catch(err){ return false; }
+}
+
+async function anStart(options){
   showError('');
+  options = options || {};
+
+  // Незавершённую работу не переписываем молча: спрашиваем, продолжить
+  // или начать заново. Заново — это ещё раз заплатить за те же главы.
+  if(!options.confirmed && await anCheckSession()) return;
+
+  $('anSession').hidden = true;
+  $('anResult').hidden = true;
   $('anStart').disabled = true;
   try{
     const {job} = await call('/api/analyze/start',
-      anPayload({force: $('anForce').checked}));
+      anPayload({force: $('anForce').checked, restart: !!options.restart}));
     anJob = job.id;
+    ownJob('analyze', job.id);
     $('anProgress').hidden = false;
     $('anStop').hidden = false;
     $('anSummary').textContent = 'Папка: ' + job.output_dir;
+    anLogStart(job.id);
 
     pollJob(job.id,
       job => {
@@ -1337,15 +1645,26 @@ async function anStart(){
       },
       async job => {
         $('anStop').hidden = true;
-        if(job.error){ showError(job.error); return; }
+        dropJob('analyze');
+        anLogStop(job.id);
         const r = job.report || {};
-        let text = `Папка: ${r.output || job.output_dir}`;
-        if(r.failed_files?.length){
-          text += '\n' + r.failed_files.slice(0, 20).join('\n');
+
+        if(job.error){
+          showError(job.error);
+          anShowResult(r.result, 'Работа прервана ошибкой');
+        }else if(job.progress?.stage === 'cancelled'){
+          anShowResult(r.result, job.progress.message || 'Работа остановлена');
+        }else{
+          anShowResult(r.result, 'Готово');
+          let text = `Папка: ${r.output || job.output_dir}`;
+          if(r.failed_files?.length){
+            text += '\n' + r.failed_files.slice(0, 20).join('\n');
+          }
+          $('anSummary').style.whiteSpace = 'pre-line';
+          $('anSummary').textContent = text;
         }
-        $('anSummary').style.whiteSpace = 'pre-line';
-        $('anSummary').textContent = text;
         await anLoadRegistry();
+        await llmKeysState();
       });
   }catch(err){
     showError(err.message);
@@ -1353,6 +1672,21 @@ async function anStart(){
     $('anStart').disabled = false;
   }
 }
+
+$('anResume').onclick = () => anStart({confirmed: true});
+$('anFresh').onclick = () => {
+  if(!confirm('Начать заново? Отметка о ходе работы стирается.\n\n'
+              + 'Разобранные главы останутся в кэше — за них уже заплачено.')) return;
+  anStart({confirmed: true, restart: true});
+};
+$('anSkip').onclick = () => { $('anSession').hidden = true; };
+$('anContinue').onclick = () => anStart({confirmed: true});
+$('anRestart').onclick = () => $('anFresh').onclick();
+$('anAddKeys').onclick = () => {
+  $('anResult').hidden = true;
+  $('llmKey').focus();
+  $('llmKey').scrollIntoView({behavior: 'smooth', block: 'center'});
+};
 
 /* ------------------------------------------------------------- реестр */
 
@@ -1603,7 +1937,7 @@ function anSaveReport(){
 }
 
 $('anList').dataset.onchange = 'anScan';
-$('anStart').onclick = anStart;
+$('anStart').onclick = () => anStart();
 $('anStop').onclick = () => stopJob(anJob);
 $('anRebuild').onclick = async () => {
   try{
@@ -2412,6 +2746,7 @@ async function orfStart(){
     const {job} = await call('/api/spelling/start',
       {targets, use_registry: $('orfReg').checked});
     orfJob = job.id;
+    ownJob('tools', job.id);
     $('orfProgress').hidden = false;
     $('orfStop').hidden = false;
 
@@ -2419,6 +2754,7 @@ async function orfStart(){
       job => drawResult(job.progress || {}, 'orfFill', 'orfStatus', null),
       job => {
         $('orfStop').hidden = true;
+        dropJob('tools');
         orfJob = null;
         if(job.error){ showError(job.error); $('orfNote').textContent = ''; return; }
         orfRender(job.report || {});
@@ -2680,6 +3016,7 @@ async function qRun(){
       start_from: $('qStart').value.trim(),
     });
     qJob = job.id;
+    ownJob('tools', job.id);
     $('qProgress').hidden = false;
     $('qStop').hidden = false;
 
@@ -2691,6 +3028,7 @@ async function qRun(){
       },
       job => {
         $('qStop').hidden = true;
+        dropJob('tools');
         qJob = null;
         if(job.error){ showError(job.error); return; }
         const report = job.report || {};
@@ -2831,6 +3169,7 @@ async function ckStart(){
   try{
     const {job} = await call('/api/check/start', {targets, kinds});
     ckJob = job.id;
+    ownJob('check', job.id);
     $('ckProgress').hidden = false;
     $('ckStop').hidden = false;
     $('ckSave').hidden = true;
@@ -3141,6 +3480,7 @@ async function ckClean(){
       folder: $('ckOut').value.trim(),
     });
     ckCleanJob = job.id;
+    ownJob('check', job.id);
     $('ckCleanResultBox').hidden = false;
 
     pollJob(job.id,
@@ -3172,26 +3512,25 @@ $('ckClean').onclick = ckClean;
 // Раздел 3: свои стрелки у всех числовых полей приложения.
 addSpinners();
 
-/* ================= Нижняя строка состояния (6.10) =================
+/* ================= Таймеры операций (2.1 и 2.2) =================
  *
- * Отвечает на вопрос «оно вообще шевелится?». По числу готовых глав этого
- * не видно: одна глава может тянуться минуту, и всё это время на экране
- * ничего не меняется.
+ * Полоса внизу оказалась неудачной: при прокрутке содержимое уезжало под
+ * неё, а в покое она сообщала бесполезное «8 прокси» на каждой вкладке.
+ * Теперь время стоит там, где на него и смотрят, — рядом с прогресс-баром
+ * и счётчиками той операции, к которой оно относится.
  *
- * Прогноз считается по последним замерам, а не по средней с начала: в
- * начале операции средняя врёт, а после смены прокси устаревает.
+ * Секундомер считает сервер: перезагрузка вкладки не должна его сбивать.
+ * Прогноз — здесь, по последним замерам: средняя с начала врёт в начале
+ * работы и устаревает после смены прокси.
  */
 
-const SB_SAMPLES = 20;
-let sbHistory = [], sbJob = null, sbTimer = null;
+//: Сколько замеров держать для прогноза.
+const ETA_SAMPLES = 20;
 
-function sbSize(bytes){
-  if(bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' МБ/с';
-  if(bytes >= 1024) return Math.round(bytes / 1024) + ' КБ/с';
-  return Math.round(bytes) + ' Б/с';
-}
+//: История «сколько сделано и когда» по каждой задаче.
+const ETA_HISTORY = {};
 
-function sbClock(seconds){
+function clockText(seconds){
   seconds = Math.max(0, Math.round(seconds));
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -3200,282 +3539,58 @@ function sbClock(seconds){
   return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-/** Прогноз по скорости обработки последних элементов. */
-function sbLeft(done, total, now){
-  sbHistory.push({at: now, done});
-  if(sbHistory.length > SB_SAMPLES) sbHistory.shift();
-  if(sbHistory.length < 3 || !total || done >= total) return '';
+/** Прогноз по скорости последних элементов. Пусто — данных ещё мало. */
+function etaText(jobId, done, total){
+  const list = ETA_HISTORY[jobId] || (ETA_HISTORY[jobId] = []);
+  const now = Date.now();
+  if(!list.length || list[list.length - 1].done !== done){
+    list.push({at: now, done});
+    if(list.length > ETA_SAMPLES) list.shift();
+  }
+  if(list.length < 3 || !total || done >= total) return '';
 
-  const first = sbHistory[0];
+  const first = list[0];
   const seconds = (now - first.at) / 1000;
   const made = done - first.done;
-  // Пока не сделано ни одного шага, прогнозировать нечего — прочерк
+  // Пока не сделано ни одного шага, прогнозировать нечего: прочерк
   // честнее выдуманного числа.
   if(seconds <= 0 || made <= 0) return '';
-  return sbClock((total - done) / (made / seconds));
+  return clockText((total - done) / (made / seconds));
 }
 
-function sbShow(id, text){
-  const box = $(id);
-  box.hidden = !text;
-  if(text) $(id + 'Num').textContent = text;
-}
-
-/** Помечает первый видимый пункт: перед ним точки быть не должно. */
-function sbFirst(){
-  let first = true;
-  for(const item of document.querySelectorAll('#statusBar .sb-item')){
-    item.classList.toggle('first', first && !item.hidden);
-    if(!item.hidden) first = false;
-  }
-}
-
-async function sbTick(){
-  try{
-    const data = await call('/api/status');
-    const bar = $('statusBar');
-    bar.classList.toggle('idle', !data.busy);
-
-    if(data.job !== sbJob){ sbJob = data.job; sbHistory = []; }
-
-    sbShow('sbSpeed', data.busy && data.network ? sbSize(data.speed) : '');
-    sbShow('sbElapsed', data.busy ? sbClock(data.elapsed) : '');
-    sbShow('sbLeft', data.busy ? sbLeft(data.done, data.total, Date.now()) : '');
-
-    const mode = [];
-    if(data.busy && data.threads) mode.push(`${data.threads} потока`);
-    if(data.proxies) mode.push(`${data.proxies} прокси`);
-    // Пустой пункт всё равно рисовал бы разделитель — точку в никуда.
-    $('sbMode').hidden = !mode.length;
-    $('sbMode').textContent = mode.join(' · ');
-
-    sbFirst();
-  }catch(err){
-    // Сервер закрыли — строка просто гаснет, ошибку показывать незачем.
-    $('statusBar').classList.add('idle');
-  }
-}
-
-sbTick();
-sbTimer = setInterval(sbTick, 1000);
-
-/* ================= Источники и рейтинг Фанкью (часть 5) =================
+/** Строка «3 потока · 3 прокси» — только если многопоточность включилась.
  *
- * Источник — отдельный модуль на сервере, здесь только выбор. Меню
- * строится по ответу `/api/sources`, а не по зашитому списку: иначе новый
- * источник пришлось бы вписывать в двух местах.
- *
- * Живёт в этом файле, а не в разметке: `makeDropdown` объявлена здесь, и
- * вызывать её раньше было бы полаганием на то, что ответ сервера придёт
- * позже загрузки скрипта.
+ *  В один поток строки нет вовсе: сообщать «1 поток» незачем, а показывать
+ *  число прокси там, где сеть не используется, — тем более.
  */
-
-async function loadSources(){
-  try{
-    const data = await call('/api/sources');
-    const box = $('srcPick');
-    if(!box) return;
-    box.dataset.options = JSON.stringify(
-      (data.sources || []).map(s => [s.key, s.name]));
-    box.innerHTML = '';
-    srcMenu = makeDropdown(box, key => {
-      const found = (data.sources || []).find(s => s.key === key);
-      // Подсказка под полем меняется вместе с источником: у Фанкью в
-      // ссылке не слаг, а числовой код, и вводить надо другое.
-      if(found) $('srcHint').textContent = found.hint;
-    });
-    const first = (data.sources || [])[0];
-    if(first) $('srcHint').textContent = first.hint;
-  }catch(err){ /* источники не список вкладок — молча оставляем как есть */ }
-}
-loadSources();
-
-/* ------------------------------------------------ рейтинг (5.3) */
-
-let rkRows = [], rkTitles = {}, rkBoardMenu = null, rkPicked = null;
-
-function rkMove(value){
-  if(value === null || value === undefined) return {text: '—', cls: 'flat'};
-  if(value > 0) return {text: '▲ ' + value, cls: 'up'};
-  if(value < 0) return {text: '▼ ' + Math.abs(value), cls: 'down'};
-  return {text: '=', cls: 'flat'};
+function modeText(progress){
+  const threads = Number(progress.threads || 0);
+  if(threads < 2) return '';
+  const proxies = Number(progress.proxies || 0);
+  return `${threads} ${plural(threads, 'поток', 'потока', 'потоков')}`
+    + (proxies ? ` · ${proxies} ${plural(proxies, 'прокси', 'прокси', 'прокси')}` : '');
 }
 
-function rkRender(){
-  const box = $('rkTable');
-  box.innerHTML = '';
-  const filter = $('rkFilter').value.trim().toLowerCase();
-  const shown = rkRows.filter(row => !filter
-    || (row.name || '').toLowerCase().includes(filter)
-    || (rkTitles[row.book_id] || '').toLowerCase().includes(filter)
-    || (row.category || '').toLowerCase().includes(filter));
+/** Рисует таймеры блока результата. Ищет `<prefix>Timers` рядом. */
+function drawTimers(statusId, job){
+  const box = $(String(statusId).replace(/Status$/, '') + 'Timers');
+  if(!box || !job) return;
 
-  if(!shown.length){
-    box.innerHTML = '<div class="tr"><span class="grow hint">'
-      + (rkRows.length ? 'Ничего не подошло под фильтр.'
-                       : 'Срезов пока нет — нажмите «Обновить срез».')
-      + '</span></div>';
-    return;
+  const progress = job.progress || {};
+  const done = job.running === false || TERMINAL.includes(progress.stage);
+  const parts = [];
+
+  if(done){
+    // По завершении оба таймера заменяются итогом — оставшееся время
+    // после конца работы смысла не имеет.
+    if(job.elapsed >= 1) parts.push(`заняло <b>${tookText(job.elapsed)}</b>`);
+  }else{
+    parts.push(`прошло <b>${clockText(job.elapsed || 0)}</b>`);
+    const left = etaText(job.id, Number(progress.done || 0), Number(progress.total || 0));
+    parts.push(`осталось <b>${left || '—'}</b>`);
   }
 
-  for(const row of shown){
-    const tr = document.createElement('div');
-    tr.className = 'tr';
-
-    const place = document.createElement('span');
-    place.className = 'place';
-    place.textContent = row.place;
-    tr.append(place);
-
-    const name = document.createElement('span');
-    name.className = 'grow';
-    name.textContent = row.name;
-    name.title = row.author ? 'автор: ' + row.author : '';
-    tr.append(name);
-
-    const readers = document.createElement('span');
-    readers.className = 'num';
-    readers.textContent = ru(row.readers);
-    readers.title = 'читающих';
-    tr.append(readers);
-
-    for(const [value, label] of [[row.day, 'за сутки'], [row.week, 'за неделю']]){
-      const move = rkMove(value);
-      const span = document.createElement('span');
-      span.className = 'num ' + move.cls;
-      span.textContent = move.text;
-      span.title = label;
-      tr.append(span);
-    }
-
-    if(row.is_new){
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = 'новая';
-      tr.append(tag);
-    }else if(row.holding > 1){
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = `${row.holding} дн.`;
-      tag.title = 'дней подряд в топе';
-      tr.append(tag);
-    }
-
-    const get = document.createElement('button');
-    get.className = 'ghost';
-    get.textContent = 'скачать';
-    get.style.padding = '4px 10px';
-    get.onclick = () => rkPick(row);
-    tr.append(get);
-
-    if(rkTitles[row.book_id]){
-      const ru_ = document.createElement('span');
-      ru_.className = 'ru';
-      ru_.textContent = rkTitles[row.book_id];
-      tr.append(ru_);
-    }
-    box.append(tr);
-  }
+  const mode = modeText(progress);
+  if(mode) parts.push(`<span class="mode">${mode}</span>`);
+  box.innerHTML = parts.join(' · ');
 }
-
-function rkShow(data){
-  rkRows = data.rows || [];
-  if(data.titles) rkTitles = data.titles;
-  $('rkNote').textContent = rkRows.length
-    ? `Срез за ${data.day}, строк ${rkRows.length}. Дней в истории: ${data.days}.`
-      + (data.note ? ' ' + data.note : '')
-    : (data.note || 'Срезов пока нет.');
-  rkRender();
-}
-
-async function rkState(){
-  try{
-    const board = rkBoardMenu ? rkBoardMenu.value : 'all';
-    const data = await call('/api/rank/state?board=' + encodeURIComponent(board));
-    if(data.boards && rkBoardMenu === null) rkBoards(data.boards);
-    rkShow(data);
-  }catch(err){ showError(err.message); }
-}
-
-function rkBoards(boards){
-  const box = $('rkBoard');
-  box.dataset.options = JSON.stringify(boards.map(b => [b.key, b.name]));
-  box.innerHTML = '';
-  rkBoardMenu = makeDropdown(box, () => rkState());
-}
-
-async function rkRefresh(){
-  showError('');
-  $('rkRefresh').disabled = true;
-  $('rkNote').innerHTML = '<span class="spin"></span>Запрашиваем рейтинг…';
-  try{
-    const data = await call('/api/rank/refresh',
-      {board: rkBoardMenu ? rkBoardMenu.value : 'all'});
-    rkShow(data);
-  }catch(err){
-    showError(err.message);
-    $('rkNote').textContent = '';
-  }finally{
-    $('rkRefresh').disabled = false;
-  }
-}
-
-async function rkTranslate(){
-  showError('');
-  $('rkTranslate').disabled = true;
-  try{
-    const data = await call('/api/rank/translate', {
-      board: rkBoardMenu ? rkBoardMenu.value : 'all',
-      model: llmMenu ? llmMenu.value : '',
-    });
-    rkTitles = data.titles || {};
-    $('rkNote').textContent =
-      `Переведено ${data.translated}, из кэша ${data.cached}.`;
-    rkRender();
-  }catch(err){ showError(err.message); }
-  finally{ $('rkTranslate').disabled = false; }
-}
-
-/** Книга выбрана — качаем её через общий путь качалки. */
-function rkPick(row){
-  rkPicked = row;
-  $('rkPlace').hidden = false;
-  $('rkChosen').textContent = `${row.name} · код ${row.book_id}`;
-  $('rkFolder').value = rkTitles[row.book_id] || row.name;
-  $('rkStartNote').textContent = '';
-  $('rkPlace').scrollIntoView({behavior: 'smooth', block: 'nearest'});
-}
-
-async function rkStart(){
-  showError('');
-  if(!rkPicked) return;
-  const base = $('rkBase').value.trim();
-  if(!base){ showError('Укажите, куда сохранить'); return; }
-
-  $('rkStart').disabled = true;
-  try{
-    // Ищем книгу тем же запросом, что и в качалке: код уже известен,
-    // копировать ничего не нужно.
-    const found = await call('/api/find',
-      {query: rkPicked.book_id, source: 'fanqie'});
-    const {job} = await call('/api/start', {
-      novel: found.novel,
-      source: 'fanqie',
-      base,
-      folder: $('rkFolder').value.trim() || found.novel.name,
-    });
-    $('rkStartNote').textContent =
-      `Качаем в ${job.output_dir}. Ход виден на вкладке «Качалка».`;
-  }catch(err){
-    showError(err.message);
-  }finally{
-    $('rkStart').disabled = false;
-  }
-}
-
-$('rkRefresh').onclick = rkRefresh;
-$('rkTranslate').onclick = rkTranslate;
-$('rkFilter').addEventListener('input', rkRender);
-$('rkStart').onclick = rkStart;
-$('rkCancel').onclick = () => { $('rkPlace').hidden = true; rkPicked = null; };
-rkState();

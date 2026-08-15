@@ -44,7 +44,7 @@
     color:var(--text);
     font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     min-height:100vh;
-    padding:48px 20px 96px;
+    padding:48px 20px 80px;
     background-image:
       radial-gradient(680px 420px at 50% -12%, rgba(176,108,255,.16), transparent 70%),
       radial-gradient(420px 300px at 88% 100%, rgba(122,63,208,.10), transparent 70%);
@@ -52,32 +52,6 @@
   }
   .wrap{max-width:660px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 
-  /* 6.10 Нижняя строка состояния. Тусклая в покое, текст загорается при
-     наведении — как остальные подписи в программе. */
-  .statusbar{
-    position:fixed;left:0;right:0;bottom:0;height:28px;z-index:60;
-    display:flex;align-items:center;justify-content:center;gap:14px;
-    padding:0 14px;
-    background:rgba(8,8,12,.86);
-    border-top:1px solid rgba(140,84,255,.22);
-    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-    color:#6d6d7a;font-size:12px;line-height:1;
-    white-space:nowrap;overflow:hidden;
-    transition:color .25s ease, border-color .25s ease, opacity .35s ease;
-  }
-  .statusbar:hover{color:#a9a4b8;border-color:rgba(140,84,255,.42)}
-  /* В покое полоса гаснет, но остаётся на месте: пропадающая насовсем
-     дёргала бы страницу на 28 пикселей при каждом запуске. */
-  .statusbar.idle{opacity:.55}
-  .sb-item{display:inline-flex;align-items:center;gap:5px}
-  .sb-item b{color:#9a6dd7;font-weight:600;font-variant-numeric:tabular-nums}
-  .statusbar:hover .sb-item b{color:#c084fc}
-  /* Разделители — точки между пунктами, а не рамки. Соседство считается
-     по разметке, а не по видимости, поэтому первый видимый пункт помечает
-     скрипт: иначе точка висела бы в начале строки. */
-  .sb-item::before{content:"·";margin-right:9px;opacity:.5}
-  .sb-item.first::before{content:none;margin-right:0}
-  .sb-item[hidden]{display:none}
 
   h1,.app-title{
     font-family:'Exo 2', system-ui, sans-serif;
@@ -171,7 +145,11 @@
     border:1px solid var(--stroke);
     border-radius:14px;
     color:var(--text);font:inherit;font-weight:500;cursor:pointer;
-    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    /* Размытия здесь нет намеренно. `backdrop-filter` и `transform` на
+       одном элементе Chrome не дружат: слой размытия перестаёт
+       обрезаться по скруглению и вылезает серыми углами поверх кнопки.
+       А transform у кнопок есть всегда — нажатие и магнит. Стекло даёт
+       карточка под кнопкой, потери не видно. */
     transition:background .18s, box-shadow .2s ease, border-color .2s ease,
                color .2s ease, text-shadow .2s ease, transform .1s;
   }
@@ -268,7 +246,7 @@
     display:flex;align-items:center;justify-content:space-between;gap:8px;
   }
   .dropdown-menu{
-    position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:30;
+    position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:200;
     background:#15151d;
     border:1px solid #6d28d9;
     border-radius:10px;
@@ -280,7 +258,7 @@
      неё соседнюю карточку уже не перебивает, и раскрытый список уходил под
      следующую. Поднимаем саму карточку, пока в ней открыт список. */
   .card{position:relative;z-index:1}
-  .card:has(.dropdown-menu:not([hidden])){z-index:40}
+  .card:has(.dropdown-menu:not([hidden])){z-index:200}
   .dropdown-item{
     padding:8px 12px;
     border-radius:7px;
@@ -300,6 +278,9 @@
     justify-content:center;justify-content:safe center;
     overflow-x:auto;overscroll-behavior-x:contain;
     scrollbar-width:none;-ms-overflow-style:none;
+    /* Прокрутка вбок делает панель обрезающей и по вертикали, поэтому
+       смещённой кнопке нужен запас — иначе магнит стирал ей верх. */
+    padding:6px 0;
     /* Колонка карточек узкая (660px), а меню ей следовать не обязано:
        выносим его на ширину окна, чтобы вкладки помещались подольше. */
     width:min(100vw - 24px, 1340px);
@@ -542,6 +523,11 @@
     to{transform:translateX(100%)}
   }
   .stats{display:flex;gap:18px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+  /* Таймеры стоят в той же строке, что и счётчики: смотреть на прогресс и
+     на оставшееся время приходится вместе. */
+  .timers{display:inline-flex;gap:14px;align-items:baseline}
+  .timers b{color:#9a6dd7;font-weight:600;font-variant-numeric:tabular-nums}
+  .timers .mode{color:#c084fc}
   .stats b{color:#fff;font-weight:600}
   .status{font-size:13px;color:var(--muted);min-height:20px}
 
@@ -689,6 +675,28 @@
   .reader p.mark{background:rgba(255,196,92,.10);
     box-shadow:inset 3px 0 0 rgba(255,196,92,.55);
     border-radius:3px;padding:2px 6px 2px 8px}
+
+  /* Журнал работы: моноширинный, чтобы время выстроилось в столбик. */
+  .joblog{
+    max-height:260px;overflow:auto;margin-top:8px;padding:10px 12px;
+    border-radius:10px;background:rgba(255,255,255,.02);
+    border:1px solid var(--stroke-soft);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px;line-height:1.6;
+  }
+  .joblog .ln{white-space:pre-wrap;word-break:break-word;color:#8b8699}
+  .joblog .ln .at{color:#6d6d7a;margin-right:8px}
+  .joblog .ln.warn{color:#ffc86b}
+  .joblog .ln.error{color:#ff9d9d}
+  .joblog .ln.stop{color:#c084fc}
+  .joblog .ln.key{color:#9be8c0}
+
+  /* Ключи: состояние видно цветом, как и всё остальное в программе. */
+  #llmKeys .tr .state{font-size:12px;white-space:nowrap}
+  #llmKeys .tr.active .state{color:#c084fc;text-shadow:0 0 8px rgba(192,132,252,.6)}
+  #llmKeys .tr.exhausted{opacity:.6}
+  #llmKeys .tr.exhausted .state{color:#8b8699}
+  #llmKeys .tr input.rowname{flex:0 0 120px}
 
   /* Рейтинг: движение вверх и вниз разными цветами. */
   #rkTable .tr{flex-wrap:wrap;row-gap:6px}
@@ -841,6 +849,7 @@
       <span>очищено <b id="hdWritten">0</b></span>
       <span>ошибок <b id="hdFailed">0</b></span>
       <span id="hdPct"></span>
+        <span class="timers" id="hdTimers"></span>
     </div>
     <p class="result-path" id="hdSummary"></p>
   </div>
@@ -956,6 +965,7 @@
       <span>пропущено <b id="sSkip">0</b></span>
       <span>ошибок <b id="sFail">0</b></span>
       <span id="sPct"></span>
+        <span class="timers" id="sTimers"></span>
     </div>
     <details id="probeBox" hidden style="margin-top:12px">
       <summary style="cursor:pointer;color:var(--neon);font-size:13px">Подробности пробы</summary>
@@ -1110,6 +1120,7 @@
       <span>записано <b id="spWritten">0</b></span>
       <span>ошибок <b id="spFailed">0</b></span>
       <span id="spPct"></span>
+        <span class="timers" id="spTimers"></span>
     </div>
     <div class="row" style="margin-top:16px">
       <button id="spStop" class="ghost">Остановить</button>
@@ -1242,6 +1253,7 @@
       <span>записано <b id="rnWritten">0</b></span>
       <span>ошибок <b id="rnFailed">0</b></span>
       <span id="rnPct"></span>
+        <span class="timers" id="rnTimers"></span>
     </div>
     <div class="row" style="margin-top:16px">
       <button id="rnStop" class="ghost">Остановить</button>
@@ -1380,6 +1392,7 @@
       <span>собрано <b id="mgWritten">0</b></span>
       <span>ошибок <b id="mgFailed">0</b></span>
       <span id="mgPct"></span>
+        <span class="timers" id="mgTimers"></span>
     </div>
     <div class="row" style="margin-top:16px">
       <button id="mgStop" class="ghost">Остановить</button>
@@ -1393,18 +1406,34 @@
 <!-- ================== Настройки модели (часть 2) ================== -->
 <section id="tab-analyze" hidden>
   <div class="card lit">
-    <label for="llmKey">Ключ Gemini</label>
-    <div class="row">
-      <input id="llmKey" type="password" placeholder="AIza…" autocomplete="off"
-             spellcheck="false">
-      <button class="ghost" id="llmShow" style="padding:9px 14px">Показать</button>
+    <label for="llmKey">Ключи Gemini</label>
+    <p class="hint">У бесплатной квоты есть суточный потолок, и на книге в
+       пятьсот глав одного ключа не хватает. Ключей может быть несколько:
+       когда один исчерпан, работа сама переходит на следующий, а запрос,
+       на котором это случилось, повторяется — глава не теряется.</p>
+    <div class="row" style="margin-top:10px">
+      <textarea id="llmKey" rows="2" spellcheck="false" autocomplete="off"
+                placeholder="AIza…&#10;можно вставить несколько строк разом"></textarea>
     </div>
-    <p class="hint" id="llmKeyNote">Ключ хранится в <code>config.json</code>
-       рядом с программой. Этот файл в <code>.gitignore</code> и в логи не
-       попадает.</p>
+    <div class="row" style="margin-top:8px">
+      <input id="llmName" type="text" placeholder="название (необязательно)"
+             autocomplete="off">
+      <input id="llmLimit" type="number" min="0" placeholder="лимит запросов"
+             style="flex:0 0 150px">
+      <button id="llmAdd" class="ghost" style="flex:0 0 auto">Добавить</button>
+    </div>
+    <p class="hint" id="llmKeyNote">Ключи хранятся в <code>config.json</code>
+       рядом с программой. Этот файл в <code>.gitignore</code>; наружу и в
+       логи ключ целиком не попадает никогда.</p>
+
+    <div class="table" id="llmKeys" style="margin-top:12px"></div>
+
     <div class="row" style="margin-top:12px">
-      <button id="llmCheck" class="primary" style="flex:1">Проверить ключ</button>
+      <button id="llmEstimate" class="ghost" style="flex:1">Оценить расход</button>
+      <button id="llmCheck" class="primary" style="flex:1">Проверить и выбрать
+        модель</button>
     </div>
+    <p class="hint" id="llmEstimateNote"></p>
   </div>
 
   <div class="card" id="llmSetup" hidden>
@@ -1456,8 +1485,42 @@
         <span>разобрано <b id="anWritten">0</b></span>
         <span>ошибок <b id="anFailed">0</b></span>
         <span id="anPct"></span>
+        <span class="timers" id="anTimers"></span>
       </div>
       <p class="result-path" id="anSummary"></p>
+
+      <!-- 7.7 Журнал: прогресс-бар говорит «сколько», а журнал — «что». -->
+      <details id="anLogBox" style="margin-top:12px">
+        <summary class="hint" style="cursor:pointer">Журнал работы</summary>
+        <div class="joblog" id="anLog"></div>
+        <div class="row" style="margin-top:8px">
+          <button id="anLogSave" class="ghost" style="flex:0 0 auto">Сохранить
+            лог в файл</button>
+        </div>
+      </details>
+    </div>
+
+    <!-- 7.5 Блок результата: он обязателен в любом исходе. -->
+    <div class="card" id="anResult" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="anResultTitle"></span></div>
+      <div class="stats" id="anResultRows" style="margin-top:10px"></div>
+      <div class="row" style="margin-top:14px">
+        <button id="anContinue" class="primary" style="flex:1">Продолжить</button>
+        <button id="anAddKeys" class="ghost" style="flex:1">Добавить ключи</button>
+        <button id="anRestart" class="ghost" style="flex:1">Начать заново</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7.6 Найдена незавершённая сессия -->
+  <div class="card" id="anSession" hidden>
+    <label>Найдена незавершённая сессия</label>
+    <div class="stats" id="anSessionRows" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="anResume" class="primary" style="flex:1">Продолжить</button>
+      <button id="anFresh" class="ghost" style="flex:1">Начать заново</button>
+      <button id="anSkip" class="ghost" style="flex:0 0 auto">Отмена</button>
     </div>
   </div>
 
@@ -1612,6 +1675,7 @@
         <span>записано <b id="rpWritten">0</b></span>
         <span>ошибок <b id="rpFailed">0</b></span>
         <span id="rpPct"></span>
+        <span class="timers" id="rpTimers"></span>
       </div>
       <p class="result-path" id="rpSummary"></p>
     </div>
@@ -1711,6 +1775,7 @@
       <div class="status result-block"><span class="result-dot"></span>
         <span class="result-text" id="orfStatus"></span></div>
       <div class="bar"><i id="orfFill"></i></div>
+      <div class="stats"><span class="timers" id="orfTimers"></span></div>
     </div>
     <p class="hint" id="orfNote"></p>
     <div class="table" id="orfFindings" style="margin-top:10px"></div>
@@ -1757,6 +1822,7 @@
       <div class="status result-block"><span class="result-dot"></span>
         <span class="result-text" id="qStatus"></span></div>
       <div class="bar"><i id="qFill"></i></div>
+      <div class="stats"><span class="timers" id="qTimers"></span></div>
     </div>
     <p class="hint" id="qNote"></p>
   </div>
@@ -1850,6 +1916,7 @@
       <div class="stats">
         <span>записано <b id="sgWritten">0</b></span>
         <span id="sgPct"></span>
+        <span class="timers" id="sgTimers"></span>
       </div>
     </div>
     <p class="hint" id="sgNote"></p>
@@ -1879,6 +1946,7 @@
   <div class="card lit" id="ckProgress" hidden>
     <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="ckStatus"></span></div>
     <div class="bar"><i id="ckFill"></i></div>
+    <div class="stats"><span class="timers" id="ckTimers"></span></div>
     <div class="row" style="margin-top:12px">
       <button id="ckStop" class="ghost">Остановить</button>
       <button id="ckSave" class="ghost" hidden>Выгрузить отчёт</button>
@@ -1939,6 +2007,7 @@
     <div id="ckCleanResultBox" hidden style="margin-top:14px">
       <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="ckCleanStatus"></span></div>
       <div class="bar"><i id="ckCleanFill"></i></div>
+      <div class="stats"><span class="timers" id="ckCleanTimers"></span></div>
       <p class="result-path" id="ckCleanResult"></p>
     </div>
   </div>
@@ -2002,13 +2071,6 @@
 </section>
 </div>
 
-<!-- 6.10 Нижняя строка состояния. Всегда на месте, тусклая в покое. -->
-<footer class="statusbar" id="statusBar">
-  <span class="sb-item" id="sbSpeed" hidden>↓ <b id="sbSpeedNum">—</b></span>
-  <span class="sb-item" id="sbElapsed" hidden>прошло <b id="sbElapsedNum">00:00</b></span>
-  <span class="sb-item" id="sbLeft" hidden>осталось <b id="sbLeftNum">—</b></span>
-  <span class="sb-item" id="sbMode"></span>
-</footer>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -2401,7 +2463,10 @@ async function tick(){
     // качалка писала текст сама и кружок-индикатор не загорался вовсе.
     const label = (STAGES[p.stage] || p.stage || '')
       + (p.message ? ' — ' + p.message : '');
+    LAST_JOB = job;
     drawResult({...p, message: label}, 'fill', 'status', 'sPct');
+    // Качалка опрашивает задачу сама, поэтому таймеры зовём отдельно.
+    drawTimers('sStatus', job);
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
     $('sFail').textContent = p.failed || 0;
@@ -2495,6 +2560,14 @@ loadProxyState();
 
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.onclick = () => {
+    // Уход с вкладки останавливает её работу: анализ на пятистах главах
+    // иначе продолжал бы жечь ключи, пока человек смотрит в другое место.
+    // Прогресс не теряется — сессия позволяет продолжить с того же места.
+    const leaving = document.querySelector('section:not([hidden])');
+    if(leaving && leaving.id !== 'tab-' + btn.dataset.tab
+       && typeof cancelTab === 'function'){
+      cancelTab(leaving.id.replace('tab-', ''));
+    }
     document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
     document.querySelectorAll('section').forEach(s => {
       s.hidden = s.id !== 'tab-' + btn.dataset.tab;

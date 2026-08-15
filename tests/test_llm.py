@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+import json
 import unittest
 from pathlib import Path
 
@@ -338,7 +339,9 @@ class TestWebApi(LlmTestCase):
     def test_state_never_returns_the_raw_key(self):
         body = self.app.get("/api/llm/state").get_json()
         self.assertTrue(body["configured"])
-        self.assertNotIn("AIzaTESTKEY0000secret", body["key"])
+        # Ключей теперь список, и целиком не отдаётся ни один.
+        self.assertNotIn("AIzaTESTKEY0000secret", json.dumps(body))
+        self.assertTrue(body["keys"])
 
     def test_check_without_a_key_fails_before_the_network(self):
         """Ключа нет — отвечаем сразу, никуда не ходим."""

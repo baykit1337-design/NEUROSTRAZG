@@ -31,6 +31,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
+from ops.base import Cancelled as OpCancelled  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ class Progress:
     #: Через какой прокси идёт работа и сколько было переключений.
     proxy: str = ""
     switches: int = 0
+    #: Сколько потоков и прокси реально работают. Показывается в блоке
+    #: результата только когда потоков больше одного: «1 поток» сообщать
+    #: незачем, а число прокси там, где сеть не используется, — тем более.
+    threads: int = 1
+    proxies: int = 0
     #: Итог автопробы способа скачивания — интерфейс показывает его
     #: уведомлением внизу справа.
     probe: dict = field(default_factory=dict)
@@ -561,10 +567,14 @@ class Downloader:
         blocked_at: int | None = None
         stopped_reason = ""
 
+        # Многопоточность действительно включилась — говорим, сколько
+        # потоков и прокси работают. В один поток эта строка не рисуется.
+        usable = self.pool.usable_count if self.pool is not None else 0
         self._emit(
             stage="download",
             message=f"Качаем {len(pending)} глав в {self.threads} потока…",
             done=0, total=len(pending),
+            threads=self.threads, proxies=usable,
         )
 
         paid = 0
@@ -706,8 +716,8 @@ def _is_refusal(error: BaseException) -> bool:
     return isinstance(error, HttpError) and error.status in (403, 429)
 
 
-class Cancelled(Exception):
-    """Пользователь остановил скачивание."""
+#: Та же отмена, что и у остальных операций, — см. `ops/base.py`.
+Cancelled = OpCancelled
 
 
 def _compact_ranges(numbers: list[int]) -> str:

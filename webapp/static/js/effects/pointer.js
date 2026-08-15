@@ -10,6 +10,10 @@
  *  промахиваешься мимо кнопки, которая уехала. */
 const FX_MAGNET = 4;
 
+/** По вертикали меньше: кнопки верхней панели стоят вплотную к краю
+ *  строки, и на четырёх пикселях им уже не хватало места. */
+const FX_MAGNET_Y = 3;
+
 /** Магнитятся только крупные кнопки действий. */
 const FX_MAGNET_MIN = 90;
 
@@ -68,7 +72,7 @@ function fxHas(key){
     held = button;
     button.style.transition = 'transform .12s ease-out';
     button.style.transform =
-      `translate(${(dx * FX_MAGNET).toFixed(2)}px, ${(dy * FX_MAGNET).toFixed(2)}px)`;
+      `translate(${(dx * FX_MAGNET).toFixed(2)}px, ${(dy * FX_MAGNET_Y).toFixed(2)}px)`;
   });
 
   // Возврат с пружиной — на уход курсора и на любое снятие эффекта.

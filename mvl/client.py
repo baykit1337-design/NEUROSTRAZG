@@ -12,17 +12,10 @@ from __future__ import annotations
 
 import logging
 import random
-import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from net import traffic  # noqa: E402
 
 BASE = "https://chap.heliosarchive.online"
 API = f"{BASE}/wp-json/wp/v2"
@@ -298,11 +291,6 @@ class Client:
                 network_failure = False
 
                 if status == 200:
-                    # Объём — в общий счётчик: по нему нижняя строка считает
-                    # скорость. Тело уже прочитано проверкой на обрыв.
-                    got = _body_length(resp)
-                    if got:
-                        traffic.add(got)
                     short = _incomplete(resp)
                     if short:
                         # Не «таймаут»: соединение было, ответ пришёл рваным.

@@ -28,12 +28,13 @@ from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
-from net import traffic  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
-from llm.client import BadKey, LlmClient, LlmError, mask  # noqa: E402
+from llm.client import BadKey, LlmClient, LlmError, NoKeysLeft, mask, short  # noqa: E402
+from llm import keys as keys_mod  # noqa: E402
+from llm.keys import store as keystore  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
 from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
@@ -43,6 +44,8 @@ from ops import docs as docs_op  # noqa: E402
 from ops import retell as retell_op  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
 from ops import history as history_op  # noqa: E402
+from ops import joblog  # noqa: E402
+from ops import session as session_op  # noqa: E402
 from ops import queue as queue_op  # noqa: E402
 from ops import reader as reader_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
@@ -96,6 +99,8 @@ class Job:
     #: страница: перезагрузка вкладки не должна сбрасывать секундомер.
     started: float = field(default_factory=time.monotonic)
     finished: float = 0.0
+    #: Построчный журнал работы — заводится там, где он нужен (7.7).
+    log: object = None
 
     @property
     def elapsed(self) -> float:
@@ -127,11 +132,11 @@ def start_job(job: Job, work) -> Job:
         try:
             work(job)
         except OpCancelled:
+            # Отмена в проекте одна на всех — см. `ops/base.py`. Раньше
+            # классов было три, остановку ловил не тот `except`, и она
+            # показывалась ошибкой.
             job.progress["stage"] = "cancelled"
-            job.progress["message"] = "Остановлено."
-        except Cancelled:
-            job.progress["stage"] = "cancelled"
-            job.progress["message"] = "Остановлено. Прогресс сохранён."
+            job.progress["message"] = "Остановлено. Что успело — сохранено."
         except Exception as exc:  # noqa: BLE001 — показываем пользователю любую поломку
             log.exception("Задача %s упала", job.id)
             job.error = scrub(f"{type(exc).__name__}: {exc}")
@@ -532,9 +537,7 @@ def api_start():
     except sources.SourceBroken as exc:
         return jsonify(error=str(exc)), 400
 
-    # Нижней строке нужен режим операции и чистый счётчик трафика.
     job.meta["threads"] = threads
-    traffic.reset()
 
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
@@ -786,15 +789,82 @@ def _llm_client(payload: dict) -> LlmClient:
 
 @app.get("/api/llm/state")
 def api_llm_state():
-    """Что уже настроено. Ключ отдаётся только замаскированным."""
-    key = settings.llm_key
-    return jsonify(
-        configured=bool(key),
-        key=mask(key) if key else "",
-        model=settings.llm.model,
-        use_proxies=settings.llm.use_proxies,
-        provider=settings.llm.provider,
-    )
+    """Что настроено. Ключи отдаются только сокращёнными."""
+    state = keystore.state()
+    return jsonify(configured=state["total"] > 0,
+                   provider=settings.llm.provider, **state)
+
+
+@app.post("/api/llm/keys/add")
+def api_llm_keys_add():
+    """Добавляет ключ или сразу несколько строк."""
+    payload = request.json or {}
+    text = str(payload.get("key") or "")
+    if not text.strip():
+        return jsonify(error="Введите ключ"), 400
+    keystore.add(text, name=str(payload.get("name") or "").strip(),
+                 limit=int(payload.get("limit") or 0))
+    return jsonify(**keystore.state())
+
+
+@app.post("/api/llm/keys/remove")
+def api_llm_keys_remove():
+    keystore.remove(str((request.json or {}).get("id") or ""))
+    return jsonify(**keystore.state())
+
+
+@app.post("/api/llm/keys/update")
+def api_llm_keys_update():
+    """Правка имени, лимита и статуса вручную (7.2 и 7.3)."""
+    payload = request.json or {}
+    ident = str(payload.get("id") or "")
+    if not ident:
+        return jsonify(error="Не указан ключ"), 400
+
+    fields = {}
+    if "name" in payload:
+        fields["name"] = str(payload.get("name") or "")
+    if "limit" in payload:
+        try:
+            fields["limit"] = max(0, int(payload.get("limit") or 0))
+        except (TypeError, ValueError):
+            return jsonify(error="Лимит должен быть числом"), 400
+    if "state" in payload:
+        wanted = str(payload.get("state") or "").strip()
+        if wanted not in (keys_mod.ACTIVE, keys_mod.EXHAUSTED):
+            return jsonify(error=f"Неизвестное состояние: {wanted}"), 400
+        fields["state"] = wanted
+        # Сняли пометку вручную — счётчик и срок сброса больше не в счёт,
+        # иначе ключ тут же снова окажется исчерпанным.
+        if wanted == keys_mod.ACTIVE:
+            fields.update(used=0, exhausted_at="", reset_at="")
+
+    keystore.update(ident, **fields)
+    return jsonify(**keystore.state())
+
+
+@app.post("/api/llm/estimate")
+def api_llm_estimate():
+    """«Оценить расход»: объём работы и сколько класть на ключ (7.2)."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        info = analyze_op.scan(targets, _book_root(payload))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    keys = keystore.state()["total"] or 1
+    estimate = info.get("estimate") or {}
+    from llm.client import Estimate
+
+    full = Estimate(chapters=int(estimate.get("chapters") or 0),
+                    characters=int(estimate.get("characters") or 0),
+                    tokens=int(estimate.get("tokens") or 0),
+                    cached=int(estimate.get("cached") or 0),
+                    keys=keys)
+    return jsonify(**full.as_dict())
 
 
 @app.post("/api/llm/check")
@@ -824,7 +894,9 @@ def api_llm_save():
     model = (payload.get("model") or "").strip()
 
     if key:
-        settings.llm.api_key = key
+        # Ключи живут списком: добавляем, а не заменяем единственный.
+        keystore.add(key, name=str(payload.get("name") or "").strip(),
+                     limit=int(payload.get("limit") or 0))
     if model:
         settings.llm.model = model
     if "use_proxies" in payload:
@@ -835,12 +907,7 @@ def api_llm_save():
     except OSError as exc:
         return jsonify(error=f"Не удалось сохранить настройки: {exc}"), 500
 
-    return jsonify(
-        saved=True,
-        key=mask(settings.llm_key) if settings.llm_key else "",
-        model=settings.llm.model,
-        use_proxies=settings.llm.use_proxies,
-    )
+    return jsonify(saved=True, **keystore.state())
 
 
 # --------------------------------------------- очистка мусорной шапки
@@ -1005,6 +1072,41 @@ def api_analyze_scan():
         return jsonify(error=str(exc)), 400
 
 
+def _analysis_result(job: Job, report=None, reason: str = "") -> dict:
+    """Блок результата разбора — обязателен в любом исходе (7.5).
+
+    Раньше при остановке на экране оставалось «разобрано 16, ошибок 0» и
+    больше ничего: было непонятно ни почему встало, ни что делать дальше.
+    """
+    keys = keystore.state()
+    soon = [k["resets_in"] for k in keys["keys"]
+            if k["resets_in"] is not None]
+    progress = job.progress or {}
+    if report is not None:
+        # Обработанное — это разобранное и взятое из кэша. Прогресс сюда не
+        # годится: он считает и осечки тоже, и «обработано 3, ошибок 3»
+        # выглядело бы враньём.
+        done = int(report.parsed) + int(report.cached)
+    else:
+        done = int(progress.get("done") or 0)
+
+    return {
+        "reason": reason,
+        "done": done,
+        "total": int(progress.get("total") or 0),
+        "failed": int(getattr(report, "failed", 0) or progress.get("failed") or 0),
+        "tokens": int(job.meta.get("tokens") or 0),
+        "keys_total": keys["total"],
+        "keys_exhausted": keys["exhausted"],
+        "keys_active": keys["active"],
+        "resets_in": min(soon) if soon else None,
+        "output": job.output_dir,
+        # «Продолжить» имеет смысл, только если есть чем продолжать.
+        "can_continue": keys["active"] > 0 and
+                        int(progress.get("done") or 0) < int(progress.get("total") or 0),
+    }
+
+
 @app.post("/api/analyze/start")
 def api_analyze_start():
     """Этап 1: разбор глав моделью."""
@@ -1012,8 +1114,11 @@ def api_analyze_start():
     targets = _targets(payload)
     if not targets:
         return jsonify(error="Выберите файлы или папку"), 400
-    if not settings.llm_key:
-        return jsonify(error="Сначала введите ключ модели в настройках"), 400
+
+    try:
+        keystore.active()
+    except NoKeysLeft as exc:
+        return jsonify(error=str(exc), need_keys=True), 400
 
     root = _book_root(payload)
     try:
@@ -1021,29 +1126,43 @@ def api_analyze_start():
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
+    if payload.get("restart"):
+        # «Начать заново» стирает только отметку о ходе работы: кэш глав
+        # трогать нельзя, за него уже заплачено.
+        session_op.forget(root)
+
     job = Job(
         id=uuid.uuid4().hex[:12],
         kind="analyze",
         meta={"targets": targets, "total": info["total"]},
         output_dir=str(root / "analysis"),
     )
+    job.log = joblog.JobLog()
     job.progress = {"stage": "analyze", "message": "Разбираем главы…",
                     "done": 0, "total": info["total"], "written": 0, "failed": 0}
+
+    model = (payload.get("model") or "").strip()
+    session_op.start(root, targets, info["total"], model=model,
+                     keys=[k["id"] for k in keystore.state()["keys"]])
 
     def work(job: Job):
         with POOL_LOCK:
             pool = POOL
-        client = LlmClient(pool=pool)
+        client = LlmClient(pool=pool, keys=keystore,
+                           on_event=lambda text: job.log.add(text, "key"))
+        report = None
         try:
             report = analyze_op.collect(
-                targets, client, root=root,
-                model=(payload.get("model") or "").strip(),
+                targets, client, root=root, model=model,
                 force=bool(payload.get("force")),
                 progress=_progress(job, "Глава"),
+                log_to=job.log,
             )
             # Реестр пересобираем сразу: без него разбор бесполезен.
             registry = analyze_op.rebuild(root)
-            job.report = {**report.as_dict(), "registry": registry.stats()}
+            session_op.finish(root, done=report.parsed + report.cached)
+            job.report = {**report.as_dict(), "registry": registry.stats(),
+                          "result": _analysis_result(job, report)}
             job.progress.update(
                 stage="done", written=report.parsed + report.cached,
                 failed=report.failed,
@@ -1051,10 +1170,87 @@ def api_analyze_start():
                          f"{report.cached}"
                          + (f", не вышло {report.failed}" if report.failed else "")),
             )
+        except NoKeysLeft as exc:
+            # Работа встала, но результат сохраняется и продолжается (7.5).
+            done = int(job.progress.get("done") or 0)
+            session_op.stop(root, "ключи исчерпаны", done=done)
+            job.log.add(str(exc), "stop")
+            job.report = {"result": _analysis_result(job, report, str(exc))}
+            job.progress.update(stage="cancelled", message=str(exc))
+        except OpCancelled:
+            session_op.stop(root, "остановлено",
+                            done=int(job.progress.get("done") or 0))
+            job.log.add("остановлено человеком", "stop")
+            job.report = {"result": _analysis_result(
+                job, report, "Работа остановлена")}
+            job.progress.update(stage="cancelled",
+                                message="Остановлено. Что успело — сохранено.")
         finally:
             client.close()
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/analyze/session")
+def api_analyze_session():
+    """Незавершённая сессия по этой папке — чтобы предложить продолжить."""
+    payload = request.json or {}
+    session = session_op.load(_book_root(payload))
+    if session is None or session.finished:
+        return jsonify(session=None)
+    return jsonify(session=session.as_dict())
+
+
+@app.post("/api/analyze/sessions")
+def api_analyze_sessions():
+    """Все незавершённые сессии по выбранным папкам.
+
+    Сессий бывает несколько — по одной на книгу, — поэтому список, а не
+    одна: иначе вторая книга была бы не видна вовсе.
+    """
+    payload = request.json or {}
+    found = []
+    for target in _targets(payload) or []:
+        path = Path(target).expanduser()
+        root = path if path.is_dir() else path.parent
+        session = session_op.load(root)
+        if session is not None and not session.finished:
+            found.append(session.as_dict())
+    return jsonify(sessions=found)
+
+
+@app.post("/api/analyze/forget")
+def api_analyze_forget():
+    """«Начать заново»: стирает ход сессии, кэш глав не трогает."""
+    payload = request.json or {}
+    return jsonify(forgotten=session_op.forget(_book_root(payload)))
+
+
+@app.get("/api/job/<job_id>/log")
+def api_job_log(job_id: str):
+    """Журнал работы под прогресс-баром (7.7)."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None or job.log is None:
+        return jsonify(lines=[], total=0)
+    try:
+        since = int(request.args.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    return jsonify(**job.log.state(since))
+
+
+@app.get("/api/job/<job_id>/log.txt")
+def api_job_log_file(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None or job.log is None:
+        return jsonify(error="Журнала нет"), 404
+    return Response(
+        job.log.as_text(),
+        mimetype="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="analysis-log.txt"'},
+    )
 
 
 @app.post("/api/registry/state")
@@ -2196,43 +2392,6 @@ def api_check_report(job_id: str):
         text,
         mimetype="text/plain; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="check-report.txt"'},
-    )
-
-
-@app.get("/api/status")
-def api_status():
-    """Нижняя строка состояния (6.10).
-
-    Одна точка на всё: скорость, секундомер и режим. Считать это на
-    странице нельзя — скорость знает только клиент качалки, а секундомер
-    переживает перезагрузку вкладки лишь на сервере.
-    """
-    with JOBS_LOCK:
-        running = [job for job in JOBS.values() if job.running]
-    # Показываем самую свежую: одновременно операций почти не бывает, а
-    # если бывают — интересна та, которую только что запустили.
-    job = max(running, key=lambda j: j.started) if running else None
-
-    with POOL_LOCK:
-        pool = POOL
-
-    progress = job.progress if job else {}
-    return jsonify(
-        busy=bool(job),
-        job=job.id if job else "",
-        kind=job.kind if job else "",
-        elapsed=round(job.elapsed, 1) if job else 0,
-        done=int(progress.get("done") or 0),
-        total=int(progress.get("total") or 0),
-        # Сеть идёт только в качалке и проверке прокси — в остальных
-        # операциях строка скорость не показывает, а не рисует ноль.
-        network=bool(job and job.kind == "download"),
-        threads=int((job.meta.get("threads") if job else 0) or 0),
-        proxies=pool.usable_count if pool else 0,
-        # Не через traffic.state(): его «total» — это байты, а «total» выше
-        # — число элементов операции.
-        speed=round(traffic.speed()),
-        received=traffic.total(),
     )
 
 

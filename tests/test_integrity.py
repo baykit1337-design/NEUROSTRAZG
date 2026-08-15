@@ -540,8 +540,39 @@ class TestNeurostrazhStyles(unittest.TestCase):
     def test_open_dropdown_covers_the_next_card(self):
         """Карточка размывает фон и делает свой слой: без подъёма самой
         карточки раскрытый список уходил под следующую."""
-        self.assertIn(".card:has(.dropdown-menu:not([hidden])){z-index:40}",
+        self.assertIn(".card:has(.dropdown-menu:not([hidden])){z-index:200}",
                       self.html)
+
+    def test_layer_order(self):
+        """Порядок слоёв: карточки внизу, списки поверх всего."""
+        self.assertIn(".card{position:relative;z-index:1}", self.html)
+        block = self.html[self.html.index("  .dropdown-menu{"):]
+        self.assertIn("z-index:200", block[:block.index("}")])
+
+    def test_buttons_have_no_backdrop_filter(self):
+        """`backdrop-filter` вместе с `transform` даёт серые углы, а
+        transform у кнопок есть всегда — нажатие и магнит."""
+        block = self.html[self.html.index("\n  button{"):]
+        block = block[:block.index("}")]
+        # Именно объявления, а не упоминания: почему его нет, написано
+        # тут же комментарием.
+        self.assertNotIn("backdrop-filter:", block)
+
+    def test_tab_bar_leaves_room_for_the_magnet(self):
+        """Панель прокручивается вбок, значит обрезает и по вертикали."""
+        block = self.html[self.html.index("  .tabs{"):]
+        block = block[:block.index("}")]
+        self.assertIn("padding:6px 0", block)
+
+    def test_no_grey_shadows(self):
+        """Серый и белый в тенях недопустимы — только чёрный и фиолетовый."""
+        import re
+
+        for value in re.findall(r"box-shadow:([^;{}]+)[;}]", self.html):
+            if "transition" in value:
+                continue
+            for colour in ("grey", "gray", "silver", "#fff", "white"):
+                self.assertNotIn(colour, value.lower(), value)
 
     def test_threads_field_present(self):
         self.assertIn('id="dlThreads"', self.html)

@@ -20,6 +20,7 @@ if str(_ROOT) not in sys.path:
 
 import split_book  # noqa: E402  — модуль лежит в корне проекта
 
+from ops.base import Cancelled as OpCancelled  # noqa: E402
 from .textprep import PrepOptions, prepare, to_text  # noqa: E402
 from .word import Style, add_blocks, new_document, split_paragraphs  # noqa: E402
 
@@ -51,8 +52,10 @@ class HeadingsNotFound(SplitError):
         self.pattern = pattern
 
 
-class Cancelled(Exception):
-    """Пользователь остановил разбивку."""
+#: Отмена в проекте одна на всех: три разных класса под одно понятие
+#: приводили к тому, что остановку ловил не тот `except`, и она
+#: показывалась ошибкой. См. `ops/base.py`.
+Cancelled = OpCancelled
 
 
 @dataclass
