@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mvl import api
 from net import pool  # noqa: E402
 
 
@@ -317,6 +318,67 @@ class TestAutoprobe(unittest.TestCase):
         self.assertTrue(data["parallel"])
         self.assertIn("attempts", data)
         self.assertIn("message", data)
+
+
+class TestManualMode(unittest.TestCase):
+    """5.3: «Всегда N потоков» пропускает пробу, но не раздачу клиентов.
+
+    Раньше пропускалось и то и другое: потоки создавались, но все делили
+    одну сессию и один прокси. Кука Cloudflare привязана к адресу, и
+    запросы вставали в очередь на сайте — заявленные N потоков работали
+    как один.
+    """
+
+    class Proxy:
+        def __init__(self, url):
+            self.url = url
+            self.disabled = False
+
+    class FakePool:
+        def __init__(self, proxies):
+            self.proxies = proxies
+
+    def downloader(self, proxies, threads=3):
+        from mvl.downloader import Downloader
+
+        return Downloader(pool=self.FakePool(proxies), threads=threads,
+                          probe=False)
+
+    def test_each_thread_gets_its_own_proxy(self):
+        proxies = [self.Proxy(f"http://p{n}") for n in range(8)]
+        fetcher = self.downloader(proxies)._manual_fetcher(
+            api.Novel(code=1, name="к", slug="k", total_chapters=1))
+        self.assertEqual(fetcher.method, pool.PROXY_PER_THREAD)
+
+        taken = set()
+        def take():
+            taken.add(getattr(fetcher._take_proxy(), "url", None))
+        threads = [threading.Thread(target=take) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(taken), 3)
+
+    def test_one_proxy_still_gives_each_thread_its_session(self):
+        fetcher = self.downloader([self.Proxy("http://one")])._manual_fetcher(
+            api.Novel(code=1, name="к", slug="k", total_chapters=1))
+        self.assertEqual(fetcher.method, pool.OWN_SESSION)
+
+    def test_threads_do_not_exceed_the_addresses(self):
+        """Четыре потока на два адреса — это два потока, а не четыре."""
+        loader = self.downloader([self.Proxy("http://a"), self.Proxy("http://b")],
+                                 threads=4)
+        loader._manual_fetcher(api.Novel(code=1, name="к", slug="k",
+                                         total_chapters=1))
+        self.assertEqual(loader.threads, 2)
+
+    def test_no_proxies_at_all_is_not_a_crash(self):
+        loader = self.downloader([])
+        fetcher = loader._manual_fetcher(
+            api.Novel(code=1, name="к", slug="k", total_chapters=1))
+        self.assertEqual(fetcher.method, pool.OWN_SESSION)
+        self.assertEqual(loader.threads, 3)
 
 
 class TestPlural(unittest.TestCase):

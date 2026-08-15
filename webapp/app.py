@@ -28,6 +28,7 @@ from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
 from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
+from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
@@ -1409,22 +1410,74 @@ def api_analyze_cards():
 
 
 
-# ------------------------------------------- рейтинг Фанкью (5.3)
+# ------------------------------------------- рейтинг Фанкью (5.2)
+
+#: Список категорий забирается с сайта один раз и живёт до перезапуска:
+#: жанры не меняются, а запрос ради них — лишний.
+RANK_CATEGORIES: dict = {}
+RANK_LOCK = threading.Lock()
+
+
+def _rank_client():
+    with POOL_LOCK:
+        pool = POOL
+    proxy = pool.current().url if pool and pool.usable_count else None
+    return Client(proxy_url=proxy)
+
+
+def _rank_where(payload) -> tuple[str, str, str]:
+    """Аудитория, вид и категория из запроса."""
+    get = payload.get if hasattr(payload, "get") else (lambda k, d=None: d)
+    audience = str(get("audience") or rank_cats.MALE)
+    kind = str(get("kind") or rank_cats.READING)
+    category = str(get("category") or "")
+    return audience, kind, category
+
+
+@app.get("/api/rank/categories")
+def api_rank_categories():
+    """Разделы и категории. С сайта один раз, дальше из памяти."""
+    global RANK_CATEGORIES
+    with RANK_LOCK:
+        have = dict(RANK_CATEGORIES)
+
+    if not have and str(request.args.get("fetch") or "") == "1":
+        client = _rank_client()
+        try:
+            have = rank_net.fetch_categories(client, rank_cats.MALE)
+        except Exception as exc:  # noqa: BLE001 — есть запасной список
+            log.warning("Категории рейтинга не забрались: %s", exc)
+            have = {}
+        finally:
+            client.close()
+        if have:
+            with RANK_LOCK:
+                RANK_CATEGORIES = have
+
+    if not have:
+        # Пустой выбор хуже известного набора: жанры не меняются годами.
+        have = {side: [rank_cats.translate(c) for c in ids]
+                for side, ids in rank_cats.FALLBACK.items()}
+
+    return jsonify(
+        categories=have,
+        audiences=[{"key": k, "name": v} for k, v in rank_cats.AUDIENCES.items()],
+        kinds=[{"key": k, "name": v} for k, v in rank_cats.KINDS.items()],
+        boards=[{"key": k, "name": v} for k, v in rank_cats.BOARDS.items()],
+    )
 
 
 @app.get("/api/rank/state")
 def api_rank_state():
-    """Разделы, дни истории и последний срез — из своей истории."""
-    board = (request.args.get("board") or "all").strip()
+    """Что уже накоплено по этому разделу и категории."""
+    audience, kind, category = _rank_where(request.args)
+    board = rank_cats.board_key(audience, kind)
     try:
-        moved = rank_op.movement(board)
+        moved = rank_op.movement(board, category=category)
     except rank_op.RankError as exc:
         return jsonify(error=str(exc)), 400
-    return jsonify(
-        boards=[{"key": k, "name": v} for k, v in rank_net.BOARDS.items()],
-        titles=titles_op.known(),
-        **moved,
-    )
+    return jsonify(titles=titles_op.known(), audience=audience, kind=kind,
+                   **moved)
 
 
 @app.post("/api/rank/refresh")
@@ -1434,49 +1487,64 @@ def api_rank_refresh():
     Только по кнопке: по расписанию сайт не опрашивается.
     """
     payload = request.json or {}
-    board = (payload.get("board") or "all").strip()
+    audience, kind, category = _rank_where(payload)
+    board = rank_cats.board_key(audience, kind)
 
-    with POOL_LOCK:
-        pool = POOL
-    proxy = pool.current().url if pool and pool.usable_count else None
-    client = Client(proxy_url=proxy)
+    client = _rank_client()
     try:
-        rows = rank_net.fetch(client, board)
+        found = rank_net.fetch(client, audience=audience, kind=kind,
+                               category=category)
+    except rank_net.Diagnosis as exc:
+        # Подробности вместо общих слов: по ним видно, сел ли сайт,
+        # сменилась ли разметка или дело только в шрифте.
+        return jsonify(error=str(exc), details=exc.details), 502
     except sources.SourceBroken as exc:
         return jsonify(error=str(exc)), 502
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     except HttpError as exc:
-        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+        return jsonify(error=f"Сайт недоступен: {exc}",
+                       details={"http": str(exc)}), 502
     finally:
         client.close()
 
-    rank_op.save(rows, board)
-    return jsonify(saved=len(rows), **rank_op.movement(board))
+    previous = rank_op.load(rank_op.days(board, category)[0], board, category) \
+        if rank_op.days(board, category) else None
+    same = previous is not None and previous.version and \
+        previous.version == found["version"]
+
+    rank_op.save(found["rows"], board, category=found["category"],
+                 version=found["version"], stats_date=found["stats_date"])
+    return jsonify(saved=len(found["rows"]), decoded=found["decoded"],
+                   same_version=same, audience=audience, kind=kind,
+                   **rank_op.movement(board, category=found["category"]))
 
 
 @app.post("/api/rank/translate")
 def api_rank_translate():
-    """Прогоняет китайские названия через модель. Кэш по book_id."""
+    """Прогоняет названия через модель. Кэш по book_id."""
     payload = request.json or {}
-    board = (payload.get("board") or "all").strip()
+    audience, kind, category = _rank_where(payload)
+    board = rank_cats.board_key(audience, kind)
     day = (payload.get("day") or "").strip()
 
-    snapshot = rank_op.load(day, board) if day else None
+    snapshot = rank_op.load(day, board, category) if day else None
     if snapshot is None:
-        found = rank_op.days(board)
-        snapshot = rank_op.load(found[0], board) if found else None
+        found = rank_op.days(board, category)
+        snapshot = rank_op.load(found[0], board, category) if found else None
     if snapshot is None:
         return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
 
     with POOL_LOCK:
         pool = POOL
-    client = LlmClient(pool=pool)
+    client = LlmClient(pool=pool, keys=keystore)
     try:
         return jsonify(**titles_op.translate(
             snapshot.rows, client,
             model=(payload.get("model") or "").strip(),
             force=bool(payload.get("force"))))
+    except NoKeysLeft as exc:
+        return jsonify(error=str(exc)), 400
     except BadKey as exc:
         return jsonify(error=str(exc)), 401
     except LlmError as exc:

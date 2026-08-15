@@ -2022,7 +2022,11 @@
        что набирает обороты. По расписанию ничего не запрашивается: срез
        снимается кнопкой.</p>
     <div class="row" style="margin-top:12px">
-      <div class="dropdown" id="rkBoard" style="flex:1" data-options='[]'></div>
+      <div class="dropdown" id="rkAudience" style="flex:1" data-options='[]'></div>
+      <div class="dropdown" id="rkKind" style="flex:1" data-options='[]'></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="dropdown" id="rkCategory" style="flex:1" data-options='[]'></div>
       <button id="rkRefresh" class="primary" style="flex:0 0 auto">Обновить срез</button>
     </div>
     <div class="row" style="margin-top:10px">
@@ -2031,6 +2035,7 @@
       <button id="rkTranslate" class="ghost" style="flex:0 0 auto">Перевести названия</button>
     </div>
     <p class="hint" id="rkNote"></p>
+    <div class="table" id="rkDetails" hidden style="margin-top:10px"></div>
     <div class="table" id="rkTable" style="margin-top:10px;max-height:520px"></div>
   </div>
 
@@ -2240,6 +2245,9 @@ async function call(url, body){
     // Подсказка «заголовки не нашлись, задайте свой шаблон» едет с ответом.
     err.needPattern = !!data.need_pattern;
     err.pattern = data.pattern;
+    // Подробности поломки разбора: по общим словам чинить нечего.
+    err.details = data.details;
+    err.needKeys = !!data.need_keys;
     throw err;
   }
   return data;

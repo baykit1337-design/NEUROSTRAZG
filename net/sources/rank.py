@@ -1,17 +1,19 @@
-"""Разбор рейтинга Фанкью (5.3 ТЗ NEUROSTRAZH).
+"""Разбор рейтинга Фанкью (5.2 ТЗ NEUROSTRAZH).
 
-Задача — находить, что сейчас набирает обороты, не листая сайт на
-китайском и не копируя идентификаторы руками.
+Задача — находить, что набирает обороты, не листая сайт на китайском и не
+копируя идентификаторы руками.
 
-Сам сайт отдаёт только суточный срез: готовых рейтингов «за неделю» и «за
-месяц» у него нет. Поэтому срезы складываются в свою историю, а движение
-считается уже по ней — см. `ops/rank.py`. Это и есть главная польза: видно
-не просто популярное, а то, что растёт, то есть кандидатов на перевод,
-пока их не разобрали.
+Данные берутся из объекта `window.__INITIAL_STATE__`, а не из вёрстки: там
+их больше, чем видно на странице, и меняются они реже разметки. Разбирать
+HTML пришлось бы заново после каждой правки дизайна.
 
-Разбор идёт по тому же правилу, что и в источнике: не нашли — говорим
-«источник изменился», а не отдаём пустую таблицу, которую примут за
-«сегодня рейтинг пуст».
+Три поля — название, автор и описание — зашифрованы шрифтом. Всё
+остальное чистое, поэтому даже без расшифровки видно позицию, движение,
+число читающих и `bookId`, а этого хватает, чтобы качать книги и следить
+за ростом.
+
+Сам сайт отдаёт только суточный срез. Историю программа копит сама — см.
+`ops/rank.py`.
 """
 
 from __future__ import annotations
@@ -20,59 +22,74 @@ import json
 import logging
 import re
 
+from . import categories, fanqiefont
 from .base import SourceBroken
-from .fanqie import SITE, _dig, _json
+from .fanqie import SITE
 
 log = logging.getLogger(__name__)
 
-#: Разделы рейтинга. Ключ — то, что уходит в адрес, значение — подпись.
-BOARDS = {
-    "all": "Общий",
-    "male": "Мужская аудитория (男频)",
-    "female": "Женская аудитория (女频)",
-}
-
-#: Адреса разделов. Отдельно от подписей: адрес может смениться, а раздел
-#: остаться тем же.
-BOARD_PATHS = {
-    "all": "/rank/all",
-    "male": "/rank/male",
-    "female": "/rank/female",
-}
-
-#: Сколько строк держать в срезе. Дальше пятидесяти рейтинг уже не смотрят.
+#: Сколько строк держать в срезе. Сайт отдаёт сотню, дальше пятидесяти
+#: рейтинг всё равно не смотрят.
 TOP = 50
+
+#: Объект с данными страницы. Кавычки внутри бывают любые, поэтому режем до
+#: конца тега, а разбирает уже JSON.
+STATE = re.compile(
+    r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*[;<]", re.S)
+
+#: Дата, до которой собрана статистика: «统计至 08-14 24:00».
+STATS_DATE = re.compile(r"(\d{1,2}-\d{1,2})\s*\d{1,2}:\d{2}")
+
+#: Ссылки левого меню — запасной способ узнать разделы.
+MENU_LINK = re.compile(r'href="(/rank/(\d)_(\d)_(\d+))"')
 
 
 class RankRow:
     """Одна строка рейтинга."""
 
-    __slots__ = ("place", "book_id", "name", "author", "readers", "category")
+    __slots__ = ("place", "book_id", "name", "author", "readers", "category",
+                 "diff", "words", "status", "last_chapter", "secret")
 
     def __init__(self, place=0, book_id="", name="", author="", readers=0,
-                 category=""):
+                 category="", diff=None, words=0, status="", last_chapter="",
+                 secret=False):
         self.place = place
         self.book_id = str(book_id)
         self.name = name
         self.author = author
         self.readers = readers
         self.category = category
+        #: Насколько сдвинулась позиция — сайт считает это сам.
+        self.diff = diff
+        self.words = words
+        self.status = status
+        self.last_chapter = last_chapter
+        #: Название расшифровать не удалось.
+        self.secret = secret
 
     def as_dict(self) -> dict:
         return {"place": self.place, "book_id": self.book_id, "name": self.name,
                 "author": self.author, "readers": self.readers,
-                "category": self.category,
+                "category": self.category, "diff": self.diff,
+                "words": self.words, "status": self.status,
+                "last_chapter": self.last_chapter, "secret": self.secret,
                 "link": f"{SITE}/page/{self.book_id}"}
 
     @classmethod
     def from_dict(cls, data: dict) -> RankRow:
+        data = data or {}
         return cls(
-            place=int((data or {}).get("place") or 0),
-            book_id=str((data or {}).get("book_id") or ""),
-            name=str((data or {}).get("name") or ""),
-            author=str((data or {}).get("author") or ""),
-            readers=_readers((data or {}).get("readers")),
-            category=str((data or {}).get("category") or ""),
+            place=int(data.get("place") or 0),
+            book_id=str(data.get("book_id") or ""),
+            name=str(data.get("name") or ""),
+            author=str(data.get("author") or ""),
+            readers=_readers(data.get("readers")),
+            category=str(data.get("category") or ""),
+            diff=data.get("diff"),
+            words=int(data.get("words") or 0),
+            status=str(data.get("status") or ""),
+            last_chapter=str(data.get("last_chapter") or ""),
+            secret=bool(data.get("secret")),
         )
 
     def __eq__(self, other):
@@ -106,81 +123,213 @@ def _readers(value) -> int:
     return int(number * SUFFIXES.get(found.group(2), 1))
 
 
-def parse(html: str, limit: int = TOP) -> list[RankRow]:
-    """Строки рейтинга со страницы."""
-    rows = _from_json(html) or _from_markup(html)
-    if not rows:
-        raise SourceBroken(
-            "Источник изменился: рейтинг на странице не разбирается. "
-            "Пустую таблицу не показываем — её приняли бы за пустой рейтинг.")
+class Diagnosis(SourceBroken):
+    """Разбор не удался — с подробностями, а не общими словами.
 
-    for place, row in enumerate(rows, 1):
-        if not row.place:
-            row.place = place
-    return rows[:limit]
+    «Источник изменился» без деталей не отличает севший сайт от смены
+    разметки, и чинить по такому сообщению нечего.
+    """
+
+    def __init__(self, message: str, details: dict | None = None):
+        super().__init__(message)
+        self.details = details or {}
 
 
-def _from_json(html: str) -> list[RankRow]:
-    """Основной путь: данные страницы отдельным блоком JSON."""
-    block = re.search(
-        r'(?s)<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
-    if not block:
-        return []
+def state_of(html: str) -> dict:
+    """Объект `__INITIAL_STATE__` со страницы."""
+    found = STATE.search(html or "")
+    if not found:
+        raise Diagnosis(
+            "На странице нет объекта __INITIAL_STATE__ — разбирать нечего.",
+            {"page_size": len(html or ""), "state_found": False})
+    try:
+        return json.loads(found.group(1))
+    except ValueError as exc:
+        raise Diagnosis(
+            "Объект __INITIAL_STATE__ найден, но не разобрался как JSON.",
+            {"page_size": len(html or ""), "state_found": True,
+             "json_error": str(exc)}) from exc
 
-    data = _json(block.group(1), "рейтинг")
-    found = (_dig(data, "rankList") or _dig(data, "bookList")
-             or _dig(data, "booksList") or _dig(data, "items"))
-    if not isinstance(found, list):
-        return []
+
+def category_list(html: str) -> dict:
+    """Категории с сайта: `{male: [...], female: [...]}`.
+
+    Забирается один раз и кэшируется вызывающим: перебирать номера жанров
+    вслепую бессмысленно, они идут не подряд.
+    """
+    try:
+        state = state_of(html)
+    except Diagnosis:
+        state = {}
+
+    found = _dig(state, "rankCategoryTypeList") or {}
+    out = {}
+    for side, key in ((categories.MALE, "male"), (categories.FEMALE, "female")):
+        items = found.get(key) if isinstance(found, dict) else None
+        rows = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            ident = item.get("id") or item.get("category_id")
+            if ident is None:
+                continue
+            rows.append(categories.translate(
+                str(ident), str(item.get("name") or "")))
+        if not rows:
+            # Меню страницы — запасной источник тех же номеров.
+            rows = [categories.translate(c) for c in _menu_ids(html, side)] \
+                or [categories.translate(c) for c in categories.FALLBACK[side]]
+        out[side] = rows
+    return out
+
+
+def _menu_ids(html: str, audience: str) -> list[str]:
+    seen = []
+    for _, side, _, ident in MENU_LINK.findall(html or ""):
+        if side == audience and ident not in seen:
+            seen.append(ident)
+    return seen
+
+
+def stats_date(html: str) -> str:
+    """До какого момента собрана статистика — по шапке страницы.
+
+    Это точнее даты запроса: рейтинг обновляется днём, и срез, снятый
+    утром, относится к прошлым суткам.
+    """
+    found = STATS_DATE.search(html or "")
+    return found.group(1) if found else ""
+
+
+def parse(html: str, limit: int = TOP, table: dict | None = None) -> dict:
+    """Строки рейтинга и всё, что о срезе известно."""
+    state = state_of(html)
+    rank = _dig(state, "rank") if isinstance(state, dict) else {}
+    books = _dig(rank if isinstance(rank, dict) else state, "book_list")
+
+    if not isinstance(books, list) or not books:
+        raise Diagnosis(
+            "Объект найден, но список книг в нём пуст.",
+            {"page_size": len(html or ""), "state_found": True,
+             "book_list": 0})
 
     rows = []
-    for item in found:
+    for index, item in enumerate(books, 1):
         if not isinstance(item, dict):
             continue
-        book_id = (item.get("bookId") or item.get("book_id") or item.get("id"))
-        name = item.get("bookName") or item.get("book_name") or item.get("title")
-        if not book_id or not name:
+        book_id = item.get("bookId") or item.get("book_id")
+        if not book_id:
             continue
+
+        name = fanqiefont.decode(item.get("bookName") or "", table)
+        author = fanqiefont.decode(item.get("author") or "", table)
         rows.append(RankRow(
-            place=int(item.get("rank") or item.get("place") or 0),
+            place=int(item.get("currentPos") or index),
             book_id=str(book_id),
-            name=str(name).strip(),
-            author=str(item.get("author") or item.get("authorName") or "").strip(),
-            readers=_readers(item.get("readCount") or item.get("read_count")
-                             or item.get("readerCount") or item.get("score")),
-            category=str(item.get("category") or item.get("categoryName")
-                         or item.get("tags") or "").strip(),
+            name=name,
+            author=author,
+            readers=_readers(item.get("read_count") or item.get("readCount")),
+            diff=_int_or_none(item.get("rankPosDiff")),
+            words=int(item.get("wordNumber") or 0),
+            status="завершена" if str(item.get("creationStatus")) == "0"
+                   else "продолжается",
+            # Название последней главы шрифтом не подменяется.
+            last_chapter=str(item.get("lastChapterTitle") or ""),
+            secret=fanqiefont.has_secret(name) or fanqiefont.has_secret(author),
         ))
-    return rows
+
+    return {
+        "rows": rows[:limit],
+        "total": _int_or_none(_dig(rank, "total_num")) or len(rows),
+        "version": str(_dig(rank, "rankVersion") or ""),
+        "stats_date": stats_date(html),
+        "page": _int_or_none(_dig(rank, "defaultPage")) or 1,
+    }
 
 
-#: Запасной разбор вёрстки: ссылка на книгу плюс всё до следующей ссылки.
-CARD = re.compile(
-    r'(?is)<a[^>]+href="[^"]*?/page/(\d{6,25})"[^>]*>(.*?)(?=<a[^>]+href="[^"]*?/page/|\Z)')
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def _from_markup(html: str) -> list[RankRow]:
-    """Запасной путь. Хуже, но лучше пустой таблицы."""
-    rows = []
-    for book_id, block in CARD.findall(html):
-        text = re.sub(r"(?s)<[^>]+>", "\n", block)
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
-        if not lines:
-            continue
-        readers = next((_readers(line) for line in lines
-                        if re.search(r"\d", line) and "万" in line), 0)
-        rows.append(RankRow(
-            book_id=book_id,
-            name=lines[0],
-            author=lines[1] if len(lines) > 1 else "",
-            readers=readers,
-        ))
-    return rows
+def _dig(data, key: str):
+    """Первое значение по ключу на любой глубине."""
+    if isinstance(data, dict):
+        if key in data and data[key] not in (None, ""):
+            return data[key]
+        for value in data.values():
+            found = _dig(value, key)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = _dig(value, key)
+            if found is not None:
+                return found
+    return None
 
 
-def fetch(client, board: str = "all", limit: int = TOP) -> list[RankRow]:
+# ------------------------------------------------------------- запросы
+
+
+def _font_table(client, html: str) -> dict | None:
+    """Таблица подстановки для этой страницы. None — расшифровки нет."""
+    family, url = fanqiefont.font_of(html)
+    if not family:
+        return None
+    if fanqiefont.known(family):
+        return fanqiefont.table_for(family)
+    if not url:
+        return None
+
+    try:
+        # Файл шрифта — двоичный, поэтому берём тело как есть.
+        response = client.get(url)
+        data = getattr(response, "content", None)
+        if not data:
+            return None
+        return fanqiefont.table_for(family, data)
+    except fanqiefont.FontUnavailable as exc:
+        # Без имён рейтинг всё равно полезен: позиция, движение и код книги
+        # приходят чистыми.
+        log.warning("Названия останутся зашифрованными: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — шрифт не главное
+        log.warning("Шрифт не скачался: %s", exc)
+    return None
+
+
+def fetch(client, audience: str = categories.MALE, kind: str = categories.READING,
+          category: str = "", limit: int = TOP) -> dict:
     """Срез рейтинга прямо сейчас."""
-    path = BOARD_PATHS.get(board)
-    if path is None:
-        raise ValueError(f"Неизвестный раздел рейтинга: {board}")
-    return parse(client.get_text(f"{SITE}{path}"), limit=limit)
+    if audience not in categories.AUDIENCES:
+        raise ValueError(f"Неизвестная аудитория: {audience}")
+    if kind not in categories.KINDS:
+        raise ValueError(f"Неизвестный вид рейтинга: {kind}")
+    category = str(category or categories.FALLBACK[audience][0])
+
+    url = f"{SITE}{categories.path(audience, kind, category)}"
+    html = client.get_text(url)
+
+    table = _font_table(client, html)
+    try:
+        found = parse(html, limit=limit, table=table)
+    except Diagnosis as exc:
+        # Диагностика вместо общих слов: по ней видно, сел ли сайт, сменилась
+        # ли разметка или дело только в шрифте.
+        exc.details.setdefault("url", url)
+        exc.details.setdefault("font", bool(table))
+        raise
+
+    found.update(audience=audience, kind=kind, category=category,
+                 board=categories.board_key(audience, kind),
+                 decoded=table is not None)
+    return found
+
+
+def fetch_categories(client, audience: str = categories.MALE) -> dict:
+    """Список категорий. Забирается один раз, дальше берётся из кэша."""
+    first = categories.FALLBACK[audience][0]
+    url = f"{SITE}{categories.path(audience, categories.READING, first)}"
+    return category_list(client.get_text(url))

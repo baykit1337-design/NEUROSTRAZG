@@ -262,62 +262,201 @@ class TestFanqieChapter(unittest.TestCase):
             self.source.chapter(FakeClient(), Chapter(number=1))
 
 
-class TestRankParsing(unittest.TestCase):
-    """Разбор страницы рейтинга."""
+def initial_state(payload: dict) -> str:
+    """Страница рейтинга: данные лежат в `window.__INITIAL_STATE__`."""
+    return ("<html><body><script>window.__INITIAL_STATE__="
+            + json.dumps(payload, ensure_ascii=False) + ";</script></body></html>")
 
-    def page(self, count=3):
-        return next_data({"props": {"pageProps": {"rankList": [
+
+def rank_page(count=3, version="1755200000", stats="08-14"):
+    return initial_state({"rank": {
+        "total_num": 100,
+        "defaultPage": 1,
+        "rankVersion": version,
+        "book_list": [
             {"bookId": f"70000000000000000{n}", "bookName": f"книга {n}",
-             "author": f"автор {n}", "readCount": f"{n}.5万",
-             "category": "фэнтези", "rank": n}
-            for n in range(1, count + 1)]}}})
+             "author": f"автор {n}", "read_count": 430187 - n,
+             "currentPos": n, "rankPosDiff": n - 2, "wordNumber": 300000 + n,
+             "creationStatus": "1", "lastChapterTitle": f"Глава {n}"}
+            for n in range(1, count + 1)],
+    }}).replace("</body>", f"<div>统计至 {stats} 24:00</div></body>")
+
+
+class TestRankParsing(unittest.TestCase):
+    """5.2: данные берём из объекта страницы, а не из вёрстки."""
 
     def test_rows_are_read(self):
-        rows = rank_net.parse(self.page(3))
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0].name, "книга 1")
-        self.assertEqual(rows[0].place, 1)
-        self.assertEqual(rows[0].category, "фэнтези")
+        found = rank_net.parse(rank_page(3))
+        self.assertEqual(len(found["rows"]), 3)
+        self.assertEqual(found["rows"][0].name, "книга 1")
+        self.assertEqual(found["rows"][0].place, 1)
+
+    def test_exact_reader_count(self):
+        """Сайт отдаёт точное число, а не «43万»."""
+        self.assertEqual(rank_net.parse(rank_page(1))["rows"][0].readers, 430186)
+
+    def test_site_movement_is_taken_as_is(self):
+        """Сайт считает динамику сам — свою поверх городить незачем."""
+        rows = rank_net.parse(rank_page(3))["rows"]
+        self.assertEqual(rows[0].diff, -1)
+        self.assertEqual(rows[2].diff, 1)
+
+    def test_extra_fields_are_kept(self):
+        row = rank_net.parse(rank_page(1))["rows"][0]
+        self.assertEqual(row.words, 300001)
+        self.assertEqual(row.status, "продолжается")
+        self.assertEqual(row.last_chapter, "Глава 1")
+
+    def test_version_and_date_are_saved(self):
+        """По версии видно, обновился ли рейтинг; дата точнее даты запроса."""
+        found = rank_net.parse(rank_page(1, version="177", stats="08-14"))
+        self.assertEqual(found["version"], "177")
+        self.assertEqual(found["stats_date"], "08-14")
+
+    def test_total_says_how_many_there_are(self):
+        self.assertEqual(rank_net.parse(rank_page(10))["total"], 100)
+
+    def test_limit_is_respected(self):
+        self.assertEqual(len(rank_net.parse(rank_page(80), limit=50)["rows"]), 50)
 
     def test_chinese_numbers_are_understood(self):
         """«12.3万» — это сто двадцать три тысячи, а не двенадцать."""
         self.assertEqual(rank_net._readers("12.3万"), 123000)
         self.assertEqual(rank_net._readers("1亿"), 100_000_000)
-        self.assertEqual(rank_net._readers("1,234"), 1234)
         self.assertEqual(rank_net._readers(""), 0)
 
-    def test_place_is_filled_when_missing(self):
-        html = next_data({"props": {"rankList": [
-            {"bookId": "700000000000000001", "bookName": "книга"},
-            {"bookId": "700000000000000002", "bookName": "вторая"}]}})
-        rows = rank_net.parse(html)
-        self.assertEqual([r.place for r in rows], [1, 2])
-
-    def test_limit_is_respected(self):
-        self.assertEqual(len(rank_net.parse(self.page(80), limit=50)), 50)
-
     def test_link_leads_to_the_book(self):
-        rows = rank_net.parse(self.page(1))
-        self.assertTrue(rows[0].as_dict()["link"].endswith("/page/700000000000000001"))
+        row = rank_net.parse(rank_page(1))["rows"][0]
+        self.assertTrue(row.as_dict()["link"].endswith("/page/700000000000000001"))
 
-    def test_unparsable_page_is_an_error_not_an_empty_table(self):
-        """Пустую таблицу приняли бы за пустой рейтинг."""
-        with self.assertRaises(SourceBroken):
+
+class TestRankDiagnosis(unittest.TestCase):
+    """Поломка описывается подробностями, а не общими словами."""
+
+    def test_missing_state_says_so(self):
+        with self.assertRaises(rank_net.Diagnosis) as caught:
             rank_net.parse("<html><body>ничего похожего</body></html>")
+        self.assertFalse(caught.exception.details["state_found"])
+        self.assertIn("page_size", caught.exception.details)
 
-    def test_markup_is_the_fallback(self):
-        html = ('<html><body>'
-                '<a href="/page/700000000000000001"><span>книга</span>'
-                '<span>автор</span><span>12.3万</span></a>'
-                '<a href="/page/700000000000000002"><span>вторая</span></a>'
-                '</body></html>')
-        rows = rank_net.parse(html)
-        self.assertEqual([r.name for r in rows], ["книга", "вторая"])
-        self.assertEqual(rows[0].readers, 123000)
+    def test_broken_json_is_told_apart(self):
+        html = "<html><script>window.__INITIAL_STATE__={сломано};</script></html>"
+        with self.assertRaises(rank_net.Diagnosis) as caught:
+            rank_net.parse(html)
+        self.assertTrue(caught.exception.details["state_found"])
 
-    def test_unknown_board_is_refused(self):
+    def test_empty_list_is_not_an_empty_table(self):
+        """Пустую таблицу приняли бы за пустой рейтинг."""
+        with self.assertRaises(rank_net.Diagnosis) as caught:
+            rank_net.parse(initial_state({"rank": {"book_list": []}}))
+        self.assertEqual(caught.exception.details["book_list"], 0)
+
+    def test_unknown_audience_is_refused(self):
         with self.assertRaises(ValueError):
-            rank_net.fetch(FakeClient(), "непонятный")
+            rank_net.fetch(FakeClient(), audience="непонятно")
+
+    def test_unknown_kind_is_refused(self):
+        with self.assertRaises(ValueError):
+            rank_net.fetch(FakeClient(), kind="9")
+
+
+class TestCategories(unittest.TestCase):
+    """Категории забираются с сайта, перевод зашит."""
+
+    def test_address_is_built_from_three_numbers(self):
+        from net.sources import categories
+
+        self.assertEqual(categories.path("1", "2", "1141"), "/rank/1_2_1141")
+
+    def test_four_boards(self):
+        from net.sources import categories
+
+        self.assertEqual(len(categories.BOARDS), 4)
+
+    def test_names_are_translated_without_the_model(self):
+        from net.sources import categories
+
+        found = categories.translate("1141", "西方奇幻")
+        self.assertEqual(found["name"], "Западное фэнтези")
+        self.assertTrue(found["translated"])
+
+    def test_unknown_category_shows_the_original_and_is_marked(self):
+        from net.sources import categories
+
+        found = categories.translate("99999", "新分类")
+        self.assertEqual(found["name"], "新分类")
+        self.assertFalse(found["translated"])
+
+    def test_list_is_read_from_the_page(self):
+        html = initial_state({"rank": {"rankCategoryTypeList": {
+            "male": [{"id": 1141, "name": "西方奇幻"}, {"id": 8, "name": "科幻末世"}],
+            "female": [{"id": 248, "name": "玄幻言情"}],
+        }}})
+        found = rank_net.category_list(html)
+        self.assertEqual([c["id"] for c in found["1"]], ["1141", "8"])
+        self.assertEqual(found["1"][0]["name"], "Западное фэнтези")
+        self.assertEqual([c["id"] for c in found["0"]], ["248"])
+
+    def test_menu_is_the_fallback(self):
+        html = ('<html><div class="muye-rank-menu">'
+                '<a href="/rank/1_2_1141">a</a><a href="/rank/1_2_8">b</a>'
+                '<a href="/rank/0_2_248">c</a></div></html>')
+        found = rank_net.category_list(html)
+        self.assertEqual([c["id"] for c in found["1"]], ["1141", "8"])
+
+    def test_known_list_is_the_last_resort(self):
+        """Пустой выбор хуже известного набора."""
+        found = rank_net.category_list("<html></html>")
+        self.assertTrue(found["1"])
+        self.assertTrue(found["0"])
+
+
+class TestFontDecoding(unittest.TestCase):
+    """Три поля зашифрованы шрифтом, всё остальное чистое."""
+
+    def setUp(self):
+        from net.sources import fanqiefont
+
+        self.font = fanqiefont
+        self.addCleanup(fanqiefont.forget)
+
+    def test_private_area_is_detected(self):
+        self.assertTrue(self.font.has_secret("книга\ue123"))
+        self.assertFalse(self.font.has_secret("обычное название"))
+
+    def test_decoding_replaces_by_the_table(self):
+        table = {"\ue123": "剑", "\ue124": "来"}
+        self.assertEqual(self.font.decode("\ue123\ue124", table), "剑来")
+
+    def test_unknown_glyph_stays_as_is(self):
+        """Строка с одним пропуском лучше, чем никакой."""
+        self.assertEqual(self.font.decode("\ue123\ue999", {"\ue123": "剑"}),
+                         "剑\ue999")
+
+    def test_without_a_table_text_is_untouched(self):
+        self.assertEqual(self.font.decode("\ue123", None), "\ue123")
+
+    def test_font_address_is_read_from_the_styles(self):
+        css = ("@font-face{font-family:'DNMrHsV173Pd4pgy';"
+               "src:url(https://lf6-awef.bytetos.com/obj/awesome-font/c/x.woff2)}")
+        family, url = self.font.font_of(css)
+        self.assertEqual(family, "DNMrHsV173Pd4pgy")
+        self.assertTrue(url.endswith(".woff2"))
+
+    def test_missing_package_is_explained(self):
+        with self.assertRaises(self.font.FontUnavailable):
+            self.font.table_for("никому не известный шрифт")
+
+    def test_rows_are_marked_when_names_stay_secret(self):
+        page = initial_state({"rank": {"book_list": [
+            {"bookId": "700000000000000001", "bookName": "\ue123\ue124",
+             "author": "\ue200", "read_count": 100},
+        ]}})
+        row = rank_net.parse(page)["rows"][0]
+        self.assertTrue(row.secret)
+        # Всё остальное приходит чистым и работает без расшифровки.
+        self.assertEqual(row.book_id, "700000000000000001")
+        self.assertEqual(row.readers, 100)
 
 
 class TestRankHistory(unittest.TestCase):

@@ -3686,9 +3686,18 @@ async function loadSources(){
 }
 loadSources();
 
-/* ------------------------------------------------ рейтинг (5.3) */
+/* ------------------------------------------------ рейтинг (5.2) */
 
-let rkRows = [], rkTitles = {}, rkBoardMenu = null, rkPicked = null;
+let rkRows = [], rkTitles = {}, rkPicked = null;
+let rkAudMenu = null, rkKindMenu = null, rkCatMenu = null, rkCats = {};
+
+function rkWhere(){
+  return {
+    audience: rkAudMenu ? rkAudMenu.value : '1',
+    kind: rkKindMenu ? rkKindMenu.value : '2',
+    category: rkCatMenu ? rkCatMenu.value : '',
+  };
+}
 
 function rkMove(value){
   if(value === null || value === undefined) return {text: '—', cls: 'flat'};
@@ -3704,7 +3713,7 @@ function rkRender(){
   const shown = rkRows.filter(row => !filter
     || (row.name || '').toLowerCase().includes(filter)
     || (rkTitles[row.book_id] || '').toLowerCase().includes(filter)
-    || (row.category || '').toLowerCase().includes(filter));
+    || (row.author || '').toLowerCase().includes(filter));
 
   if(!shown.length){
     box.innerHTML = '<div class="tr"><span class="grow hint">'
@@ -3725,8 +3734,14 @@ function rkRender(){
 
     const name = document.createElement('span');
     name.className = 'grow';
-    name.textContent = row.name;
-    name.title = row.author ? 'автор: ' + row.author : '';
+    // Название могло не расшифроваться — тогда честно говорим об этом, а
+    // не показываем строку из служебных квадратиков.
+    name.textContent = row.secret ? `книга ${row.book_id}` : row.name;
+    name.title = [row.author && 'автор: ' + row.author,
+                  row.words && `${ru(row.words)} знаков`,
+                  row.status, row.last_chapter && 'последняя: ' + row.last_chapter]
+                 .filter(Boolean).join(' · ');
+    if(row.secret) name.style.opacity = '.7';
     tr.append(name);
 
     const readers = document.createElement('span');
@@ -3735,7 +3750,10 @@ function rkRender(){
     readers.title = 'читающих';
     tr.append(readers);
 
-    for(const [value, label] of [[row.day, 'за сутки'], [row.week, 'за неделю']]){
+    // Движение: за сутки и за неделю считаем по своей истории, а `diff` —
+    // то, что посчитал сам сайт.
+    for(const [value, label] of [[row.day, 'за сутки'], [row.week, 'за неделю'],
+                                 [row.diff, 'по данным сайта']]){
       const move = rkMove(value);
       const span = document.createElement('span');
       span.className = 'num ' + move.cls;
@@ -3777,27 +3795,83 @@ function rkRender(){
 function rkShow(data){
   rkRows = data.rows || [];
   if(data.titles) rkTitles = data.titles;
-  $('rkNote').textContent = rkRows.length
-    ? `Срез за ${data.day}, строк ${rkRows.length}. Дней в истории: ${data.days}.`
-      + (data.note ? ' ' + data.note : '')
-    : (data.note || 'Срезов пока нет.');
+  $('rkDetails').hidden = true;
+
+  const parts = [];
+  if(rkRows.length){
+    parts.push(`Срез за ${data.day}, строк ${rkRows.length}`);
+    if(data.stats_date) parts.push(`статистика сайта до ${data.stats_date}`);
+    parts.push(`дней в истории ${data.days}`);
+    if(data.decoded === false) parts.push('названия расшифровать не удалось');
+    if(data.same_version) parts.push('рейтинг с прошлого раза не обновился');
+  }
+  $('rkNote').textContent = parts.join(' · ') + (parts.length ? '.' : '')
+    + (data.note ? ' ' + data.note : '');
   rkRender();
+}
+
+/** Подробности поломки: по ним видно, что именно сломалось. */
+function rkDiagnose(details){
+  const box = $('rkDetails');
+  box.innerHTML = '';
+  if(!details){ box.hidden = true; return; }
+  box.hidden = false;
+  for(const [name, value] of Object.entries(details)){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const label = document.createElement('span');
+    label.className = 'grow';
+    label.textContent = {
+      page_size: 'размер страницы', state_found: 'объект с данными найден',
+      book_list: 'книг в объекте', json_error: 'разбор JSON',
+      font: 'шрифт скачан', url: 'адрес', http: 'ответ сайта',
+    }[name] || name;
+    const said = document.createElement('span');
+    said.className = 'num';
+    said.textContent = typeof value === 'boolean' ? (value ? 'да' : 'нет')
+                                                  : String(value);
+    row.append(label, said);
+    box.append(row);
+  }
 }
 
 async function rkState(){
   try{
-    const board = rkBoardMenu ? rkBoardMenu.value : 'all';
-    const data = await call('/api/rank/state?board=' + encodeURIComponent(board));
-    if(data.boards && rkBoardMenu === null) rkBoards(data.boards);
-    rkShow(data);
+    const where = rkWhere();
+    const query = new URLSearchParams(where).toString();
+    rkShow(await call('/api/rank/state?' + query));
   }catch(err){ showError(err.message); }
 }
 
-function rkBoards(boards){
-  const box = $('rkBoard');
-  box.dataset.options = JSON.stringify(boards.map(b => [b.key, b.name]));
+async function rkLoadCategories(fetchFromSite){
+  try{
+    const data = await call('/api/rank/categories'
+                            + (fetchFromSite ? '?fetch=1' : ''));
+    rkCats = data.categories || {};
+
+    if(!rkAudMenu){
+      const aud = $('rkAudience');
+      aud.dataset.options = JSON.stringify(data.audiences.map(a => [a.key, a.name]));
+      aud.innerHTML = '';
+      rkAudMenu = makeDropdown(aud, () => { rkFillCategories(); rkState(); });
+
+      const kind = $('rkKind');
+      kind.dataset.options = JSON.stringify(data.kinds.map(k => [k.key, k.name]));
+      kind.innerHTML = '';
+      rkKindMenu = makeDropdown(kind, () => rkState());
+    }
+    rkFillCategories();
+  }catch(err){ showError(err.message); }
+}
+
+function rkFillCategories(){
+  const side = rkAudMenu ? rkAudMenu.value : '1';
+  const list = rkCats[side] || [];
+  const box = $('rkCategory');
+  box.dataset.options = JSON.stringify(list.map(c => [
+    c.id, c.name + (c.translated ? '' : ' (без перевода)')]));
   box.innerHTML = '';
-  rkBoardMenu = makeDropdown(box, () => rkState());
+  rkCatMenu = makeDropdown(box, () => rkState());
 }
 
 async function rkRefresh(){
@@ -3805,12 +3879,12 @@ async function rkRefresh(){
   $('rkRefresh').disabled = true;
   $('rkNote').innerHTML = '<span class="spin"></span>Запрашиваем рейтинг…';
   try{
-    const data = await call('/api/rank/refresh',
-      {board: rkBoardMenu ? rkBoardMenu.value : 'all'});
+    const data = await call('/api/rank/refresh', rkWhere());
     rkShow(data);
   }catch(err){
     showError(err.message);
     $('rkNote').textContent = '';
+    rkDiagnose(err.details);
   }finally{
     $('rkRefresh').disabled = false;
   }
@@ -3820,13 +3894,12 @@ async function rkTranslate(){
   showError('');
   $('rkTranslate').disabled = true;
   try{
-    const data = await call('/api/rank/translate', {
-      board: rkBoardMenu ? rkBoardMenu.value : 'all',
-      model: llmMenu ? llmMenu.value : '',
-    });
+    const data = await call('/api/rank/translate',
+      {...rkWhere(), model: llmMenu ? llmMenu.value : ''});
     rkTitles = data.titles || {};
     $('rkNote').textContent =
-      `Переведено ${data.translated}, из кэша ${data.cached}.`;
+      `Переведено ${data.translated}, из кэша ${data.cached}.`
+      + (data.broken ? ` Не разобрано ответов: ${data.broken}.` : '');
     rkRender();
   }catch(err){ showError(err.message); }
   finally{ $('rkTranslate').disabled = false; }
@@ -3836,8 +3909,9 @@ async function rkTranslate(){
 function rkPick(row){
   rkPicked = row;
   $('rkPlace').hidden = false;
-  $('rkChosen').textContent = `${row.name} · код ${row.book_id}`;
-  $('rkFolder').value = rkTitles[row.book_id] || row.name;
+  $('rkChosen').textContent =
+    `${row.secret ? 'книга' : row.name} · код ${row.book_id}`;
+  $('rkFolder').value = rkTitles[row.book_id] || (row.secret ? row.book_id : row.name);
   $('rkStartNote').textContent = '';
   $('rkPlace').scrollIntoView({behavior: 'smooth', block: 'nearest'});
 }
@@ -3850,8 +3924,7 @@ async function rkStart(){
 
   $('rkStart').disabled = true;
   try{
-    // Ищем книгу тем же запросом, что и в качалке: код уже известен,
-    // копировать ничего не нужно.
+    // Код уже известен — копировать ничего не нужно.
     const found = await call('/api/find',
       {query: rkPicked.book_id, source: 'fanqie'});
     const {job} = await call('/api/start', {
@@ -3874,4 +3947,4 @@ $('rkTranslate').onclick = rkTranslate;
 $('rkFilter').addEventListener('input', rkRender);
 $('rkStart').onclick = rkStart;
 $('rkCancel').onclick = () => { $('rkPlace').hidden = true; rkPicked = null; };
-rkState();
+rkLoadCategories().then(rkState);

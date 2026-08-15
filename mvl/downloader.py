@@ -294,10 +294,17 @@ class Downloader:
         threads_downgraded = False
 
         fetcher = None
-        if self.threads > 1 and self.probe and pending:
-            # Подбираем способ до основного прогона: заявленная
-            # многопоточность и работающая — разные вещи.
-            fetcher = self._autoprobe(novel, pending)
+        if self.threads > 1 and pending:
+            if self.probe:
+                # Подбираем способ до основного прогона: заявленная
+                # многопоточность и работающая — разные вещи.
+                fetcher = self._autoprobe(novel, pending)
+            else:
+                # Ручной режим пропускает пробу, но не раздачу клиентов.
+                # Без неё все потоки делили одну сессию и один прокси, а
+                # кука Cloudflare привязана к адресу — запросы вставали в
+                # очередь на сайте, и «N потоков» оказывались одним.
+                fetcher = self._manual_fetcher(novel)
 
         if self.threads > 1:
             # Пачками: смена прокси и повтор главы тут не делаются — по ТЗ
@@ -505,6 +512,35 @@ class Downloader:
         low, high = SITE_PAUSE_RANGE
         time.sleep(random.uniform(low, high) * self.pause_multiplier)
 
+    def _make_site_client(self, novel: api.Novel):
+        """Как заводить клиента витрины — одинаково для пробы и ручного."""
+        def make_client(proxy_url=None, shared_session=False):
+            return SiteClient(referer=novel.page_url, proxy_url=proxy_url,
+                              shared_session=shared_session,
+                              max_attempts=settings.threads.probe_attempts)
+
+        return make_client
+
+    def _manual_fetcher(self, novel: api.Novel):
+        """Раздатчик клиентов для ручного режима, без пробы.
+
+        Прокси раздаются по потокам, если их хватает: при восьми адресах и
+        трёх потоках каждый поток работает со своего. Адресов меньше двух —
+        у каждого потока хотя бы своя сессия.
+        """
+        from net import pool as netpool
+
+        proxies = []
+        if self.pool is not None:
+            proxies = [p for p in self.pool.proxies if not p.disabled]
+
+        method = netpool.PROXY_PER_THREAD if len(proxies) >= 2 else netpool.OWN_SESSION
+        if proxies:
+            self.threads = max(1, min(self.threads, len(proxies)))
+        log.info("Ручной режим: %s потока, способ «%s», адресов %s",
+                 self.threads, method, len(proxies))
+        return netpool.Fetcher(method, self._make_site_client(novel), proxies)
+
     def _autoprobe(self, novel: api.Novel, pending):
         """Пробный прогон: 5 глав в 3 потока, способы по порядку из ТЗ.
 
@@ -519,10 +555,7 @@ class Downloader:
         if self.pool is not None:
             proxies = [p for p in self.pool.proxies if not p.disabled]
 
-        def make_client(proxy_url=None, shared_session=False):
-            return SiteClient(referer=novel.page_url, proxy_url=proxy_url,
-                              shared_session=shared_session,
-                              max_attempts=settings.threads.probe_attempts)
+        make_client = self._make_site_client(novel)
 
         def fetch(client, chapter):
             return self.source.chapter(client, chapter)[1]
