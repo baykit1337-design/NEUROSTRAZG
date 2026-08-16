@@ -1308,6 +1308,23 @@ function llmFillModels(models, suggested){
     : '';
 }
 
+/** Журнал одиночного запроса — в тот же блок, что и журнал разбора.
+ *
+ * Проверка ключа не задача и прогресс-бара не имеет, но вопросы к ней те
+ * же: каким ключом проверяли, через какой адрес ушёл запрос, что ответил
+ * сервер. Ответы на них сервер присылает строками вместе с ответом.
+ */
+function llmLog(lines){
+  if(!lines || !lines.length) return;
+  const box = $('llmLogBox');
+  box.hidden = false;
+  box.open = true;
+  // Журнал одной проверки, а не накопительный: строки прошлой попытки
+  // рядом с новыми только сбивают.
+  $('llmLog').innerHTML = '';
+  logDraw($('llmLog'), lines);
+}
+
 async function llmCheck(){
   showError('');
   $('llmCheck').disabled = true;
@@ -1316,13 +1333,16 @@ async function llmCheck(){
   note.innerHTML = '<span class="spin"></span>Спрашиваем список моделей…';
   try{
     const data = await call('/api/llm/check', {key: $('llmKey').value.trim()});
-    note.textContent = `Ключ рабочий: ${data.key}. Моделей доступно: ${data.models.length}.`;
+    llmLog(data.log);
+    note.textContent = `Ключ рабочий: ${data.checked || data.key}. `
+      + `Моделей доступно: ${data.models.length}.`;
     $('llmSetup').hidden = false;
     llmFillModels(data.models, data.suggested);
   }catch(err){
     note.textContent = original;
+    llmLog(err.log);
     $('llmSetup').hidden = true;
-    showError(err.message);
+    showError(err.message, $('llmCheck'));
   }finally{
     $('llmCheck').disabled = false;
   }
@@ -1342,7 +1362,7 @@ async function llmSave(){
     $('llmKey').value = '';
     llmRenderKeys(data);
   }catch(err){
-    showError(err.message);
+    showError(err.message, $('llmSave'));
   }finally{
     $('llmSave').disabled = false;
   }
@@ -1448,7 +1468,7 @@ async function llmKeysState(){
 async function llmAdd(){
   showError('');
   const text = $('llmKey').value.trim();
-  if(!text){ showError('Введите ключ'); return; }
+  if(!text){ showError('Введите ключ', $('llmAdd')); return; }
   try{
     const data = await call('/api/llm/keys/add', {
       key: text,
@@ -1458,19 +1478,19 @@ async function llmAdd(){
     $('llmKey').value = '';
     $('llmName').value = '';
     llmRenderKeys(data);
-  }catch(err){ showError(err.message); }
+  }catch(err){ showError(err.message, $('llmAdd')); }
 }
 
 async function llmUpdate(id, fields){
   try{
     llmRenderKeys(await call('/api/llm/keys/update', {id, ...fields}));
-  }catch(err){ showError(err.message); }
+  }catch(err){ showError(err.message, $('llmKeys')); }
 }
 
 async function llmRemove(id){
   try{
     llmRenderKeys(await call('/api/llm/keys/remove', {id}));
-  }catch(err){ showError(err.message); }
+  }catch(err){ showError(err.message, $('llmKeys')); }
 }
 
 /** 7.2: «Оценить расход» — объём работы и сколько класть на ключ. */
@@ -1478,7 +1498,7 @@ async function llmEstimate(){
   showError('');
   const targets = CHOSEN.anList || [];
   if(!targets.length){
-    showError('Сначала выберите файлы на этой вкладке');
+    showError('Сначала выберите файлы на этой вкладке', $('llmEstimate'));
     return;
   }
   $('llmEstimate').disabled = true;
@@ -1496,13 +1516,19 @@ async function llmEstimate(){
       const limit = row.querySelectorAll('input')[1];
       if(limit && !Number(limit.value)) limit.value = data.per_key;
     }
-  }catch(err){ showError(err.message); }
+  }catch(err){ showError(err.message, $('llmEstimate')); }
   finally{ $('llmEstimate').disabled = false; }
 }
 
 $('llmCheck').onclick = llmCheck;
 $('llmSave').onclick = llmSave;
 $('llmAdd').onclick = llmAdd;
+// Запасной путь для вставки: ярлык зависит от раскладки, кнопка — нет.
+$('llmPaste').onclick = () => {
+  const field = $('llmKey');
+  field.focus();
+  pasteInto(field);
+};
 $('llmEstimate').onclick = llmEstimate;
 llmKeysState();
 
@@ -1575,7 +1601,12 @@ window.anScan = anScan;
 let anLogSeen = 0, anLogTimer = null;
 
 function anLogDraw(lines){
-  const box = $('anLog');
+  logDraw($('anLog'), lines);
+}
+
+/** Отрисовка строк журнала. Общая: журналов на экране два — под
+ *  прогресс-баром разбора и под кнопкой проверки ключа. */
+function logDraw(box, lines){
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
   for(const line of lines){
     const row = document.createElement('div');

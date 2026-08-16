@@ -789,11 +789,21 @@ def api_rename_apply():
 # ------------------------------------------------------ модель и ключ
 
 
-def _llm_client(payload: dict) -> LlmClient:
-    """Клиент с ключом из запроса либо из настроек, через общий пул прокси."""
+def _llm_client(payload: dict, log_to=None) -> LlmClient:
+    """Клиент для запроса. Ключ — из поля либо из списка.
+
+    Список обязателен: без него клиент искал ключ в старом одиночном поле
+    настроек, которое список как раз и очищает. Отсюда и брались отказы
+    «ключ не задан» при полном списке ключей.
+    """
     with POOL_LOCK:
         pool = POOL
-    return LlmClient(key=(payload.get("key") or "").strip(), pool=pool)
+    typed = (payload.get("key") or "").strip()
+    return LlmClient(key=typed, pool=pool,
+                     # Введённый вручную ключ проверяется как есть: он ещё
+                     # не сохранён, и ротации для него нет.
+                     keys=None if typed else keystore,
+                     on_event=(lambda text: log_to.add(text, "key")) if log_to else None)
 
 
 @app.get("/api/llm/state")
@@ -884,13 +894,33 @@ def api_llm_check():
     здесь, а не при первом разборе главы.
     """
     payload = request.json or {}
-    client = _llm_client(payload)
+    typed = (payload.get("key") or "").strip()
+    if not typed and not keystore.state()["total"]:
+        return jsonify(error="Ключей в списке нет — добавьте хотя бы один",
+                       need_keys=True), 400
+
+    # Проверка — не задача, прогресс-бара у неё нет, но журнал тот же:
+    # он и отвечает на вопрос «через какой адрес ушёл запрос».
+    trace = joblog.JobLog()
+    client = _llm_client(payload, log_to=trace)
     try:
-        return jsonify(**client.check())
+        found = client.check()
+        # По какому ключу проверяли — видно и в ответе, и в журнале.
+        return jsonify(**found, checked=short(client.key), log=trace.lines())
+    except NoKeysLeft as exc:
+        trace.add(str(exc), "error")
+        return jsonify(error=str(exc), need_keys=True, log=trace.lines()), 400
     except BadKey as exc:
-        return jsonify(error=str(exc)), 400
+        # Причина словами: «наш сервер отказал» и «Gemini отклонил ключ» —
+        # разные беды, и чинить их надо по-разному.
+        text = f"Gemini отклонил ключ {short(client.key)}: {exc}"
+        trace.add(text, "error")
+        return jsonify(error=text, key=short(client.key),
+                       log=trace.lines()), 400
     except LlmError as exc:
-        return jsonify(error=str(exc)), 502
+        trace.add(str(exc), "error")
+        return jsonify(error=str(exc), key=short(client.key),
+                       log=trace.lines()), 502
     finally:
         client.close()
 

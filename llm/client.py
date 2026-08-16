@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
 #: Сколько знаков ключа показывать по краям: «AIza…4f2c».
 VISIBLE = 4
 
+#: Как зовётся в журнале запрос без прокси.
+DIRECT = "напрямую"
+
 
 class LlmError(Exception):
     """Запрос к модели не удался."""
@@ -230,27 +233,40 @@ class LlmClient:
                 self._clients[proxy_url] = client
             return client
 
-    def _proxies(self) -> list:
-        """Адреса для перебора. Пустой список — идём напрямую."""
+    def _proxies(self) -> list[tuple[str | None, str]]:
+        """Адреса для перебора парами «url, как звать в журнале».
+
+        Имя для журнала берём у самого прокси (`label` — адрес без учётных
+        данных): пароль в журнале не нужен никому.
+        """
         if self.pool is None:
-            return [None]
-        live = [p.url for p in getattr(self.pool, "proxies", []) if not p.disabled]
+            # Галочка «использовать прокси для модели» снята — так и скажем.
+            return [(None, DIRECT)]
+
+        live = []
+        for proxy in getattr(self.pool, "proxies", []):
+            if getattr(proxy, "disabled", False):
+                continue
+            live.append((proxy.url, getattr(proxy, "label", "") or DIRECT))
         # Прокси не заданы — идём напрямую, это не ошибка.
-        return live or [None]
+        return live or [(None, DIRECT)]
 
     def _request(self, path: str, payload: dict | None = None) -> dict:
         """GET или POST к API, с перебором прокси при отказе.
 
         При отказе прокси берём следующий из списка и повторяем запрос —
-        так же, как это делает парсер.
+        так же, как это делает парсер. Каждая попытка попадает в журнал:
+        иначе на вопрос «а через прокси ли ушёл запрос» отвечать нечем.
         """
         if not self.key:
             raise BadKey("Ключ не задан. Введите его в настройках анализа.")
 
         url = f"{self.base_url}/{path.lstrip('/')}"
         last: Exception | None = None
+        route = self._proxies()
 
-        for proxy_url in self._proxies():
+        for number, (proxy_url, label) in enumerate(route, 1):
+            self._say(f"запрос к модели {'напрямую' if label == DIRECT else 'через ' + label}")
             try:
                 return self._once(self._http(proxy_url), url, payload)
             except (BadKey, QuotaSpent):
@@ -259,8 +275,17 @@ class LlmClient:
             except Exception as exc:  # noqa: BLE001 — пробуем следующий адрес
                 last = exc
                 log.warning("Запрос к модели не прошёл: %s", mask(exc))
+                left = len(route) - number
+                self._say(f"{label} не ответил: {mask(exc)}"
+                          + (f", пробую следующий адрес (осталось {left})"
+                             if left else ""))
 
-        raise LlmError(mask(last or "не удалось связаться с моделью"))
+        # Наружу — причина словами. Внутренности curl человек всё равно не
+        # чинит, а понять «сеть не пустила» или «ключ плохой» ему нужно.
+        where = "напрямую" if len(route) == 1 and route[0][1] == DIRECT \
+            else f"ни через один из {len(route)} адресов"
+        raise LlmError(f"Не удалось связаться с Gemini {where}. "
+                       f"Подробности: {mask(last or 'ответа нет')}")
 
     def _once(self, http, url: str, payload: dict | None) -> dict:
         params = [("key", self.key)]
@@ -315,7 +340,11 @@ class LlmClient:
 
     def check(self) -> dict:
         """Проверяет ключ и подбирает модель. Зовётся сразу при вводе."""
+        name = self.current.name if self.current and self.current.name else ""
+        self._say(f"проверяю ключ {short(self.key)}"
+                  + (f" («{name}»)" if name else ""))
         found = self.models()
+        self._say(f"Gemini ответил: моделей с генерацией — {len(found)}")
         pick = cheapest(found)
         return {
             "ok": True,

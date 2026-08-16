@@ -535,6 +535,14 @@
     border-color:rgba(255,90,120,.4);
     color:#ff9db0;font-size:13px;
   }
+  /* 1.2: то же сообщение, но внутри карточки — под кнопкой, которую
+     нажали, а не наверху страницы, куда в этот момент никто не смотрит. */
+  .err.local{
+    margin-top:12px;padding:10px 12px;
+    border:1px solid rgba(255,90,120,.4);border-radius:12px;
+    background:rgba(255,90,120,.07);
+    color:#ff9db0;font-size:13px;line-height:1.45;
+  }
   /* Раздел 4: кружок и текст пульсируют строго в такт.
 
      Одинаковой длительности для этого мало: анимации стартуют в момент
@@ -1419,6 +1427,9 @@
              autocomplete="off">
       <input id="llmLimit" type="number" min="0" placeholder="лимит запросов"
              style="flex:0 0 150px">
+      <!-- Ярлык Ctrl+V на некоторых раскладках не доходит до браузера,
+           а ключ набирать руками — сорок знаков без единой ошибки. -->
+      <button id="llmPaste" class="ghost" style="flex:0 0 auto">Вставить</button>
       <button id="llmAdd" class="ghost" style="flex:0 0 auto">Добавить</button>
     </div>
     <p class="hint" id="llmKeyNote">Ключи хранятся в <code>config.json</code>
@@ -1433,6 +1444,14 @@
         модель</button>
     </div>
     <p class="hint" id="llmEstimateNote"></p>
+
+    <!-- Тот же журнал, что и под прогресс-баром разбора: проверка ключа
+         идёт до всякого прогресс-бара, а вопросы к ней те же — каким
+         ключом проверяли и через какой адрес ушёл запрос. -->
+    <details id="llmLogBox" hidden style="margin-top:12px">
+      <summary class="hint" style="cursor:pointer">Журнал проверки</summary>
+      <div class="joblog" id="llmLog"></div>
+    </details>
   </div>
 
   <div class="card" id="llmSetup" hidden>
@@ -2229,12 +2248,84 @@ function toast(message){
   return box;
 }
 
-function showError(msg){
-  const box = $('error');
-  if(!msg){ box.hidden = true; return; }
+/* Ошибка показывается под той карточкой, где нажали кнопку (1.2 ТЗ).
+ *
+ * Общий блок наверху страницы человек не видит: он смотрит на кнопку, а
+ * страница в этот момент прокручена вниз, и отказ выглядит как «ничего не
+ * произошло». Поэтому сообщение подставляем в саму карточку, а верхний
+ * блок остаётся запасным — для случаев, когда прикладывать не к чему.
+ */
+let ERR_SPOT = null;
+
+/** Место под сообщение внутри карточки с кнопкой. Создаётся один раз. */
+function errSpot(near){
+  const card = near && near.closest ? near.closest('.card') : null;
+  if(!card) return null;
+  let box = card.querySelector(':scope > .err.local');
+  if(!box){
+    box = document.createElement('div');
+    box.className = 'err local';
+    box.hidden = true;
+    card.append(box);
+  }
+  return box;
+}
+
+function showError(msg, near){
+  // Прошлое сообщение снимаем всегда: два одновременно только путают.
+  if(ERR_SPOT){ ERR_SPOT.hidden = true; ERR_SPOT.textContent = ''; }
+  ERR_SPOT = null;
+  const top = $('error');
+  top.hidden = true;
+  if(!msg) return;
+
+  const box = errSpot(near) || top;
   box.hidden = false;
   box.textContent = msg;
+  if(box === top) return;
+  ERR_SPOT = box;
+  box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 }
+
+/* Вставка при нелатинской раскладке (1.1 ТЗ).
+ *
+ * Событие `paste` в приложении никто не перехватывает, и в браузере с
+ * латинской раскладкой Ctrl+V работает сам. Ломается он на кириллице:
+ * часть браузеров сверяет ярлык с *символом*, а на русской раскладке это
+ * Ctrl+М — такого ярлыка нет, и вставки не происходит. Клавиша при этом
+ * известна всегда (`code === 'KeyV'`), так что вставляем сами.
+ *
+ * Перехватываем только тот случай, где штатная вставка уже не сработала:
+ * если `key` — это «v», браузер справится без нас, и лезть нельзя, иначе
+ * текст вставится дважды.
+ */
+async function pasteInto(field){
+  let text = '';
+  try{
+    text = await navigator.clipboard.readText();
+  }catch(err){
+    // Доступ к буферу не дали — молча ничего не делаем: сообщение об
+    // ошибке здесь пугает сильнее, чем не сработавший ярлык.
+    return;
+  }
+  if(!text) return;
+  const from = field.selectionStart ?? field.value.length;
+  const to = field.selectionEnd ?? from;
+  field.value = field.value.slice(0, from) + text + field.value.slice(to);
+  const caret = from + text.length;
+  field.setSelectionRange(caret, caret);
+  field.dispatchEvent(new Event('input', {bubbles: true}));
+}
+
+document.addEventListener('keydown', e => {
+  if(e.code !== 'KeyV' || e.altKey || e.shiftKey) return;
+  if(!(e.ctrlKey || e.metaKey)) return;
+  if(e.key === 'v' || e.key === 'V') return;   // латиница — браузер сам
+  const field = e.target;
+  if(!field || !('selectionStart' in field) || field.readOnly) return;
+  e.preventDefault();
+  pasteInto(field);
+});
 
 async function call(url, body){
   const opts = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
@@ -2248,6 +2339,8 @@ async function call(url, body){
     // Подробности поломки разбора: по общим словам чинить нечего.
     err.details = data.details;
     err.needKeys = !!data.need_keys;
+    // Журнал приезжает и с отказом: по нему видно, где именно встало.
+    err.log = data.log;
     throw err;
   }
   return data;

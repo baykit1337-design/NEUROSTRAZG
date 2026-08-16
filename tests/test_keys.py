@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
 from llm import keys as keys_mod  # noqa: E402
-from llm.client import NoKeysLeft, key_id, mask, short  # noqa: E402
+from llm.client import (BadKey, DIRECT, LlmClient, LlmError, NoKeysLeft,  # noqa: E402
+                        key_id, mask, short)
+from mvl.proxies import Proxy  # noqa: E402
 from ops import joblog, session as session_op  # noqa: E402
 
 KEY_A = "AIzaAAAA1111222233334444aaaabbbbcccc"
@@ -340,6 +342,101 @@ class TestJobLog(unittest.TestCase):
         log = joblog.JobLog()
         log.add("глава 215 разобрана")
         self.assertIn("глава 215 разобрана", log.as_text())
+
+
+class TestRoute(KeysBase):
+    """Через что уходит запрос к модели и что об этом сказано (1.1 ТЗ).
+
+    Раньше на вопрос «а точно ли запросы идут через прокси» ответить было
+    нечем: в журнале о маршруте не было ни строчки.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._use = settings.llm.use_proxies
+        self.addCleanup(lambda: setattr(settings.llm, "use_proxies", self._use))
+        settings.llm.use_proxies = True
+        self.said: list[str] = []
+
+    def _client(self, pool=None):
+        return LlmClient(key=KEY_A, pool=pool, on_event=self.said.append)
+
+    def test_no_proxies_means_straight_and_it_is_said_so(self):
+        route = self._client()._proxies()
+        self.assertEqual(route, [(None, DIRECT)])
+
+    def test_proxy_is_named_without_the_password(self):
+        proxy = Proxy(host="10.0.0.1", port=8080,
+                      username="user", password="s3cret")
+        route = self._client(_Pool([proxy]))._proxies()
+        self.assertEqual(route, [(proxy.url, "10.0.0.1:8080")])
+        self.assertNotIn("s3cret", route[0][1])
+
+    def test_disabled_proxy_is_skipped(self):
+        live = Proxy(host="10.0.0.1", port=8080)
+        dead = Proxy(host="10.0.0.2", port=8080, disabled=True)
+        route = self._client(_Pool([live, dead]))._proxies()
+        self.assertEqual([label for _, label in route], ["10.0.0.1:8080"])
+
+    def test_checkbox_off_means_straight_even_with_proxies(self):
+        settings.llm.use_proxies = False
+        route = self._client(_Pool([Proxy(host="10.0.0.1", port=8080)]))._proxies()
+        self.assertEqual(route, [(None, DIRECT)])
+
+    def test_every_attempt_is_written_to_the_log(self):
+        client = self._client(_Pool([Proxy(host="10.0.0.1", port=8080),
+                                     Proxy(host="10.0.0.2", port=8080)]))
+        client._http = lambda url: None
+        client._once = _refuse
+        with self.assertRaises(LlmError):
+            client._request("models")
+
+        route = [line for line in self.said if line.startswith("запрос к модели")]
+        self.assertEqual(route, ["запрос к модели через 10.0.0.1:8080",
+                                 "запрос к модели через 10.0.0.2:8080"])
+
+    def test_next_address_is_taken_after_a_refusal(self):
+        client = self._client(_Pool([Proxy(host="10.0.0.1", port=8080),
+                                     Proxy(host="10.0.0.2", port=8080)]))
+        client._http = lambda url: None
+        client._once = _refuse
+        with self.assertRaises(LlmError):
+            client._request("models")
+        self.assertTrue(any("пробую следующий адрес" in line for line in self.said))
+
+    def test_a_bad_key_does_not_start_a_tour_of_the_addresses(self):
+        """Дело в ключе — перебирать адреса бессмысленно и долго."""
+        client = self._client(_Pool([Proxy(host="10.0.0.1", port=8080),
+                                     Proxy(host="10.0.0.2", port=8080)]))
+        client._http = lambda url: None
+
+        def reject(*a, **k):
+            raise BadKey("ключ отклонён")
+
+        client._once = reject
+        with self.assertRaises(BadKey):
+            client._request("models")
+        self.assertEqual(
+            len([line for line in self.said if line.startswith("запрос к модели")]), 1)
+
+    def test_failure_says_it_in_words_not_in_curl(self):
+        client = self._client()
+        client._http = lambda url: None
+        client._once = _refuse
+        with self.assertRaises(LlmError) as caught:
+            client._request("models")
+        self.assertIn("Не удалось связаться с Gemini", str(caught.exception))
+
+
+class _Pool:
+    """Список прокси в том виде, в каком его видит клиент."""
+
+    def __init__(self, proxies):
+        self.proxies = proxies
+
+
+def _refuse(*args, **kwargs):
+    raise OSError("соединение сброшено")
 
 
 if __name__ == "__main__":

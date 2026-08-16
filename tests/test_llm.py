@@ -344,11 +344,27 @@ class TestWebApi(LlmTestCase):
         self.assertTrue(body["keys"])
 
     def test_check_without_a_key_fails_before_the_network(self):
-        """Ключа нет — отвечаем сразу, никуда не ходим."""
+        """Ключей нет вовсе — отвечаем сразу, никуда не ходим.
+
+        Пустое поле ввода при этом ключей не отменяет: оно означает
+        «проверь то, что в списке», а не «ключ не задан». Раньше на этом
+        месте и получался отказ 400 при полном списке ключей.
+        """
         settings.llm.api_key = ""
-        res = self.app.post("/api/llm/check", json={"key": ""})
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("Ключ", res.get_json()["error"])
+        saved = list(settings.llm.keys)
+        no_save = settings.save
+        settings.llm.keys = []
+        settings.save = lambda *a, **k: None
+        try:
+            res = self.app.post("/api/llm/check", json={"key": ""})
+            self.assertEqual(res.status_code, 400)
+            body = res.get_json()
+            self.assertIn("Ключей в списке нет", body["error"])
+            # Причина должна быть словами, а не общим «Ключ не задан».
+            self.assertTrue(body["need_keys"])
+        finally:
+            settings.llm.keys = saved
+            settings.save = no_save
 
     def test_state_reports_the_proxy_switch(self):
         body = self.app.get("/api/llm/state").get_json()
