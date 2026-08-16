@@ -92,9 +92,15 @@ class TestRankScreenIsWired(unittest.TestCase):
         cls.js = (root / "tabs.js").read_text(encoding="utf-8")
 
     def test_every_control_has_a_handler(self):
-        for name in ("rkRefresh", "rkTranslate", "rkStart", "rkFilter"):
+        for name in ("rkRefresh", "rkTranslate", "rkFilter"):
             self.assertIn(f'id="{name}"', self.html, name)
             self.assertIn(f"$('{name}')", self.js, name)
+
+    def test_downloading_goes_through_the_downloader_tab(self):
+        """Своего загрузчика у рейтинга больше нет: он умел меньше, а
+        диапазон глав в качалке при этом оставался от прошлого запуска."""
+        self.assertIn("function rkPick(row)", self.js)
+        self.assertIn("goTab('download')", self.js)
 
     def test_source_picker_is_filled_by_the_server(self):
         self.assertIn("function loadSources(", self.js)
