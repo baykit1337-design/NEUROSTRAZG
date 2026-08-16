@@ -1628,6 +1628,9 @@ def api_rank_refresh():
                  version=found["version"], stats_date=found["stats_date"])
     return jsonify(saved=len(found["rows"]), decoded=found["decoded"],
                    same_version=same, audience=audience, kind=kind,
+                   # 2.5: подробности разбора шрифта. Без них «названия
+                   # расшифровать не удалось» не говорит, что чинить.
+                   font=found.get("font") or {},
                    **rank_op.movement(board, category=found["category"]))
 
 

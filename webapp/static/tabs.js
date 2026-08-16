@@ -4096,7 +4096,54 @@ function rkShow(data){
   }
   $('rkNote').textContent = parts.join(' · ') + (parts.length ? '.' : '')
     + (data.note ? ' ' + data.note : '');
+  rkFont(data.font);
   rkRender();
+}
+
+/** Подробности разбора шрифта (2.5 ТЗ).
+ *
+ * «Названия расшифровать не удалось» не говорит, что чинить: не скачался
+ * файл, не разобрался, обезличены имена глифов или не хватает пакетов
+ * для сравнения по начертанию — беды разные.
+ */
+function rkFont(found){
+  const box = $('rkFont');
+  if(!found || !Object.keys(found).length){ box.hidden = true; return; }
+  // Всё расшифровалось — подробности не нужны, только помеха.
+  if(found.ok && !found.unmapped){ box.hidden = true; return; }
+
+  box.hidden = false;
+  box.open = !found.ok;
+  const list = $('rkFontRows');
+  list.innerHTML = '';
+
+  const rows = [
+    ['шрифт со страницы', found.family || 'не найден'],
+    ['файл скачан', found.downloaded
+      ? `да, ${ru(found.size)} байт` : 'нет'],
+    ['отпечаток файла', found.digest || '—'],
+    ['глифов в шрифте', found.glyphs ? ru(found.glyphs) : '—'],
+    ['из них служебных', found.private ? ru(found.private) : '—'],
+    ['сопоставлено', found.mapped ? ru(found.mapped) : '0'],
+    ['без пары', found.unmapped ? ru(found.unmapped) : '0'],
+    ['способ', found.method || '—'],
+  ];
+  // Порог имеет смысл только у сравнения по начертанию.
+  if(found.threshold) rows.push(['порог сравнения', found.threshold]);
+  if(found.error) rows.push(['где встало', found.error]);
+
+  for(const [name, value] of rows){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const label = document.createElement('span');
+    label.className = 'grow';
+    label.textContent = name;
+    const said = document.createElement('span');
+    said.className = 'num';
+    said.textContent = String(value);
+    row.append(label, said);
+    list.append(row);
+  }
 }
 
 /** Подробности поломки: по ним видно, что именно сломалось. */
@@ -4114,9 +4161,15 @@ function rkDiagnose(details){
       page_size: 'размер страницы', state_found: 'объект с данными найден',
       book_list: 'книг в объекте', json_error: 'разбор JSON',
       font: 'шрифт скачан', url: 'адрес', http: 'ответ сайта',
+      font_details: 'подробности шрифта',
     }[name] || name;
     const said = document.createElement('span');
     said.className = 'num';
+    if(name === 'font_details'){
+      // Подробности шрифта — отдельный блок, а не строка со словарём.
+      rkFont(value);
+      continue;
+    }
     said.textContent = typeof value === 'boolean' ? (value ? 'да' : 'нет')
                                                   : String(value);
     row.append(label, said);

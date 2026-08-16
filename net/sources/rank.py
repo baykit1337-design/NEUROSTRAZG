@@ -283,30 +283,48 @@ def _dig(data, key: str):
 # ------------------------------------------------------------- запросы
 
 
-def _font_table(client, html: str) -> dict | None:
-    """Таблица подстановки для этой страницы. None — расшифровки нет."""
+def _font_table(client, html: str):
+    """Таблица подстановки и отчёт о разборе (2.5 ТЗ).
+
+    Возвращает пару «таблица, отчёт». Таблица `None` — расшифровки нет, а
+    отчёт объясняет, на каком шаге всё встало: не нашёлся шрифт в стилях,
+    не скачался файл, не разобрался, или разобрался, но подстановок ноль.
+    """
     family, url = fanqiefont.font_of(html)
     if not family:
-        return None
+        return None, fanqiefont.FontReport(
+            error="в стилях страницы нет шрифта с подменой знаков")
+
     if fanqiefont.known(family):
-        return fanqiefont.table_for(family)
+        return (fanqiefont.table_for(family),
+                fanqiefont.report_for(family=family))
+
     if not url:
-        return None
+        return None, fanqiefont.FontReport(
+            family=family,
+            error="шрифт в стилях назван, но адрес файла не найден")
 
     try:
         # Файл шрифта — двоичный, поэтому берём тело как есть.
         response = client.get(url)
         data = getattr(response, "content", None)
         if not data:
-            return None
-        return fanqiefont.table_for(family, data)
+            return None, fanqiefont.FontReport(
+                family=family, url=url,
+                error="файл шрифта пришёл пустым")
+        table = fanqiefont.table_for(family, data, url=url)
+        return table, fanqiefont.report_for(family=family)
     except fanqiefont.FontUnavailable as exc:
         # Без имён рейтинг всё равно полезен: позиция, движение и код книги
         # приходят чистыми.
         log.warning("Названия останутся зашифрованными: %s", exc)
+        found = fanqiefont.report_for(family=family)
+        return None, found or fanqiefont.FontReport(
+            family=family, url=url, error=str(exc))
     except Exception as exc:  # noqa: BLE001 — шрифт не главное
         log.warning("Шрифт не скачался: %s", exc)
-    return None
+        return None, fanqiefont.FontReport(
+            family=family, url=url, error=f"файл не скачался: {exc}")
 
 
 def fetch(client, audience: str = categories.MALE, kind: str = categories.READING,
@@ -321,7 +339,7 @@ def fetch(client, audience: str = categories.MALE, kind: str = categories.READIN
     url = f"{SITE}{categories.path(audience, kind, category)}"
     html = client.get_text(url)
 
-    table = _font_table(client, html)
+    table, font_report = _font_table(client, html)
     try:
         found = parse(html, limit=limit, table=table)
     except Diagnosis as exc:
@@ -329,11 +347,16 @@ def fetch(client, audience: str = categories.MALE, kind: str = categories.READIN
         # ли разметка или дело только в шрифте.
         exc.details.setdefault("url", url)
         exc.details.setdefault("font", bool(table))
+        if font_report is not None:
+            exc.details.setdefault("font_details", font_report.as_dict())
         raise
 
     found.update(audience=audience, kind=kind, category=category,
                  board=categories.board_key(audience, kind),
-                 decoded=table is not None)
+                 decoded=table is not None,
+                 # 2.5: «расшифровать не удалось» — не ответ. Подробности
+                 # едут вместе со срезом, чтобы было понятно, что чинить.
+                 font=font_report.as_dict() if font_report else {})
     return found
 
 
