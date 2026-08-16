@@ -711,7 +711,7 @@ async function rnApply(){
           $('rnSummary').style.whiteSpace = 'pre-line';
           $('rnSummary').textContent = text;
         }
-        if(job.error) showError(job.error);
+        if(job.error) showError(job.error, $('rnSummary'));
       });
   }catch(err){
     showError(err.message);
@@ -942,7 +942,7 @@ async function spStart(){
       },
       job => {
         $('spStop').hidden = true;
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('spSummary')); return; }
         $('spSummary').textContent = 'Папка: ' + (job.report?.output || job.output_dir);
         showFailures('spErrors', job.report?.failures);
       });
@@ -1045,7 +1045,7 @@ async function mgStart(){
       },
       job => {
         $('mgStop').hidden = true;
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('mgSummary')); return; }
         $('mgSummary').textContent = 'Файл: ' + (job.report?.output || job.output_dir);
         showFailures('mgErrors', job.report?.failures);
       });
@@ -1425,7 +1425,7 @@ async function hdClean(){
         return drawResult(p, 'hdFill', 'hdStatus', 'hdPct');
       },
       job => {
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('hdSummary')); return; }
         $('hdSummary').textContent = 'Папка: ' + (job.report?.output || job.output_dir);
       });
   }catch(err){
@@ -2424,7 +2424,7 @@ async function rpStart(rules, note){
         return drawResult(p, 'rpFill', 'rpStatus', 'rpPct');
       },
       job => {
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('rpSummary')); return; }
         const r = job.report || {};
         $('rpSummary').textContent =
           `Папка: ${r.output || job.output_dir}` +
@@ -2867,7 +2867,7 @@ async function sgStart(){
         return drawResult(p, 'sgFill', 'sgStatus', 'sgPct');
       },
       job => {
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('sgProgress')); return; }
         const r = job.report || {};
         $('sgNote').textContent =
           `Готово. Записано ${r.written} из ${r.total}. Папка: ${r.output}`;
@@ -3018,7 +3018,7 @@ async function orfStart(){
         $('orfStop').hidden = true;
         dropJob('tools');
         orfJob = null;
-        if(job.error){ showError(job.error); $('orfNote').textContent = ''; return; }
+        if(job.error){ showError(job.error, $('orfNote')); $('orfNote').textContent = ''; return; }
         orfRender(job.report || {});
       });
   }catch(err){
@@ -3292,7 +3292,7 @@ async function qRun(){
         $('qStop').hidden = true;
         dropJob('tools');
         qJob = null;
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('qStop')); return; }
         const report = job.report || {};
         if(report.steps){ qSteps = report.steps; qRender(); }
         $('qNote').textContent = job.progress.message || '';
@@ -3440,7 +3440,7 @@ async function ckStart(){
       job => drawResult(job.progress || {}, 'ckFill', 'ckStatus'),
       job => {
         $('ckStop').hidden = true;
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('ckStop')); return; }
         if(job.report){
           $('ckSave').hidden = false;
           ckRender(job.report);
@@ -3748,7 +3748,7 @@ async function ckClean(){
     pollJob(job.id,
       job => drawResult(job.progress || {}, 'ckCleanFill', 'ckCleanStatus'),
       job => {
-        if(job.error){ showError(job.error); return; }
+        if(job.error){ showError(job.error, $('ckCleanResultBox')); return; }
         const report = job.report || {};
         // Отчёт: что и сколько исправлено.
         const parts = (report.counts || []).map(r => `${r.kind_name}: ${r.count}`);

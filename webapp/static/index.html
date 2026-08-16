@@ -2316,6 +2316,35 @@ function toast(message){
  */
 let ERR_SPOT = null;
 
+/* Какую кнопку нажали последней.
+ *
+ * Почти каждое сообщение об ошибке — ответ на нажатие, и передавать
+ * кнопку в каждый из сотни вызовов вручную значит гарантированно где-то
+ * забыть. Поэтому нажатие запоминается само, а явный второй аргумент
+ * нужен только там, где сообщение приходит не от нажатия.
+ */
+const PRESS_MEMORY = 60000;
+let LAST_PRESS = {button: null, at: 0};
+
+document.addEventListener('click', e => {
+  const button = e.target && e.target.closest
+    ? e.target.closest('button') : null;
+  if(button) LAST_PRESS = {button, at: Date.now()};
+}, true);
+
+/** Кнопка, к которой ещё уместно привязать сообщение. */
+function freshPress(){
+  const {button, at} = LAST_PRESS;
+  if(!button || Date.now() - at > PRESS_MEMORY) return null;
+  // Кнопку могли перерисовать вместе со списком — тогда она уже не на
+  // экране, и сообщение под ней никто не увидит.
+  if(!button.isConnected) return null;
+  // Ушли на другую вкладку — сообщение о прошлой там ни к чему.
+  const section = button.closest('section');
+  if(section && section.hidden) return null;
+  return button;
+}
+
 /** Место под сообщение внутри карточки с кнопкой. Создаётся один раз. */
 function errSpot(near){
   const card = near && near.closest ? near.closest('.card') : null;
@@ -2338,7 +2367,7 @@ function showError(msg, near){
   top.hidden = true;
   if(!msg) return;
 
-  const box = errSpot(near) || top;
+  const box = errSpot(near || freshPress()) || top;
   box.hidden = false;
   box.textContent = msg;
   if(box === top) return;

@@ -308,5 +308,44 @@ class TestChosenPaths(unittest.TestCase):
         self.assertEqual(len(self.plan(chosen=paths)["rows"]), len(paths))
 
 
+class TestErrorFindsItsButton(UiBase):
+    """1.2: якорь по нажатой кнопке — иначе сотню вызовов не обойти."""
+
+    def test_the_pressed_button_is_remembered(self):
+        self.assertIn("LAST_PRESS = {button, at: Date.now()}", self.page)
+
+    def test_it_is_remembered_on_the_way_down(self):
+        """Обработчик кнопки может убрать её со страницы — тогда всплытия
+        уже не будет, и запоминать станет нечего."""
+        self.assertIn("}, true);", self.page)
+
+    def test_show_error_uses_it_when_nothing_is_passed(self):
+        self.assertIn("errSpot(near || freshPress())", self.page)
+
+    def test_a_stale_press_is_not_used(self):
+        fresh = self.page.split("function freshPress()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("PRESS_MEMORY", fresh)
+
+    def test_a_button_that_left_the_page_is_not_used(self):
+        fresh = self.page.split("function freshPress()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("isConnected", fresh)
+
+    def test_a_button_on_another_tab_is_not_used(self):
+        fresh = self.page.split("function freshPress()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("section.hidden", fresh)
+
+    def test_long_jobs_say_it_at_their_own_card(self):
+        """Задача идёт минутами: к моменту отказа нажатие давно забыто."""
+        for anchor in ("rnSummary", "spSummary", "mgSummary", "hdSummary",
+                       "rpSummary", "sgProgress", "qStop", "ckStop"):
+            with self.subTest(anchor=anchor):
+                self.assertIn(f"showError(job.error, $('{anchor}'))", self.tabs)
+
+    def test_no_job_reports_its_failure_to_the_top_of_the_page(self):
+        self.assertNotIn("if(job.error) showError(job.error);", self.tabs)
+        self.assertNotIn("if(job.error){ showError(job.error); return; }",
+                         self.tabs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
