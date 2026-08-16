@@ -686,15 +686,21 @@ def strip_leading_title(paragraphs: list[str], title: str) -> list[str]:
     подряд: в исходнике название нередко стоит дважды.
     """
     wanted = normalize_title(title)
-    if not wanted:
+    # У главы без собственного имени («Глава 217») приставка — это всё
+    # название, и `normalize_title` даёт пустую строку. Сверять тогда надо
+    # строку целиком, иначе заголовок остаётся продублированным в тексте.
+    whole = normalize_loose(title)
+    if not wanted and not whole:
         return paragraphs
 
     index = 0
     while index < min(TITLE_LOOKAHEAD, len(paragraphs)):
-        if normalize_title(paragraphs[index]) == wanted:
-            index += 1
-            continue
-        break
+        line = paragraphs[index]
+        same = ((wanted and normalize_title(line) == wanted)
+                or (whole and normalize_loose(line) == whole))
+        if not same:
+            break
+        index += 1
     return paragraphs[index:]
 
 

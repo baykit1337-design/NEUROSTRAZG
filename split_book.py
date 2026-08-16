@@ -97,6 +97,11 @@ def safe_name(s: str, limit: int = 110) -> str:
 
 # ---------------------------------------------------------------- EPUB
 
+#: Сколько знаков в странице без заголовка ещё считаем служебными
+#: (обложка, титул, выходные данные), а не главой.
+SERVICE_PAGE = 200
+
+
 def epub_chapters(path: Path):
     """Возвращает список (заголовок, текст) в порядке чтения книги."""
     with zipfile.ZipFile(path) as z:
@@ -120,9 +125,14 @@ def epub_chapters(path: Path):
 
         # 2. manifest: id -> href
         manifest = {}
+        # Оглавление помечено в манифесте само — угадывать его по объёму
+        # не нужно, а вот короткую настоящую главу так недолго и потерять.
+        nav_ids = set()
         for el in opf.iter():
             if el.tag.endswith('item') and el.get('id') and el.get('href'):
                 manifest[el.get('id')] = el.get('href')
+                if 'nav' in (el.get('properties') or '').split():
+                    nav_ids.add(el.get('id'))
 
         # 3. spine: порядок чтения
         order = [el.get('idref') for el in opf.iter()
@@ -131,7 +141,7 @@ def epub_chapters(path: Path):
         chapters = []
         for idref in order:
             href = manifest.get(idref)
-            if not href:
+            if not href or idref in nav_ids:
                 continue
             full = os.path.normpath(os.path.join(base, href)).replace('\\', '/')
             if full not in names:
@@ -140,7 +150,12 @@ def epub_chapters(path: Path):
                 continue
 
             text, heading = html_to_text(z.read(full))
-            if len(text) < 200:      # обложка, оглавление, служебные страницы
+            # Служебная страница — та, у которой нет заголовка и почти нет
+            # текста. Порог по одной длине терял настоящие главы: у
+            # авторского послесловия или интерлюдии двухсот знаков нет.
+            if not heading and len(text) < SERVICE_PAGE:
+                continue
+            if not text.strip():
                 continue
 
             title = heading or Path(full).stem

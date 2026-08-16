@@ -87,6 +87,30 @@ def collect_files(targets) -> list[Path]:
     return files
 
 
+def skipped_files(targets) -> list[str]:
+    """Файлы из выбранных папок, которые пропущены по формату (4.2 ТЗ).
+
+    Пропускать их в папке правильно — рядом лежат `state.json` и прочее
+    служебное. Но делать это молча нельзя: недостающие главы иначе
+    обнаружатся только в готовой книге.
+    """
+    if isinstance(targets, (str, Path)):
+        targets = [targets]
+
+    skipped: list[str] = []
+    for target in targets:
+        path = Path(str(target)).expanduser()
+        if not path.is_dir():
+            continue
+        for item in sorted(path.iterdir()):
+            if not item.is_file() or formats.is_readable(item):
+                continue
+            if item.name.lower() in SERVICE_FILES:
+                continue
+            skipped.append(item.name)
+    return skipped
+
+
 def read_all(files: list[Path], report: OpReport, progress: Progress | None = None
              ) -> list[Chapter]:
     """Читает все источники. Сбой одного файла не мешает остальным."""

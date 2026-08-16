@@ -756,6 +756,12 @@
   .tag.warn{color:#ffc86b;border-color:rgba(255,200,107,.45)}
   /* Курсор говорит, что у пометки есть что рассказать. */
   .tag[data-tip]{cursor:help}
+  /* 4.1: перечень расширений в подписи. Он длинный, и выделять его
+     цветом незачем — это уточнение, а не заголовок. */
+  .formats{color:var(--muted);text-transform:none;letter-spacing:0}
+  /* Предупреждение, а не отказ: посторонний файл рядом с главами — дело
+     обычное, но знать о нём надо. */
+  .hint.warn{color:#ffc86b}
 
   /* Уведомление внизу справа: не модальное окно и не ошибка. Сообщает и
      исчезает само, прогон при этом продолжается. */
@@ -1083,7 +1089,7 @@
 
   <!-- 1. Что разбиваем: файл книги целиком или папка -->
   <div class="card lit">
-    <label>Что разбиваем — файл книги или папка с главами</label>
+    <label>Что разбиваем — файл книги или папка с главами<span class="formats" data-formats="readable"></span></label>
     <div class="row">
       <button class="ghost pickany" data-list="spList" style="flex:1">Выбрать…</button>
     </div>
@@ -1229,7 +1235,7 @@
 <!-- ================= Переименование и деление ================= -->
 <section id="tab-rename" hidden>
   <div class="card lit">
-    <label>Папка с главами</label>
+    <label>Папка с главами<span class="formats" data-formats="readable"></span></label>
     <div class="row">
       <input id="rnIn" type="text" placeholder="Путь к папке от WebToEpub" autocomplete="off">
       <button class="ghost browse" data-target="rnIn" data-kind="folder">Выбрать…</button>
@@ -1360,7 +1366,7 @@
 <!-- ========================= Объединить ========================= -->
 <section id="tab-merge" hidden>
   <div class="card lit">
-    <label>Что объединяем — папка или отдельные файлы, форматы можно смешивать</label>
+    <label>Что объединяем — папка или отдельные файлы, форматы можно смешивать<span class="formats" data-formats="readable"></span></label>
     <div class="row">
       <button class="ghost pickany" data-list="mgList" style="flex:1">Выбрать…</button>
     </div>
@@ -1371,6 +1377,9 @@
     </div>
     <div class="chosen" id="mgList"></div>
     <p class="hint" id="mgScanned">Файлы читаются сразу после выбора.</p>
+    <!-- 4.2: что в папке лежало, но по формату не подошло. Молчать об
+         этом нельзя — недостающие главы видны только в готовой книге. -->
+    <p class="hint warn" id="mgSkipped" hidden></p>
     <div class="schema" id="mgSchema" hidden></div>
     <div class="row" style="margin-top:10px">
       <button class="ghost hdOpen" data-source="mgList"
@@ -2033,7 +2042,7 @@
 <!-- ====================== Проверка текста ====================== -->
 <section id="tab-check" hidden>
   <div class="card lit">
-    <label>Что проверяем — .epub, .docx, .txt или .md</label>
+    <label>Что проверяем<span class="formats" data-formats="readable"></span></label>
     <div class="row">
       <button class="ghost pickany" data-list="ckList" style="flex:1">Выбрать…</button>
     </div>

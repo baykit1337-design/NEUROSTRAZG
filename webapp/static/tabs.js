@@ -230,6 +230,25 @@ function plural(count, one, few, many){
 }
 
 /** Расширения выбранного, по убыванию частоты: «.txt», «.txt и .docx». */
+/** Разбор выбора по форматам: «.docx — 200, .txt — 100, .fb2 — 12».
+ *
+ * В одной папке форматы спокойно лежат вперемешку, и до запуска надо
+ * видеть, что именно набралось: молча отсеянный десяток файлов иначе
+ * обнаружится только по недостающим главам в готовой книге.
+ */
+function formatBreakdown(files){
+  const seen = new Map();
+  for(const path of files || []){
+    const match = /\.[^./\\]+$/.exec(path);
+    if(match) seen.set(match[0].toLowerCase(),
+                       (seen.get(match[0].toLowerCase()) || 0) + 1);
+  }
+  return [...seen.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([suffix, count]) => `${suffix} — ${count}`)
+    .join(', ');
+}
+
 function extensions(files){
   const seen = new Map();
   for(const path of files || []){
@@ -959,10 +978,26 @@ async function mgScan(){
     });
     mgState.scan = data;
     updateListBar('mgList', data.file_count);
+    // 4.2: разбор по форматам. Порядок глав от формата не зависит —
+    // главы сортируются по номеру, чем бы ни был файл.
+    const kinds = formatBreakdown(data.files);
     $('mgScanned').textContent =
-      `Файлов: ${data.file_count}, глав: ${data.total}. ` +
-      (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
-    if(data.unreadable?.length) showError('Не прочитаны: ' + data.unreadable.join('; '));
+      `Выбрано ${data.file_count} ${plural(data.file_count, 'файл', 'файла', 'файлов')}`
+      + (kinds ? `: ${kinds}` : '')
+      + `. Глав: ${data.total}. `
+      + (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
+    if(data.unreadable?.length){
+      showError('Не прочитаны: ' + data.unreadable.join('; '), $('mgScanned'));
+    }
+    // Пропущенное по формату — предупреждение, а не отказ: рядом с
+    // главами часто лежит что-то постороннее, и это в порядке вещей.
+    $('mgSkipped').hidden = !data.skipped?.length;
+    if(data.skipped?.length){
+      const shown = data.skipped.slice(0, 8).join(', ');
+      $('mgSkipped').textContent =
+        `Пропущено по формату: ${data.skipped.length} `
+        + `(${shown}${data.skipped.length > 8 ? ' и другие' : ''}).`;
+    }
     $('mgOpts').hidden = false;
     $('mgPlace').hidden = false;
     if(!$('mgName').value) $('mgName').value = 'Книга';
@@ -1057,6 +1092,20 @@ function buildAllFormats(){
   buildFormats('spFormats', spState, spUpdateFinal);
   buildFormats('mgFormats', mgState, mgUpdateFinal);
   buildFormats('rnFormats', rnState, () => {});
+  writeFormatCaptions();
+}
+
+/** Подписи «какие файлы принимаются» (4.1 ТЗ).
+ *
+ * Перечень расширений, записанный в разметке руками, устаревает молча:
+ * форматов стало восемь, а подпись обещала четыре. Берём его из того же
+ * списка, по которому работает и сам разбор.
+ */
+function writeFormatCaptions(){
+  for(const node of document.querySelectorAll('[data-formats]')){
+    const list = FORMATS[node.dataset.formats] || [];
+    node.textContent = list.length ? ' — ' + list.join(', ') : '';
+  }
 }
 
 call('/api/formats').then(data => {

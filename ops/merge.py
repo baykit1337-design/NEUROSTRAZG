@@ -12,7 +12,7 @@ from core import naming
 from core.models import OpReport
 from core.text import PrepOptions
 
-from .base import Progress, collect_files, read_all
+from .base import Progress, collect_files, read_all, skipped_files
 
 ORDER_NUMBER = "number"
 ORDER_NAME = "name"
@@ -40,6 +40,9 @@ def scan(targets, order: str = ORDER_NUMBER) -> dict:
         "total": len(chapters),
         "titles": [chapter.title for chapter in chapters[:5]],
         "unreadable": [failure.as_text() for failure in report.failures],
+        # Что в папке лежало, но по формату не подошло. Молчать об этом
+        # нельзя: недостающие главы иначе видны только в готовой книге.
+        "skipped": skipped_files(targets),
     }
 
 
