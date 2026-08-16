@@ -764,6 +764,24 @@
   #rkTable .down{color:#ff9d9d}
   #rkTable .flat{color:var(--muted)}
   #rkTable .ru{flex:1 1 100%;color:#c084fc;font-size:12px}
+  /* 2.4: раскрытая строка. Плавно по высоте — резкий скачок сбивает
+     место, на которое смотрели. */
+  #rkTable .rkcard{
+    max-height:0;overflow:hidden;
+    transition:max-height .28s ease;
+    border-bottom:1px solid rgba(255,255,255,.05);
+    background:rgba(140,84,255,.05);
+  }
+  #rkTable .rkcard-body{display:flex;gap:14px;padding:14px 12px}
+  #rkTable .rkcard-cover{
+    flex:0 0 130px;width:130px;height:184px;object-fit:cover;
+    border-radius:8px;border:1px solid var(--stroke-soft);background:#15121e;
+  }
+  #rkTable .rkcard-side{flex:1;min-width:0}
+  #rkTable .rkcard-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  @media (prefers-reduced-motion: reduce){
+    #rkTable .rkcard{transition:none}
+  }
 
   /* Очередь: состояние шага видно по точке слева. */
   #qSteps .tr .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;

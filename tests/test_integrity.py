@@ -558,11 +558,16 @@ class TestNeurostrazhStyles(unittest.TestCase):
         # тут же комментарием.
         self.assertNotIn("backdrop-filter:", block)
 
-    def test_tab_bar_leaves_room_for_the_magnet(self):
-        """Панель прокручивается вбок, значит обрезает и по вертикали."""
+    def test_tab_bar_leaves_room_for_the_glow(self):
+        """Панель прокручивается вбок, значит обрезает и по вертикали.
+
+        Запас внутри панели — единственное место, куда свечению кнопки
+        можно распространиться: убрать прокрутку нельзя, вкладки обязаны
+        идти одной строкой при любом их числе.
+        """
         block = self.html[self.html.index("  .tabs{"):]
         block = block[:block.index("}")]
-        self.assertIn("padding:6px 0", block)
+        self.assertIn("padding:12px 0", block)
 
     def test_no_grey_shadows(self):
         """Серый и белый в тенях недопустимы — только чёрный и фиолетовый."""

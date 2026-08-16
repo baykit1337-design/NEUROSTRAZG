@@ -365,3 +365,105 @@ def fetch_categories(client, audience: str = categories.MALE) -> dict:
     first = categories.FALLBACK[audience][0]
     url = f"{SITE}{categories.path(audience, categories.READING, first)}"
     return category_list(client.get_text(url))
+
+
+# ------------------------------------------------------ страница книги
+
+
+#: Что о книге известно из среза, а что — только со страницы.
+def book_page(html: str, table: dict | None = None) -> dict:
+    """Подробности книги со страницы `/page/{bookId}` (2.4 ТЗ).
+
+    Берём из того же `__INITIAL_STATE__`, ветка `page`: в срезе рейтинга
+    описания и жанра нет вовсе, а без них непонятно, стоит ли книгу
+    вообще брать.
+
+    Разбор нарочно нестрогий: сайт меняет имена полей, и терять из-за
+    одного переименованного ключа всю карточку незачем — чего нет, того
+    просто нет.
+    """
+    state = state_of(html)
+    page = _dig(state, "page")
+    data = page if isinstance(page, dict) else state
+    book = _dig(data, "bookInfo")
+    if not isinstance(book, dict):
+        book = data if isinstance(data, dict) else {}
+
+    def text(*names):
+        for name in names:
+            found = book.get(name)
+            if found not in (None, "", []):
+                return fanqiefont.decode(str(found), table)
+        return ""
+
+    def number(*names):
+        for name in names:
+            found = book.get(name)
+            try:
+                if found not in (None, ""):
+                    return int(found)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    name = text("bookName", "book_name")
+    author = text("author")
+    abstract = text("abstract", "bookAbstract", "description")
+
+    return {
+        "book_id": str(book.get("bookId") or book.get("book_id") or ""),
+        "name": name,
+        "author": author,
+        "author_id": str(book.get("authorId") or book.get("author_id")
+                         or book.get("uid") or ""),
+        "abstract": abstract,
+        # Описание тоже подменяется шрифтом: без пометки на его месте
+        # будет строка из служебных квадратиков.
+        "secret": (fanqiefont.has_secret(name)
+                   or fanqiefont.has_secret(author)
+                   or fanqiefont.has_secret(abstract)),
+        "category": text("category", "categoryName"),
+        "tags": _tags(book),
+        "words": number("wordNumber", "word_number"),
+        "chapters": number("serialCount", "chapterNumber", "chapter_count"),
+        "status": "завершена" if str(book.get("creationStatus")) == "0"
+                  else "продолжается",
+        "last_chapter": str(book.get("lastChapterTitle") or ""),
+        "updated": str(book.get("lastChapterUpdateTime")
+                       or book.get("lastPublishTime") or ""),
+        "first_published": str(book.get("firstOnlineTime")
+                               or book.get("createTime") or ""),
+        "first_chapter_id": str(book.get("firstChapterId") or ""),
+        "last_chapter_id": str(book.get("lastChapterId") or ""),
+        "cover": str(book.get("thumbUri") or book.get("audioThumbUri") or ""),
+        "link": f"{SITE}/page/{book.get('bookId') or book.get('book_id') or ''}",
+    }
+
+
+def _tags(book: dict) -> list:
+    """Теги книги. Приходят то списком, то строкой через запятую."""
+    for name in ("tags", "tagList", "categoryTags"):
+        found = book.get(name)
+        if isinstance(found, list):
+            return [str(t.get("name") if isinstance(t, dict) else t).strip()
+                    for t in found if str(t).strip()]
+        if isinstance(found, str) and found.strip():
+            return [part.strip() for part in re.split(r"[,，;]", found)
+                    if part.strip()]
+    return []
+
+
+def fetch_book(client, book_id: str) -> dict:
+    """Страница книги целиком: подробности плюс расшифровка."""
+    book_id = str(book_id or "").strip()
+    if not book_id:
+        raise ValueError("Не указан код книги")
+
+    url = f"{SITE}/page/{book_id}"
+    html = client.get_text(url)
+    table, _ = _font_table(client, html)
+    found = book_page(html, table)
+    found.setdefault("book_id", book_id)
+    if not found["book_id"]:
+        found["book_id"] = book_id
+    return found

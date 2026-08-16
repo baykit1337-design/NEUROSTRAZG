@@ -31,6 +31,7 @@ from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
+from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
@@ -1663,6 +1664,40 @@ def api_rank_cover(book_id: str):
     # Кэш навсегда: имя файла — код книги, а картинка у книги одна.
     return send_file(path, mimetype=covers.mimetype_of(path),
                      max_age=31536000)
+
+
+@app.get("/api/rank/book/<book_id>")
+def api_rank_book(book_id: str):
+    """Подробности книги для раскрытой строки (2.4 ТЗ).
+
+    Данные подтягиваются лениво — по первому раскрытию — и кладутся в
+    `data/books/{bookId}.json`. Ходить на сайт при каждом клике незачем:
+    описание и жанр у книги меняются раз в месяц.
+    """
+    if not covers.safe_id(book_id):
+        return jsonify(error="Плохой код книги"), 400
+
+    fresh = request.args.get("fresh") == "1"
+    if not fresh:
+        found = books_op.load(book_id)
+        if found is not None:
+            return jsonify(**found, cached=True)
+
+    client = _rank_client()
+    try:
+        found = rank_net.fetch_book(client, book_id)
+    except rank_net.Diagnosis as exc:
+        return jsonify(error=str(exc), details=exc.details), 502
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 502
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except HttpError as exc:
+        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    finally:
+        client.close()
+
+    return jsonify(**books_op.save(book_id, found), cached=False)
 
 
 @app.post("/api/rank/translate")

@@ -4007,10 +4007,15 @@ function rkRender(){
     get.className = 'ghost';
     get.textContent = 'скачать';
     get.style.padding = '4px 10px';
-    get.onclick = () => rkPick(row);
+    get.onclick = e => { e.stopPropagation(); rkPick(row); };
     tr.append(get);
 
     tr.append(rkCopyMenu(row));
+
+    // 2.4: клик по строке раскрывает её. Кнопки внутри строки свои клики
+    // не пускают наверх, иначе «скачать» ещё и раскрывала бы карточку.
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => rkToggle(row, tr);
 
     if(rkTitles[row.book_id]){
       const ru_ = document.createElement('span');
@@ -4019,6 +4024,8 @@ function rkRender(){
       tr.append(ru_);
     }
     box.append(tr);
+    // Строго после строки: карточка раскрывается под ней, а не над.
+    box.append(rkDetailsBox(row));
   }
 }
 
@@ -4245,6 +4252,202 @@ async function rkTranslate(){
     rkRender();
   }catch(err){ showError(err.message); }
   finally{ $('rkTranslate').disabled = false; }
+}
+
+/* Раскрытие строки рейтинга (2.4 ТЗ).
+ *
+ * В срезе нет ни описания, ни жанра, а без них непонятно, стоит ли книгу
+ * вообще брать. Данные тянутся лениво — по первому раскрытию — и лежат в
+ * своём кэше: ходить на сайт при каждом клике незачем.
+ *
+ * Раскрыта всегда одна строка: две развёрнутые карточки не помещаются на
+ * экран, и сравнивать их всё равно не выходит.
+ */
+let rkOpenId = null;
+
+/** Пустой блок под подробности. Наполняется при первом раскрытии. */
+function rkDetailsBox(row){
+  const box = document.createElement('div');
+  box.className = 'rkcard';
+  box.dataset.book = row.book_id;
+  box.hidden = true;
+  return box;
+}
+
+function rkBoxOf(bookId){
+  return document.querySelector(`#rkTable .rkcard[data-book="${bookId}"]`);
+}
+
+async function rkToggle(row, tr){
+  const box = rkBoxOf(row.book_id);
+  if(!box) return;
+
+  // Уже открытую закрываем: одновременно раскрыта одна строка.
+  if(rkOpenId && rkOpenId !== row.book_id){
+    const other = rkBoxOf(rkOpenId);
+    if(other) rkShut(other);
+  }
+
+  if(rkOpenId === row.book_id){ rkShut(box); rkOpenId = null; return; }
+  rkOpenId = row.book_id;
+
+  if(!box.dataset.filled){
+    box.innerHTML = '<div class="hint" style="padding:10px 12px">'
+      + '<span class="spin"></span>Читаем страницу книги…</div>';
+    rkOpen(box);
+    try{
+      const data = await call(`/api/rank/book/${encodeURIComponent(row.book_id)}`);
+      box.innerHTML = '';
+      box.append(rkCardBody(row, data));
+      box.dataset.filled = '1';
+    }catch(err){
+      box.innerHTML = '';
+      const said = document.createElement('div');
+      said.className = 'err local';
+      said.hidden = false;
+      said.textContent = 'Подробности не пришли: ' + err.message;
+      box.append(said);
+    }
+    rkOpen(box);
+    return;
+  }
+  rkOpen(box);
+}
+
+/** Плавно по высоте: резкий скачок сбивает место, на которое смотрели. */
+function rkOpen(box){
+  box.hidden = false;
+  box.style.maxHeight = box.scrollHeight + 'px';
+  box.classList.add('open');
+}
+
+function rkShut(box){
+  box.style.maxHeight = '0px';
+  box.classList.remove('open');
+  // Прятать только после доигранного перехода, иначе он не виден.
+  setTimeout(() => { if(!box.classList.contains('open')) box.hidden = true; }, 300);
+}
+
+/** Содержимое раскрытой карточки. */
+function rkCardBody(row, data){
+  const wrap = document.createElement('div');
+  wrap.className = 'rkcard-body';
+
+  const cover = document.createElement('img');
+  cover.className = 'rkcard-cover';
+  cover.alt = '';
+  cover.loading = 'lazy';
+  cover.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
+    + ((data.cover || row.cover) ? `?url=${encodeURIComponent(data.cover || row.cover)}` : '');
+  cover.onerror = () => { cover.hidden = true; };
+
+  const side = document.createElement('div');
+  side.className = 'rkcard-side';
+
+  const title = document.createElement('div');
+  title.className = 'book-name';
+  title.textContent = data.secret ? `книга ${row.book_id}`
+                                  : (data.name || row.name);
+  side.append(title);
+
+  // Описание тоже подменяется шрифтом: пустое место на его месте
+  // выглядит как поломка, поэтому говорим прямо.
+  const about = document.createElement('p');
+  about.className = 'hint';
+  about.style.whiteSpace = 'pre-line';
+  about.textContent = data.abstract
+    || (data.secret ? 'Описание зашифровано шрифтом — расшифровать не вышло.'
+                    : 'Описания на странице книги нет.');
+  side.append(about);
+
+  const tags = document.createElement('div');
+  tags.className = 'rkcard-tags';
+  for(const tag of [data.category, ...(data.tags || [])].filter(Boolean)){
+    const chip = document.createElement('span');
+    chip.className = 'tag';
+    chip.textContent = tag;
+    tags.append(chip);
+  }
+  if(tags.children.length) side.append(tags);
+
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  const rows = [
+    ['глав', data.chapters ? ru(data.chapters) : '—'],
+    ['знаков', (data.words || row.words) ? ru(data.words || row.words) : '—'],
+    ['статус', data.status || row.status || '—'],
+    ['читающих', row.readers ? ru(row.readers) : '—'],
+  ];
+  for(const [name, value] of rows){
+    const span = document.createElement('span');
+    span.innerHTML = `${name} <b>${value}</b>`;
+    stats.append(span);
+  }
+  side.append(stats);
+
+  const when = [
+    data.updated && `обновлено ${rkWhen(data.updated)}`,
+    data.first_published && `первая публикация ${rkWhen(data.first_published)}`,
+    (data.last_chapter || row.last_chapter)
+      && `последняя глава: ${data.last_chapter || row.last_chapter}`,
+    data.author && `автор: ${data.author}`,
+  ].filter(Boolean);
+  if(when.length){
+    const line = document.createElement('p');
+    line.className = 'hint';
+    line.textContent = when.join(' · ');
+    side.append(line);
+  }
+
+  const buttons = document.createElement('div');
+  buttons.className = 'row';
+  buttons.style.marginTop = '12px';
+
+  const get = document.createElement('button');
+  get.className = 'primary';
+  get.style.flex = '1';
+  get.textContent = 'Скачать';
+  get.onclick = e => { e.stopPropagation(); rkPick(row); };
+
+  const open = document.createElement('button');
+  open.className = 'ghost';
+  open.textContent = 'Открыть на сайте';
+  open.onclick = e => {
+    e.stopPropagation();
+    window.open(data.link || (RK_LINK + row.book_id), '_blank', 'noopener');
+  };
+
+  const copy = document.createElement('button');
+  copy.className = 'ghost';
+  copy.textContent = 'Скопировать';
+  copy.onclick = e => {
+    e.stopPropagation();
+    openMenu(copy, [
+      ['ссылку', async () => toast(
+        await copyText(RK_LINK + row.book_id) ? 'Ссылка скопирована'
+                                              : 'Скопировать не вышло')],
+      ['id', async () => toast(
+        await copyText(String(row.book_id)) ? 'Код книги скопирован'
+                                            : 'Скопировать не вышло')],
+    ]);
+  };
+
+  buttons.append(get, open, copy);
+  side.append(buttons);
+
+  wrap.append(cover, side);
+  return wrap;
+}
+
+/** Дата с сайта: приходит то числом секунд, то строкой. */
+function rkWhen(value){
+  const number = Number(value);
+  if(number > 0){
+    // Секунды и миллисекунды сайт смешивает — различаем по порядку.
+    const when = new Date(number > 1e12 ? number : number * 1000);
+    if(!isNaN(when)) return when.toLocaleDateString('ru');
+  }
+  return String(value);
 }
 
 /** Книга выбрана — уходим на качалку и настраиваем её под эту книгу (2.1).

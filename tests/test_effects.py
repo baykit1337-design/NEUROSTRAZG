@@ -155,7 +155,11 @@ class TestSubtitle(Base):
 
 
 class TestStars(Base):
-    """3.2: звёздное поле с параллаксом."""
+    """Часть 5: живое звёздное поле.
+
+    Точки раньше стояли намертво и двигались только при прокрутке — небо
+    от этого выглядело нарисованным.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -167,35 +171,100 @@ class TestStars(Base):
         self.assertIn("STARS_MIN = 120", self.js)
         self.assertIn("STARS_MAX = 180", self.js)
 
-    def test_no_twinkling(self):
-        """Мельтешение на фоне отвлекает от текста."""
-        self.assertNotIn("@keyframes", self.css)
-        self.assertNotIn("animation", self.css)
+    def test_three_depths_with_the_shares_from_the_spec(self):
+        block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
+        self.assertEqual(block.count("share:"), 3)
+        for share in ("0.60", "0.30", "0.10"):
+            with self.subTest(share=share):
+                self.assertIn(f"share: {share}", block)
 
-    def test_parallax_is_gentle(self):
-        """На тысяче пикселей прокрутки это несколько десятков."""
-        self.assertIn("STARS_PARALLAX = 0.035", self.js)
+    def test_each_depth_has_its_own_brightness_and_size(self):
+        block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
+        for value in ("dim: 0.10", "bright: 0.25", "dim: 0.55", "bright: 0.85"):
+            with self.subTest(value=value):
+                self.assertIn(value, block)
 
-    def test_moved_by_transform_not_by_top(self):
-        self.assertIn("translate3d(0,", self.js)
-        self.assertNotIn("style.top =", self.js.split("function paint")[1])
+    def test_the_nearest_ones_glow(self):
+        block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
+        self.assertEqual(block.count("glow: true"), 1)
 
-    def test_recomputed_once_per_frame(self):
-        self.assertIn("requestAnimationFrame(paint)", self.js)
+    def test_twinkling_lasts_four_to_twelve_seconds(self):
+        self.assertIn("STARS_BLINK_MIN = 4000", self.js)
+        self.assertIn("STARS_BLINK_MAX = 12000", self.js)
 
-    def test_placed_once_and_not_reshuffled(self):
-        """Звёзды, прыгающие при прокрутке, выглядят поломкой."""
-        self.assertIn("if(layer) return layer", self.js)
+    def test_every_star_blinks_on_its_own(self):
+        """Иначе точки мигают хором, и это читается как поломка."""
+        self.assertIn("phase: Math.random() * Math.PI * 2", self.js)
+        self.assertIn("cycle: starsBetween(STARS_BLINK_MIN, STARS_BLINK_MAX)",
+                      self.js)
 
-    def test_layer_is_behind_and_deaf(self):
+    def test_a_star_moves_every_six_to_ten_seconds(self):
+        self.assertIn("STARS_MOVE_MIN = 6000", self.js)
+        self.assertIn("STARS_MOVE_MAX = 10000", self.js)
+
+    def test_fading_in_and_out_takes_two_to_three_seconds(self):
+        self.assertIn("STARS_FADE_MIN = 2000", self.js)
+        self.assertIn("STARS_FADE_MAX = 3000", self.js)
+
+    def test_no_more_than_three_move_at_once(self):
+        self.assertIn("STARS_MOVING_MAX = 3", self.js)
+        self.assertIn("if(busy >= STARS_MOVING_MAX) return;", self.js)
+
+    def test_a_new_spot_is_not_next_to_a_neighbour(self):
+        """Иначе точки собираются в кучки."""
+        self.assertIn("STARS_APART = 40", self.js)
+        self.assertIn("< STARS_APART", self.js)
+
+    def test_the_whole_field_drifts_by_itself(self):
+        self.assertIn("STARS_DRIFT = 1.5", self.js)
+        self.assertIn("driftAngle", self.js)
+
+    def test_the_drift_turns_now_and_then(self):
+        self.assertIn("STARS_TURN_MIN = 120000", self.js)
+        self.assertIn("if(now >= turnAt)", self.js)
+
+    def test_drift_is_counted_in_pixels_per_minute(self):
+        self.assertIn("STARS_DRIFT * (elapsed / 60000)", self.js)
+
+    def test_parallax_is_gentle_and_deeper_for_the_near_ones(self):
+        self.assertIn("STARS_PARALLAX = 0.02", self.js)
+        self.assertIn("STARS_PARALLAX_DEPTH = 3", self.js)
+        self.assertIn("star.depth * (STARS_PARALLAX_DEPTH - 1)", self.js)
+
+    def test_the_whole_field_is_one_canvas(self):
+        """Полторы сотни анимированных элементов дороже всей страницы."""
+        self.assertIn("createElement('canvas')", self.js)
+        self.assertIn("getContext('2d')", self.js)
+
+    def test_drawing_happens_once_per_frame(self):
+        self.assertIn("requestAnimationFrame(frame)", self.js)
+
+    def test_an_inactive_tab_stops_the_animation(self):
+        self.assertIn("visibilitychange", self.js)
+        self.assertIn("if(document.hidden) stop();", self.js)
+
+    def test_calm_mode_leaves_the_field_still(self):
+        """Системное «уменьшить движение» сильнее любых галочек."""
+        self.assertIn("if(starsCalm()){ paint(performance.now()); return; }",
+                      self.js)
+
+    def test_the_layer_is_behind_and_deaf(self):
         block = self.css[self.css.index(".fx-stars .starfield{"):]
         block = block[:block.index("}")]
         self.assertIn("z-index:-1", block)
         self.assertIn("pointer-events:none", block)
 
+    def test_the_field_reaches_above_the_screen(self):
+        """При прокрутке снизу не должно появляться пустоты."""
+        self.assertIn("STARS_MARGIN = 0.3", self.js)
+
     def test_every_tenth_is_violet(self):
         self.assertIn("STARS_VIOLET = 10", self.js)
-        self.assertIn(".violet", self.css)
+        self.assertIn("STARS_LILAC", self.js)
+
+    def test_unchecking_the_box_stops_the_work(self):
+        """Погашенное поле не должно продолжать считать кадры."""
+        self.assertIn("else{\n      stop();", self.js)
 
 
 class TestButtonPress(Base):
