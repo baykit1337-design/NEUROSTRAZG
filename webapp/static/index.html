@@ -258,6 +258,12 @@
     box-shadow:0 8px 24px rgba(0,0,0,.6), 0 0 14px rgba(140,84,255,.25);
   }
   .dropdown-menu[hidden]{display:none}
+  /* Меню, живущее в body: у списков overflow:auto, и внутри строки оно
+     обрезалось бы её краем. Координаты ему считает openMenu. */
+  .dropdown-menu.floating{
+    position:fixed;left:0;top:0;right:auto;
+    width:max-content;min-width:130px;z-index:400;
+  }
   /* Карточка размывает фон, а это создаёт свой слой: z-index списка внутри
      неё соседнюю карточку уже не перебивает, и раскрытый список уходил под
      следующую. Поднимаем саму карточку, пока в ней открыт список. */
@@ -2457,6 +2463,63 @@ document.addEventListener('mouseover', e => {
 window.addEventListener('scroll', tipHide, true);
 window.addEventListener('resize', tipHide);
 document.addEventListener('click', tipHide, true);
+
+/* Выпадающее меню у кнопки внутри списка.
+ *
+ * У списков `overflow:auto` — им это нужно для прокрутки, — и меню,
+ * положенное внутрь строки, обрезалось бы её краем ровно так же, как
+ * обрезалась подсказка. Поэтому меню тоже живёт в body и позиционируется
+ * `fixed`, а координаты берутся у кнопки, которая его открыла.
+ */
+let MENU_OPEN = null;
+
+function closeMenu(){
+  if(MENU_OPEN) MENU_OPEN.remove();
+  MENU_OPEN = null;
+}
+
+/** `items` — пары «название пункта, что сделать при выборе». */
+function openMenu(button, items){
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'dropdown-menu floating';
+
+  for(const [name, pick] of items){
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+    item.textContent = name;
+    item.onclick = e => {
+      e.stopPropagation();
+      closeMenu();
+      pick();
+    };
+    menu.append(item);
+  }
+
+  document.body.append(menu);
+  MENU_OPEN = menu;
+
+  const box = button.getBoundingClientRect();
+  const size = menu.getBoundingClientRect();
+  // Под кнопкой; не помещается снизу — над ней. Правый край меню держим
+  // на правом крае кнопки, но не за краем экрана.
+  let top = box.bottom + 4;
+  if(top + size.height > window.innerHeight - TIP_EDGE){
+    top = box.top - size.height - 4;
+  }
+  let left = box.right - size.width;
+  left = Math.min(left, window.innerWidth - size.width - TIP_EDGE);
+  left = Math.max(left, TIP_EDGE);
+
+  menu.style.left = Math.round(left) + 'px';
+  menu.style.top = Math.round(top) + 'px';
+  return menu;
+}
+
+// Клик мимо, прокрутка и Esc меню закрывают: оно висело бы над пустотой.
+document.addEventListener('click', closeMenu);
+window.addEventListener('scroll', closeMenu, true);
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closeMenu(); });
 
 /* Вставка при нелатинской раскладке (1.1 ТЗ).
  *

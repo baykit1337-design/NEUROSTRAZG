@@ -401,5 +401,67 @@ class TestTooltipLayer(UiBase):
         self.assertIn('data-tip="', self.page)
 
 
+class TestCopyMenu(UiBase):
+    """2.2: из рейтинга нельзя было забрать даже ссылку."""
+
+    def menu(self) -> str:
+        return self.tabs.split("function rkCopyMenu(row)", 1)[1] \
+            .split("\n}\n", 1)[0]
+
+    def test_every_row_has_the_button(self):
+        self.assertIn("tr.append(rkCopyMenu(row))", self.tabs)
+
+    def test_the_menu_has_both_items(self):
+        menu = self.menu()
+        self.assertIn("'ссылку'", menu)
+        self.assertIn("'id'", menu)
+
+    def test_the_link_is_built_from_the_code(self):
+        self.assertIn("https://fanqienovel.com/page/", self.tabs)
+        self.assertIn("RK_LINK + row.book_id", self.menu())
+
+    def test_copying_says_so(self):
+        self.assertIn("toast(await copyText(text) ? said", self.tabs)
+
+    def test_a_failure_says_so_too(self):
+        self.assertIn("'Скопировать не вышло'", self.tabs)
+
+    def test_the_menu_does_not_live_inside_the_scrolling_list(self):
+        """У списков overflow:auto — край строки обрезал бы меню."""
+        self.assertIn("document.body.append(menu)", self.page)
+        self.assertIn(".dropdown-menu.floating{", self.page)
+        self.assertIn("position:fixed;left:0;top:0;right:auto;", self.page)
+
+    def test_the_menu_flips_up_when_there_is_no_room_below(self):
+        opener = self.page.split("function openMenu(button, items)", 1)[1]
+        self.assertIn("top = box.top - size.height - 4;", opener)
+
+    def test_the_menu_stays_on_screen_horizontally(self):
+        opener = self.page.split("function openMenu(button, items)", 1)[1]
+        self.assertIn("window.innerWidth - size.width - TIP_EDGE", opener)
+
+    def test_only_one_menu_at_a_time(self):
+        self.assertIn("function openMenu(button, items){\n  closeMenu();",
+                      self.page)
+
+    def test_clicking_away_closes_it(self):
+        self.assertIn("document.addEventListener('click', closeMenu);",
+                      self.page)
+
+    def test_scrolling_closes_it(self):
+        """Кнопка уехала — меню висело бы над пустотой."""
+        self.assertIn("window.addEventListener('scroll', closeMenu, true)",
+                      self.page)
+
+    def test_escape_closes_it(self):
+        self.assertIn("if(e.key === 'Escape') closeMenu();", self.page)
+
+    def test_copying_has_one_way_of_doing_it(self):
+        """127.0.0.1 браузер защищённым не считает — запасной путь нужен."""
+        self.assertEqual(self.tabs.count("async function copyText(text)"), 1)
+        self.assertIn("document.execCommand('copy')", self.tabs)
+        self.assertIn("await copyText(text)", self.tabs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

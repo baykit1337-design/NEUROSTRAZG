@@ -1154,28 +1154,35 @@ function hdRender(){
   hdUpdate();
 }
 
-/** Копирует фрагмент. Без буфера обмена — старым способом. */
-async function hdCopy(text, button){
-  const said = button.textContent;
+/** Кладёт текст в буфер обмена. Возвращает, получилось ли.
+ *
+ * http://127.0.0.1 браузер защищённым не считает, а программа живёт
+ * именно там — поэтому запасной путь через скрытое поле обязателен.
+ */
+async function copyText(text){
   try{
     if(navigator.clipboard && window.isSecureContext){
       await navigator.clipboard.writeText(text);
-    }else{
-      // http://127.0.0.1 защищённым не считается, а программа живёт
-      // именно там — поэтому запасной путь обязателен.
-      const field = document.createElement('textarea');
-      field.value = text;
-      field.style.position = 'fixed';
-      field.style.opacity = '0';
-      document.body.append(field);
-      field.select();
-      document.execCommand('copy');
-      field.remove();
+      return true;
     }
-    button.textContent = 'скопировано';
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    const done = document.execCommand('copy');
+    field.remove();
+    return done;
   }catch(err){
-    button.textContent = 'не вышло';
+    return false;
   }
+}
+
+/** Копирует фрагмент, отвечая надписью на самой кнопке. */
+async function hdCopy(text, button){
+  const said = button.textContent;
+  button.textContent = await copyText(text) ? 'скопировано' : 'не вышло';
   setTimeout(() => { button.textContent = said; }, 1500);
 }
 
@@ -3952,6 +3959,8 @@ function rkRender(){
     get.onclick = () => rkPick(row);
     tr.append(get);
 
+    tr.append(rkCopyMenu(row));
+
     if(rkTitles[row.book_id]){
       const ru_ = document.createElement('span');
       ru_.className = 'ru';
@@ -3960,6 +3969,34 @@ function rkRender(){
     }
     box.append(tr);
   }
+}
+
+//: Адрес книги на сайте. Собирается из кода — другого способа нет.
+const RK_LINK = 'https://fanqienovel.com/page/';
+
+/** Кнопка «скопировать» с меню из двух пунктов (2.2 ТЗ).
+ *
+ * Забрать ссылку руками из рейтинга было нельзя вовсе, а нужна она
+ * постоянно: то поделиться, то открыть в браузере, то проверить книгу.
+ */
+function rkCopyMenu(row){
+  const button = document.createElement('button');
+  button.className = 'ghost';
+  button.textContent = 'скопировать';
+  button.style.padding = '4px 10px';
+
+  const put = async (text, said) => {
+    toast(await copyText(text) ? said : 'Скопировать не вышло');
+  };
+
+  button.onclick = e => {
+    e.stopPropagation();
+    openMenu(button, [
+      ['ссылку', () => put(RK_LINK + row.book_id, 'Ссылка скопирована')],
+      ['id', () => put(String(row.book_id), 'Код книги скопирован')],
+    ]);
+  };
+  return button;
 }
 
 function rkShow(data){
