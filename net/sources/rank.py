@@ -48,11 +48,11 @@ class RankRow:
     """Одна строка рейтинга."""
 
     __slots__ = ("place", "book_id", "name", "author", "readers", "category",
-                 "diff", "words", "status", "last_chapter", "secret")
+                 "diff", "words", "status", "last_chapter", "secret", "cover")
 
     def __init__(self, place=0, book_id="", name="", author="", readers=0,
                  category="", diff=None, words=0, status="", last_chapter="",
-                 secret=False):
+                 secret=False, cover=""):
         self.place = place
         self.book_id = str(book_id)
         self.name = name
@@ -66,6 +66,9 @@ class RankRow:
         self.last_chapter = last_chapter
         #: Название расшифровать не удалось.
         self.secret = secret
+        #: Адрес обложки на сайте. Он подписан и живёт недолго, поэтому
+        #: наружу отдаётся не он, а путь к своей копии.
+        self.cover = cover
 
     def as_dict(self) -> dict:
         return {"place": self.place, "book_id": self.book_id, "name": self.name,
@@ -73,6 +76,7 @@ class RankRow:
                 "category": self.category, "diff": self.diff,
                 "words": self.words, "status": self.status,
                 "last_chapter": self.last_chapter, "secret": self.secret,
+                "cover": self.cover,
                 "link": f"{SITE}/page/{self.book_id}"}
 
     @classmethod
@@ -90,6 +94,7 @@ class RankRow:
             status=str(data.get("status") or ""),
             last_chapter=str(data.get("last_chapter") or ""),
             secret=bool(data.get("secret")),
+            cover=str(data.get("cover") or ""),
         )
 
     def __eq__(self, other):
@@ -236,6 +241,10 @@ def parse(html: str, limit: int = TOP, table: dict | None = None) -> dict:
             # Название последней главы шрифтом не подменяется.
             last_chapter=str(item.get("lastChapterTitle") or ""),
             secret=fanqiefont.has_secret(name) or fanqiefont.has_secret(author),
+            # Обложка шифром не затронута. Ссылка подписана и с сроком
+            # действия — в сохранённом срезе она протухнет, поэтому
+            # картинку кладут в свой кэш, а сюда попадает только адрес.
+            cover=str(item.get("thumbUri") or item.get("thumb_uri") or ""),
         ))
 
     return {

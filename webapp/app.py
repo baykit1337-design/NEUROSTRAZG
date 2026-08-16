@@ -15,7 +15,8 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import (Flask, Response, jsonify, request, send_file,
+                   send_from_directory)
 
 import sys
 
@@ -30,6 +31,7 @@ from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
+from ops import covers  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
@@ -1627,6 +1629,37 @@ def api_rank_refresh():
     return jsonify(saved=len(found["rows"]), decoded=found["decoded"],
                    same_version=same, audience=audience, kind=kind,
                    **rank_op.movement(board, category=found["category"]))
+
+
+@app.get("/api/rank/cover/<book_id>")
+def api_rank_cover(book_id: str):
+    """Отдаёт обложку из своего кэша (2.3 ТЗ).
+
+    Адрес на сайте подписан и с сроком действия: в сохранённом срезе он
+    протухает, а срезы хранятся месяцами. Поэтому картинка берётся из
+    `data/covers`, а если её там нет — скачивается по адресу из среза и
+    остаётся в кэше навсегда.
+    """
+    if not covers.safe_id(book_id):
+        return jsonify(error="Плохой код книги"), 400
+
+    if not covers.have(book_id):
+        source = (request.args.get("url") or "").strip()
+        if not source:
+            return jsonify(error="Обложки нет в кэше"), 404
+        client = _rank_client()
+        try:
+            if not covers.fetch(client, book_id, source):
+                return jsonify(error="Обложку скачать не удалось"), 502
+        finally:
+            client.close()
+
+    path = covers.path_for(book_id)
+    # Тип определяем по самим байтам: расширение у нас одно на все, а
+    # объявленный не тот формат браузер просто не покажет.
+    # Кэш навсегда: имя файла — код книги, а картинка у книги одна.
+    return send_file(path, mimetype=covers.mimetype_of(path),
+                     max_age=31536000)
 
 
 @app.post("/api/rank/translate")

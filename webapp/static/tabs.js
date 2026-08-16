@@ -3958,6 +3958,8 @@ function rkRender(){
     place.textContent = row.place;
     tr.append(place);
 
+    tr.append(rkCover(row));
+
     const name = document.createElement('span');
     name.className = 'grow';
     // Название могло не расшифроваться — тогда честно говорим об этом, а
@@ -4022,6 +4024,37 @@ function rkRender(){
 
 //: Адрес книги на сайте. Собирается из кода — другого способа нет.
 const RK_LINK = 'https://fanqienovel.com/page/';
+
+/** Миниатюра обложки в строке рейтинга (2.3 ТЗ).
+ *
+ * Картинка идёт через свой кэш, а не по ссылке с сайта: та подписана и
+ * с сроком действия, а срезы хранятся месяцами — во вчерашнем рейтинге
+ * такие ссылки уже мертвы.
+ *
+ * Загрузка ленивая (`loading="lazy"`): в срезе полсотни строк, и тянуть
+ * все обложки разом незачем. Пока картинка не пришла, на её месте
+ * пульсирует заготовка, а не пустота.
+ */
+function rkCover(row){
+  const box = document.createElement('span');
+  box.className = 'cover';
+
+  if(!row.book_id) return box;
+
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = '';
+  img.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
+    + (row.cover ? `?url=${encodeURIComponent(row.cover)}` : '');
+  img.onload = () => box.classList.add('ready');
+  // Обложки может не быть вовсе — тогда остаётся заготовка, и это лучше
+  // значка «картинка не загрузилась».
+  img.onerror = () => { img.remove(); box.classList.add('empty'); };
+
+  box.append(img);
+  return box;
+}
 
 /** Кнопка «скопировать» с меню из двух пунктов (2.2 ТЗ).
  *
@@ -4209,9 +4242,15 @@ function rkShowCard(row){
     row.place && `место ${row.place} в срезе`,
   ].filter(Boolean).join('  ·  ');
 
+  // Через свой кэш, как и миниатюра в строке: ссылка с сайта подписана и
+  // живёт недолго, а карточка может провисеть на экране весь вечер.
   const cover = $('rkCardCover');
-  cover.hidden = !row.cover;
-  if(row.cover) cover.src = row.cover;
+  cover.hidden = !row.book_id;
+  if(row.book_id){
+    cover.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
+      + (row.cover ? `?url=${encodeURIComponent(row.cover)}` : '');
+    cover.onerror = () => { cover.hidden = true; };
+  }
 }
 
 /** Доскроллить и подсветить: иначе непонятно, куда книга уехала. */
