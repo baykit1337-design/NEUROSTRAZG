@@ -217,9 +217,11 @@
     border:1px solid #6d28d9;color:#c084fc;background:rgba(140,84,255,.12);
     position:relative;
   }
+  /* 1.4: подсказка живёт в слое на уровне body, а не внутри значка.
+     Внутри карточки её обрезала бы граница — прочитать нельзя. */
   .tooltip{
-    position:absolute;bottom:calc(100% + 8px);left:50%;
-    transform:translate(-50%,4px);
+    position:fixed;left:0;top:0;
+    transform:translateY(4px);
     background:#15151d;
     color:#e5e5ec;
     border:1px solid #6d28d9;
@@ -234,9 +236,11 @@
     opacity:0;
     transition:opacity .2s ease, transform .2s ease;
     pointer-events:none;
-    z-index:40;
+    /* Выше всего остального: слой лежит последним в body и перекрывать
+       его нечему, но выпадающие списки поднимают свою карточку до 200. */
+    z-index:400;
   }
-  .tooltip.visible{opacity:1;transform:translate(-50%,0)}
+  .tooltip.visible{opacity:1;transform:translateY(0)}
 
   /* 5.3 Свой выпадающий список — нативный был белым и нечитаемым. */
   .dropdown{position:relative}
@@ -744,6 +748,8 @@
   #anFindings .tr .grow{flex:1 1 100%;white-space:normal;overflow:visible}
   #anFindings .tr .actions{margin-left:auto;display:flex;gap:6px}
   .tag.warn{color:#ffc86b;border-color:rgba(255,200,107,.45)}
+  /* Курсор говорит, что у пометки есть что рассказать. */
+  .tag[data-tip]{cursor:help}
 
   /* Уведомление внизу справа: не модальное окно и не ошибка. Сообщает и
      исчезает само, прогон при этом продолжается. */
@@ -2374,6 +2380,83 @@ function showError(msg, near){
   ERR_SPOT = box;
   box.scrollIntoView({behavior: 'smooth', block: 'nearest'});
 }
+
+/* Подсказки в отдельном слое на уровне body (1.4 ТЗ).
+ *
+ * Подсказка, вложенная в сам значок, разворачивалась внутрь карточки и
+ * обрезалась её границей — как раз у пометки «проверьте», где текст
+ * нужнее всего. Слой лежит в body и позиционируется `fixed`, поэтому
+ * обрезать его нечем: координаты считаются от элемента, рядом с которым
+ * подсказка вызвана.
+ *
+ * Наведение ловится на всём документе, а не привязывается к элементам
+ * при загрузке: половина подсказок висит на строках, которых в этот
+ * момент ещё нет.
+ */
+
+// Появление с задержкой, чтобы подсказки не мельтешили при движении мыши.
+const TOOLTIP_DELAY = 400;
+
+//: Отступ подсказки от элемента и минимальный зазор от края экрана.
+const TIP_GAP = 8, TIP_EDGE = 8;
+
+let TIP_LAYER = null, TIP_TIMER = null, TIP_OVER = null;
+
+function tipLayer(){
+  if(!TIP_LAYER){
+    TIP_LAYER = document.createElement('div');
+    TIP_LAYER.className = 'tooltip';
+    TIP_LAYER.setAttribute('role', 'tooltip');
+    document.body.append(TIP_LAYER);
+  }
+  return TIP_LAYER;
+}
+
+function tipShow(anchor, text){
+  if(!text || !anchor.isConnected) return;
+  const tip = tipLayer();
+  tip.textContent = text;
+  // Ширину и высоту можно измерить только когда текст уже на месте.
+  tip.classList.add('visible');
+  const box = anchor.getBoundingClientRect();
+  const size = tip.getBoundingClientRect();
+
+  // Обычное место — над элементом. Не помещается сверху — разворачиваем
+  // вниз; не помещается справа — сдвигаем влево. Обрезать её при этом
+  // всё равно нечем, но читать подсказку за краем экрана невозможно.
+  let top = box.top - size.height - TIP_GAP;
+  if(top < TIP_EDGE) top = box.bottom + TIP_GAP;
+
+  let left = box.left + box.width / 2 - size.width / 2;
+  left = Math.min(left, window.innerWidth - size.width - TIP_EDGE);
+  left = Math.max(left, TIP_EDGE);
+
+  tip.style.left = Math.round(left) + 'px';
+  tip.style.top = Math.round(top) + 'px';
+}
+
+function tipHide(){
+  clearTimeout(TIP_TIMER);
+  TIP_OVER = null;
+  if(TIP_LAYER) TIP_LAYER.classList.remove('visible');
+}
+
+document.addEventListener('mouseover', e => {
+  const found = e.target && e.target.closest
+    ? e.target.closest('[data-tip]') : null;
+  if(found === TIP_OVER) return;
+  tipHide();
+  TIP_OVER = found;
+  if(!found) return;
+  TIP_TIMER = setTimeout(() => tipShow(found, found.dataset.tip),
+                         TOOLTIP_DELAY);
+});
+
+// Прокрутка и уход со страницы оставляли бы подсказку висеть в пустоте:
+// элемент, к которому она относится, уже уехал.
+window.addEventListener('scroll', tipHide, true);
+window.addEventListener('resize', tipHide);
+document.addEventListener('click', tipHide, true);
 
 /* Вставка при нелатинской раскладке (1.1 ТЗ).
  *

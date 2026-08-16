@@ -44,41 +44,15 @@ $('baseHidden').addEventListener('input', e => browse(e.target.value));
 
 /* ------------------------------------------------- всплывающие подсказки */
 
-// Появление с задержкой 400 мс, чтобы не мельтешили.
-const TOOLTIP_DELAY = 400;
-
-document.querySelectorAll('.hint-icon').forEach(icon => {
-  const tip = document.createElement('span');
-  tip.className = 'tooltip';
-  tip.textContent = icon.dataset.tip || '';
-  icon.append(tip);
-
-  let timer = null;
-  icon.addEventListener('mouseenter', () => {
-    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
-  });
-  icon.addEventListener('mouseleave', () => {
-    clearTimeout(timer);
-    tip.classList.remove('visible');
-  });
-});
-
-// Раздел 12: подсказка вешается прямо на элемент, значок вопроса не нужен.
-document.querySelectorAll('.tipped').forEach(node => {
-  const tip = document.createElement('span');
-  tip.className = 'tooltip';
-  tip.textContent = node.dataset.tip || '';
-  node.append(tip);
-
-  let timer = null;
-  node.addEventListener('mouseenter', () => {
-    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
-  });
-  node.addEventListener('mouseleave', () => {
-    clearTimeout(timer);
-    tip.classList.remove('visible');
-  });
-});
+/* Подсказки рисует общий слой на уровне body (index.html, 1.4 ТЗ).
+ *
+ * Раньше подсказка была вложена в сам значок и разворачивалась внутрь
+ * карточки — граница карточки её обрезала, и текст у пометки «проверьте»
+ * прочитать было нельзя. Заодно исчезли три копии одного и того же кода
+ * и привязка «только к тому, что было на странице при загрузке»: слой
+ * ловит наведение на лету, поэтому подсказки работают и у строк, которые
+ * дорисованы позже.
+ */
 
 /** Ставит подсказку на произвольный элемент (для галочек, что строит JS). */
 function attachTip(element, text){
@@ -86,19 +60,8 @@ function attachTip(element, text){
   const icon = document.createElement('i');
   icon.className = 'hint-icon';
   icon.textContent = '?';
-  const tip = document.createElement('span');
-  tip.className = 'tooltip';
-  tip.textContent = text;
-  icon.append(tip);
-
-  let timer = null;
-  icon.addEventListener('mouseenter', () => {
-    timer = setTimeout(() => tip.classList.add('visible'), TOOLTIP_DELAY);
-  });
-  icon.addEventListener('mouseleave', () => {
-    clearTimeout(timer);
-    tip.classList.remove('visible');
-  });
+  // Текст живёт в атрибуте — дальше его найдёт общий слой.
+  icon.dataset.tip = text;
   element.append(icon);
 }
 
@@ -551,7 +514,9 @@ function rnRenderList(){
       const tag = document.createElement('span');
       tag.className = 'tag warn';
       tag.textContent = '⚠ проверьте';
-      if(chapter.suspect_reason) attachTip(tag, chapter.suspect_reason);
+      // Подсказка на самой пометке, а не на значке «?» внутри неё: значок
+      // тут лишний, а целиться мышью в него — отдельное упражнение.
+      if(chapter.suspect_reason) tag.dataset.tip = chapter.suspect_reason;
       row.append(tag);
     }
     if(chapter.number != null){

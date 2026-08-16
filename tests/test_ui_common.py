@@ -347,5 +347,59 @@ class TestErrorFindsItsButton(UiBase):
                          self.tabs)
 
 
+class TestTooltipLayer(UiBase):
+    """1.4: подсказка не должна упираться в границу карточки."""
+
+    def show(self) -> str:
+        return self.page.split("function tipShow(anchor, text)", 1)[1] \
+            .split("\n}", 1)[0]
+
+    def test_the_layer_lives_in_the_body(self):
+        self.assertIn("document.body.append(TIP_LAYER)", self.page)
+
+    def test_it_is_positioned_by_the_screen_not_by_the_card(self):
+        self.assertIn("position:fixed;left:0;top:0;", self.page)
+
+    def test_coordinates_come_from_the_element_it_belongs_to(self):
+        self.assertIn("anchor.getBoundingClientRect()", self.show())
+
+    def test_it_flips_down_when_there_is_no_room_above(self):
+        self.assertIn("if(top < TIP_EDGE) top = box.bottom + TIP_GAP;",
+                      self.show())
+
+    def test_it_slides_left_when_there_is_no_room_right(self):
+        self.assertIn("window.innerWidth - size.width - TIP_EDGE", self.show())
+
+    def test_it_never_goes_off_the_left_edge_either(self):
+        self.assertIn("Math.max(left, TIP_EDGE)", self.show())
+
+    def test_hovering_is_caught_on_the_whole_document(self):
+        """Половина подсказок висит на строках, которых при загрузке нет."""
+        self.assertIn("e.target.closest('[data-tip]')", self.page)
+
+    def test_scrolling_takes_the_tooltip_away(self):
+        """Элемент уехал — подсказка висела бы в пустоте."""
+        self.assertIn("window.addEventListener('scroll', tipHide, true)",
+                      self.page)
+
+    def test_there_is_only_one_copy_of_this_code(self):
+        """Раньше их было три, и расходились они молча."""
+        self.assertNotIn("tip.classList.add('visible')", self.tabs)
+        self.assertEqual(self.tabs.count("function attachTip"), 1)
+
+    def test_attach_tip_only_puts_the_text_in_the_attribute(self):
+        attach = self.tabs.split("function attachTip(element, text)", 1)[1]
+        attach = attach.split("\n}", 1)[0]
+        self.assertIn("icon.dataset.tip = text;", attach)
+        self.assertNotIn("addEventListener", attach)
+
+    def test_the_suspect_tag_itself_is_the_trigger(self):
+        """Целиться мышью в значок «?» внутри пометки — упражнение."""
+        self.assertIn("tag.dataset.tip = chapter.suspect_reason;", self.tabs)
+
+    def test_static_tooltips_still_have_their_text(self):
+        self.assertIn('data-tip="', self.page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
