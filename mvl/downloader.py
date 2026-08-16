@@ -175,6 +175,7 @@ class Downloader:
         threads: int = 1,
         probe: bool = True,
         source=None,
+        on_event=None,
     ):
         self.client = client or Client()
         #: Откуда качаем. По умолчанию тот сайт, с которого всё начиналось,
@@ -188,6 +189,10 @@ class Downloader:
         self.site_client = site_client
         self.pool = pool
         self.on_progress = on_progress
+        #: Куда писать построчный журнал прогона: раздачу прокси по
+        #: потокам и смену адреса с причиной. Прогресс-бар говорит
+        #: «сколько», а на вопрос «через что именно» отвечает журнал.
+        self.on_event = on_event
         self.cancel = cancel_event or threading.Event()
         self.progress = Progress()
         #: Множитель паузы, растёт после каждого 429.
@@ -212,6 +217,11 @@ class Downloader:
             setattr(self.progress, key, value)
         if self.on_progress:
             self.on_progress(self.progress)
+
+    def _say(self, text: str, kind: str = "info") -> None:
+        """Строка в журнал прогона. Без журнала — молча ничего."""
+        if self.on_event:
+            self.on_event(text, kind)
 
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
@@ -534,12 +544,52 @@ class Downloader:
         if self.pool is not None:
             proxies = [p for p in self.pool.proxies if not p.disabled]
 
-        method = netpool.PROXY_PER_THREAD if len(proxies) >= 2 else netpool.OWN_SESSION
+        # Единственный адрес — тоже адрес: раздача по потокам при нём
+        # выдаёт его всем, и это правильно. Прежний порог «хотя бы два»
+        # уводил такую настройку в прямое соединение, то есть прокси
+        # просто не работал, а на Фанкью это ещё и утечка своего адреса.
+        method = netpool.PROXY_PER_THREAD if proxies else netpool.OWN_SESSION
+        asked = self.threads
         if proxies:
             self.threads = max(1, min(self.threads, len(proxies)))
         log.info("Ручной режим: %s потока, способ «%s», адресов %s",
                  self.threads, method, len(proxies))
+
+        if proxies and self.threads < asked:
+            # Прямая формулировка: молчаливое урезание потоков выглядит
+            # как «настройка не работает».
+            self._say(f"потоков {asked}, живых прокси {len(proxies)} — "
+                      f"работаю в {self.threads} "
+                      f"{netpool.threads_word(self.threads)}", "warn")
+        else:
+            self._say(f"качаем в {self.threads} "
+                      f"{netpool.threads_word(self.threads)}"
+                      + (f", адресов {len(proxies)}" if proxies
+                         else ", без прокси"))
         return netpool.Fetcher(method, self._make_site_client(novel), proxies)
+
+    def measure_threads(self, novel: api.Novel, chapters, count: int = 6):
+        """Замер многопоточности на живых главах (часть 6 ТЗ).
+
+        Ручной режим чинили вслепую: на живом сайте с прокси проверить
+        параллельность было нечем, кроме прогона книги целиком. Здесь
+        качаются несколько глав, ничего не сохраняется, а в отчёте видно,
+        какой поток через какой адрес работал.
+        """
+        from net import pool as netpool
+
+        proxies = []
+        if self.pool is not None:
+            proxies = [p for p in self.pool.proxies if not p.disabled]
+
+        def fetch(client, chapter):
+            return self.source.chapter(client, chapter)[1]
+
+        return netpool.measure(
+            list(chapters)[:max(2, int(count or 6))],
+            self._make_site_client(novel), fetch,
+            threads=self.threads, proxies=proxies, cancel=self.cancel,
+        )
 
     def _autoprobe(self, novel: api.Novel, pending):
         """Пробный прогон: 5 глав в 3 потока, способы по порядку из ТЗ.
@@ -706,11 +756,24 @@ class Downloader:
         """Новый клиент потока на другом адресе. None — менять не на что."""
         if fetcher is None or _is_refusal(error):
             return None
+        reason = scrub(str(error))
+        was = getattr(fetcher.proxy_of_thread(), "label", "")
         try:
-            return fetcher.replace(scrub(str(error)))
+            client = fetcher.replace(reason)
         except Exception as exc:  # noqa: BLE001 — замена не должна ронять поток
             log.warning("Не удалось сменить прокси в потоке: %s", exc)
             return None
+
+        # Смена адреса — самое важное событие прогона: по журналу видно,
+        # какой поток куда переехал и почему.
+        now = getattr(fetcher.proxy_of_thread(), "label", "")
+        if client is None:
+            self._say(f"адрес {was or 'потока'} отвалился ({reason}), "
+                      "менять больше не на что", "warn")
+        else:
+            self._say(f"адрес {was or '—'} отвалился ({reason}), "
+                      f"поток переезжает на {now or 'прямое соединение'}", "warn")
+        return client
 
     def _one(
         self,

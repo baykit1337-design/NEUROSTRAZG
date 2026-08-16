@@ -463,5 +463,63 @@ class TestCopyMenu(UiBase):
         self.assertIn("await copyText(text)", self.tabs)
 
 
+class TestThreadsButton(UiBase):
+    """Часть 6: замер многопоточности рядом с настройками потоков."""
+
+    def test_the_button_exists_and_is_wired(self):
+        self.assertIn('id="thCheck"', self.page)
+        self.assertIn("$('thCheck').onclick = thCheck;", self.page)
+
+    def test_it_stands_next_to_the_thread_settings(self):
+        block = self.page.split('id="dlThreads"', 1)[1]
+        block = block.split('<!-- 4. Прогресс', 1)[0]
+        self.assertIn('id="thCheck"', block)
+
+    def test_the_report_has_a_place_for_every_part(self):
+        for part in ("thTotals", "thRows", "thWarn"):
+            with self.subTest(part=part):
+                self.assertIn(f'id="{part}"', self.page)
+
+    def test_the_totals_repeat_the_spec(self):
+        for name in ("прогрев", "последовательно (расчёт)", "фактически",
+                     "ускорение"):
+            with self.subTest(name=name):
+                self.assertIn(f"'{name}'", self.page)
+
+    def test_each_row_names_its_proxy_and_chapters(self):
+        draw = self.page.split("function thDraw(data)", 1)[1]
+        self.assertIn("'поток ' + row.number", draw)
+        self.assertIn("row.proxy", draw)
+        self.assertIn("row.chapters.join", draw)
+
+    def test_one_address_for_everyone_is_called_out(self):
+        """Ровно то, ради чего замер и затевался."""
+        self.assertIn("data.shared_address", self.page)
+        self.assertIn("параллельности по", self.page)
+
+    def test_it_says_the_download_is_not_kept(self):
+        self.assertIn("Скачанное не сохраняется", self.page)
+
+
+class TestGlowHasRoom(UiBase):
+    """1.3: свечение кнопки упиралось в невидимую границу строки."""
+
+    def panel(self) -> str:
+        """Правило .tabs целиком: `tabs` тут уже занято текстом tabs.js."""
+        return self.page.split("  .tabs{", 1)[1].split("\n  }", 1)[0]
+
+    def test_the_panel_gives_the_glow_room(self):
+        self.assertIn("padding:12px 0;", self.panel())
+
+    def test_the_row_still_scrolls_sideways(self):
+        """Вкладки идут одной строкой, сколько бы их ни было."""
+        self.assertIn("flex-wrap:nowrap", self.panel())
+        self.assertIn("overflow-x:auto", self.panel())
+
+    def test_no_wrapper_clips_the_panel(self):
+        wrap = self.page.split("  .wrap{", 1)[1].split("}", 1)[0]
+        self.assertNotIn("overflow", wrap)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

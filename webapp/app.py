@@ -79,6 +79,10 @@ MAX_TIMEOUT = 300
 #: Событий в книге тысячи — в интерфейс отдаём только начало.
 MAX_EVENTS = 500
 
+#: Сколько глав качать при замере многопоточности. Шести хватает, чтобы
+#: на трёх потоках каждому досталось по две, а книга при этом не качается.
+CHECK_CHAPTERS = 6
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 
@@ -540,12 +544,16 @@ def api_start():
 
     job.meta["threads"] = threads
 
+    # Журнал прогона: раздача прокси по потокам и смена адреса с причиной.
+    job.log = joblog.JobLog()
+
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
         downloader = Downloader(
             client=client,
             pool=pool,
             on_progress=lambda p: job.progress.update(p.as_dict()),
+            on_event=job.log.add,
             cancel_event=job.cancel,
             threads=threads,
             probe=probe,
@@ -557,6 +565,53 @@ def api_start():
             client.close()
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/threads/check")
+def api_threads_check():
+    """Замер многопоточности на живых главах (часть 6 ТЗ).
+
+    Ручной режим чинили вслепую: убедиться, что параллельность работает,
+    можно было только прогоном книги целиком. Здесь качаются несколько
+    глав, ничего не сохраняется, а в ответе видно, какой поток через
+    какой адрес шёл.
+    """
+    payload = request.json or {}
+    novel_data = payload.get("novel") or {}
+    if not novel_data.get("code"):
+        return jsonify(error="Сначала найдите книгу"), 400
+
+    try:
+        source = sources.get(payload.get("source") or "")
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 400
+
+    try:
+        threads = max(1, int(payload.get("threads") or 1))
+        count = max(2, min(int(payload.get("chapters") or CHECK_CHAPTERS), 20))
+    except (TypeError, ValueError):
+        return jsonify(error="Потоки и число глав должны быть числами"), 400
+
+    novel = _novel_from_payload(novel_data)
+    with POOL_LOCK:
+        pool = POOL
+
+    client = Client()
+    downloader = Downloader(client=client, pool=pool, threads=threads,
+                            source=source)
+    try:
+        toc = source.toc(client, novel, first=1, last=count)
+        found = downloader.measure_threads(novel, toc.chapters, count)
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 502
+    except (LookupError, ValueError) as exc:
+        return jsonify(error=str(exc)), 404
+    except HttpError as exc:
+        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    finally:
+        client.close()
+
+    return jsonify(**found.as_dict())
 
 
 # --------------------------------------------- вкладка «Разбить»

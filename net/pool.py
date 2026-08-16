@@ -185,6 +185,10 @@ class Fetcher:
                 self._clients.append(client)
         return client
 
+    def proxy_of_thread(self):
+        """Через какой адрес работает текущий поток. None — напрямую."""
+        return getattr(self._local, "proxy", None)
+
     def replace(self, reason: str = ""):
         """Меняет адрес отвалившегося потока на следующий свободный.
 
@@ -232,6 +236,164 @@ class Fetcher:
                 except Exception:  # noqa: BLE001 — закрытие не должно ломать прогон
                     pass
             self._clients.clear()
+
+
+@dataclass
+class ThreadRow:
+    """Что достало и за сколько один поток замера (часть 6 ТЗ)."""
+
+    number: int
+    proxy: str = ""
+    chapters: list = field(default_factory=list)
+    seconds: float = 0.0
+    failed: list = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {"number": self.number, "proxy": self.proxy or DIRECT_LABEL,
+                "chapters": list(self.chapters),
+                "seconds": round(self.seconds, 2),
+                "failed": list(self.failed)}
+
+
+@dataclass
+class Measurement:
+    """Замер многопоточности: цифры сверху и разбивка по потокам."""
+
+    method: str = SEQUENTIAL
+    threads: int = 1
+    proxies: int = 0
+    asked_threads: int = 1
+    warmup: float = 0.0
+    seconds: float = 0.0
+    expected: float = 0.0
+    rows: list = field(default_factory=list)
+    note: str = ""
+    error: str = ""
+
+    @property
+    def speedup(self) -> float:
+        return self.expected / self.seconds if self.seconds else 0.0
+
+    @property
+    def shared_address(self) -> bool:
+        """Все потоки на одном адресе — параллельности по прокси нет."""
+        used = {row.proxy for row in self.rows if row.proxy}
+        return len(self.rows) > 1 and len(used) == 1
+
+    def as_dict(self) -> dict:
+        return {
+            "method": self.method, "name": NAMES.get(self.method, self.method),
+            "threads": self.threads, "proxies": self.proxies,
+            "asked_threads": self.asked_threads,
+            "warmup": round(self.warmup, 2),
+            "seconds": round(self.seconds, 2),
+            "expected": round(self.expected, 2),
+            "speedup": round(self.speedup, 2),
+            "shared_address": self.shared_address,
+            "rows": [row.as_dict() for row in self.rows],
+            "note": self.note, "error": self.error,
+        }
+
+
+#: Как зовётся отсутствие прокси в отчёте.
+DIRECT_LABEL = "напрямую"
+
+
+def measure(chapters, make_client, fetch, threads: int,
+            proxies: list | None = None,
+            cancel: threading.Event | None = None) -> Measurement:
+    """Качает несколько глав и рассказывает, кто и через что их достал.
+
+    Отличие от `probe_method` в том, что здесь ничего не выбирается:
+    задача — показать, работает ли параллельность на живом сайте, и через
+    какой адрес шёл каждый поток. Если адрес один на всех, параллельности
+    нет, и по отчёту это видно сразу.
+
+    Скачанное не сохраняется: это замер, а не скачивание.
+    """
+    live = [p for p in (proxies or []) if not getattr(p, "disabled", False)]
+    asked = max(1, int(threads or 1))
+    # Единственный адрес — тоже адрес: раздача по потокам при нём выдаёт
+    # его всем, и это правильно. Прежний порог «хотя бы два» уводил такую
+    # настройку в прямое соединение, то есть прокси просто не работал.
+    method = PROXY_PER_THREAD if live else OWN_SESSION
+    workers = max(1, min(asked, len(live))) if live else asked
+
+    found = Measurement(method=method, threads=workers, proxies=len(live),
+                        asked_threads=asked)
+    if len(live) and workers < asked:
+        # Прямая формулировка из ТЗ: молчаливое урезание потоков выглядит
+        # как «настройка не работает».
+        found.note = (f"потоков {asked}, живых прокси {len(live)} — "
+                      f"работаю в {workers} {threads_word(workers)}")
+    if not chapters:
+        found.error = "нечего качать: у книги не нашлось глав"
+        return found
+
+    fetcher = Fetcher(method, make_client, live)
+    #: Что успел каждый поток. Ключ — идентификатор потока.
+    seen: dict[int, ThreadRow] = {}
+    lock = threading.Lock()
+    durations: list[float] = []
+
+    def one(chapter):
+        if cancel is not None and cancel.is_set():
+            raise ProbeFailed("остановлено")
+        client = fetcher.client()
+        proxy = fetcher.proxy_of_thread()
+        begin = time.monotonic()
+        text = fetch(client, chapter)
+        spent = time.monotonic() - begin
+        number = getattr(chapter, "number", None)
+
+        with lock:
+            row = seen.get(threading.get_ident())
+            if row is None:
+                row = ThreadRow(number=len(seen) + 1,
+                                proxy=getattr(proxy, "label", "") or "")
+                seen[threading.get_ident()] = row
+            row.seconds += spent
+            if (text or "").strip():
+                row.chapters.append(number)
+            else:
+                row.failed.append(number)
+        return spent
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Прогрев отдельно: первый запрос всегда дольше — рукопожатие
+            # TLS и кука Cloudflare. В замер он не идёт.
+            warmed = time.monotonic()
+            pool.submit(one, chapters[0]).result()
+            found.warmup = time.monotonic() - warmed
+            with lock:
+                seen.clear()
+
+            started = time.monotonic()
+            futures = [pool.submit(one, chapter) for chapter in chapters]
+            for future in as_completed(futures):
+                durations.append(future.result())
+            found.seconds = time.monotonic() - started
+    except ProbeFailed as exc:
+        found.error = str(exc)
+    except Exception as exc:  # noqa: BLE001 — замер не должен ронять экран
+        found.error = _reason(exc)
+    finally:
+        fetcher.close()
+
+    found.rows = sorted(seen.values(), key=lambda row: row.number)
+    if durations:
+        # Оценка последовательного времени: самая быстрая глава показывает,
+        # во что обходится один запрос без соседей.
+        found.expected = min(durations) * len(durations)
+    return found
+
+
+def threads_word(count: int) -> str:
+    tail = count % 10
+    if count % 100 in range(11, 15) or tail == 0 or tail >= 5:
+        return "потоков"
+    return "поток" if tail == 1 else "потока"
 
 
 def probe_method(method: str, chapters, make_client, fetch, threads: int,

@@ -288,9 +288,14 @@
     justify-content:center;justify-content:safe center;
     overflow-x:auto;overscroll-behavior-x:contain;
     scrollbar-width:none;-ms-overflow-style:none;
-    /* Прокрутка вбок делает панель обрезающей и по вертикали, поэтому
-       смещённой кнопке нужен запас — иначе магнит стирал ей верх. */
-    padding:6px 0;
+    /* 1.3: прокрутка вбок обязательна — вкладки должны идти одной
+       строкой при любом их числе, — но `overflow-x:auto` по правилам CSS
+       делает панель обрезающей и по вертикали, и свечение кнопки
+       упиралось в невидимую границу строки. Убрать прокрутку нельзя,
+       поэтому свечению даётся место внутри самой панели: с запасом
+       сверху и снизу оно целиком помещается в её же отступы и обрезать
+       его нечем. Раскладку это не трогает — панель просто выше. */
+    padding:12px 0;
     /* Колонка карточек узкая (660px), а меню ей следовать не обязано:
        выносим его на ширину окна, чтобы вкладки помещались подольше. */
     width:min(100vw - 24px, 1340px);
@@ -1055,6 +1060,21 @@
       </div>
       <p class="hint" id="dlModeNote"></p>
     </div>
+
+    <!-- Часть 6: убедиться, что параллельность работает на живом сайте,
+         не прогоняя книгу целиком. -->
+    <div class="row" style="margin-top:14px">
+      <button id="thCheck" class="ghost" style="flex:1">Проверить
+        многопоточность</button>
+    </div>
+    <p class="hint" id="thNote">Качает шесть глав и показывает, какой поток
+       через какой адрес шёл. Скачанное не сохраняется.</p>
+    <div id="thResult" hidden>
+      <div class="stats" id="thTotals" style="margin-top:10px"></div>
+      <div class="table" id="thRows" style="margin-top:10px"></div>
+      <p class="hint warn" id="thWarn" hidden></p>
+    </div>
+
     <p class="hint" id="estimate"></p>
   </div>
 
@@ -2921,6 +2941,107 @@ document.querySelectorAll('.pickmode').forEach(btn => {
   };
 });
 $('dlModeNote').textContent = DL_MODE_NOTES.auto;
+
+/* Замер многопоточности (часть 6 ТЗ).
+ *
+ * Ручной режим чинили вслепую: убедиться, что потоки действительно идут
+ * параллельно и через разные адреса, можно было только прогоном книги
+ * целиком. Здесь качается шесть глав, ничего не сохраняется, а в отчёте
+ * видно, какой поток на каком адресе работал и сколько на это ушло.
+ */
+function thSeconds(value){
+  return `${Number(value || 0).toFixed(1)} с`;
+}
+
+function thDraw(data){
+  $('thResult').hidden = false;
+
+  const totals = $('thTotals');
+  totals.innerHTML = '';
+  const rows = [
+    ['режим', `${data.threads} ${plural(data.threads, 'поток', 'потока', 'потоков')}`
+      + (data.proxies ? ` · ${data.proxies} `
+         + plural(data.proxies, 'прокси', 'прокси', 'прокси') : ' · без прокси')],
+    ['прогрев', thSeconds(data.warmup)],
+    ['последовательно (расчёт)', thSeconds(data.expected)],
+    ['фактически', thSeconds(data.seconds)],
+    ['ускорение', `${Number(data.speedup || 0).toFixed(1)}×`],
+  ];
+  for(const [name, value] of rows){
+    const span = document.createElement('span');
+    span.innerHTML = `${name} <b>${value}</b>`;
+    totals.append(span);
+  }
+
+  const list = $('thRows');
+  list.innerHTML = '';
+  for(const row of data.rows || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+
+    const number = document.createElement('span');
+    number.className = 'tag';
+    number.textContent = 'поток ' + row.number;
+
+    const proxy = document.createElement('span');
+    proxy.className = 'grow';
+    proxy.textContent = row.proxy;
+
+    const chapters = document.createElement('span');
+    chapters.className = 'num';
+    chapters.textContent = row.chapters.length
+      ? 'главы ' + row.chapters.join(', ') : 'ни одной главы';
+
+    const spent = document.createElement('span');
+    spent.className = 'num';
+    spent.textContent = thSeconds(row.seconds);
+
+    line.append(number, proxy, chapters, spent);
+    if(row.failed && row.failed.length){
+      const bad = document.createElement('span');
+      bad.className = 'tag warn';
+      bad.textContent = 'пусто: ' + row.failed.join(', ');
+      line.append(bad);
+    }
+    list.append(line);
+  }
+
+  // Один адрес на все потоки — параллельности по прокси нет, и это
+  // главное, ради чего замер и затевался.
+  const warn = $('thWarn');
+  const words = [];
+  if(data.note) words.push(data.note);
+  if(data.shared_address){
+    words.push('все потоки работали через один адрес — параллельности по '
+               + 'прокси нет; добавьте адреса в список.');
+  }
+  if(data.error) words.push('Замер прервался: ' + data.error);
+  warn.hidden = !words.length;
+  warn.textContent = words.join(' ');
+}
+
+async function thCheck(){
+  showError('');
+  if(!novel){ showError('Сначала найдите книгу', $('thCheck')); return; }
+  $('thCheck').disabled = true;
+  const note = $('thNote');
+  const said = note.textContent;
+  note.innerHTML = '<span class="spin"></span>Качаем шесть глав…';
+  try{
+    thDraw(await call('/api/threads/check', {
+      novel,
+      source: srcMenu ? srcMenu.value : '',
+      threads: Number($('dlThreads').value) || 1,
+    }));
+    note.textContent = said;
+  }catch(err){
+    note.textContent = said;
+    showError(err.message, $('thCheck'));
+  }finally{
+    $('thCheck').disabled = false;
+  }
+}
+$('thCheck').onclick = thCheck;
 
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });

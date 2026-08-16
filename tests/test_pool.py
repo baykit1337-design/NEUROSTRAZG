@@ -360,10 +360,22 @@ class TestManualMode(unittest.TestCase):
             t.join()
         self.assertEqual(len(taken), 3)
 
-    def test_one_proxy_still_gives_each_thread_its_session(self):
-        fetcher = self.downloader([self.Proxy("http://one")])._manual_fetcher(
+    def test_one_proxy_is_still_used(self):
+        """Единственный адрес — тоже адрес.
+
+        Порог «раздавать прокси по потокам, только если их хотя бы два»
+        уводил настройку с одним адресом в прямое соединение: прокси не
+        работал вовсе, а на Фанкью это ещё и утечка своего адреса.
+        """
+        loader = self.downloader([self.Proxy("http://one")])
+        fetcher = loader._manual_fetcher(
             api.Novel(code=1, name="к", slug="k", total_chapters=1))
-        self.assertEqual(fetcher.method, pool.OWN_SESSION)
+        self.assertEqual(fetcher.method, pool.PROXY_PER_THREAD)
+        self.assertEqual(getattr(fetcher._take_proxy(), "url", None),
+                         "http://one")
+        # Адрес один — и поток при нём один: ломиться в него втроём значит
+        # ровно то, ради чего раздача по потокам и делалась.
+        self.assertEqual(loader.threads, 1)
 
     def test_threads_do_not_exceed_the_addresses(self):
         """Четыре потока на два адреса — это два потока, а не четыре."""
@@ -388,6 +400,207 @@ class TestPlural(unittest.TestCase):
                             (0, "адресов")]:
             with self.subTest(count=count):
                 self.assertEqual(pool._plural(count), word)
+
+
+class Addressed:
+    """Прокси, каким его видит замер: с адресом для отчёта."""
+
+    def __init__(self, label: str):
+        self.label = label
+        self.url = f"http://{label}"
+        self.disabled = False
+
+
+class TestMeasure(unittest.TestCase):
+    """Замер многопоточности (часть 6 ТЗ).
+
+    Ручной режим чинили вслепую: убедиться, что потоки идут параллельно и
+    через разные адреса, было нечем, кроме прогона книги целиком.
+    """
+
+    def proxies(self, count: int = 3):
+        return [Addressed(f"10.0.0.{n}:8000") for n in range(1, count + 1)]
+
+    def test_every_thread_gets_its_own_address(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3,
+                             proxies=self.proxies(3))
+        addresses = [row.proxy for row in found.rows]
+        self.assertEqual(len(addresses), 3)
+        self.assertEqual(len(set(addresses)), 3)
+
+    def test_the_address_is_named_without_the_password(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=2,
+                             proxies=self.proxies(2))
+        for row in found.rows:
+            with self.subTest(row=row.number):
+                self.assertNotIn("@", row.proxy)
+                self.assertNotIn("http", row.proxy)
+
+    def test_chapters_are_listed_per_thread(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3,
+                             proxies=self.proxies(3))
+        taken = sorted(n for row in found.rows for n in row.chapters)
+        self.assertEqual(taken, [c.number for c in CHAPTERS])
+
+    def test_one_address_for_everyone_is_called_out(self):
+        """Ровно то, ради чего замер и затевался."""
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3,
+                             proxies=self.proxies(1))
+        self.assertTrue(found.rows)
+        self.assertTrue(found.shared_address or len(found.rows) == 1)
+
+    def test_without_proxies_the_report_says_so(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3)
+        self.assertEqual(found.proxies, 0)
+        self.assertTrue(all(row["proxy"] == pool.DIRECT_LABEL
+                            for row in found.as_dict()["rows"]))
+
+    def test_fewer_proxies_than_threads_is_said_in_words(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=5,
+                             proxies=self.proxies(3))
+        self.assertEqual(found.threads, 3)
+        self.assertIn("потоков 5, живых прокси 3", found.note)
+
+    def test_speedup_is_measured(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.1), threads=3,
+                             proxies=self.proxies(3))
+        self.assertGreater(found.speedup, 1.5)
+        self.assertGreater(found.expected, found.seconds)
+
+    def test_warmup_is_kept_out_of_the_measurement(self):
+        """Первый запрос дольше остальных — он тормозил бы сам замер."""
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3,
+                             proxies=self.proxies(3))
+        self.assertGreater(found.warmup, 0)
+
+    def test_an_empty_chapter_is_marked_not_counted(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.01, text=" "),
+                             threads=2, proxies=self.proxies(2))
+        self.assertEqual([n for row in found.rows for n in row.chapters], [])
+        self.assertTrue([n for row in found.rows for n in row.failed])
+
+    def test_a_broken_site_does_not_crash_the_measurement(self):
+        def refuse(client, chapter):
+            raise OSError("соединение сброшено")
+
+        found = pool.measure(CHAPTERS, maker(), refuse, threads=2,
+                             proxies=self.proxies(2))
+        self.assertTrue(found.error)
+
+    def test_nothing_to_download_is_said_plainly(self):
+        found = pool.measure([], maker(), slow(0.01), threads=2)
+        self.assertIn("не нашлось глав", found.error)
+
+    def test_cancelling_stops_it(self):
+        stop = threading.Event()
+        stop.set()
+        found = pool.measure(CHAPTERS, maker(), slow(0.01), threads=2,
+                             cancel=stop)
+        self.assertEqual(found.error, "остановлено")
+
+    def test_the_report_survives_the_trip_to_the_screen(self):
+        found = pool.measure(CHAPTERS, maker(), slow(0.05), threads=3,
+                             proxies=self.proxies(3)).as_dict()
+        for key in ("threads", "proxies", "warmup", "seconds", "expected",
+                    "speedup", "rows", "shared_address", "note"):
+            with self.subTest(key=key):
+                self.assertIn(key, found)
+        self.assertIn("chapters", found["rows"][0])
+
+    def test_nothing_is_saved_anywhere(self):
+        """Это замер, а не скачивание: файлов после него быть не должно."""
+        written = []
+
+        def fetch(client, chapter):
+            written.append(chapter.number)
+            return "Текст."
+
+        pool.measure(CHAPTERS, maker(), fetch, threads=2,
+                     proxies=self.proxies(2))
+        # Качалка вызвана, но записывать ей нечем — writer сюда не передан.
+        self.assertTrue(written)
+
+
+class TestThreadsWord(unittest.TestCase):
+    def test_russian_endings(self):
+        self.assertEqual(pool.threads_word(1), "поток")
+        self.assertEqual(pool.threads_word(3), "потока")
+        self.assertEqual(pool.threads_word(5), "потоков")
+        self.assertEqual(pool.threads_word(11), "потоков")
+
+
+class TestThreadsRoute(unittest.TestCase):
+    """Замер должен доехать до экрана целиком."""
+
+    @classmethod
+    def setUpClass(cls):
+        import webapp.app as web
+        from mvl.api import Toc
+        from net.sources.base import Source
+
+        class FakeSource(Source):
+            key, name, hint, placeholder = "fake", "Тест", "", ""
+
+            def find(self, client, query):
+                return api.Novel(code=1, name="Т", slug="t", total_chapters=20)
+
+            def toc(self, client, novel, first=1, last=None, on_progress=None):
+                return Toc(chapters=[api.Chapter(number=n)
+                                     for n in range(first, (last or 6) + 1)])
+
+            def chapter(self, client, chapter):
+                time.sleep(0.02)
+                return f"Глава {chapter.number}", f"Текст {chapter.number}."
+
+        cls.web = web
+        cls.real_get = web.sources.get
+        web.sources.get = lambda key="": FakeSource()
+        web.app.config["TESTING"] = True
+        cls.app = web.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.web.sources.get = cls.real_get
+
+    def setUp(self):
+        self.was = self.web.POOL
+        self.addCleanup(lambda: setattr(self.web, "POOL", self.was))
+
+    def pool(self, count: int):
+        class Pool:
+            proxies = [Addressed(f"10.0.0.{n}:8000") for n in range(1, count + 1)]
+
+        self.web.POOL = Pool() if count else None
+
+    def check(self, **extra):
+        return self.app.post("/api/threads/check", json={
+            "novel": {"code": 1, "name": "Т", "total_chapters": 20},
+            "source": "fake", **extra})
+
+    def test_the_report_comes_back(self):
+        self.pool(3)
+        res = self.check(threads=3)
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(len(body["rows"]), 3)
+        self.assertEqual(len({row["proxy"] for row in body["rows"]}), 3)
+
+    def test_without_a_book_it_refuses_before_the_network(self):
+        res = self.app.post("/api/threads/check", json={"novel": {}})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("найдите книгу", res.get_json()["error"])
+
+    def test_fewer_proxies_than_threads_is_explained(self):
+        self.pool(2)
+        body = self.check(threads=5).get_json()
+        self.assertIn("живых прокси 2", body["note"])
+
+    def test_nothing_is_written_to_disk(self):
+        """Это замер: папки для него никто не выбирал."""
+        self.pool(2)
+        body = self.check(threads=2).get_json()
+        self.assertNotIn("output_dir", body)
+        self.assertNotIn("job", body)
 
 
 if __name__ == "__main__":
