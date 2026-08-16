@@ -114,6 +114,11 @@ HEAD_LINES = 5
 #: шапкой. Название книги стоит почти в каждом файле, содержание — нет.
 HEAD_SHARE = 0.8
 
+#: Меньше этого числа файлов сравнивать бессмысленно: в одном файле любая
+#: строка встречается «во всех ста процентах файлов», и в находки попадает
+#: текст главы. Для одного файла работает поиск внутри него.
+HEAD_MIN_FILES = 3
+
 #: Шапка — это название книги или главы, то есть строка короткая. Абзац на
 #: три экрана шапкой не бывает, даже если повторился во всех файлах.
 HEAD_MAX = 120
@@ -127,6 +132,32 @@ LOOSE_NOISE = re.compile(r"[_:.,;!?()\[\]{}«»\"'—–\-]+")
 #: название главы из имени файла.
 HEAD_REPEAT = "repeat"
 HEAD_TITLE = "title"
+
+#: Находки внутри одного файла (3.3 ТЗ).
+HEAD_DOUBLE = "double"        #: сдвоенный заголовок главы
+HEAD_NEIGHBOUR = "neighbour"  #: шапка вплотную к заголовку главы
+HEAD_MANUAL = "manual"        #: своё выражение
+HEAD_POSITION = "position"    #: N-я строка после каждого заголовка
+
+#: Сколько раз строка должна встретиться внутри файла, чтобы считаться
+#: шапкой. Порог настраиваемый: у книги на сорок глав своя арифметика.
+INSIDE_REPEAT = 20
+
+#: Либо — чаще, чем в трети глав. Название книги стоит перед каждой, а
+#: реплика «— Что?» на тысячу глав столько раз не наберёт.
+INSIDE_SHARE = 1 / 3
+
+#: Слова, по которым строка опознаётся как заголовок главы.
+HEADING_WORDS = ("глава", "глaва", "chapter", "часть", "part", "том", "book")
+
+#: Китайская нумерация: 第 241 章.
+HEADING_CJK = re.compile(r"第\s*\d+\s*[章回节話话]")
+
+#: Сколько строк файла показывать, когда правила ничего не нашли.
+HEAD_PEEK = 10
+
+#: Сколько строк давать на полностью ручной разбор.
+HEAD_MANUAL_LINES = 30
 
 
 def normalize_loose(text: str) -> str:
@@ -153,6 +184,12 @@ class HeaderFinding:
     #: Файлы, где строка встретилась. Нужны, чтобы её можно было открыть
     #: и посмотреть, о чём речь, до удаления.
     files: list = field(default_factory=list)
+    #: Находка внутри одного файла считается не файлами, а вхождениями.
+    inside: bool = False
+    #: Номера строк — для предпросмотра ручного правила («в каких местах»).
+    at: list = field(default_factory=list)
+    #: Значение правила: номер строки после заголовка или само выражение.
+    value: str = ""
 
     @property
     def share(self) -> float:
@@ -160,16 +197,45 @@ class HeaderFinding:
 
     @property
     def label(self) -> str:
-        if self.kind == HEAD_TITLE:
-            return f"Дубль названия главы: в {self.count} файлах из {self.total}"
-        return f"Найдено в {self.count} файлах из {self.total}"
+        if not self.inside:
+            if self.kind == HEAD_TITLE:
+                return f"Дубль названия главы: в {self.count} файлах из {self.total}"
+            return f"Найдено в {self.count} файлах из {self.total}"
+
+        # Внутри файла считать файлы бессмысленно: он один.
+        times = _times(self.count)
+        if self.kind == HEAD_DOUBLE:
+            return f"найдено {times}"
+        if self.kind == HEAD_POSITION:
+            return f"строка после заголовка, найдено {times}"
+        if self.kind == HEAD_MANUAL:
+            return f"своё выражение, совпадений {self.count}"
+        if self.kind == HEAD_NEIGHBOUR:
+            return f"рядом с заголовком главы, встречается {times}"
+        return f"встречается {times}"
 
     def as_dict(self) -> dict:
         return {"text": self.text, "count": self.count, "total": self.total,
-                "kind": self.kind, "label": self.label,
+                "kind": self.kind, "label": self.label, "inside": self.inside,
+                "value": self.value,
+                # Первые места — чтобы можно было посмотреть, о чём речь,
+                # не пролистывая тысячу строк.
+                "at": list(self.at[:20]),
                 # Показываем несколько: открывается первый, остальные —
                 # чтобы было видно, что находка не единичная.
                 "files": list(self.files[:20])}
+
+
+def _times(count: int) -> str:
+    """«1004 раза», «1001 раз», «1005 раз» — по-русски."""
+    tail, hundred = count % 10, count % 100
+    if tail == 1 and hundred != 11:
+        word = "раз"
+    elif tail in (2, 3, 4) and hundred not in (12, 13, 14):
+        word = "раза"
+    else:
+        word = "раз"
+    return f"{count} {word}"
 
 
 def find_headers(samples) -> list[HeaderFinding]:
@@ -185,7 +251,9 @@ def find_headers(samples) -> list[HeaderFinding]:
         prepared.append((title, list(lines), str(rest[0]) if rest else ""))
     samples = prepared
     total = len(samples)
-    if not total:
+    # Одна-две главы — не выборка: доля «встретилась почти везде» на них
+    # равна единице для любой строки, включая текст главы.
+    if total < HEAD_MIN_FILES:
         return []
 
     seen: dict[str, tuple[str, int]] = {}
@@ -231,6 +299,301 @@ def find_headers(samples) -> list[HeaderFinding]:
 
     findings.sort(key=lambda f: (-f.count, f.text))
     return findings
+
+
+def looks_like_heading(line: str, title: str = "") -> bool:
+    """Похожа ли строка на заголовок главы (3.3 ТЗ).
+
+    Признак нарочно грубый: строка короткая, в ней есть число и слово из
+    списка — либо она совпадает с названием из имени файла. Точнее здесь
+    и не нужно: правило только отличает заголовок от названия книги,
+    стоящего с ним рядом.
+    """
+    line = (line or "").strip()
+    if not line or len(line) > HEAD_MAX:
+        return False
+    if HEADING_CJK.search(line):
+        return True
+    low = line.casefold()
+    if any(word in low for word in HEADING_WORDS) and re.search(r"\d", line):
+        return True
+    return bool(title) and normalize_loose(line) == normalize_loose(title)
+
+
+def _clean_lines(lines) -> list[str]:
+    return [str(line or "") for line in lines]
+
+
+def find_repeats_inside(lines, repeat: int = INSIDE_REPEAT,
+                        chapters: int = 0, title: str = "") -> list[HeaderFinding]:
+    """Правило первое: строка, повторяющаяся внутри файла.
+
+    Считаем каждую строку по всему файлу. Встретилась больше порога (либо
+    чаще, чем в трети глав) — это шапка, а не содержание: название книги
+    вычисляется само, вписывать его руками не нужно.
+
+    Заголовки глав из счёта исключены. Заголовок — это ровно то, что
+    правила обязаны оставить, и предлагать его к удалению нельзя, как бы
+    часто он ни повторялся. Плата за это — название книги, само похожее
+    на заголовок («Книга 2»), правилом не найдётся: для него есть ручное.
+    """
+    lines = _clean_lines(lines)
+    counts: dict[str, int] = {}
+    shown: dict[str, str] = {}
+    at: dict[str, list] = {}
+
+    for number, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or len(stripped) > HEAD_MAX:
+            continue
+        if looks_like_heading(stripped, title):
+            continue
+        key = normalize_loose(stripped)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        shown.setdefault(key, stripped)
+        at.setdefault(key, []).append(number)
+
+    # Порог по числу глав работает там, где глав мало: на сорока главах
+    # двадцати повторов не наберётся, а шапка всё равно шапка.
+    by_share = int(chapters * INSIDE_SHARE) if chapters else 0
+    limit = min(repeat, by_share) if by_share else repeat
+
+    found = [
+        HeaderFinding(text=shown[key], count=count, total=len(lines),
+                      kind=HEAD_REPEAT, inside=True, at=at[key])
+        for key, count in counts.items()
+        if count > limit
+    ]
+    found.sort(key=lambda f: (-f.count, f.text))
+    return found
+
+
+def find_doubles_inside(lines, title: str = "") -> HeaderFinding | None:
+    """Правило второе: сдвоенный заголовок главы.
+
+    Ищем тройки строк подряд, где первая и третья — одно и то же после
+    грубой нормализации, а между ними ровно одна строка. Так ловится
+    «Chapter 241_ …» / название книги / «Chapter 241: …».
+
+    Отдаём один пункт с числом, а не тысячу пунктов: список на тысячу
+    строк прочитать нельзя.
+    """
+    lines = _clean_lines(lines)
+    at = [number for number, _ in _double_spots(lines)]
+    if not at:
+        return None
+    return HeaderFinding(text="Сдвоенный заголовок главы", count=len(at),
+                         total=len(lines), kind=HEAD_DOUBLE, inside=True, at=at)
+
+
+def _double_spots(lines: list[str]):
+    """Места сдвоенных заголовков: пары «номер первой строки, сама тройка».
+
+    Считаем только непустые строки: между заголовком и его повтором
+    пустых строк не бывает, а вот отступы вокруг тройки бывают всякие.
+    """
+    for index in range(len(lines) - 2):
+        first, middle, third = lines[index], lines[index + 1], lines[index + 2]
+        if not first.strip() or not middle.strip() or not third.strip():
+            continue
+        head = normalize_loose(first)
+        if not head or len(first.strip()) > HEAD_MAX:
+            continue
+        if head != normalize_loose(third):
+            continue
+        yield index + 1, (first, middle, third)
+
+
+def find_neighbours_inside(lines, repeats, title: str = "") -> list[HeaderFinding]:
+    """Правило третье: одиночный заголовок с названием книги рядом.
+
+    Строка, опознанная первым правилом как шапка, стоит вплотную (через
+    пустую строку или без неё) к строке, похожей на заголовок главы.
+    Удалять при этом надо только шапку — заголовок остаётся.
+    """
+    lines = _clean_lines(lines)
+    found = []
+    for repeat in repeats:
+        spots = [number for number in repeat.at
+                 if _next_to_heading(lines, number, title)]
+        # Соседство должно быть правилом, а не совпадением в паре мест:
+        # иначе в список попадёт любая часто повторяющаяся реплика.
+        if len(spots) * 2 < repeat.count:
+            continue
+        found.append(HeaderFinding(text=repeat.text, count=len(spots),
+                                   total=len(lines), kind=HEAD_NEIGHBOUR,
+                                   inside=True, at=spots))
+    return found
+
+
+def _next_to_heading(lines: list[str], number: int, title: str) -> bool:
+    """Есть ли заголовок главы вплотную к строке с этим номером."""
+    index = number - 1
+    for step in (-2, -1, 1, 2):
+        near = index + step
+        if not 0 <= near < len(lines):
+            continue
+        # Через пустую строку — тоже «вплотную»: пустая строка не текст.
+        if abs(step) == 2 and lines[index + step // 2].strip():
+            continue
+        if looks_like_heading(lines[near], title):
+            return True
+    return False
+
+
+def find_by_pattern(lines, pattern: str) -> HeaderFinding | None:
+    """Ручное правило: своё выражение с предпросмотром (3.4 ТЗ).
+
+    Выражение сначала пробуем как обычный текст: большинству нужно именно
+    это, а regexp с непонятной ошибкой отпугивает.
+    """
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return None
+    lines = _clean_lines(lines)
+
+    try:
+        rule = re.compile(pattern, re.I)
+    except re.error as exc:
+        raise ValueError(f"Выражение не разобрать: {exc}") from exc
+
+    at = [number for number, line in enumerate(lines, 1)
+          if line.strip() and rule.search(line)]
+    if not at:
+        return None
+    return HeaderFinding(text=pattern, count=len(at), total=len(lines),
+                         kind=HEAD_MANUAL, inside=True, at=at, value=pattern)
+
+
+def find_by_position(lines, offset: int, title: str = "") -> HeaderFinding | None:
+    """Правило по позиции: N-я строка после каждого заголовка главы.
+
+    Нужно там, где мусор не повторяется дословно — в нём номер главы или
+    дата, и первое правило его не поймает.
+    """
+    offset = int(offset or 0)
+    if offset < 1:
+        return None
+    lines = _clean_lines(lines)
+
+    at = []
+    for index, line in enumerate(lines):
+        if not looks_like_heading(line, title):
+            continue
+        target = index + offset
+        if target < len(lines) and lines[target].strip():
+            at.append(target + 1)
+    if not at:
+        return None
+    return HeaderFinding(text=f"{offset}-я строка после заголовка",
+                         count=len(at), total=len(lines), kind=HEAD_POSITION,
+                         inside=True, at=at, value=str(offset))
+
+
+def find_headers_inside(lines, title: str = "", repeat: int = INSIDE_REPEAT,
+                        chapters: int = 0, pattern: str = "",
+                        offset: int = 0) -> list[HeaderFinding]:
+    """Все правила разом. Порядок — как в ТЗ: повтор, дубль, сосед.
+
+    Книга одним файлом на тысячу глав — обычное дело, и сравнивать её
+    не с чем: находка ищется внутри самого файла.
+    """
+    lines = _clean_lines(lines)
+    repeats = find_repeats_inside(lines, repeat=repeat, chapters=chapters,
+                                  title=title)
+    found: list[HeaderFinding] = list(repeats)
+
+    double = find_doubles_inside(lines, title)
+    if double is not None:
+        found.append(double)
+
+    # Соседство добавляем только там, где первое правило само не сработало:
+    # иначе одна и та же строка попадёт в список дважды.
+    seen = {normalize_loose(f.text) for f in repeats}
+    for neighbour in find_neighbours_inside(lines, repeats, title):
+        if normalize_loose(neighbour.text) not in seen:
+            found.append(neighbour)
+
+    manual = find_by_pattern(lines, pattern)
+    if manual is not None:
+        found.append(manual)
+
+    positional = find_by_position(lines, offset, title)
+    if positional is not None:
+        found.append(positional)
+
+    return found
+
+
+def peek(lines, count: int = HEAD_PEEK) -> list[dict]:
+    """Первые строки файла с нумерацией.
+
+    Показываются, когда правила ничего не нашли: «ничего не найдено» —
+    не ответ, а вот первые строки сразу подсказывают, что здесь лишнее.
+    """
+    lines = _clean_lines(lines)
+    return [{"number": number, "text": line}
+            for number, line in enumerate(lines[:count], 1)]
+
+
+def strip_headers_inside(lines, rules) -> list[str]:
+    """Убирает шапку внутри одного файла по отмеченным правилам.
+
+    `rules` — то, что вернул поиск: словари с `kind` и `text`. Строки
+    сначала помечаются на удаление и только потом выкидываются: правила
+    смотрят на исходную нумерацию и мешать друг другу не должны.
+    """
+    lines = _clean_lines(lines)
+    drop: set[int] = set()
+
+    texts = set()
+    patterns = []
+    offsets = []
+    doubles = False
+
+    for rule in rules or []:
+        if isinstance(rule, str):
+            kind, value, body = HEAD_REPEAT, "", rule
+        else:
+            kind = str(rule.get("kind") or HEAD_REPEAT)
+            body = str(rule.get("text") or "")
+            value = str(rule.get("value") or "")
+
+        if kind == HEAD_DOUBLE:
+            doubles = True
+        elif kind == HEAD_MANUAL:
+            patterns.append(value or body)
+        elif kind == HEAD_POSITION:
+            offsets.append(value or body)
+        elif body.strip():
+            texts.add(normalize_loose(body))
+
+    if doubles:
+        # `number` — номер первой строки тройки, считая с единицы, то есть
+        # её же индекс плюс один. Значит, это индекс средней строки.
+        for number, _ in _double_spots(lines):
+            drop.add(number)      # название книги между заголовками
+            drop.add(number + 1)  # повтор заголовка
+
+    for pattern in patterns:
+        finding = find_by_pattern(lines, pattern)
+        if finding is not None:
+            drop.update(index - 1 for index in finding.at)
+
+    for offset in offsets:
+        digits = re.search(r"\d+", str(offset))
+        finding = find_by_position(lines, int(digits.group()) if digits else 0)
+        if finding is not None:
+            drop.update(index - 1 for index in finding.at)
+
+    if texts:
+        for index, line in enumerate(lines):
+            if line.strip() and normalize_loose(line) in texts:
+                drop.add(index)
+
+    return [line for index, line in enumerate(lines) if index not in drop]
 
 
 def _is_title_echo(line: str, title: str) -> bool:

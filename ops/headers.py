@@ -20,8 +20,38 @@ from core.text import PrepOptions
 from .base import Progress, collect_files, read_all
 
 
-def scan(targets, progress: Progress | None = None) -> dict:
-    """Что похоже на шапку и в скольких файлах встретилось."""
+def lines_of(chapters) -> list[str]:
+    """Строки файла в том виде, в каком они в нём лежали.
+
+    Читатель забирает первую строку в название главы, и без неё тройка
+    «заголовок · название книги · тот же заголовок» распадается — правило
+    сдвоенного заголовка не срабатывает. Поэтому название возвращаем на
+    место.
+    """
+    lines: list[str] = []
+    for chapter in chapters:
+        if chapter.title:
+            lines.append(chapter.title)
+        lines.extend(chapter.paragraphs)
+    return lines
+
+
+def _by_file(chapters) -> dict:
+    """Главы, разложенные по файлам, откуда они прочитаны."""
+    grouped: dict[str, list] = {}
+    for chapter in chapters:
+        grouped.setdefault(str(chapter.source or ""), []).append(chapter)
+    return grouped
+
+
+def scan(targets, progress: Progress | None = None, repeat: int = 0,
+         pattern: str = "", offset: int = 0) -> dict:
+    """Что похоже на шапку: и между файлами, и внутри каждого из них.
+
+    Книга одним файлом на тысячу глав сравнивать себя не с чем: правило
+    «строка почти во всех файлах» находит там ровно одну строку и чистит
+    одно место. Поэтому те же правила прогоняются и внутри файла.
+    """
     report = OpReport()
     files = collect_files(targets)
     chapters = read_all(files, report, progress)
@@ -32,22 +62,94 @@ def scan(targets, progress: Progress | None = None) -> dict:
         (chapter.title, chapter.paragraphs, chapter.source)
         for chapter in chapters
     )
+
+    inside = _scan_inside(chapters, repeat=repeat, pattern=pattern,
+                          offset=offset)
+    first = next(iter(_by_file(chapters).values()), [])
     return {
         "files": [str(path) for path in files],
         "file_count": len(files),
         "total": len(chapters),
         "findings": [f.as_dict() for f in findings],
+        "inside": [f.as_dict() for f in inside],
+        # Правила могли не найти ничего: тогда «ничего не найдено» — не
+        # ответ, а вот первые строки сразу подсказывают, что здесь лишнее.
+        "peek": text.peek(lines_of(first), text.HEAD_MANUAL_LINES),
+        "repeat": repeat or text.INSIDE_REPEAT,
         "unreadable": [failure.as_text() for failure in report.failures],
     }
 
 
-def clean_chapter(chapter: Chapter, texts) -> Chapter:
-    """Глава без шапки. Исходная не меняется."""
+def _scan_inside(chapters, repeat: int = 0, pattern: str = "",
+                 offset: int = 0) -> list:
+    """Находки внутри файлов, сведённые в один список.
+
+    Файлов может быть и тысяча: тогда каждое отдельное правило находит
+    мало, но вместе по всем файлам находка одна и та же. Складываем её,
+    иначе список будет на тысячу одинаковых строк.
+    """
+    limit = repeat or text.INSIDE_REPEAT
+    merged: dict[tuple, text.HeaderFinding] = {}
+
+    for chapters_of_file in _by_file(chapters).values():
+        lines = lines_of(chapters_of_file)
+        found = text.find_headers_inside(
+            lines,
+            title=chapters_of_file[0].title if chapters_of_file else "",
+            repeat=limit,
+            chapters=_chapter_guess(lines),
+            pattern=pattern,
+            offset=offset,
+        )
+        for finding in found:
+            key = (finding.kind, text.normalize_loose(finding.text))
+            known = merged.get(key)
+            if known is None:
+                merged[key] = finding
+            else:
+                known.count += finding.count
+                known.total += finding.total
+                known.at.extend(finding.at)
+
+    order = [text.HEAD_REPEAT, text.HEAD_DOUBLE, text.HEAD_NEIGHBOUR,
+             text.HEAD_MANUAL, text.HEAD_POSITION]
+    return sorted(merged.values(),
+                  key=lambda f: (order.index(f.kind) if f.kind in order else 9,
+                                 -f.count, f.text))
+
+
+def _chapter_guess(lines) -> int:
+    """Сколько в файле глав — по числу строк, похожих на заголовок.
+
+    Нужно для порога «чаще, чем в трети глав»: на книге в сорок глав
+    двадцати повторов не наберётся, а шапка всё равно шапка.
+    """
+    return sum(1 for line in lines if text.looks_like_heading(line))
+
+
+def clean_chapter(chapter: Chapter, texts, rules=None) -> Chapter:
+    """Глава без шапки. Исходная не меняется.
+
+    `texts` — находки по папке, `rules` — правила внутри файла. Первые
+    чистят зону шапки в начале главы, вторые проходят по всему тексту:
+    при книге одним файлом «начало главы» — это одно место на тысячу.
+    """
+    paragraphs = text.strip_headers(chapter.paragraphs, chapter.title, texts)
+
+    if rules:
+        lines = ([chapter.title] if chapter.title else []) + paragraphs
+        lines = text.strip_headers_inside(lines, rules)
+        # Название снимаем обратно, только если оно уцелело: правила
+        # заголовок главы не трогают, но проверить дешевле, чем потерять.
+        if chapter.title and lines and lines[0] == chapter.title:
+            lines = lines[1:]
+        paragraphs = lines
+
     return Chapter(
         number=chapter.number,
         part=chapter.part,
         title=chapter.title,
-        paragraphs=text.strip_headers(chapter.paragraphs, chapter.title, texts),
+        paragraphs=paragraphs,
         source=chapter.source,
     )
 
@@ -61,11 +163,13 @@ def run(
     style=None,
     encoding: str = "utf-8",
     progress: Progress | None = None,
+    rules=None,
 ) -> OpReport:
     """Пишет очищенные главы в новую папку. Оригиналы не трогает.
 
-    `texts` — отмеченные находки. Пустая строка среди них означает «убрать
-    дубль названия главы»: сама строка у каждого файла своя.
+    `texts` — отмеченные находки по папке. Пустая строка среди них
+    означает «убрать дубль названия главы»: сама строка у каждого файла
+    своя. `rules` — отмеченные правила внутри файла.
     Формат на выходе по умолчанию — как у исходного файла.
     """
     progress = progress or Progress()
@@ -84,7 +188,7 @@ def run(
 
     for index, chapter in enumerate(chapters, 1):
         progress.check()
-        cleaned = clean_chapter(chapter, texts)
+        cleaned = clean_chapter(chapter, texts, rules)
 
         # Имя и расширение сохраняем: очистка не переименование.
         source = Path(chapter.source) if chapter.source else None

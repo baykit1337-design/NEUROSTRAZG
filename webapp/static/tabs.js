@@ -1074,6 +1074,15 @@ mgUpdateFinal();
 
 let hdSource = null, hdFindings = [], hdChosen = new Set(), hdJob = null;
 
+//: Находки внутри файла и отмеченные из них. Ключ — «вид·текст»: одна и
+//: та же строка бывает и повтором, и соседом заголовка.
+let hdInside = [], hdInsideChosen = new Set(), hdPeekLines = [];
+
+/** Ключ правила: вид и текст. Текста у сдвоенного заголовка нет. */
+function hdKey(rule){
+  return `${rule.kind} ${rule.text || ''}`;
+}
+
 /** Пути, с которыми работает вызвавшая вкладка. */
 function hdTargets(){
   if(!hdSource) return [];
@@ -1166,10 +1175,109 @@ async function hdCopy(text, button){
   setTimeout(() => { button.textContent = said; }, 1500);
 }
 
+/** 3.5: находки внутри файла. У них своя подпись — не «в файлах», а
+ *  «встречается N раз»: файл-то один. */
+function hdRenderInside(){
+  const list = $('hdInside');
+  list.innerHTML = '';
+
+  for(const rule of hdInside){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = hdInsideChosen.has(hdKey(rule));
+    box.onchange = () => {
+      box.checked ? hdInsideChosen.add(hdKey(rule))
+                  : hdInsideChosen.delete(hdKey(rule));
+      hdUpdate();
+    };
+
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = rule.text;
+    text.title = rule.at?.length
+      ? 'Строки: ' + rule.at.slice(0, 10).join(', ') : rule.text;
+
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = rule.label;
+
+    row.append(box, text, tag);
+
+    // Копировать имеет смысл только настоящую строку: «Сдвоенный
+    // заголовок главы» — это название правила, а не текст из файла.
+    if(rule.kind === 'repeat' || rule.kind === 'neighbour'){
+      const copy = document.createElement('button');
+      copy.className = 'ghost';
+      copy.style.padding = '4px 10px';
+      copy.textContent = 'скопировать';
+      copy.title = 'Чтобы найти место поиском внутри документа';
+      copy.onclick = () => hdCopy(rule.text, copy);
+      row.append(copy);
+    }
+    list.append(row);
+  }
+  $('hdInsideBox').hidden = hdInside.length === 0;
+  hdUpdate();
+}
+
+/** 3.4: полностью ручной разбор — первые строки файла с галочками. */
+function hdRenderPeek(){
+  const list = $('hdPeek');
+  list.innerHTML = '';
+  for(const line of hdPeekLines){
+    if(!line.text.trim()) continue;
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    const rule = {kind: 'repeat', text: line.text,
+                  label: 'отмечено вручную', at: [line.number]};
+    box.checked = hdInsideChosen.has(hdKey(rule));
+    box.onchange = () => {
+      if(box.checked){
+        hdInsideChosen.add(hdKey(rule));
+        // Отмеченная руками строка становится обычным правилом: иначе её
+        // некуда положить, и на «Удалить» она не поедет.
+        if(!hdInside.some(r => hdKey(r) === hdKey(rule))) hdInside.push(rule);
+      }else{
+        hdInsideChosen.delete(hdKey(rule));
+      }
+      // Список выше — единственная правда о том, что будет удалено.
+      hdRenderInside();
+    };
+
+    const number = document.createElement('span');
+    number.className = 'tag';
+    number.textContent = line.number;
+
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = line.text;
+    text.title = line.text;
+
+    row.append(box, number, text);
+    list.append(row);
+  }
+  $('hdPeekBox').hidden = list.children.length === 0;
+}
+
 function hdUpdate(){
-  $('hdClean').disabled = hdChosen.size === 0;
-  $('hdClean').textContent = hdChosen.size
-    ? `Удалить отмеченное (${hdChosen.size})` : 'Удалить отмеченное';
+  const total = hdChosen.size + hdInsideChosen.size;
+  $('hdClean').disabled = total === 0;
+  $('hdClean').textContent = total
+    ? `Удалить отмеченное (${total})` : 'Удалить отмеченное';
+  // Куда сохранить — показываем, как только есть что удалять.
+  $('hdPlace').hidden = !(hdFindings.length || hdInside.length);
+}
+
+/** Отмеченные правила внутри файла — в том виде, в каком их ждёт сервер. */
+function hdRules(){
+  return hdInside.filter(rule => hdInsideChosen.has(hdKey(rule)))
+    .map(rule => ({kind: rule.kind, text: rule.text, value: rule.value || ''}));
 }
 
 /** Переносит блок в раздел вкладки, которая его вызвала.
@@ -1195,35 +1303,53 @@ async function hdScan(source, quiet){
 
   if(!quiet){
     $('hdCard').hidden = false;
-    $('hdIntro').innerHTML = '<span class="spin"></span>Читаем начала файлов…';
+    $('hdIntro').innerHTML = '<span class="spin"></span>Читаем файлы…';
     $('hdList').innerHTML = '';
+    $('hdInside').innerHTML = '';
     $('hdPlace').hidden = true;
   }
   try{
-    const data = await call('/api/headers/scan', {targets});
+    const data = await call('/api/headers/scan', {
+      targets,
+      repeat: Number($('hdRepeat').value) || 0,
+      offset: Number($('hdOffset').value) || 0,
+      pattern: $('hdPattern').value.trim(),
+    });
     hdFindings = data.findings || [];
     hdChosen = new Set(hdFindings.map(f => f.text));
+    hdInside = data.inside || [];
+    hdInsideChosen = new Set(hdInside.map(hdKey));
+    hdPeekLines = data.peek || [];
 
-    if(!hdFindings.length){
-      if(!quiet){
-        $('hdCard').hidden = false;
-        $('hdIntro').textContent =
-          `Файлов: ${data.file_count}. Повторяющихся строк в начале не нашлось.`;
-        $('hdPlace').hidden = true;
-      }
+    $('hdCard').hidden = false;
+    const found = hdFindings.length + hdInside.length;
+
+    if(!found){
+      // 3.4: «ничего не найдено» — не ответ. Показываем начало файла:
+      // по нему сразу видно, каким правилом надо воспользоваться.
+      $('hdIntro').textContent =
+        `Файлов: ${data.file_count}. Правила ничего не нашли — посмотрите `
+        + 'начало файла ниже и отметьте лишние строки сами.';
+      $('hdRulesBox').open = true;
+      hdRenderInside();
+      hdRenderPeek();
       return 0;
     }
 
-    $('hdCard').hidden = false;
-    $('hdIntro').textContent =
-      `Файлов: ${data.file_count}. Строки ниже повторяются почти в каждом — `
-      + 'это шапка, а не содержание. Снимите галочку, если строка нужна.';
-    $('hdPlace').hidden = false;
+    $('hdIntro').textContent = hdFindings.length
+      ? `Файлов: ${data.file_count}. Строки ниже повторяются почти в каждом — `
+        + 'это шапка, а не содержание. Снимите галочку, если строка нужна.'
+      : `Файлов: ${data.file_count}. Между файлами повторов нет, а внутри — есть.`;
+    $('hdInsideIntro').textContent =
+      'Книга может лежать одним файлом на тысячу глав: тогда шапка ищется '
+      + 'внутри него самого. Число справа — сколько раз строка встретилась.';
     if(!$('hdFolder').value) $('hdFolder').value = 'Без шапок';
     hdRender();
-    return hdFindings.length;
+    hdRenderInside();
+    hdRenderPeek();
+    return found;
   }catch(err){
-    if(!quiet) showError(err.message);
+    if(!quiet) showError(err.message, $('hdCard'));
     return 0;
   }
 }
@@ -1246,6 +1372,7 @@ async function hdClean(){
       base: $('hdBase').value.trim(),
       folder: $('hdFolder').value.trim(),
       texts: [...hdChosen],
+      rules: hdRules(),
     });
     hdJob = job.id;
     $('hdProgress').hidden = false;
@@ -1274,6 +1401,14 @@ document.querySelectorAll('.hdOpen').forEach(button => {
 });
 $('hdClean').onclick = hdClean;
 $('hdClose').onclick = () => { $('hdCard').hidden = true; };
+// 3.4: правило меняют и сразу смотрят, что найдётся — без предпросмотра
+// подбирать выражение вслепую невозможно.
+$('hdRescan').onclick = () => hdScan(hdSource, false);
+for(const id of ['hdRepeat', 'hdOffset', 'hdPattern']){
+  $(id).addEventListener('keydown', e => {
+    if(e.key === 'Enter') hdScan(hdSource, false);
+  });
+}
 
 
 /* ===================== Настройки модели (часть 2) =====================

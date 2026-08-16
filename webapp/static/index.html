@@ -830,6 +830,51 @@
   <p class="hint" id="hdIntro"></p>
   <div class="table" id="hdList"></div>
 
+  <!-- 3.1: книга одним файлом сравнивать себя не с чем — те же правила
+       прогоняются внутри файла, и находки у них свои. -->
+  <div id="hdInsideBox" hidden style="margin-top:14px">
+    <label>Внутри файла</label>
+    <p class="hint" id="hdInsideIntro"></p>
+    <div class="table" id="hdInside"></div>
+  </div>
+
+  <!-- 3.4: правила могут не подойти под чужую разметку. Тогда — руками. -->
+  <details id="hdRulesBox" style="margin-top:14px">
+    <summary class="hint" style="cursor:pointer">Настроить правила</summary>
+
+    <div class="row" style="margin-top:10px">
+      <div style="flex:0 0 190px">
+        <label for="hdRepeat">порог повторов</label>
+        <input id="hdRepeat" type="number" min="1" value="20">
+      </div>
+      <div style="flex:0 0 230px">
+        <label for="hdOffset">строка после заголовка</label>
+        <input id="hdOffset" type="number" min="0" value="0"
+               placeholder="0 — правило выключено">
+      </div>
+      <div style="flex:1">
+        <label for="hdPattern">своё выражение</label>
+        <input id="hdPattern" type="text" autocomplete="off"
+               placeholder="кусок строки либо регулярное выражение">
+      </div>
+    </div>
+    <p class="hint">Порог — сколько раз строка должна встретиться, чтобы
+       считаться шапкой. «Строка после заголовка» нужна, когда мусор не
+       повторяется дословно: в нём номер главы или дата.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="hdRescan" class="ghost" style="flex:0 0 auto">Показать, что
+        найдётся</button>
+    </div>
+
+    <!-- 3.4: полностью ручной разбор — отметить лишние строки самому. -->
+    <div id="hdPeekBox" hidden style="margin-top:14px">
+      <label>Первые строки файла</label>
+      <p class="hint" id="hdPeekIntro">Отметьте строки, которые в начале
+         каждой главы лишние — правило применится ко всем главам.</p>
+      <div class="table" id="hdPeek"></div>
+    </div>
+  </details>
+
   <div id="hdPlace" hidden>
     <div style="margin-top:14px">
       <label>Куда сохранить очищенное</label>

@@ -954,13 +954,23 @@ def api_llm_save():
 
 @app.post("/api/headers/scan")
 def api_headers_scan():
-    """Что похоже на шапку и в скольких файлах встретилось."""
+    """Что похоже на шапку: и между файлами, и внутри каждого из них."""
     payload = request.json or {}
     targets = _targets(payload)
     if not targets:
         return jsonify(error="Выберите файлы или папку"), 400
     try:
-        return jsonify(**headers_op.scan(targets))
+        repeat = max(1, int(payload.get("repeat") or 0)) \
+            if payload.get("repeat") else 0
+        offset = max(0, int(payload.get("offset") or 0))
+    except (TypeError, ValueError):
+        return jsonify(error="Порог и номер строки должны быть числами"), 400
+
+    try:
+        return jsonify(**headers_op.scan(
+            targets, repeat=repeat,
+            pattern=str(payload.get("pattern") or "").strip(),
+            offset=offset))
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -973,6 +983,9 @@ def api_headers_clean():
     base = (payload.get("base") or "").strip()
     folder = (payload.get("folder") or "").strip()
     texts = payload.get("texts")
+    rules = payload.get("rules")
+    texts = texts if isinstance(texts, list) else []
+    rules = rules if isinstance(rules, list) else []
 
     if not targets:
         return jsonify(error="Выберите файлы или папку"), 400
@@ -981,7 +994,7 @@ def api_headers_clean():
     if not folder:
         return jsonify(error="Введите имя папки"), 400
     # Пустой список — это «ничего не отмечено», а не «убрать всё».
-    if not isinstance(texts, list) or not texts:
+    if not texts and not rules:
         return jsonify(error="Отметьте, что убрать"), 400
 
     try:
@@ -1004,6 +1017,7 @@ def api_headers_clean():
             prep=PrepOptions.from_dict(payload.get("prep")),
             style=Style.from_dict(payload.get("style")),
             progress=_progress(job, "Файл"),
+            rules=rules,
         ), "Очищено")
 
     return jsonify(job=start_job(job, work).snapshot())
