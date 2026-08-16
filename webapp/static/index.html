@@ -535,6 +535,20 @@
     border-color:rgba(255,90,120,.4);
     color:#ff9db0;font-size:13px;
   }
+  /* 2.1: книга, выбранная в рейтинге. Обложка слева, всё остальное
+     справа — чтобы с одного взгляда было видно, что именно выбрано. */
+  .picked-row{display:flex;gap:14px;align-items:flex-start;margin-top:10px}
+  .picked-row img{
+    flex:0 0 84px;width:84px;height:112px;object-fit:cover;
+    border-radius:10px;border:1px solid var(--stroke-soft);background:#15121e;
+  }
+  /* Подсветка после перехода: карточка должна найтись глазами сразу. */
+  @keyframes picked-flash{
+    from{box-shadow:0 0 0 2px var(--neon), 0 0 26px rgba(176,108,255,.45)}
+    to{box-shadow:0 0 0 0 rgba(176,108,255,0), 0 0 0 rgba(176,108,255,0)}
+  }
+  .card.flash{animation:picked-flash 1.6s ease-out 1}
+
   /* 1.2: то же сообщение, но внутри карточки — под кнопкой, которую
      нажали, а не наверху страницы, куда в этот момент никто не смотрит. */
   .err.local{
@@ -951,6 +965,19 @@
     <div class="meta" id="bookMeta"></div>
   </div>
 
+  <!-- 2.1: книга пришла из рейтинга. Пока она не найдена на сайте, видно
+       хотя бы то, что о ней знает рейтинг — иначе непонятно, что выбрано. -->
+  <div class="card lit picked" id="rkCard" hidden>
+    <label>Выбрано в рейтинге</label>
+    <div class="picked-row">
+      <img id="rkCardCover" alt="" hidden>
+      <div style="flex:1;min-width:0">
+        <div class="book-name" id="rkCardName"></div>
+        <div class="meta" id="rkCardMeta"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- 3. Куда сохранять -->
   <div class="card" id="place" hidden>
     <label>Где создать папку</label>
@@ -977,6 +1004,10 @@
         <input id="last" type="number" min="1">
       </div>
     </div>
+    <!-- 2.1: про неверный диапазон надо говорить у самих полей, а не
+         наверху вкладки — там сообщение не связывается с причиной. -->
+    <p class="err local" id="rangeErr" hidden></p>
+    <p class="hint" id="rangeHint">Пустые поля — вся книга целиком.</p>
 
     <div class="row" style="margin-top:18px">
       <button id="start" class="primary" style="flex:1">Скачать</button>
@@ -2103,23 +2134,6 @@
     <div class="table" id="rkTable" style="margin-top:10px;max-height:520px"></div>
   </div>
 
-  <div class="card" id="rkPlace" hidden>
-    <label>Куда скачать</label>
-    <p class="hint" id="rkChosen"></p>
-    <div class="row" style="margin-top:8px">
-      <input id="rkBase" type="text" placeholder="Папка назначения" autocomplete="off">
-      <button class="ghost browse" data-target="rkBase" data-kind="folder">Обзор…</button>
-    </div>
-    <div style="margin-top:10px">
-      <label for="rkFolder">имя папки</label>
-      <input id="rkFolder" type="text" autocomplete="off">
-    </div>
-    <div class="row" style="margin-top:12px">
-      <button id="rkStart" class="primary" style="flex:1">Скачать</button>
-      <button id="rkCancel" class="ghost" style="flex:0 0 auto">Отмена</button>
-    </div>
-    <p class="hint" id="rkStartNote"></p>
-  </div>
 </section>
 
 <!-- ====================== Оформление ====================== -->
@@ -2456,10 +2470,17 @@ async function proxyAction(url, button, busyText){
 }
 
 /* ---- поиск книги ---- */
-async function find(){
+/** Поиск книги. `fillRange` — подставлять ли диапазон глав.
+ *
+ *  Книге, пришедшей из рейтинга, диапазон подставлять не надо: там он
+ *  нарочно пуст и означает «вся книга». Если заполнить его здесь, при
+ *  медленном поиске поля успевают моргнуть чужими числами.
+ */
+async function find(fillRange = true){
   const query = $('q').value.trim();
   if(!query) return;
   showError('');
+  rangeNote('');
   $('find').disabled = true;
   $('find').textContent = 'Ищем…';
   try{
@@ -2476,7 +2497,7 @@ async function find(){
     $('book').hidden = false;
     $('place').hidden = false;
     $('folder').value = novel.name;
-    $('last').value = novel.total_chapters;
+    if(fillRange) $('last').value = novel.total_chapters;
     $('last').max = novel.total_chapters;
     $('first').max = novel.total_chapters;
     if(basePath === null) browse();
@@ -2564,8 +2585,37 @@ async function exportLinks(){
 }
 
 /* ---- запуск ---- */
+/** Сообщение о диапазоне — у самих полей (2.1 ТЗ). */
+function rangeNote(msg){
+  const box = $('rangeErr');
+  box.hidden = !msg;
+  box.textContent = msg || '';
+  $('rangeHint').hidden = !!msg;
+}
+
+/** Что просили скачать. Пустые поля — вся книга, это не ошибка. */
+function rangeAsked(){
+  const total = (novel && novel.total_chapters) || 0;
+  return {
+    first: Number($('first').value) || 1,
+    last: Number($('last').value) || total,
+  };
+}
+
 async function start(){
   showError('');
+  rangeNote('');
+  if(!novel){
+    showError('Сначала найдите книгу', $('start'));
+    return;
+  }
+  const {first, last} = rangeAsked();
+  if(last < first){
+    rangeNote(`Конечная глава (${last}) меньше начальной (${first}). `
+              + 'Оставьте оба поля пустыми, чтобы скачать книгу целиком.');
+    return;
+  }
+
   $('start').disabled = true;
   try{
     const data = await call('/api/start', {
@@ -2573,8 +2623,8 @@ async function start(){
       source: srcMenu ? srcMenu.value : '',
       base: basePath,
       folder: $('folder').value.trim(),
-      first: Number($('first').value) || 1,
-      last: Number($('last').value) || novel.total_chapters
+      first,
+      last,
     });
     jobId = data.job.id;
     $('place').hidden = true;
@@ -2690,6 +2740,8 @@ $('dlModeNote').textContent = DL_MODE_NOTES.auto;
 
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
+// Ссылку правят руками — значит, книга уже не та, что выбрана в рейтинге.
+$('q').addEventListener('input', () => { $('rkCard').hidden = true; });
 $('folder').addEventListener('input', updateFinalPath);
 $('first').addEventListener('input', updateFinalPath);
 $('last').addEventListener('input', updateFinalPath);
@@ -2702,6 +2754,17 @@ loadProxyState();
 
 
 /* ================================ вкладки ================================ */
+
+/** Переключение вкладки из кода — тем же путём, что и нажатием.
+ *
+ *  Своей ветки здесь быть не должно: обработчик кнопки не только меняет
+ *  видимость, но и останавливает работу покидаемой вкладки.
+ */
+function goTab(name){
+  const button = document.querySelector(`.tabs button[data-tab="${name}"]`);
+  if(button) button.click();
+  return !!button;
+}
 
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.onclick = () => {

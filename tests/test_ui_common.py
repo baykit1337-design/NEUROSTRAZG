@@ -127,5 +127,104 @@ class TestNoSecondSourceOfTruth(UiBase):
         self.assertIn("keys=None if typed else keystore", maker)
 
 
+class TestRankHandsOverToTheDownloader(UiBase):
+    """2.1: «скачать» в рейтинге настраивает качалку, а не качает сама."""
+
+    def pick(self) -> str:
+        return self.tabs.split("async function rkPick(row)", 1)[1] \
+            .split("\n}\n", 1)[0]
+
+    def test_the_rank_has_no_downloader_of_its_own(self):
+        """Свой маленький загрузчик умел меньше и жил своей жизнью."""
+        for gone in ("rkPlace", "rkStart", "rkBase", "rkFolder"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.page)
+                self.assertNotIn(gone, self.tabs)
+
+    def test_it_switches_to_the_downloader(self):
+        self.assertIn("goTab('download')", self.pick())
+
+    def test_switching_goes_through_the_tab_button(self):
+        """Обработчик кнопки не только показывает вкладку, но и
+        останавливает работу покидаемой — своей ветки быть не должно."""
+        self.assertIn("button.click()", self.page)
+
+    def test_the_source_becomes_fanqie(self):
+        self.assertIn("srcMenu.set('fanqie', {notify: true})", self.pick())
+
+    def test_the_hint_changes_with_the_source(self):
+        """Без `notify` заполнитель поля остался бы от прошлого источника."""
+        self.assertIn("if(options_.notify && onChange) onChange(value);",
+                      self.tabs)
+
+    def test_the_code_goes_into_the_query_field(self):
+        self.assertIn("$('q').value = row.book_id", self.pick())
+
+    def test_the_range_is_cleared(self):
+        pick = self.pick()
+        self.assertIn("$('first').value = '';", pick)
+        self.assertIn("$('last').value = '';", pick)
+
+    def test_the_range_is_cleared_before_the_search_not_after(self):
+        """Поиск идёт секунды: до него поля успевают показать чужие числа."""
+        pick = self.pick()
+        self.assertLess(pick.index("$('first').value = '';"),
+                        pick.index("await find(false)"))
+
+    def test_the_search_does_not_refill_the_range(self):
+        self.assertIn("if(fillRange) $('last').value = novel.total_chapters;",
+                      self.page)
+
+    def test_the_chosen_book_is_shown(self):
+        self.assertIn('id="rkCard"', self.page)
+        for part in ("rkCardCover", "rkCardName", "rkCardMeta"):
+            with self.subTest(part=part):
+                self.assertIn(f'id="{part}"', self.page)
+
+    def test_the_card_says_what_the_rank_knows(self):
+        card = self.tabs.split("function rkShowCard(row)", 1)[1]
+        for field in ("readers", "words", "status", "place", "book_id"):
+            with self.subTest(field=field):
+                self.assertIn(field, card)
+
+    def test_the_card_is_scrolled_to_and_highlighted(self):
+        flash = self.tabs.split("function rkCardFlash()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("scrollIntoView", flash)
+        self.assertIn("classList.add('flash')", flash)
+
+    def test_the_highlight_restarts_on_every_pick(self):
+        """Без чтения раскладки браузер снятие и возврат класса не заметит."""
+        self.assertIn("void card.offsetWidth;", self.tabs)
+
+    def test_the_card_goes_away_when_the_link_is_edited_by_hand(self):
+        self.assertIn("$('rkCard').hidden = true;", self.page)
+
+
+class TestRangeMessage(UiBase):
+    """2.1: про неверный диапазон говорится у самих полей."""
+
+    def test_there_is_a_place_for_it_next_to_the_fields(self):
+        self.assertIn('id="rangeErr"', self.page)
+
+    def test_the_check_happens_before_the_request(self):
+        start = self.page.split("async function start()", 1)[1]
+        start = start.split("await call('/api/start'", 1)[0]
+        self.assertIn("rangeNote(", start)
+
+    def test_the_message_names_both_numbers(self):
+        self.assertIn("Конечная глава (${last}) меньше начальной (${first})",
+                      self.page)
+
+    def test_empty_fields_mean_the_whole_book(self):
+        self.assertIn("Пустые поля — вся книга целиком.", self.page)
+
+    def test_an_empty_range_is_not_an_error(self):
+        """`last` пуст — берём всю книгу, а не ноль глав."""
+        self.assertIn("last: Number($('last').value) || total,", self.page)
+
+    def test_starting_without_a_book_is_not_a_crash(self):
+        self.assertIn("if(!novel){", self.page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

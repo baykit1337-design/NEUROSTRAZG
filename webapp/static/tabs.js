@@ -143,14 +143,19 @@ function makeDropdown(node, onChange){
   node.append(toggle, menu);
 
   /** Выбрать пункт из кода: список моделей приходит с сервера, и
-      подобранную по умолчанию надо отметить уже после отрисовки. */
-  function set(key){
+      подобранную по умолчанию надо отметить уже после отрисовки.
+
+      Обработчик изменения по умолчанию НЕ зовётся: часть вызовов идёт
+      как раз изнутри него, и получилось бы бесконечное кольцо. Кому
+      нужно поведение как при нажатии — просит `notify` явно. */
+  function set(key, options_ = {}){
     if(!options.some(o => o[0] === key)) return false;
     value = key;
     menu.querySelectorAll('.dropdown-item').forEach((item, index) => {
       item.classList.toggle('selected', options[index][0] === key);
     });
     label();
+    if(options_.notify && onChange) onChange(value);
     return true;
   }
 
@@ -1080,7 +1085,7 @@ let hdInside = [], hdInsideChosen = new Set(), hdPeekLines = [];
 
 /** Ключ правила: вид и текст. Текста у сдвоенного заголовка нет. */
 function hdKey(rule){
-  return `${rule.kind} ${rule.text || ''}`;
+  return `${rule.kind} :: ${rule.text || ''}`;
 }
 
 /** Пути, с которыми работает вызвавшая вкладка. */
@@ -4071,46 +4076,71 @@ async function rkTranslate(){
   finally{ $('rkTranslate').disabled = false; }
 }
 
-/** Книга выбрана — качаем её через общий путь качалки. */
-function rkPick(row){
+/** Книга выбрана — уходим на качалку и настраиваем её под эту книгу (2.1).
+ *
+ * Раньше здесь был свой маленький загрузчик со своими полями. Он умел
+ * меньше качалки, а диапазон глав оставался от прошлого запуска — отсюда
+ * и бралось «Конечная глава меньше начальной» на только что выбранной
+ * книге. Теперь всё идёт одним путём: рейтинг лишь заполняет качалку.
+ */
+async function rkPick(row){
   rkPicked = row;
-  $('rkPlace').hidden = false;
-  $('rkChosen').textContent =
-    `${row.secret ? 'книга' : row.name} · код ${row.book_id}`;
-  $('rkFolder').value = rkTitles[row.book_id] || (row.secret ? row.book_id : row.name);
-  $('rkStartNote').textContent = '';
-  $('rkPlace').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  goTab('download');
+
+  // Источник — Fanqie: рейтинг больше ниоткуда не берётся.
+  // С `notify`: вместе с источником меняются заполнитель поля и пояснение
+  // под ним — у Фанкью в ссылке не слаг, а числовой код.
+  if(typeof srcMenu !== 'undefined' && srcMenu) srcMenu.set('fanqie', {notify: true});
+  $('q').value = row.book_id;
+
+  // Диапазон чистим сразу, до поиска: пустые поля означают «вся книга»,
+  // а числа от прошлого запуска — то самое «конечная глава меньше
+  // начальной» на только что выбранной книге.
+  $('first').value = '';
+  $('last').value = '';
+  if(typeof rangeNote === 'function') rangeNote('');
+
+  rkShowCard(row);
+  rkCardFlash();
+
+  try{
+    // Без подстановки диапазона: поля уже очищены и значат то же самое.
+    await find(false);
+  }catch(err){ /* показать карточку важнее, чем найти книгу с первого раза */ }
 }
 
-async function rkStart(){
-  showError('');
-  if(!rkPicked) return;
-  const base = $('rkBase').value.trim();
-  if(!base){ showError('Укажите, куда сохранить'); return; }
+/** Карточка «что именно выбрано»: то, что о книге знает рейтинг. */
+function rkShowCard(row){
+  const card = $('rkCard');
+  card.hidden = false;
+  $('rkCardName').textContent = row.secret
+    ? `книга ${row.book_id}` : (rkTitles[row.book_id] || row.name);
+  $('rkCardMeta').textContent = [
+    `код ${row.book_id}`,
+    row.author && 'автор: ' + row.author,
+    row.readers && `${ru(row.readers)} читающих`,
+    row.words && `${ru(row.words)} знаков`,
+    row.status,
+    row.place && `место ${row.place} в срезе`,
+  ].filter(Boolean).join('  ·  ');
 
-  $('rkStart').disabled = true;
-  try{
-    // Код уже известен — копировать ничего не нужно.
-    const found = await call('/api/find',
-      {query: rkPicked.book_id, source: 'fanqie'});
-    const {job} = await call('/api/start', {
-      novel: found.novel,
-      source: 'fanqie',
-      base,
-      folder: $('rkFolder').value.trim() || found.novel.name,
-    });
-    $('rkStartNote').textContent =
-      `Качаем в ${job.output_dir}. Ход виден на вкладке «Качалка».`;
-  }catch(err){
-    showError(err.message);
-  }finally{
-    $('rkStart').disabled = false;
-  }
+  const cover = $('rkCardCover');
+  cover.hidden = !row.cover;
+  if(row.cover) cover.src = row.cover;
+}
+
+/** Доскроллить и подсветить: иначе непонятно, куда книга уехала. */
+function rkCardFlash(){
+  const card = $('rkCard');
+  card.scrollIntoView({behavior: 'smooth', block: 'center'});
+  card.classList.remove('flash');
+  // Перезапуск анимации: без чтения раскладки браузер снятие и возврат
+  // класса в одном кадре не заметит.
+  void card.offsetWidth;
+  card.classList.add('flash');
 }
 
 $('rkRefresh').onclick = rkRefresh;
 $('rkTranslate').onclick = rkTranslate;
 $('rkFilter').addEventListener('input', rkRender);
-$('rkStart').onclick = rkStart;
-$('rkCancel').onclick = () => { $('rkPlace').hidden = true; rkPicked = null; };
 rkLoadCategories().then(rkState);
