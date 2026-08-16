@@ -573,10 +573,37 @@ function rnRenderList(){
   rnUpdateChosen();
 }
 
-function rnUpdateChosen(){
-  $('rnSelected').textContent =
-    `— отмечено ${rnChosen.size} из ${rnChapters.length}`;
-  rnBuildPreview();
+/** Подпись под списком (1.5 ТЗ).
+ *
+ * Считаем по предпросмотру, а не по галочкам: в работу уходят именно его
+ * строки. «Отмечено 206 из 206» при пустом предпросмотре — обещание,
+ * которого кнопка не выполнит, и человек ищет причину не там.
+ *
+ * `rows` — сколько строк в предпросмотре; `null`, пока он не построен.
+ */
+function rnUpdateChosen(rows){
+  const total = rnChapters.length;
+  const shown = rows === null || rows === undefined
+    ? '…' : rows;
+  let text = `— в предпросмотре ${shown} из ${total}`;
+  // Расхождение показываем только когда оно есть: обычно числа равны.
+  if(rows !== null && rows !== undefined && rows !== rnChosen.size){
+    text += `, отмечено ${rnChosen.size}`;
+  }
+  $('rnSelected').textContent = text;
+  if(rows === null || rows === undefined) rnBuildPreview();
+}
+
+/** Почему предпросмотр пуст. Общее «сначала отметьте» ничего не чинит. */
+function rnWhyEmpty(){
+  if(!rnChapters.length){
+    return 'В папке не нашлось ни одного файла с текстом.';
+  }
+  if(!rnChosen.size){
+    return 'Сняты все галочки: отметьте главы в списке выше.';
+  }
+  return 'Главы отмечены, но предпросмотр пуст — разбор имён не дал ни '
+    + 'одной главы. Задайте своё выражение в поле «Свой шаблон имени».';
 }
 
 async function rnBuildPreview(){
@@ -610,13 +637,20 @@ async function rnBuildPreview(){
     });
 
     $('rnPreviewCard').hidden = false;
+    // Кнопка завязана на предпросмотр: в работу уходят его строки.
     $('rnApply').disabled = !data.rows.length;
     $('rnApplyHint').textContent = data.rows.length
       ? `Будет создано файлов: ${data.rows.length}. Оригиналы не изменятся.`
-      : 'Нечего переименовывать.';
+      : rnWhyEmpty();
+    rnUpdateChosen(data.rows.length);
   }catch(err){
-    showError(err.message);
+    // Предпросмотр не построился — причина нужна здесь же, у кнопки:
+    // иначе она просто не нажимается и непонятно почему.
+    showError(err.message, $('rnApply'));
     $('rnApply').disabled = true;
+    $('rnApplyHint').textContent =
+      'Предпросмотр не построился: ' + err.message;
+    rnUpdateChosen(0);
   }
 }
 

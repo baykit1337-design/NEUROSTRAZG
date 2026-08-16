@@ -651,6 +651,14 @@ def api_split_start():
 # --------------------------------------- вкладка «Переименование и деление»
 
 
+def _chosen_paths(payload: dict) -> set[str] | None:
+    """Отмеченные галочками пути. `None` — «галочек не присылали»."""
+    chosen = payload.get("chosen")
+    if chosen is None:
+        return None
+    return {str(path) for path in chosen}
+
+
 def _plan_from_payload(payload: dict):
     """Собирает план по параметрам запроса. Общее для предпросмотра и записи."""
     folder = (payload.get("folder_in") or "").strip()
@@ -673,9 +681,11 @@ def _plan_from_payload(payload: dict):
         rename.NameFormat.from_dict(payload.get("format")),
         splits={str(k): int(v) for k, v in (payload.get("splits") or {}).items()},
         renumber_from=renumber_from,
-        # Отмеченные галочками пути. Пусто — значит, все: понятия
-        # «служебный файл», который выпадает сам, больше нет.
-        chosen={str(p) for p in (payload.get("chosen") or [])} or None,
+        # Отмеченные галочками пути. Пустой список и отсутствие списка —
+        # разные вещи: первое значит «не отмечено ничего», второе — «про
+        # галочки не спрашивали, берём все». Раньше они были одним и тем
+        # же, и снятие всех галочек означало «переименовать всё».
+        chosen=_chosen_paths(payload),
     )
     return chapters, rows
 

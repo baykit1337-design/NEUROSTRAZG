@@ -226,5 +226,87 @@ class TestRangeMessage(UiBase):
         self.assertIn("if(!novel){", self.page)
 
 
+class TestPreviewGatesTheButton(UiBase):
+    """1.5: кнопка идёт за предпросмотром, а не за галочками."""
+
+    def test_the_caption_counts_the_preview(self):
+        self.assertIn("— в предпросмотре ${shown} из ${total}", self.tabs)
+
+    def test_a_mismatch_is_shown_when_there_is_one(self):
+        self.assertIn(", отмечено ${rnChosen.size}", self.tabs)
+
+    def test_the_button_follows_the_preview(self):
+        self.assertIn("$('rnApply').disabled = !data.rows.length;", self.tabs)
+
+    def test_an_empty_preview_says_why(self):
+        why = self.tabs.split("function rnWhyEmpty()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("не нашлось ни одного файла", why)
+        self.assertIn("Сняты все галочки", why)
+        self.assertIn("разбор имён", why)
+
+    def test_a_broken_preview_says_so_at_the_button(self):
+        self.assertIn("Предпросмотр не построился: ", self.tabs)
+
+
+class TestChosenPaths(unittest.TestCase):
+    """1.5: пустой список галочек и отсутствие списка — разные вещи."""
+
+    @classmethod
+    def setUpClass(cls):
+        from webapp.app import app
+
+        app.config["TESTING"] = True
+        cls.app = app.test_client()
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = Path(self.dir.name)
+        for number in range(1, 6):
+            (self.root / f"Глава {number}.txt").write_text(
+                f"Текст {number}.\n", encoding="utf-8")
+        # Файл, чьё имя не разбирается: он и есть тот самый «проверьте».
+        (self.root / "аннотация.txt").write_text("Пара слов.\n",
+                                                 encoding="utf-8")
+
+    def plan(self, **extra):
+        return self.app.post("/api/rename/plan",
+                             json={"folder_in": str(self.root), **extra}).get_json()
+
+    def paths(self):
+        found = self.app.post("/api/rename/scan",
+                              json={"folder_in": str(self.root)}).get_json()
+        return [chapter["path"] for chapter in found["chapters"]]
+
+    def test_no_list_at_all_means_all_of_them(self):
+        self.assertEqual(len(self.plan()["rows"]), 6)
+
+    def test_an_empty_list_means_none_of_them(self):
+        """Иначе снятие всех галочек переименовывало всю папку."""
+        self.assertEqual(self.plan(chosen=[])["rows"], [])
+
+    def test_a_partial_list_means_exactly_those(self):
+        rows = self.plan(chosen=self.paths()[:3])["rows"]
+        self.assertEqual(len(rows), 3)
+
+    def test_the_suspect_file_is_in_the_preview(self):
+        """1.5: без него счётчики расходятся, а кнопка отказывается."""
+        rows = self.plan(chosen=self.paths())["rows"]
+        self.assertIn("аннотация.txt", [row["old_name"] for row in rows])
+
+    def test_the_suspect_file_gets_a_number(self):
+        found = self.app.post("/api/rename/scan",
+                              json={"folder_in": str(self.root)}).get_json()
+        suspect = [c for c in found["chapters"] if c["name"] == "аннотация.txt"]
+        self.assertTrue(suspect)
+        self.assertIsNotNone(suspect[0]["number"])
+
+    def test_the_preview_matches_the_checkbox_count(self):
+        paths = self.paths()
+        self.assertEqual(len(self.plan(chosen=paths)["rows"]), len(paths))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
