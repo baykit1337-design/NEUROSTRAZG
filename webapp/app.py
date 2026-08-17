@@ -302,6 +302,30 @@ def api_sources():
     return jsonify(sources=[s.as_dict() for s in sources.all_sources()])
 
 
+def _toc_any_proxy(source, novel, client, live, count):
+    """Оглавление через любой живой прокси, а не только через первый.
+
+    Список прокси на то и список: один адрес отвалился — это не повод
+    сказать «не удалось собрать оглавление». Раньше замер брал `live[0]`
+    и падал по таймауту, хотя рядом были рабочие адреса.
+    """
+    try:
+        return source.toc(client, novel, first=1, last=count)
+    except HttpError as first_error:
+        for proxy in live[1:]:
+            spare = Client(proxy_url=proxy.url)
+            try:
+                found = source.toc(spare, novel, first=1, last=count)
+                log.info("Оглавление собралось через запасной прокси %s",
+                         mask(proxy.url))
+                return found
+            except HttpError:
+                continue
+            finally:
+                spare.close()
+        raise first_error
+
+
 def _found(novel) -> dict:
     """Книга для интерфейса: к своим полям добавлены перевод и имя папки.
 
@@ -631,7 +655,7 @@ def api_threads_check():
                             source=source)
     try:
         try:
-            toc = source.toc(client, novel, first=1, last=count)
+            toc = _toc_any_proxy(source, novel, client, live, count)
         except (sources.SourceBroken, HttpError, LookupError, ValueError) as exc:
             # Разделяем шаги: «не собралось оглавление» и «не пошли потоки»
             # чинятся по-разному, а общий 502 не говорит ни о том, ни о другом.
@@ -1774,6 +1798,42 @@ def api_rank_abstract():
             force=bool(payload.get("force"))))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    except NoKeysLeft as exc:
+        return jsonify(error=str(exc)), 400
+    except BadKey as exc:
+        return jsonify(error=str(exc)), 401
+    except LlmError as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        client.close()
+
+
+@app.post("/api/find/translate")
+def api_find_translate():
+    """Перевод названия одной найденной книги.
+
+    Книгу могли найти по коду, мимо рейтинга — тогда перевода у неё нет
+    ниоткуда, а имя папки из иероглифов не собрать (3.2 ТЗ). Кладём в то
+    же хранилище, что и рейтинг: у книги один код и один перевод.
+    """
+    payload = request.json or {}
+    code = str(payload.get("code") or "").strip()
+    name = (payload.get("name") or "").strip()
+    if not code or not name:
+        return jsonify(error="Нужны код книги и её название."), 400
+
+    client = _llm_client(payload)
+    try:
+        row = rank_net.RankRow(book_id=code, name=name)
+        done = titles_op.translate([row], client,
+                                  model=(payload.get("model") or "").strip(),
+                                  force=bool(payload.get("force")))
+        translated = (done.get("titles") or {}).get(code, "")
+        if not translated:
+            return jsonify(error="Модель не вернула перевод названия."), 502
+        return jsonify(code=code, translated=translated,
+                       folder=naming.folder_name(name, code=code,
+                                                 translated=translated))
     except NoKeysLeft as exc:
         return jsonify(error=str(exc)), 400
     except BadKey as exc:

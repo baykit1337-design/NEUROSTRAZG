@@ -185,18 +185,42 @@ class TestStars(Base):
                 self.assertIn(f"share: {share}", block)
 
     def test_each_depth_has_its_own_brightness_and_size(self):
+        """У каждой группы свой размах яркости и свой размер."""
         block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
-        for value in ("dim: 0.10", "bright: 0.25", "dim: 0.55", "bright: 0.85"):
-            with self.subTest(value=value):
-                self.assertIn(value, block)
+        rows = [line for line in block.splitlines() if "share:" in line]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({self._value(r, "dim") for r in rows}), 3)
+        self.assertEqual(len({self._value(r, "bright") for r in rows}), 3)
+        self.assertEqual(len({self._value(r, "size") for r in rows}), 3)
+
+    def test_the_swing_of_brightness_is_visible_to_the_eye(self):
+        """Прежние 0.10→0.25 у дальних точек глаз не ловил вовсе.
+
+        Поле «мерцало по приборам»: сдвиг в полтора десятка сотых на
+        тёмном фоне неотличим от неподвижной картинки.
+        """
+        block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
+        for row in [line for line in block.splitlines() if "share:" in line]:
+            swing = self._value(row, "bright") - self._value(row, "dim")
+            with self.subTest(row=row.strip()):
+                self.assertGreaterEqual(swing, 0.35, row)
+
+    @staticmethod
+    def _value(row: str, key: str) -> float:
+        import re as _re
+
+        found = _re.search(rf"{key}:\s*([\d.]+)", row)
+        return float(found.group(1))
 
     def test_the_nearest_ones_glow(self):
         block = self.js.split("STARS_DEPTHS = [", 1)[1].split("];", 1)[0]
         self.assertEqual(block.count("glow: true"), 1)
 
-    def test_twinkling_lasts_four_to_twelve_seconds(self):
-        self.assertIn("STARS_BLINK_MIN = 4000", self.js)
-        self.assertIn("STARS_BLINK_MAX = 12000", self.js)
+    def test_twinkling_is_quick_enough_to_notice(self):
+        """На цикле в двенадцать секунд точка меняется медленнее, чем на
+        неё смотрят: поле от этого казалось застывшим."""
+        self.assertIn("STARS_BLINK_MIN = 2200", self.js)
+        self.assertIn("STARS_BLINK_MAX = 6500", self.js)
 
     def test_every_star_blinks_on_its_own(self):
         """Иначе точки мигают хором, и это читается как поломка."""
@@ -204,16 +228,19 @@ class TestStars(Base):
         self.assertIn("cycle: starsBetween(STARS_BLINK_MIN, STARS_BLINK_MAX)",
                       self.js)
 
-    def test_a_star_moves_every_six_to_ten_seconds(self):
-        self.assertIn("STARS_MOVE_MIN = 6000", self.js)
-        self.assertIn("STARS_MOVE_MAX = 10000", self.js)
+    def test_stars_move_often_enough_to_be_seen(self):
+        """Один переезд в шесть-десять секунд на полторы сотни точек —
+        событие, которого просто не застать глазом."""
+        self.assertIn("STARS_MOVE_MIN = 900", self.js)
+        self.assertIn("STARS_MOVE_MAX = 2200", self.js)
 
-    def test_fading_in_and_out_takes_two_to_three_seconds(self):
-        self.assertIn("STARS_FADE_MIN = 2000", self.js)
-        self.assertIn("STARS_FADE_MAX = 3000", self.js)
+    def test_fading_in_and_out_stays_gradual(self):
+        """Точка гаснет и зажигается плавно, а не мигает на кадр."""
+        self.assertIn("STARS_FADE_MIN = 1200", self.js)
+        self.assertIn("STARS_FADE_MAX = 2600", self.js)
 
-    def test_no_more_than_three_move_at_once(self):
-        self.assertIn("STARS_MOVING_MAX = 3", self.js)
+    def test_several_can_move_at_once_but_not_all(self):
+        self.assertIn("STARS_MOVING_MAX = 12", self.js)
         self.assertIn("if(busy >= STARS_MOVING_MAX) return;", self.js)
 
     def test_a_new_spot_is_not_next_to_a_neighbour(self):

@@ -37,6 +37,17 @@ def next_data(payload: dict) -> str:
             + json.dumps(payload, ensure_ascii=False) + "</script></html>")
 
 
+def state_page(payload: dict) -> str:
+    """Страница в том виде, в каком её отдаёт сайт сейчас.
+
+    Данные лежат в `window.__INITIAL_STATE__`; прежний `__NEXT_DATA__`
+    сайт не отдаёт уже давно, и книга из-за этого приезжала с нулём глав.
+    """
+    return ("<html><body><script>window.__INITIAL_STATE__="
+            + json.dumps(payload, ensure_ascii=False)
+            + ";</script></body></html>")
+
+
 class TestRegistry(unittest.TestCase):
     """Источники перечисляются в одном месте."""
 
@@ -149,6 +160,48 @@ class TestFanqieBook(unittest.TestCase):
         self.assertEqual(novel.total_chapters, 300)
         self.assertEqual(novel.language, "zh")
 
+    def test_book_is_read_from_the_shape_the_site_uses_now(self):
+        """Сайт отдаёт `__INITIAL_STATE__`, а модуль искал `__NEXT_DATA__`.
+
+        Поиск не находил ничего, уходил в запасной разбор заголовка — и
+        книга на тысячу глав приезжала с «0 глав». Качать при этом нечего:
+        диапазон получался пустым.
+        """
+        client = FakeClient({"/page/": state_page({"page": {
+            "bookName": "末日生存方案供应商", "author": "板面王仔",
+            "creationStatus": 0, "chapterTotal": 1272,
+            "chapterListWithVolume": [[
+                {"itemId": "7496029406847042073", "title": "第1章"},
+                {"itemId": "7496031021620544025", "title": "第2章"},
+            ]]}})})
+        novel = self.source.find(client, "7496026299845053465")
+
+        self.assertEqual(novel.name, "末日生存方案供应商")
+        self.assertEqual(novel.total_chapters, 1272)
+        self.assertEqual(novel.author, "板面王仔")
+
+    def test_a_finished_book_is_not_called_ongoing(self):
+        """Признак завершённости равен нулю, а ноль — ложь.
+
+        Через `or ""` он превращался в пустоту, и любая книга оказывалась
+        «продолжается».
+        """
+        client = FakeClient({"/page/": state_page({"page": {
+            "bookName": "книга", "creationStatus": 0, "chapterTotal": 5}})})
+        self.assertEqual(self.source.find(client, "7143038691944959011").status,
+                         "завершена")
+
+    def test_chapters_are_counted_when_the_site_gives_no_total(self):
+        """Счётчика нет — считаем по оглавлению, но не отдаём ноль."""
+        client = FakeClient({"/page/": state_page({"page": {
+            "bookName": "книга",
+            "chapterListWithVolume": [[
+                {"itemId": "700000000000000001", "title": "Раз"},
+                {"itemId": "700000000000000002", "title": "Два"},
+            ]]}})})
+        self.assertEqual(
+            self.source.find(client, "7143038691944959011").total_chapters, 2)
+
     def test_title_is_the_fallback(self):
         client = FakeClient({"/page/": "<html><title>剑来_番茄小说</title></html>"})
         self.assertEqual(self.source.find(client, "7143038691944959011").name, "剑来")
@@ -256,9 +309,29 @@ class TestFanqieChapter(unittest.TestCase):
         with self.assertRaises(SourceBroken):
             self.source.chapter(client, self.chapter())
 
-    def test_not_json_says_the_source_changed(self):
-        client = FakeClient({"/api/reader/full": "<html>лишь бы не json</html>"})
-        with self.assertRaises(SourceBroken):
+    def test_not_json_falls_back_to_the_reading_page(self):
+        """Внутренний адрес отвечает то JSON, то страницей входа.
+
+        Ронять на этом всю книгу нельзя: тот же текст лежит на странице
+        чтения, только берётся медленнее.
+        """
+        client = FakeClient({
+            "/api/reader/full": "<html>лишь бы не json</html>",
+            "/reader/": state_page({"reader": {"chapterData": {
+                "title": "Глава 1", "content": "<p>Текст главы.</p>"}}}),
+        })
+        title, text = self.source.chapter(client, self.chapter())
+
+        self.assertEqual(title, "Глава 1")
+        self.assertEqual(text, "Текст главы.")
+
+    def test_when_neither_the_api_nor_the_page_gives_text(self):
+        """Оба пути пусты — вот это уже поломка, и о ней надо сказать."""
+        client = FakeClient({
+            "/api/reader/full": "<html>лишь бы не json</html>",
+            "/reader/": "<html>и тут пусто</html>",
+        })
+        with self.assertRaises((SourceBroken, PaidChapter)):
             self.source.chapter(client, self.chapter())
 
     def test_chapter_without_an_id_is_refused(self):

@@ -126,16 +126,30 @@ class FanqieSource(Source):
         Сайт отдаёт данные страницы отдельным блоком JSON — из него они и
         берутся: разбирать вёрстку бессмысленно, она меняется чаще.
         """
-        block = re.search(
-            r'(?s)<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
-        if block:
-            data = _json(block.group(1), "страница книги")
+        data = _page_data(html)
+        if data is not None:
             found = _dig(data, "bookName") or _dig(data, "book_name")
-            total = _dig(data, "serialCount") or _dig(data, "chapterCount")
+            # `chapterTotal` — то, чем сайт считает главы сейчас; прежние
+            # имена оставлены на случай возврата старой формы ответа. Без
+            # него книга приезжала с «0 глав», и качать было нечего.
+            total = (_dig(data, "chapterTotal") or _dig(data, "serialCount")
+                     or _dig(data, "chapterCount"))
+            if not total:
+                # Счётчика нет — считаем сами по оглавлению: ноль глав
+                # останавливает и поиск, и скачивание.
+                total = len(_flatten_items(
+                    _dig(data, "chapterListWithVolume")
+                    or _dig(data, "itemIds") or []))
+            # У завершённой книги признак равен нулю, а ноль — ложь: через
+            # `or ""` он превращался в пустоту, и всё подряд оказывалось
+            # «продолжается». Поэтому сравниваем с None, а не на истинность.
+            done = _dig(data, "creationStatus")
             return {
                 "name": str(_need(found, "название книги")),
                 "author": str(_dig(data, "author") or ""),
-                "status": str(_dig(data, "creationStatus") or ""),
+                "status": ("продолжается" if done is None
+                           else ("завершена" if str(done) == "0"
+                                 else "продолжается")),
                 "total": int(total or 0),
             }
 
@@ -184,11 +198,10 @@ class FanqieSource(Source):
 
     def _items(self, html: str) -> list[tuple[str, str]]:
         """Пары (id главы, название) в порядке чтения."""
-        block = re.search(
-            r'(?s)<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
-        if block:
-            data = _json(block.group(1), "оглавление")
-            found = _dig(data, "chapterListWithVolume") or _dig(data, "allItemIds")
+        data = _page_data(html)
+        if data is not None:
+            found = (_dig(data, "chapterListWithVolume")
+                     or _dig(data, "allItemIds"))
             items = _flatten_items(found)
             if items:
                 return items
@@ -207,7 +220,15 @@ class FanqieSource(Source):
             raise SourceBroken("У главы нет идентификатора Фанкью.")
 
         raw = client.get_text(f"{READER_API}?itemId={item_id}")
-        data = _json(raw, "текст главы")
+        try:
+            data = _json(raw, "текст главы")
+        except SourceBroken:
+            # Внутренний адрес отвечает то JSON, то страницей входа или
+            # заглушкой — по нему одному ронять всю книгу нельзя. Страница
+            # чтения отдаёт тот же текст в своих данных, только медленнее.
+            log.info("Фанкью: %s ответил не JSON — беру главу со страницы",
+                     READER_API)
+            return self._chapter_page(client, chapter, item_id)
 
         code = data.get("code")
         if code not in (0, "0", None):
@@ -227,6 +248,67 @@ class FanqieSource(Source):
             raise SourceBroken(
                 f"Источник изменился: в главе {chapter.number} нет текста.")
         return title, text
+
+    def _chapter_page(self, client, chapter: Chapter,
+                      item_id: str) -> tuple[str, str]:
+        """Глава со страницы чтения — запасной путь.
+
+        Тот же текст, что и у внутреннего адреса, лежит в данных страницы
+        (ветка `reader`). Разбор вёрстки — последняя попытка: она меняется
+        чаще всего, но пустая глава хуже разобранной с третьего захода.
+        """
+        html = client.get_text(f"{SITE}/reader/{item_id}")
+        data = _page_data(html)
+
+        content, title = "", ""
+        if data is not None:
+            item = _dig(data, "chapterData") or {}
+            if isinstance(item, dict):
+                content = str(item.get("content") or "")
+                title = str(item.get("title") or "")
+
+        if not content:
+            # В вёрстке текст лежит абзацами внутри блока с содержимым.
+            block = re.search(
+                r'(?is)<div[^>]+class="[^"]*muye-reader-content[^"]*"[^>]*>'
+                r'(.*?)</div>\s*</div>', html)
+            content = block.group(1) if block else ""
+
+        if not content or any(mark in content for mark in PAID_MARKERS):
+            raise PaidChapter(f"Глава {chapter.number} платная — пропускаем")
+
+        text = _clean(content)
+        if not text.strip():
+            raise SourceBroken(
+                f"Источник изменился: в главе {chapter.number} нет текста "
+                f"ни в ответе {READER_API}, ни на странице {SITE}/reader/"
+                f"{item_id}.")
+        return (title or chapter.title), text
+
+
+#: Данные страницы. Сайт кладёт их в `window.__INITIAL_STATE__`; прежняя
+#: форма — блок `__NEXT_DATA__`. Ищем обе: за первой сайт держится уже
+#: давно, вторая осталась на случай отката.
+STATE_BLOCK = re.compile(
+    r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*[;<]", re.S)
+NEXT_BLOCK = re.compile(
+    r'(?s)<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>')
+
+
+def _page_data(html: str):
+    """Данные страницы книги. None — на странице их нет вовсе.
+
+    Раньше здесь искался только `__NEXT_DATA__`. Сайт давно отдаёт
+    `__INITIAL_STATE__`, поиск ничего не находил и уходил в запасной
+    разбор заголовка — оттуда и бралось «0 глав» у книги на тысячу.
+    """
+    found = STATE_BLOCK.search(html or "")
+    if found:
+        return _json(found.group(1), "страница книги")
+    found = NEXT_BLOCK.search(html or "")
+    if found:
+        return _json(found.group(1), "страница книги")
+    return None
 
 
 def _dig(data, key: str):

@@ -1054,6 +1054,10 @@
   <div class="card lit" id="book" hidden>
     <div class="book-name" id="bookName"></div>
     <div class="meta" id="bookMeta"></div>
+    <!-- Перевода названия может не быть: книгу нашли по коду, мимо
+         рейтинга. Тогда её имя — иероглифы, и в папку они не пойдут. -->
+    <button class="ghost" id="bookTranslate" hidden
+            style="margin-top:10px;padding:3px 12px">перевести название</button>
   </div>
 
   <!-- 2.1: книга пришла из рейтинга. Пока она не найдена на сайте, видно
@@ -2781,6 +2785,8 @@ async function find(fillRange = true){
       `код ${novel.code}`
     ].filter(Boolean).join('  ·  ');
     $('book').hidden = false;
+    // Кнопка нужна, только пока перевода нет: с ним переводить нечего.
+    $('bookTranslate').hidden = !!novel.translated;
     $('place').hidden = false;
     // Имя папки готовит сервер: у него есть перевод названия, и он же
     // следит, чтобы в пути не оказалось иероглифов (3.2 ТЗ).
@@ -3135,6 +3141,29 @@ $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
 // Ссылку правят руками — значит, книга уже не та, что выбрана в рейтинге.
 $('q').addEventListener('input', () => { $('rkCard').hidden = true; });
 $('folder').addEventListener('input', updateFinalPath);
+
+/** Перевод названия найденной книги и имя папки вместе с ним (3.1, 3.2). */
+$('bookTranslate').onclick = async () => {
+  if(!novel) return;
+  const button = $('bookTranslate');
+  button.disabled = true;
+  button.textContent = 'Переводим…';
+  try{
+    const got = await call('/api/find/translate',
+                           {code: String(novel.code), name: novel.name});
+    novel.translated = got.translated;
+    $('bookName').textContent = `${novel.name} / ${got.translated}`;
+    // Имя папки считает сервер — правило про иероглифы в пути одно.
+    if(got.folder) $('folder').value = got.folder;
+    updateFinalPath();
+    button.hidden = true;
+  }catch(err){
+    showError(err.message);
+  }finally{
+    button.disabled = false;
+    button.textContent = 'перевести название';
+  }
+};
 $('first').addEventListener('input', updateFinalPath);
 $('last').addEventListener('input', updateFinalPath);
 $('home').onclick = () => browse();
