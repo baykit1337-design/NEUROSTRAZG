@@ -462,6 +462,14 @@ class TestWebRoutes(unittest.TestCase):
         })
         self.assertEqual(res.status_code, 200)
 
+        # Чистка идёт в своём потоке, а временная папка сносится по концу
+        # теста. Без ожидания поток дописывает файлы в уже удаляемую папку,
+        # и весь прогон разваливается «Directory not empty: 'чисто'» —
+        # причём через раз, потому что кто успел, тот и прав.
+        from webapp.app import JOBS
+
+        JOBS[res.get_json()["job"]["id"]].thread.join(timeout=60)
+
     def test_nothing_marked_at_all_is_refused(self):
         res = self.app.post("/api/headers/clean", json={
             "targets": [str(self.path)],
