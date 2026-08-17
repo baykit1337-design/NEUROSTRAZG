@@ -289,5 +289,136 @@ class TestFontUi(unittest.TestCase):
         self.assertIn("box.open = !found.ok;", self.tabs)
 
 
+def as_woff2(data: bytes) -> bytes:
+    """Тот же шрифт, сжатый brotli, — как его отдаёт сайт."""
+    import io
+
+    from fontTools.ttLib import TTFont
+
+    face = TTFont(io.BytesIO(data))
+    face.flavor = "woff2"
+    buffer = io.BytesIO()
+    face.save(buffer)
+    return buffer.getvalue()
+
+
+class TestFormatOrder(unittest.TestCase):
+    """1.1: `.woff2` без brotli не открывается вовсе.
+
+    Сайт перечисляет один и тот же шрифт в трёх форматах и ставит
+    `.woff2` первым. Нам нужен самый простой в разборе, а не самый
+    компактный: у `.otf` распаковки нет вообще.
+    """
+
+    CSS = ("@font-face{font-family:'fq';"
+           "src:url(https://s/f.woff2) format('woff2'),"
+           "url(https://s/f.woff) format('woff'),"
+           "url(https://s/f.otf) format('opentype');}")
+
+    def test_otf_goes_first(self):
+        self.assertEqual(font.sources_of(self.CSS)[0], "https://s/f.otf")
+
+    def test_the_compressed_ones_stay_as_a_fallback(self):
+        found = font.sources_of(self.CSS)
+        self.assertEqual(len(found), 3)
+        self.assertIn("https://s/f.woff2", found)
+
+    def test_the_best_one_is_what_font_of_returns(self):
+        self.assertEqual(font.font_of(self.CSS)[1], "https://s/f.otf")
+
+    def test_a_page_with_only_woff2_still_gives_an_address(self):
+        css = "@font-face{font-family:'fq';src:url(https://s/f.woff2)}"
+        self.assertEqual(font.sources_of(css), ["https://s/f.woff2"])
+
+    def test_no_font_no_addresses(self):
+        self.assertEqual(font.sources_of("body{color:red}"), [])
+
+    def test_the_same_address_is_not_listed_twice(self):
+        css = ("@font-face{src:url(https://s/f.otf)}"
+               "@font-face{src:url(https://s/f.otf)}")
+        self.assertEqual(font.sources_of(css), ["https://s/f.otf"])
+
+    def test_brotli_is_in_the_requirements(self):
+        """Второй способ из ТЗ: если `.otf` на странице нет, нужен brotli."""
+        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("brotli", text.lower())
+
+
+class TestFormatFallback(FontBase):
+    """Перебор адресов: с первым может не выйти."""
+
+    class Client:
+        def __init__(self, html: str, files: dict):
+            self.html = html
+            self.files = files
+            self.asked: list[str] = []
+
+        def get_text(self, url):
+            return self.html
+
+        def get(self, url):
+            self.asked.append(url)
+
+            class Response:
+                pass
+
+            found = Response()
+            found.content = self.files.get(url)
+            found.status_code = 200
+            return found
+
+        def close(self):
+            pass
+
+    def page(self, css: str) -> str:
+        return ("<html><style>" + css + "</style><script>"
+                'window.__INITIAL_STATE__ = {"rank": {"book_list": ['
+                '{"bookId": "7", "bookName": "\ue000", "author": "a",'
+                ' "wordNumber": 1}]}}</script></html>')
+
+    def test_otf_is_taken_and_nothing_else_is_asked_for(self):
+        data = make_font({0xE000: "uni4E2D"})
+        css = ("@font-face{font-family:'fq';src:url(https://s/f.woff2),"
+               "url(https://s/f.otf);}")
+        client = self.Client(self.page(css),
+                             {"https://s/f.otf": data,
+                              "https://s/f.woff2": as_woff2(data)})
+        found = rank_net.fetch(client)
+        self.assertEqual(client.asked, ["https://s/f.otf"])
+        self.assertTrue(found["decoded"])
+        self.assertEqual(found["rows"][0].name, "\u4e2d")
+
+    def test_a_broken_first_format_falls_through_to_the_next(self):
+        data = make_font({0xE000: "uni4E2D"})
+        css = ("@font-face{font-family:'fq';src:url(https://s/f.woff2),"
+               "url(https://s/broken.otf);}")
+        client = self.Client(self.page(css),
+                             {"https://s/broken.otf": b"not a font",
+                              "https://s/f.woff2": as_woff2(data)})
+        found = rank_net.fetch(client)
+        self.assertEqual(client.asked,
+                         ["https://s/broken.otf", "https://s/f.woff2"])
+        self.assertTrue(found["decoded"])
+
+    def test_woff2_alone_still_works(self):
+        """Ради этого brotli и добавлен в зависимости."""
+        data = make_font({0xE000: "uni4E2D"})
+        css = "@font-face{font-family:'fq';src:url(https://s/f.woff2);}"
+        client = self.Client(self.page(css),
+                             {"https://s/f.woff2": as_woff2(data)})
+        found = rank_net.fetch(client)
+        self.assertTrue(found["decoded"], found["font"].get("error"))
+
+    def test_all_formats_broken_says_so(self):
+        css = ("@font-face{font-family:'fq';src:url(https://s/a.otf),"
+               "url(https://s/b.woff2);}")
+        client = self.Client(self.page(css),
+                             {"https://s/a.otf": b"no", "https://s/b.woff2": b"no"})
+        found = rank_net.fetch(client)
+        self.assertFalse(found["decoded"])
+        self.assertTrue(found["font"]["error"])
+        self.assertEqual(len(client.asked), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

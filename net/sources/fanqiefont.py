@@ -41,6 +41,15 @@ PRIVATE_TO = 0xF8FF
 FAMILY = re.compile(r"font-family\s*:\s*['\"]?([\w-]+)['\"]?", re.I)
 SOURCE = re.compile(r"url\(['\"]?(https?://[^)'\"]+\.(?:woff2?|otf|ttf))", re.I)
 
+#: В каком порядке брать форматы одного и того же шрифта.
+#:
+#: Сайт перечисляет три: `.woff2`, `.woff` и `.otf`. Первым в списке идёт
+#: `.woff2`, но он сжат brotli, и без этого пакета `fontTools` его просто
+#: не откроет — расшифровка молча не начиналась. У `.otf` распаковки нет
+#: вовсе, поэтому берём его первым, а сжатые оставляем на случай, когда
+#: `.otf` на странице не перечислен.
+FORMAT_ORDER = (".otf", ".ttf", ".woff", ".woff2")
+
 #: Имя глифа вида `uni4E2D` или `u4E2D` — из него и берётся знак.
 GLYPH = re.compile(r"^uni?([0-9A-Fa-f]{4,6})$")
 
@@ -116,12 +125,31 @@ def has_secret(text) -> bool:
     return any(PRIVATE_FROM <= ord(ch) <= PRIVATE_TO for ch in str(text or ""))
 
 
+def sources_of(css: str) -> list[str]:
+    """Все адреса шрифта со страницы, в порядке предпочтения формата.
+
+    Один и тот же шрифт перечислен в нескольких форматах. Порядок в
+    стилях — не наш: там первым идёт самый компактный, а нам нужен самый
+    простой в разборе.
+    """
+    found = SOURCE.findall(css or "")
+
+    def rank(url: str) -> int:
+        low = url.lower()
+        for index, suffix in enumerate(FORMAT_ORDER):
+            if low.endswith(suffix):
+                return index
+        return len(FORMAT_ORDER)
+
+    # Порядок внутри одного формата сохраняем: `sorted` устойчив.
+    return sorted(dict.fromkeys(found), key=rank)
+
+
 def font_of(css: str) -> tuple[str, str]:
-    """Имя семейства и адрес файла из стилей страницы."""
+    """Имя семейства и лучший из адресов файла."""
     family = FAMILY.search(css or "")
-    source = SOURCE.search(css or "")
-    return (family.group(1) if family else "",
-            source.group(1) if source else "")
+    found = sources_of(css)
+    return (family.group(1) if family else "", found[0] if found else "")
 
 
 def digest_of(data: bytes) -> str:

@@ -290,7 +290,7 @@ def _font_table(client, html: str):
     отчёт объясняет, на каком шаге всё встало: не нашёлся шрифт в стилях,
     не скачался файл, не разобрался, или разобрался, но подстановок ноль.
     """
-    family, url = fanqiefont.font_of(html)
+    family, _ = fanqiefont.font_of(html)
     if not family:
         return None, fanqiefont.FontReport(
             error="в стилях страницы нет шрифта с подменой знаков")
@@ -299,32 +299,41 @@ def _font_table(client, html: str):
         return (fanqiefont.table_for(family),
                 fanqiefont.report_for(family=family))
 
-    if not url:
+    addresses = fanqiefont.sources_of(html)
+    if not addresses:
         return None, fanqiefont.FontReport(
             family=family,
             error="шрифт в стилях назван, но адрес файла не найден")
 
-    try:
-        # Файл шрифта — двоичный, поэтому берём тело как есть.
-        response = client.get(url)
-        data = getattr(response, "content", None)
-        if not data:
-            return None, fanqiefont.FontReport(
-                family=family, url=url,
-                error="файл шрифта пришёл пустым")
-        table = fanqiefont.table_for(family, data, url=url)
-        return table, fanqiefont.report_for(family=family)
-    except fanqiefont.FontUnavailable as exc:
-        # Без имён рейтинг всё равно полезен: позиция, движение и код книги
-        # приходят чистыми.
-        log.warning("Названия останутся зашифрованными: %s", exc)
-        found = fanqiefont.report_for(family=family)
-        return None, found or fanqiefont.FontReport(
-            family=family, url=url, error=str(exc))
-    except Exception as exc:  # noqa: BLE001 — шрифт не главное
-        log.warning("Шрифт не скачался: %s", exc)
-        return None, fanqiefont.FontReport(
-            family=family, url=url, error=f"файл не скачался: {exc}")
+    # Один шрифт лежит в нескольких форматах, и с первым может не выйти:
+    # `.woff2` сжат brotli, а без этого пакета он не откроется вовсе.
+    # Поэтому перебираем адреса по порядку и сдаёмся только после всех.
+    last = None
+    for url in addresses:
+        try:
+            # Файл шрифта — двоичный, поэтому берём тело как есть.
+            response = client.get(url)
+            data = getattr(response, "content", None)
+            if not data:
+                last = fanqiefont.FontReport(
+                    family=family, url=url, error="файл шрифта пришёл пустым")
+                continue
+            table = fanqiefont.table_for(family, data, url=url)
+            return table, fanqiefont.report_for(family=family)
+        except fanqiefont.FontUnavailable as exc:
+            # Без имён рейтинг всё равно полезен: позиция, движение и код
+            # книги приходят чистыми.
+            log.warning("Шрифт %s не подошёл: %s", url, exc)
+            last = fanqiefont.report_for(family=family) or fanqiefont.FontReport(
+                family=family, url=url, downloaded=True, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — шрифт не главное
+            log.warning("Шрифт %s не скачался: %s", url, exc)
+            last = fanqiefont.FontReport(
+                family=family, url=url, error=f"файл не скачался: {exc}")
+
+    log.warning("Названия останутся зашифрованными: перебрали %s адресов",
+                len(addresses))
+    return None, last
 
 
 def fetch(client, audience: str = categories.MALE, kind: str = categories.READING,

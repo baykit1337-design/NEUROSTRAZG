@@ -586,7 +586,9 @@ class TestDownload(MockSiteTestCase):
     def test_state_file_written(self):
         _, out, _ = self.run_download()
         state = State(out / "state.json")
-        self.assertEqual(state.data["novel"]["code"], NOVEL_CODE)
+        # В state.json книга пишется тем же `to_dict`, что уходит на
+        # экран, а там код — строка (1.2 ТЗ).
+        self.assertEqual(state.data["novel"]["code"], str(NOVEL_CODE))
         self.assertEqual(state.data["mode"], api.SOURCE_SITE)
         self.assertIn("1", state.data["downloaded"])
 
@@ -693,7 +695,9 @@ class TestWebApp(MockSiteTestCase):
     def test_find_endpoint(self):
         res = self.app.post("/api/find", json={"query": NOVEL_SLUG})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.get_json()["novel"]["code"], NOVEL_CODE)
+        # Код уходит строкой: у Фанкью он в девятнадцать разрядов, а
+        # числом такой длины JavaScript не хранит (1.2 ТЗ).
+        self.assertEqual(res.get_json()["novel"]["code"], str(NOVEL_CODE))
 
     def test_find_empty_query(self):
         self.assertEqual(self.app.post("/api/find", json={"query": ""}).status_code, 400)

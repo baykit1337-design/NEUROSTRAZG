@@ -42,8 +42,12 @@ class Novel:
         return novel_url(self.slug) if self.slug else SITE
 
     def to_dict(self) -> dict:
+        # Код книги уходит строкой, а не числом (1.2 ТЗ). У Фанкью он в
+        # девятнадцать разрядов, а JavaScript точно хранит целые только до
+        # шестнадцати: `7590221243043826712` превращался в
+        # `...827000`, возвращался таким же и давал 404 на скачивании.
         return {
-            "code": self.code,
+            "code": str(self.code),
             "name": self.name,
             "slug": self.slug,
             "total_chapters": self.total_chapters,
@@ -56,7 +60,9 @@ class Novel:
 @dataclass
 class Chapter:
     number: int
-    post_id: int | None = None
+    #: Идентификатор главы у источника. Строкой: у Фанкью он такой же
+    #: длины, что и код книги, и числом его хранить нельзя.
+    post_id: int | str | None = None
     ch_name: str = ""
     link: str = ""
 

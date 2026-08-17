@@ -168,7 +168,7 @@ class FanqieSource(Source):
             item_id, title = items[number - 1]
             chapters.append(Chapter(
                 number=number,
-                post_id=int(item_id),
+                post_id=str(item_id),
                 ch_name=title,
                 link=f"{SITE}/reader/{item_id}",
             ))
