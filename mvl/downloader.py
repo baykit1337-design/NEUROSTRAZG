@@ -795,10 +795,16 @@ class Downloader:
 
 
 def _is_paid(error: BaseException) -> bool:
-    """Глава платная. Отдельно от осечек: повтор её не откроет."""
-    from net.sources.fanqie import PaidChapter
+    """Глава платная или нерасшифрованная.
 
-    return isinstance(error, PaidChapter)
+    И то и другое повтором не лечится: платную не откроет ни один заход, а
+    нерасшифрованную не спасёт второй запрос — подводит не сеть, а таблица
+    подстановки шрифта. Общее у них одно: такую главу в файл класть
+    нельзя, но и всю книгу из-за неё ронять незачем.
+    """
+    from net.sources.fanqie import ChapterEncrypted, PaidChapter
+
+    return isinstance(error, (PaidChapter, ChapterEncrypted))
 
 
 def _is_refusal(error: BaseException) -> bool:

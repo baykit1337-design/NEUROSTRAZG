@@ -78,6 +78,32 @@ def _clean(html: str) -> str:
     return "\n\n".join(out)
 
 
+#: Приватная зона Юникода. Сайт прячет туда часть иероглифов и рисует их
+#: своим шрифтом: без таблицы подстановки это не текст, а номера глифов.
+PRIVATE_USE = re.compile(r"[-]")
+
+#: Доля таких символов, после которой глава считается нерасшифрованной.
+#: Пара штук — случайность вёрстки, каждый двадцатый — сломанный шрифт.
+SECRET_SHARE = 0.05
+
+
+def secret_share(text: str) -> float:
+    """Какая доля текста осталась зашифрованной шрифтом."""
+    if not text:
+        return 0.0
+    return len(PRIVATE_USE.findall(text)) / len(text)
+
+
+class ChapterEncrypted(Exception):
+    """Глава скачалась, но осталась зашифрованной шрифтом.
+
+    Отдельная беда, и лечится она отдельно: это не «сайт изменился» и не
+    «глава платная». Раньше такая глава молча ложилась в файл, и человек
+    открывал его уже потом — а там половина символов из приватной зоны,
+    которые ни один редактор не рисует. Выглядит как пропавший текст.
+    """
+
+
 class PaidChapter(Exception):
     """Глава платная — её мы не трогаем."""
 
@@ -247,6 +273,7 @@ class FanqieSource(Source):
         if not text.strip():
             raise SourceBroken(
                 f"Источник изменился: в главе {chapter.number} нет текста.")
+        _check_readable(text, chapter)
         return title, text
 
     def _chapter_page(self, client, chapter: Chapter,
@@ -283,6 +310,7 @@ class FanqieSource(Source):
                 f"Источник изменился: в главе {chapter.number} нет текста "
                 f"ни в ответе {READER_API}, ни на странице {SITE}/reader/"
                 f"{item_id}.")
+        _check_readable(text, chapter)
         return (title or chapter.title), text
 
 
@@ -324,6 +352,22 @@ def _book_branch(data):
         if isinstance(page, dict) and page:
             return page
     return data
+
+
+def _check_readable(text: str, chapter) -> None:
+    """Не даёт положить в файл главу, оставшуюся зашифрованной.
+
+    Подстановка по шрифту может не сработать целиком — тогда половина
+    иероглифов остаётся номерами глифов из приватной зоны. На экране это
+    выглядит как пропавший текст, а файл при этом считается скачанным
+    успешно, и понимает человек это через сотню глав.
+    """
+    share = secret_share(text)
+    if share >= SECRET_SHARE:
+        raise ChapterEncrypted(
+            f"Глава {chapter.number}: расшифровать шрифт не удалось, "
+            f"{share:.0%} символов остались нечитаемыми. "
+            f"Сохранять такой текст незачем — он всё равно не читается.")
 
 
 def _dig(data, key: str):

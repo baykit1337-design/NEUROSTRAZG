@@ -708,3 +708,54 @@ class TestTitles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestChapterStaysEncrypted(unittest.TestCase):
+    """Полузашифрованную главу нельзя класть в файл как удачную.
+
+    Подстановка по шрифту может не сработать целиком — тогда половина
+    иероглифов остаётся номерами глифов из приватной зоны. Редактор их не
+    рисует, и человек видит пропавший текст, хотя качалка отчиталась об
+    успехе. Понимает он это уже через сотню глав.
+    """
+
+    def setUp(self):
+        self.source = FanqieSource()
+
+    def chapter(self):
+        from mvl.api import Chapter
+
+        return Chapter(number=4, post_id="700000000000000001")
+
+    def answer(self, content):
+        return json.dumps({"code": 0, "data": {"chapterData": {
+            "title": "Глава 4", "content": content}}}, ensure_ascii=False)
+
+    def test_a_readable_chapter_goes_through(self):
+        client = FakeClient({"/api/reader/full": self.answer(
+            "<p>Обычный текст без всякой приватной зоны.</p>")})
+        title, text = self.source.chapter(client, self.chapter())
+        self.assertIn("Обычный текст", text)
+
+    def test_a_chapter_full_of_private_glyphs_is_refused(self):
+        from net.sources.fanqie import ChapterEncrypted
+
+        secret = "".join(chr(0xE000 + n % 100) for n in range(200))
+        client = FakeClient({"/api/reader/full": self.answer(
+            f"<p>Начало. {secret}</p>")})
+        with self.assertRaises(ChapterEncrypted):
+            self.source.chapter(client, self.chapter())
+
+    def test_a_stray_glyph_is_not_a_reason_to_refuse(self):
+        """Пара знаков — случайность вёрстки, а не сломанный шрифт."""
+        client = FakeClient({"/api/reader/full": self.answer(
+            "<p>" + "Текст главы, вполне читаемый. " * 20 + "</p>")})
+        title, text = self.source.chapter(client, self.chapter())
+        self.assertIn("читаемый", text)
+
+    def test_such_a_chapter_does_not_bring_the_whole_book_down(self):
+        """Она пропускается, как платная: повтор её всё равно не спасёт."""
+        from mvl.downloader import _is_paid
+        from net.sources.fanqie import ChapterEncrypted
+
+        self.assertTrue(_is_paid(ChapterEncrypted("нерасшифрована")))
