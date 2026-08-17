@@ -439,5 +439,50 @@ def _refuse(*args, **kwargs):
     raise OSError("соединение сброшено")
 
 
+class TestOneKeyStore(unittest.TestCase):
+    """Хранилище ключей одно на всё приложение (1.3 ТЗ).
+
+    Разбор глав работал, а «Перевести названия» и «Аннотация» падали с
+    «ключей нет»: аннотация заводила клиента вообще без хранилища, и он
+    искал ключ в старом одиночном поле настроек, которое список очищает.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (Path(__file__).resolve().parent.parent
+                      / "webapp" / "app.py").read_text(encoding="utf-8")
+
+    def test_the_client_is_built_in_exactly_one_place(self):
+        """Одна точка сборки — единственный способ ничего не забыть."""
+        self.assertEqual(self.source.count("LlmClient("), 1)
+
+    def test_that_place_is_the_factory(self):
+        maker = self.source.split("def _llm_client", 1)[1].split("\n@app.", 1)[0]
+        self.assertIn("LlmClient(", maker)
+        self.assertIn("keystore", maker)
+
+    def test_the_factory_works_without_a_request_body(self):
+        """Пересказ и перевод зовут её без полей формы."""
+        self.assertIn("def _llm_client(payload: dict | None = None",
+                      self.source)
+        self.assertIn("payload = payload or {}", self.source)
+
+    def test_every_route_goes_through_it(self):
+        for route in ("api_rank_translate", "api_retell_annotation"):
+            with self.subTest(route=route):
+                body = self.source.split(f"def {route}", 1)[1]
+                body = body.split("\n@app.", 1)[0]
+                self.assertIn("_llm_client(", body)
+
+    def test_the_store_itself_is_a_single_object(self):
+        """Модульный singleton: два хранилища разошлись бы молча."""
+        from llm import keys as keys_mod
+
+        self.assertIsInstance(keys_mod.store, keys_mod.KeyStore)
+        import webapp.app as web
+
+        self.assertIs(web.keystore, keys_mod.store)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

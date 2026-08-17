@@ -372,5 +372,152 @@ class TestWebApi(LlmTestCase):
         self.assertEqual(body["provider"], "gemini")
 
 
+class TestBusyModel(LlmTestCase):
+    """1.4: перегрузка модели — не отказ прокси.
+
+    `192.166.153.44:8000 не ответил: This model is currently experiencing
+    high demand` — это ответ Gemini, а не молчание адреса. Прокси
+    отработал и ответ доставил; менять его бессмысленно, на следующем
+    будет ровно то же.
+    """
+
+    BUSY = {"error": {"code": 503, "status": "UNAVAILABLE",
+                      "message": "This model is currently experiencing high "
+                                 "demand. Spikes in demand are usually "
+                                 "temporary."}}
+
+    def setUp(self):
+        super().setUp()
+        self.waited: list[int] = []
+        self.was = llm.sleep
+        llm.sleep = self.waited.append
+        self.addCleanup(lambda: setattr(llm, "sleep", self.was))
+
+    class Answer:
+        def __init__(self, body, status=503):
+            self.body = body
+            self.status_code = status
+            self.headers = {}
+
+        def json(self):
+            return self.body
+
+    class Http:
+        """Отвечает по списку; когда он кончился — успехом."""
+
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = 0
+
+        def get(self, url, params=None):
+            self.calls += 1
+            if self.replies:
+                return self.replies.pop(0)
+
+            class Ok:
+                status_code = 200
+                headers: dict = {}
+
+                def json(self):
+                    return {"models": []}
+
+            return Ok()
+
+        def close(self):
+            pass
+
+    def client(self, replies, proxies=None):
+        said: list[str] = []
+        http = self.Http(replies)
+        instance = llm.LlmClient(key="AIzaTESTKEY0000secret", pool=proxies,
+                                 on_event=said.append)
+        instance._http = lambda proxy_url: http
+        instance.http = http
+        instance.said = said
+        return instance
+
+    def test_a_busy_answer_is_recognised(self):
+        self.assertTrue(llm._is_busy(self.BUSY, 503))
+
+    def test_a_quota_answer_is_not_called_busy(self):
+        """«Слишком часто» и «слишком много народу» лечатся по-разному."""
+        quota = {"error": {"status": "RESOURCE_EXHAUSTED",
+                           "message": "Quota exceeded"}}
+        self.assertFalse(llm._is_busy(quota, 429))
+
+    def test_it_waits_and_succeeds_on_the_same_address(self):
+        instance = self.client([self.Answer(self.BUSY)] * 2)
+        instance._request("models")
+        self.assertEqual(instance.http.calls, 3)
+        self.assertEqual(self.waited, [5, 15])
+
+    def test_the_address_is_not_changed(self):
+        """На новом адресе будет ровно то же — менять бессмысленно."""
+        class Pool:
+            proxies = [Addressed("1.1.1.1:80"), Addressed("2.2.2.2:80")]
+
+        instance = self.client([self.Answer(self.BUSY)] * 2, proxies=Pool())
+        instance._request("models")
+        tried = [line for line in instance.said
+                 if line.startswith("запрос к модели")]
+        self.assertEqual(len(tried), 1)
+
+    def test_three_retries_then_it_gives_up(self):
+        instance = self.client([self.Answer(self.BUSY)] * 10)
+        with self.assertRaises(llm.ModelBusy):
+            instance._request("models")
+        self.assertEqual(self.waited, list(llm.BUSY_WAITS))
+        self.assertEqual(instance.http.calls, len(llm.BUSY_WAITS) + 1)
+
+    def test_the_log_says_busy_not_silent(self):
+        instance = self.client([self.Answer(self.BUSY)])
+        instance._request("models")
+        self.assertTrue(any("модель перегружена, жду 5 с" in line
+                            for line in instance.said))
+        self.assertFalse(any("не ответил" in line for line in instance.said))
+
+    def test_the_server_decides_how_long_to_wait(self):
+        """У сервера точнее: он знает про свою очередь."""
+        answer = self.Answer(self.BUSY)
+        answer.headers = {"Retry-After": "7"}
+        instance = self.client([answer])
+        instance._request("models")
+        self.assertEqual(self.waited, [7])
+
+    def test_a_real_proxy_failure_still_changes_the_address(self):
+        """Разделение работает в обе стороны."""
+        class Pool:
+            proxies = [Addressed("1.1.1.1:80"), Addressed("2.2.2.2:80")]
+
+        instance = llm.LlmClient(key="AIzaTESTKEY0000secret", pool=Pool(),
+                                 on_event=lambda text: said.append(text))
+        said: list[str] = []
+
+        def refuse(proxy_url):
+            class Dead:
+                def get(self, url, params=None):
+                    raise OSError("соединение сброшено")
+
+                def close(self):
+                    pass
+
+            return Dead()
+
+        instance._http = refuse
+        with self.assertRaises(llm.LlmError):
+            instance._request("models")
+        tried = [line for line in said if line.startswith("запрос к модели")]
+        self.assertEqual(len(tried), 2)
+
+
+class Addressed:
+    """Прокси с адресом для журнала."""
+
+    def __init__(self, label: str):
+        self.label = label
+        self.url = f"http://{label}"
+        self.disabled = False
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

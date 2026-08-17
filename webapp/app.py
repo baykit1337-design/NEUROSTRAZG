@@ -857,13 +857,18 @@ def api_rename_apply():
 # ------------------------------------------------------ модель и ключ
 
 
-def _llm_client(payload: dict, log_to=None) -> LlmClient:
-    """Клиент для запроса. Ключ — из поля либо из списка.
+def _llm_client(payload: dict | None = None, log_to=None) -> LlmClient:
+    """Единственный способ завести клиента модели (1.3 ТЗ).
 
-    Список обязателен: без него клиент искал ключ в старом одиночном поле
-    настроек, которое список как раз и очищает. Отсюда и брались отказы
-    «ключ не задан» при полном списке ключей.
+    Хранилище ключей одно на всё приложение, и подставляется оно здесь.
+    Заводить клиента в обход этой функции нельзя: про ключи слишком легко
+    забыть — так и вышло с аннотацией, которая падала с «ключ не задан»
+    при полном списке ключей, пока разбор глав работал.
+
+    Список обязателен и по второй причине: без него клиент искал ключ в
+    старом одиночном поле настроек, а список это поле как раз и очищает.
     """
+    payload = payload or {}
     with POOL_LOCK:
         pool = POOL
     typed = (payload.get("key") or "").strip()
@@ -1269,8 +1274,7 @@ def api_analyze_start():
     def work(job: Job):
         with POOL_LOCK:
             pool = POOL
-        client = LlmClient(pool=pool, keys=keystore,
-                           on_event=lambda text: job.log.add(text, "key"))
+        client = _llm_client(log_to=job.log)
         report = None
         try:
             report = analyze_op.collect(
@@ -1715,9 +1719,7 @@ def api_rank_translate():
     if snapshot is None:
         return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
 
-    with POOL_LOCK:
-        pool = POOL
-    client = LlmClient(pool=pool, keys=keystore)
+    client = _llm_client()
     try:
         return jsonify(**titles_op.translate(
             snapshot.rows, client,
@@ -1763,9 +1765,7 @@ def api_retell_annotation():
     """Аннотация книги. Один запрос к модели."""
     payload = request.json or {}
     registry = analyze_op.load_registry(_book_root(payload))
-    with POOL_LOCK:
-        pool = POOL
-    client = LlmClient(pool=pool)
+    client = _llm_client()
     try:
         return jsonify(**retell_op.annotation(
             registry, client, model=(payload.get("model") or "").strip()))

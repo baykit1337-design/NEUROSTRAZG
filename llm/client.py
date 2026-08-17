@@ -21,6 +21,9 @@ from config import settings
 
 log = logging.getLogger(__name__)
 
+#: Пауза вынесена отдельно, чтобы тесты не ждали по-настоящему.
+sleep = time.sleep
+
 #: Сколько знаков ключа показывать по краям: «AIza…4f2c».
 VISIBLE = 4
 
@@ -30,6 +33,19 @@ DIRECT = "напрямую"
 
 class LlmError(Exception):
     """Запрос к модели не удался."""
+
+
+class ModelBusy(LlmError):
+    """Модель перегружена. Отвечает не прокси, а сам Gemini.
+
+    Отдельно от всего прочего, потому что лечится иначе: адрес тут ни при
+    чём — он честно доставил ответ, — и менять его бессмысленно, на новом
+    будет ровно то же. Помогает только пауза.
+    """
+
+    def __init__(self, message: str, retry_after: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class QuotaSpent(LlmError):
@@ -268,9 +284,10 @@ class LlmClient:
         for number, (proxy_url, label) in enumerate(route, 1):
             self._say(f"запрос к модели {'напрямую' if label == DIRECT else 'через ' + label}")
             try:
-                return self._once(self._http(proxy_url), url, payload)
-            except (BadKey, QuotaSpent):
-                # Дело в ключе, а не в адресе: перебирать прокси бессмысленно.
+                return self._with_patience(self._http(proxy_url), url, payload)
+            except (BadKey, QuotaSpent, ModelBusy):
+                # Дело в ключе или в самой модели, а не в адресе: перебирать
+                # прокси бессмысленно, на следующем будет ровно то же.
                 raise
             except Exception as exc:  # noqa: BLE001 — пробуем следующий адрес
                 last = exc
@@ -287,6 +304,32 @@ class LlmClient:
         raise LlmError(f"Не удалось связаться с Gemini {where}. "
                        f"Подробности: {mask(last or 'ответа нет')}")
 
+    def _with_patience(self, http, url: str, payload: dict | None) -> dict:
+        """Запрос с паузами на случай перегрузки модели (1.4 ТЗ).
+
+        Перегрузка — не отказ адреса: прокси отработал и ответ доставил,
+        просто у модели сейчас очередь. Раньше это принималось за молчание
+        прокси, и программа переключалась на следующий — бессмысленно,
+        потому что там будет то же самое. Помогает только подождать, и
+        ждать надо на том же адресе.
+        """
+        for attempt in range(len(BUSY_WAITS) + 1):
+            try:
+                return self._once(http, url, payload)
+            except ModelBusy as busy:
+                if attempt >= len(BUSY_WAITS):
+                    # Три повтора позади, очередь не рассосалась. Дальше
+                    # ждать бессмысленно — пусть решает вызывающий.
+                    raise
+                # Сервер знает про свою очередь лучше нас.
+                pause = busy.retry_after or BUSY_WAITS[attempt]
+                self._say(f"модель перегружена, жду {pause} с "
+                          f"(повтор {attempt + 1} из {len(BUSY_WAITS)})")
+                log.info("Модель перегружена, пауза %s с", pause)
+                sleep(pause)
+        # Досюда не доходим: цикл либо вернёт ответ, либо бросит.
+        raise ModelBusy("модель перегружена")
+
     def _once(self, http, url: str, payload: dict | None) -> dict:
         params = [("key", self.key)]
         if payload is None:
@@ -301,6 +344,11 @@ class LlmClient:
         if status == 429 or _is_quota(body):
             raise QuotaSpent(mask(_error_text(body) or "квота ключа исчерпана"),
                              _retry_after(body, response))
+        # Проверяем после квоты: «слишком часто» и «слишком много народу» —
+        # разные беды. Первая лечится сменой ключа, вторая — паузой.
+        if _is_busy(body, status):
+            raise ModelBusy(mask(_error_text(body) or "модель перегружена"),
+                            _retry_after(body, response))
         if status in (401, 403):
             raise BadKey("Ключ отклонён: нет доступа к API.")
         if status >= 400:
@@ -422,6 +470,33 @@ def _error_text(body: dict) -> str:
 
 #: Признаки исчерпанной квоты в ответе Gemini.
 QUOTA_MARKERS = ("resource_exhausted", "quota", "rate limit", "too many requests")
+
+#: Признаки перегрузки самой модели. Это ответ Gemini, а не молчание
+#: прокси: адрес отработал и ответ доставил.
+BUSY_MARKERS = ("high demand", "overloaded", "currently unavailable",
+                "try again later", "model is overloaded",
+                "unavailable", "перегруж")
+
+#: Сколько ждать между попытками при перегрузке и сколько их всего.
+#: Паузы растут: если модель занята, через секунду она занята и подавно.
+BUSY_WAITS = (5, 15, 40)
+
+
+def _is_busy(body: dict, status: int = 0) -> bool:
+    """Перегружена ли модель — по её собственному ответу.
+
+    Квоту проверяем раньше: «слишком часто» и «слишком много народу» —
+    разные беды, и лечатся они по-разному.
+    """
+    if _is_quota(body):
+        return False
+    text = _error_text(body).lower()
+    name = str((body.get("error") or {}).get("status") or "").lower()
+    if name in ("unavailable", "resource_unavailable"):
+        return True
+    if status == 503:
+        return True
+    return any(marker in text for marker in BUSY_MARKERS)
 
 
 def _is_quota(body: dict) -> bool:
