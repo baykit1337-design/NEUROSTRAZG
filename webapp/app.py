@@ -1718,11 +1718,15 @@ def api_rank_book(book_id: str):
     if not covers.safe_id(book_id):
         return jsonify(error="Плохой код книги"), 400
 
+    # Перевод описания приезжает вместе с карточкой (3.1 ТЗ): переключатель
+    # «原/RU» должен знать сразу, есть ли что показывать по второй кнопке.
+    ru_text = titles_op.abstract_of(book_id)
+
     fresh = request.args.get("fresh") == "1"
     if not fresh:
         found = books_op.load(book_id)
         if found is not None:
-            return jsonify(**found, cached=True)
+            return jsonify(**found, abstract_ru=ru_text, cached=True)
 
     client = _rank_client()
     try:
@@ -1738,7 +1742,46 @@ def api_rank_book(book_id: str):
     finally:
         client.close()
 
-    return jsonify(**books_op.save(book_id, found), cached=False)
+    return jsonify(**books_op.save(book_id, found), abstract_ru=ru_text,
+                   cached=False)
+
+
+@app.post("/api/rank/abstract")
+def api_rank_abstract():
+    """Перевод описания одной книги (3.1 ТЗ).
+
+    По кнопке и по одной книге: описаний полсотни на срез, а читают из них
+    два-три. Гнать все в модель ради «вдруг откроют» — полсотни лишних
+    запросов на каждый снятый рейтинг.
+    """
+    payload = request.json or {}
+    book_id = str(payload.get("book_id") or "").strip()
+    if not covers.safe_id(book_id):
+        return jsonify(error="Плохой код книги"), 400
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        # Описание уже лежит в кэше карточки: строку раскрывали, иначе
+        # кнопке «перевести» было бы неоткуда взяться.
+        card = books_op.load(book_id) or {}
+        text = str(card.get("abstract") or "").strip()
+
+    client = _llm_client(payload)
+    try:
+        return jsonify(book_id=book_id, abstract=titles_op.translate_abstract(
+            book_id, text, client,
+            model=(payload.get("model") or "").strip(),
+            force=bool(payload.get("force"))))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except NoKeysLeft as exc:
+        return jsonify(error=str(exc)), 400
+    except BadKey as exc:
+        return jsonify(error=str(exc)), 401
+    except LlmError as exc:
+        return jsonify(error=str(exc)), 502
+    finally:
+        client.close()
 
 
 @app.post("/api/rank/translate")

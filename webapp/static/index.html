@@ -2769,7 +2769,11 @@ async function find(fillRange = true){
     const data = await call('/api/find',
       {query, source: srcMenu ? srcMenu.value : ''});
     novel = data.novel;
-    $('bookName').textContent = novel.name;
+    // Оригинал и перевод рядом (3.1 ТЗ): по переводу книгу не найти на
+    // сайте, по оригиналу не понять, о чём она.
+    $('bookName').textContent =
+      (novel.translated && novel.translated !== novel.name)
+        ? `${novel.name} / ${novel.translated}` : novel.name;
     $('bookMeta').textContent = [
       `${novel.total_chapters} глав`,
       novel.author && `автор: ${novel.author}`,

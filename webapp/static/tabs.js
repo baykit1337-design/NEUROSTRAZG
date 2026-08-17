@@ -4392,6 +4392,90 @@ function rkShut(box){
   setTimeout(() => { if(!box.classList.contains('open')) box.hidden = true; }, 300);
 }
 
+//: Какой язык описания выбран у книги. Держим здесь, а не в самой
+//: карточке: список пересобирается на каждый фильтр и на каждый срез, и
+//: выбор «читаю по-русски» иначе слетал бы (3.1 ТЗ).
+const rkLang = {};
+
+//: Что показать вместо описания, когда его нет. Отдельно про шрифт:
+//: описание тоже подменяется им, и пустое место выглядит как поломка.
+const RK_NO_ABOUT = 'Описания на странице книги нет.';
+const RK_SECRET_ABOUT = 'Описание зашифровано шрифтом — расшифровать не вышло.';
+
+/** Описание книги с переключателем «оригинал / перевод» (3.1 ТЗ).
+ *
+ * Перевод заказывается по кнопке и по одной книге: описаний полсотни на
+ * срез, а читают из них два-три. Переведённое сервер помнит по коду
+ * книги, поэтому второй раз кнопка не понадобится.
+ */
+function rkAbout(row, data){
+  const wrap = document.createElement('div');
+  const own = (data.abstract || '').trim();
+  let done = (data.abstract_ru || '').trim();
+
+  const text = document.createElement('p');
+  text.className = 'hint';
+  text.style.whiteSpace = 'pre-line';
+
+  const bar = document.createElement('div');
+  bar.className = 'row';
+  bar.style.gap = '6px';
+  bar.style.marginTop = '6px';
+
+  const orig = document.createElement('button');
+  orig.className = 'ghost';
+  orig.textContent = '原';
+  orig.title = 'описание как на сайте';
+  const ru_ = document.createElement('button');
+  ru_.className = 'ghost';
+  ru_.textContent = 'RU';
+  ru_.title = 'перевод описания';
+  const ask = document.createElement('button');
+  ask.className = 'ghost';
+  ask.textContent = 'перевести';
+
+  for(const button of [orig, ru_, ask]) button.style.padding = '2px 10px';
+
+  function show(){
+    const on = rkLang[row.book_id] === 'ru' && !!done;
+    text.textContent = on ? done
+      : (own || (data.secret ? RK_SECRET_ABOUT : RK_NO_ABOUT));
+    orig.classList.toggle('on', !on);
+    ru_.classList.toggle('on', on);
+    ru_.hidden = !done;
+    // Пока перевода нет, вместо второй кнопки стоит та, что его закажет.
+    ask.hidden = !!done;
+  }
+
+  orig.onclick = e => { e.stopPropagation(); rkLang[row.book_id] = 'zh'; show(); };
+  ru_.onclick = e => { e.stopPropagation(); rkLang[row.book_id] = 'ru'; show(); };
+  ask.onclick = async e => {
+    e.stopPropagation();
+    ask.disabled = true;
+    ask.textContent = 'Переводим…';
+    try{
+      const got = await call('/api/rank/abstract',
+                             {book_id: row.book_id, text: own});
+      done = (got.abstract || '').trim();
+      // Перевод заказывали — его и показываем, без второго нажатия.
+      rkLang[row.book_id] = 'ru';
+      show();
+    }catch(err){
+      toast(err.message);
+    }finally{
+      ask.disabled = false;
+      ask.textContent = 'перевести';
+    }
+  };
+
+  wrap.append(text);
+  // Переводить нечего — и переключать нечего.
+  if(own) wrap.append(bar);
+  bar.append(orig, ru_, ask);
+  show();
+  return wrap;
+}
+
 /** Содержимое раскрытой карточки. */
 function rkCardBody(row, data){
   const wrap = document.createElement('div');
@@ -4410,19 +4494,16 @@ function rkCardBody(row, data){
 
   const title = document.createElement('div');
   title.className = 'book-name';
-  title.textContent = data.secret ? `книга ${row.book_id}`
-                                  : (data.name || row.name);
+  // Оригинал и перевод рядом (3.1 ТЗ). Название берём со страницы книги:
+  // там оно полное, в срезе бывает урезанным.
+  title.textContent = rkBothTitles({
+    book_id: row.book_id,
+    name: data.name || row.name,
+    secret: data.secret === undefined ? row.secret : data.secret,
+  });
   side.append(title);
 
-  // Описание тоже подменяется шрифтом: пустое место на его месте
-  // выглядит как поломка, поэтому говорим прямо.
-  const about = document.createElement('p');
-  about.className = 'hint';
-  about.style.whiteSpace = 'pre-line';
-  about.textContent = data.abstract
-    || (data.secret ? 'Описание зашифровано шрифтом — расшифровать не вышло.'
-                    : 'Описания на странице книги нет.');
-  side.append(about);
+  side.append(rkAbout(row, data));
 
   const tags = document.createElement('div');
   tags.className = 'rkcard-tags';

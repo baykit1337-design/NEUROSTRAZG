@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -107,18 +108,44 @@ class TestFolderName(unittest.TestCase):
 class TestServerBuildsTheName(unittest.TestCase):
     """Считает имя сервер: перевод лежит у него, правило должно быть одно."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
+    def setUp(self):
+        from ops import titles
 
-    def test_find_answers_with_a_ready_folder_name(self):
-        self.assertIn('data["folder"] = naming.folder_name(', self.app)
+        self.titles = titles
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        saved = titles.TITLES_FILE
+        titles.TITLES_FILE = Path(self._dir.name) / "titles.json"
+        self.addCleanup(setattr, titles, "TITLES_FILE", saved)
 
-    def test_find_answers_with_the_translation_too(self):
-        self.assertIn('data["translated"] = translated', self.app)
+    def book(self):
+        from mvl import api
 
-    def test_translation_is_looked_up_by_the_book_code_as_a_string(self):
-        self.assertIn('titles_op.known().get(str(novel.code), "")', self.app)
+        return api.Novel(code=int(CODE), name=CHINESE, slug=CODE,
+                         total_chapters=1204, author="作者")
+
+    def found(self):
+        from webapp.app import _found
+
+        return _found(self.book())
+
+    def test_the_answer_carries_a_ready_folder_name(self):
+        self.assertEqual(self.found()["folder"], f"book-{CODE}")
+
+    def test_the_translation_reaches_the_folder_name(self):
+        self.titles.remember({CODE: "Расколотая битвой синева"})
+        data = self.found()
+
+        self.assertEqual(data["translated"], "Расколотая битвой синева")
+        self.assertEqual(data["folder"], "Расколотая битвой синева")
+
+    def test_no_translation_is_an_empty_string_not_a_missing_key(self):
+        """Иначе в браузере вместо названия встало бы «undefined»."""
+        self.assertEqual(self.found()["translated"], "")
+
+    def test_the_code_still_leaves_as_a_string(self):
+        """Девятнадцать разрядов JavaScript точно не хранит (1.2 ТЗ)."""
+        self.assertEqual(self.found()["code"], CODE)
 
 
 class TestBrowserOnlyFillsItIn(unittest.TestCase):
