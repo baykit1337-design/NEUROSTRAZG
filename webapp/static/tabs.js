@@ -1205,17 +1205,10 @@ function hdRender(){
       ? `Встречается в ${finding.count} файлах` : '';
 
     row.append(box, text, tag);
-
-    if(finding.kind !== 'title' && finding.text){
-      const copy = document.createElement('button');
-      copy.className = 'ghost';
-      copy.style.padding = '4px 10px';
-      copy.textContent = 'скопировать';
-      copy.title = 'Чтобы найти место поиском внутри документа';
-      copy.onclick = () => hdCopy(finding.text, copy);
-      row.append(copy);
-    }
     list.append(row);
+    // 4.3: под находкой — сам фрагмент. У дубля названия своей строки
+    // нет, и раньше на его месте не показывалось ничего.
+    list.append(hdExample(finding));
   }
   hdUpdate();
 }
@@ -1282,22 +1275,76 @@ function hdRenderInside(){
     tag.textContent = rule.label;
 
     row.append(box, text, tag);
-
-    // Копировать имеет смысл только настоящую строку: «Сдвоенный
-    // заголовок главы» — это название правила, а не текст из файла.
-    if(rule.kind === 'repeat' || rule.kind === 'neighbour'){
-      const copy = document.createElement('button');
-      copy.className = 'ghost';
-      copy.style.padding = '4px 10px';
-      copy.textContent = 'скопировать';
-      copy.title = 'Чтобы найти место поиском внутри документа';
-      copy.onclick = () => hdCopy(rule.text, copy);
-      row.append(copy);
-    }
     list.append(row);
+
+    // 4.3: под находкой — сам фрагмент, а не только название правила.
+    // По «Сдвоенный заголовок» не видно, что программа собирается
+    // выкинуть, а решать это человеку.
+    list.append(hdExample(rule));
   }
   $('hdInsideBox').hidden = hdInside.length === 0;
   hdUpdate();
+}
+
+/** Фрагмент под находкой: строки как они лежат в файле (4.3 ТЗ).
+ *
+ * У правил с тысячей совпадений показывается один пример и счётчик:
+ * тысяча одинаковых троек на экране бесполезна. Клик по строке
+ * открывает файл, рядом кнопка «скопировать».
+ */
+function hdExample(rule){
+  const box = document.createElement('div');
+  box.className = 'tr example';
+
+  const lines = document.createElement('div');
+  lines.className = 'grow';
+
+  for(const line of rule.example || []){
+    const one = document.createElement('div');
+    one.className = 'line' + (line.removed ? ' removed' : '');
+    one.textContent = line.text;
+    one.title = line.removed ? 'Эта строка удалится' : 'Эта строка останется';
+    lines.append(one);
+  }
+  if(!lines.children.length){
+    const said = document.createElement('div');
+    said.className = 'line';
+    said.textContent = rule.text;
+    lines.append(said);
+  }
+  box.append(lines);
+
+  const file = (rule.files || [])[0];
+  if(file){
+    const open = document.createElement('button');
+    open.className = 'ghost';
+    open.style.padding = '4px 10px';
+    open.textContent = 'открыть файл';
+    open.title = file;
+    open.onclick = e => {
+      e.stopPropagation();
+      call('/api/open', {path: file}).catch(err => showError(err.message, open));
+    };
+    box.append(open);
+    // Клик по самому фрагменту делает то же: целиться в кнопку не надо.
+    lines.style.cursor = 'pointer';
+    lines.onclick = () => call('/api/open', {path: file})
+      .catch(err => showError(err.message, box));
+  }
+
+  const copy = document.createElement('button');
+  copy.className = 'ghost';
+  copy.style.padding = '4px 10px';
+  copy.textContent = 'скопировать';
+  copy.title = 'Чтобы найти место поиском внутри документа';
+  copy.onclick = e => {
+    e.stopPropagation();
+    // Копируем сам фрагмент: искать в документе по названию правила
+    // невозможно, а по строке из файла — ровно то, что нужно.
+    hdCopy((rule.example || []).map(l => l.text).join('\n') || rule.text, copy);
+  };
+  box.append(copy);
+  return box;
 }
 
 /** 3.4: полностью ручной разбор — первые строки файла с галочками. */

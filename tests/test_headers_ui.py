@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import formats, text  # noqa: E402
 from core.models import Chapter  # noqa: E402
 from ops import headers as headers_op  # noqa: E402
+from tempfile import TemporaryDirectory  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "webapp" / "static"
@@ -122,6 +123,133 @@ class TestOpenRoute(unittest.TestCase):
         res = self.app.post("/api/open", json={"path": str(ROOT / "README.md")})
         self.assertEqual(res.status_code, 400)
         self.assertIn("xdg-open", res.get_json()["error"])
+
+
+class TestFindingShowsTheFragment(unittest.TestCase):
+    """4.3: по названию правила не видно, что именно уйдёт.
+
+    «Сдвоенный заголовок» — это имя правила, а не текст из файла: ни
+    прочитать, ни скопировать, ни открыть место было нельзя.
+    """
+
+    def lines(self, chapters: int = 30) -> list:
+        out = []
+        for number in range(1, chapters + 1):
+            out += ["", f"Chapter {number}_ Panicking Count Ashton",
+                    "Summoners War: Only I Summoned",
+                    f"Chapter {number}: Panicking Count Ashton", "",
+                    f"Текст главы {number}."]
+        return out
+
+    def test_the_double_shows_all_three_lines(self):
+        found = text.find_doubles_inside(self.lines())
+        self.assertEqual([line["text"] for line in found.example], [
+            "Chapter 1_ Panicking Count Ashton",
+            "Summoners War: Only I Summoned",
+            "Chapter 1: Panicking Count Ashton",
+        ])
+
+    def test_it_is_marked_which_ones_go(self):
+        """Первая остаётся, вторая и третья удаляются."""
+        found = text.find_doubles_inside(self.lines())
+        self.assertEqual([line["removed"] for line in found.example],
+                         [False, True, True])
+
+    def test_one_example_not_a_thousand(self):
+        """Тысяча одинаковых троек на экране бесполезна."""
+        found = text.find_doubles_inside(self.lines(1000))
+        self.assertEqual(len(found.example), 3)
+        self.assertEqual(found.count, 1000)
+
+    def test_a_repeated_line_shows_its_neighbours(self):
+        """Без контекста непонятно, где эта строка стоит."""
+        found = text.find_repeats_inside(self.lines())[0]
+        self.assertGreater(len(found.example), 1)
+        removed = [line for line in found.example if line["removed"]]
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(removed[0]["text"], "Summoners War: Only I Summoned")
+
+    def test_the_title_echo_finally_has_something_to_show(self):
+        """У этой находки своей строки нет — показывали пустоту."""
+        samples = [(f"Глава {n}", ["Название книги", f"Глава {n}", "Текст."],
+                    f"/к/{n}.txt") for n in range(1, 11)]
+        found = [f for f in text.find_headers(samples)
+                 if f.kind == text.HEAD_TITLE]
+        self.assertTrue(found[0].example)
+        self.assertTrue(found[0].example[0]["removed"])
+
+    def test_the_example_reaches_the_screen(self):
+        found = text.find_doubles_inside(self.lines())
+        self.assertIn("example", found.as_dict())
+
+
+class TestFindingKnowsItsFile(unittest.TestCase):
+    """4.3: клик по находке должен открывать файл."""
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = Path(self.dir.name)
+        lines = []
+        for number in range(1, 41):
+            lines += ["", f"Chapter {number}_ Panicking Count Ashton",
+                      "Summoners War: Only I Summoned",
+                      f"Chapter {number}: Panicking Count Ashton", "",
+                      f"Текст главы {number}."]
+        self.path = self.root / "книга.txt"
+        self.path.write_text("\n\n".join(lines), encoding="utf-8")
+
+    def test_every_inside_finding_names_its_file(self):
+        found = headers_op.scan([str(self.path)])
+        self.assertTrue(found["inside"])
+        for rule in found["inside"]:
+            with self.subTest(kind=rule["kind"]):
+                self.assertEqual(rule["files"], [str(self.path)])
+
+    def test_every_inside_finding_has_an_example(self):
+        found = headers_op.scan([str(self.path)])
+        for rule in found["inside"]:
+            with self.subTest(kind=rule["kind"]):
+                self.assertTrue(rule["example"])
+
+
+class TestFindingUi(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tabs = (STATIC / "tabs.js").read_text(encoding="utf-8")
+        cls.page = (STATIC / "index.html").read_text(encoding="utf-8")
+
+    def test_the_fragment_is_drawn_by_one_shared_function(self):
+        """Списка находок два — рисовалка одна, иначе разъедутся."""
+        self.assertEqual(self.tabs.count("function hdExample(rule)"), 1)
+        self.assertEqual(self.tabs.count("hdExample("), 3)
+
+    def test_both_lists_show_it(self):
+        self.assertIn("list.append(hdExample(finding));", self.tabs)
+        self.assertIn("list.append(hdExample(rule));", self.tabs)
+
+    def test_clicking_the_fragment_opens_the_file(self):
+        body = self.tabs.split("function hdExample(rule)", 1)[1]
+        self.assertIn("lines.onclick", body)
+        self.assertIn("'/api/open'", body)
+
+    def test_there_is_a_button_for_it_too(self):
+        body = self.tabs.split("function hdExample(rule)", 1)[1]
+        self.assertIn("'открыть файл'", body)
+
+    def test_copying_takes_the_fragment_not_the_rule_name(self):
+        """По «Сдвоенный заголовок» в документе ничего не найдёшь."""
+        body = self.tabs.split("function hdExample(rule)", 1)[1]
+        self.assertIn("(rule.example || []).map(l => l.text).join", body)
+
+    def test_removed_lines_look_different(self):
+        self.assertIn(".table .tr.example .line.removed{", self.page)
+        self.assertIn("удаляется", self.page)
+
+    def test_the_mark_does_not_wrap_onto_its_own_line(self):
+        """Разорванная надвое, пометка читается как часть текста."""
+        block = self.page.split(".line.removed::after{", 1)[1].split("}", 1)[0]
+        self.assertIn("white-space:nowrap", block)
 
 
 if __name__ == "__main__":

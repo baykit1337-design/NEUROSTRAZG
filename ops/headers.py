@@ -101,7 +101,12 @@ def _scan_inside(chapters, repeat: int = 0, pattern: str = "",
             pattern=pattern,
             offset=offset,
         )
+        source = str(chapters_of_file[0].source or "") if chapters_of_file else ""
         for finding in found:
+            # Файл нужен, чтобы находку можно было открыть и посмотреть,
+            # о чём речь, до удаления (4.3 ТЗ).
+            if source and source not in finding.files:
+                finding.files.append(source)
             key = (finding.kind, text.normalize_loose(finding.text))
             known = merged.get(key)
             if known is None:
@@ -110,6 +115,11 @@ def _scan_inside(chapters, repeat: int = 0, pattern: str = "",
                 known.count += finding.count
                 known.total += finding.total
                 known.at.extend(finding.at)
+                for path in finding.files:
+                    if path not in known.files:
+                        known.files.append(path)
+                # Пример берём у первого файла, где находка встретилась:
+                # он уже есть, и заменять его нечем и незачем.
 
     order = [text.HEAD_REPEAT, text.HEAD_DOUBLE, text.HEAD_NEIGHBOUR,
              text.HEAD_MANUAL, text.HEAD_POSITION]

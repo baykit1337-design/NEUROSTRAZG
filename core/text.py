@@ -190,6 +190,10 @@ class HeaderFinding:
     at: list = field(default_factory=list)
     #: Значение правила: номер строки после заголовка или само выражение.
     value: str = ""
+    #: Пример найденного: строки как они лежат в файле, с пометкой, какие
+    #: из них удалятся (4.3 ТЗ). Одного названия правила мало — по нему
+    #: не видно, что именно программа собирается выкинуть.
+    example: list = field(default_factory=list)
 
     @property
     def share(self) -> float:
@@ -221,6 +225,7 @@ class HeaderFinding:
                 # Первые места — чтобы можно было посмотреть, о чём речь,
                 # не пролистывая тысячу строк.
                 "at": list(self.at[:20]),
+                "example": list(self.example),
                 # Показываем несколько: открывается первый, остальные —
                 # чтобы было видно, что находка не единичная.
                 "files": list(self.files[:20])}
@@ -259,6 +264,10 @@ def find_headers(samples) -> list[HeaderFinding]:
     seen: dict[str, tuple[str, int]] = {}
     where: dict[str, list] = {}
     title_files: list = []
+    #: Как выглядит продублированное название в тексте. Своей строки у
+    #: этой находки нет — она у каждого файла своя, — но показать хоть
+    #: один пример надо: иначе непонятно, что удалится (4.3 ТЗ).
+    title_example = ""
     duplicates = 0
 
     for title, lines, source in samples:
@@ -270,6 +279,8 @@ def find_headers(samples) -> list[HeaderFinding]:
         for line in head:
             if _is_title_echo(line, title):
                 title_hit = True
+                if not title_example:
+                    title_example = line
                 continue
             if len(line) > HEAD_MAX:
                 continue
@@ -289,13 +300,17 @@ def find_headers(samples) -> list[HeaderFinding]:
 
     findings = [
         HeaderFinding(text=text, count=count, total=total,
-                      files=where.get(key, []))
+                      files=where.get(key, []),
+                      example=[{"text": text, "removed": True}])
         for key, (text, count) in seen.items()
         if count / total > HEAD_SHARE
     ]
     if duplicates:
-        findings.append(HeaderFinding(text="", count=duplicates, total=total,
-                                      kind=HEAD_TITLE, files=title_files))
+        findings.append(HeaderFinding(
+            text="", count=duplicates, total=total, kind=HEAD_TITLE,
+            files=title_files,
+            example=([{"text": title_example, "removed": True}]
+                     if title_example else [])))
 
     findings.sort(key=lambda f: (-f.count, f.text))
     return findings
@@ -322,6 +337,26 @@ def looks_like_heading(line: str, title: str = "") -> bool:
 
 def _clean_lines(lines) -> list[str]:
     return [str(line or "") for line in lines]
+
+
+#: Сколько строк показывать вокруг найденной — чтобы был контекст.
+AROUND = 1
+
+
+def _around(lines: list[str], number: int, span: int = AROUND) -> list[dict]:
+    """Найденная строка с соседями и пометкой, что именно удалится.
+
+    Само название правила ничего не говорит: по «Сдвоенный заголовок» не
+    видно, что программа собирается выкинуть. Показываем кусок файла как
+    он есть (4.3 ТЗ).
+    """
+    index = number - 1
+    if not 0 <= index < len(lines):
+        return []
+    first = max(0, index - span)
+    last = min(len(lines), index + span + 1)
+    return [{"text": lines[n], "removed": n == index}
+            for n in range(first, last) if lines[n].strip()]
 
 
 def find_repeats_inside(lines, repeat: int = INSIDE_REPEAT,
@@ -362,7 +397,8 @@ def find_repeats_inside(lines, repeat: int = INSIDE_REPEAT,
 
     found = [
         HeaderFinding(text=shown[key], count=count, total=len(lines),
-                      kind=HEAD_REPEAT, inside=True, at=at[key])
+                      kind=HEAD_REPEAT, inside=True, at=at[key],
+                      example=_around(lines, at[key][0]))
         for key, count in counts.items()
         if count > limit
     ]
@@ -381,11 +417,21 @@ def find_doubles_inside(lines, title: str = "") -> HeaderFinding | None:
     строк прочитать нельзя.
     """
     lines = _clean_lines(lines)
-    at = [number for number, _ in _double_spots(lines)]
-    if not at:
+    spots = list(_double_spots(lines))
+    if not spots:
         return None
-    return HeaderFinding(text="Сдвоенный заголовок главы", count=len(at),
-                         total=len(lines), kind=HEAD_DOUBLE, inside=True, at=at)
+
+    # Один пример на всю находку: тысяча одинаковых троек на экране
+    # бесполезна, а по одной сразу видно, что именно уйдёт (4.3 ТЗ).
+    _, (first, middle, third) = spots[0]
+    example = [
+        {"text": first, "removed": False},
+        {"text": middle, "removed": True},
+        {"text": third, "removed": True},
+    ]
+    return HeaderFinding(text="Сдвоенный заголовок главы", count=len(spots),
+                         total=len(lines), kind=HEAD_DOUBLE, inside=True,
+                         at=[number for number, _ in spots], example=example)
 
 
 def _double_spots(lines: list[str]):
@@ -424,7 +470,8 @@ def find_neighbours_inside(lines, repeats, title: str = "") -> list[HeaderFindin
             continue
         found.append(HeaderFinding(text=repeat.text, count=len(spots),
                                    total=len(lines), kind=HEAD_NEIGHBOUR,
-                                   inside=True, at=spots))
+                                   inside=True, at=spots,
+                                   example=_around(lines, spots[0])))
     return found
 
 
@@ -464,7 +511,8 @@ def find_by_pattern(lines, pattern: str) -> HeaderFinding | None:
     if not at:
         return None
     return HeaderFinding(text=pattern, count=len(at), total=len(lines),
-                         kind=HEAD_MANUAL, inside=True, at=at, value=pattern)
+                         kind=HEAD_MANUAL, inside=True, at=at, value=pattern,
+                         example=_around(lines, at[0]))
 
 
 def find_by_position(lines, offset: int, title: str = "") -> HeaderFinding | None:
@@ -489,7 +537,8 @@ def find_by_position(lines, offset: int, title: str = "") -> HeaderFinding | Non
         return None
     return HeaderFinding(text=f"{offset}-я строка после заголовка",
                          count=len(at), total=len(lines), kind=HEAD_POSITION,
-                         inside=True, at=at, value=str(offset))
+                         inside=True, at=at, value=str(offset),
+                         example=_around(lines, at[0]))
 
 
 def find_headers_inside(lines, title: str = "", repeat: int = INSIDE_REPEAT,

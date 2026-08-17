@@ -801,6 +801,25 @@
   .tag.warn{color:#ffc86b;border-color:rgba(255,200,107,.45)}
   /* Курсор говорит, что у пометки есть что рассказать. */
   .tag[data-tip]{cursor:help}
+  /* 4.3: фрагмент под находкой — сам кусок файла, а не название правила.
+     Отступ слева показывает, что строка относится к находке выше. */
+  .table .tr.example{
+    align-items:flex-start;padding:6px 11px 10px 34px;
+    background:rgba(255,255,255,.02);
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .table .tr.example .line{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px;line-height:1.55;color:#8b8699;
+    white-space:pre-wrap;word-break:break-word;
+  }
+  /* Что уйдёт — видно сразу, до нажатия кнопки. Пометка не переносится
+     на свою строку: разорванная надвое, она читается как часть текста. */
+  .table .tr.example .line.removed{color:#ff9d9d}
+  .table .tr.example .line.removed::after{
+    content:" ← удаляется";color:#8b8699;font-size:11px;
+    white-space:nowrap;
+  }
   /* 4.1: перечень расширений в подписи. Он длинный, и выделять его
      цветом незачем — это уточнение, а не заголовок. */
   .formats{color:var(--muted);text-transform:none;letter-spacing:0}
