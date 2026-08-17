@@ -494,7 +494,10 @@ async function rnScan(){
     ['rnPatternCard','rnFormat','rnListCard','rnPlace'].forEach(id => { $(id).hidden = false; });
     if(!$('rnOut').value) $('rnOut').value = 'Готово';
 
-    rnRenderList();
+    // Список рисуется без пересборки предпросмотра: собирать его дважды
+    // подряд значит послать два запроса и отдать экран тому, который
+    // вернётся последним (4.4 ТЗ).
+    rnRenderList(false);
     rnUpdateExample();
     await rnBuildPreview();
     hdOffer('rnIn');
@@ -504,7 +507,12 @@ async function rnScan(){
   }
 }
 
-function rnRenderList(){
+/** Рисует список глав. `build` — пересобрать ли заодно предпросмотр.
+ *
+ *  При чтении папки предпросмотр собирается отдельно и один раз: он
+ *  нужен всегда, независимо от того, трогал ли кто-нибудь галочки.
+ */
+function rnRenderList(build = true){
   const list = $('rnList');
   list.innerHTML = '';
   for(const chapter of rnChapters){
@@ -554,7 +562,7 @@ function rnRenderList(){
     row.append(size);
     list.append(row);
   }
-  rnUpdateChosen();
+  if(build) rnUpdateChosen();
 }
 
 /** Подпись под списком (1.5 ТЗ).
@@ -590,9 +598,17 @@ function rnWhyEmpty(){
     + 'одной главы. Задайте своё выражение в поле «Свой шаблон имени».';
 }
 
+//: Номер последней запрошенной сборки предпросмотра. Ответы приходят не
+//: в том порядке, в каком уходили запросы, и отставший затирал бы свежий.
+let rnBuildNo = 0;
+
 async function rnBuildPreview(){
+  const mine = ++rnBuildNo;
   try{
     const data = await call('/api/rename/plan', rnPayload());
+    // Пока ходили на сервер, галочки могли поменять ещё раз — тогда этот
+    // ответ уже про прошлое состояние, и показывать его нельзя.
+    if(mine !== rnBuildNo) return;
     rnRows = data.rows;
     const table = $('rnPreview');
     table.innerHTML = '';
@@ -628,6 +644,7 @@ async function rnBuildPreview(){
       : rnWhyEmpty();
     rnUpdateChosen(data.rows.length);
   }catch(err){
+    if(mine !== rnBuildNo) return;
     // Предпросмотр не построился — причина нужна здесь же, у кнопки:
     // иначе она просто не нажимается и непонятно почему.
     showError(err.message, $('rnApply'));

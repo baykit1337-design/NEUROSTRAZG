@@ -521,5 +521,36 @@ class TestGlowHasRoom(UiBase):
         self.assertNotIn("overflow", wrap)
 
 
+class TestPreviewBuildsItself(UiBase):
+    """4.4: предпросмотр не должен ждать, пока тронут галочки."""
+
+    def scan(self) -> str:
+        return self.tabs.split("async function rnScan()", 1)[1] \
+            .split("\nfunction rnRenderList", 1)[0]
+
+    def test_it_is_built_right_after_the_folder_is_read(self):
+        self.assertIn("await rnBuildPreview();", self.scan())
+
+    def test_it_is_built_once_not_twice(self):
+        """Две сборки подряд — это два запроса, и экран достаётся тому,
+        который вернётся последним."""
+        self.assertIn("rnRenderList(false);", self.scan())
+        self.assertIn("if(build) rnUpdateChosen();", self.tabs)
+
+    def test_ticking_a_box_still_rebuilds_it(self):
+        self.assertIn("function rnRenderList(build = true)", self.tabs)
+
+    def test_a_late_answer_cannot_overwrite_a_fresh_one(self):
+        """Ответы приходят не в том порядке, в каком уходили запросы."""
+        build = self.tabs.split("async function rnBuildPreview()", 1)[1]
+        self.assertIn("const mine = ++rnBuildNo;", build)
+        self.assertIn("if(mine !== rnBuildNo) return;", build)
+
+    def test_the_folder_is_read_however_it_was_chosen(self):
+        """Через проводник поле заполняет скрипт, а событие само не
+        случится — его посылают руками."""
+        self.assertIn("input.dispatchEvent(new Event('input'))", self.tabs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
