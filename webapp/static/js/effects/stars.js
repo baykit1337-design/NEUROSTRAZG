@@ -79,6 +79,26 @@ function starsBetween(from, to){
   //: Дрейф: куда и с какой скоростью ползёт всё поле.
   let driftX = 0, driftY = 0, driftAngle = Math.random() * Math.PI * 2;
   let turnAt = 0, movedAt = 0, lastFrame = 0;
+  //: Сколько кадров отрисовано. Нужен только для слепка состояния: по
+  //: нему видно, идёт цикл или встал после первого кадра.
+  let frames = 0;
+
+  /* Системное «уменьшить движение». Читаем один раз и следим за сменой:
+   * `matchMedia` шестьдесят раз в секунду — лишняя работа на ровном месте.
+   *
+   * Раньше при этой настройке поле рисовало один кадр и замирало совсем —
+   * та самая статичная картинка (4.1 ТЗ). Настройка, однако, про
+   * перемещение, а не про яркость: укачивает движение, а не медленный
+   * перелив. Поэтому в тихом режиме гаснут дрейф, переезды и параллакс —
+   * всё, что двигает точки, — а мерцание остаётся: небо живёт, но ничто
+   * по экрану не ездит. */
+  let calm = starsCalm();
+  if(window.matchMedia){
+    const watchCalm = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const noted = () => { calm = watchCalm.matches; };
+    if(watchCalm.addEventListener) watchCalm.addEventListener('change', noted);
+    else if(watchCalm.addListener) watchCalm.addListener(noted);
+  }
 
   function depthOf(){
     const roll = Math.random();
@@ -168,6 +188,10 @@ function starsBetween(from, to){
   }
 
   function advance(now, elapsed){
+    // В тихом режиме точки стоят: двигать их эта настройка и запрещает.
+    // Мерцание ей не подчиняется — оно живёт в `shineOf`.
+    if(calm) return;
+
     // Разворот направления дрейфа — плавный и редкий.
     if(now >= turnAt){
       driftAngle = Math.random() * Math.PI * 2;
@@ -200,7 +224,8 @@ function starsBetween(from, to){
 
   function paint(now){
     ctx.clearRect(0, 0, width, height);
-    const scroll = window.scrollY || 0;
+    // Параллакс — тоже перемещение: в тихом режиме поле стоит на месте.
+    const scroll = calm ? 0 : (window.scrollY || 0);
 
     for(const star of stars){
       // Ближние смещаются сильнее дальних — от этого поле кажется глубже.
@@ -233,6 +258,7 @@ function starsBetween(from, to){
     if(!running) return;
     const elapsed = lastFrame ? Math.min(now - lastFrame, 1000) : 0;
     lastFrame = now;
+    frames++;
     advance(now, elapsed);
     paint(now);
     requestAnimationFrame(frame);
@@ -260,10 +286,6 @@ function starsBetween(from, to){
     if(!turnAt) turnAt = performance.now() + starsBetween(STARS_TURN_MIN, STARS_TURN_MAX);
     if(!movedAt) movedAt = performance.now() + starsBetween(STARS_MOVE_MIN, STARS_MOVE_MAX);
 
-    // «Уменьшить движение» сильнее любых галочек: рисуем один кадр и
-    // оставляем поле неподвижным.
-    if(starsCalm()){ paint(performance.now()); return; }
-
     running = true;
     lastFrame = 0;
     requestAnimationFrame(frame);
@@ -273,6 +295,30 @@ function starsBetween(from, to){
     running = false;
     lastFrame = 0;
   }
+
+  /* Слепок состояния поля наружу (4.1 ТЗ).
+   *
+   * Поле рисуется на холсте: снаружи не видно ни точек, ни их яркости, и
+   * проверить «идёт ли цикл вообще» нечем — только глазами, а глаз на
+   * такой амплитуде не судья: дрейф здесь полтора пикселя в минуту, и
+   * работающее поле от застывшего на глаз не отличить.
+   *
+   * Слепок читают только снаружи; сам эффект им не пользуется, и менять
+   * через него нечего — это копия, а не сами точки.
+   */
+  window.starfieldState = () => ({
+    running,
+    calm,
+    count: stars.length,
+    frames,
+    driftX, driftY, driftAngle,
+    moving: stars.filter(s => s.leaving || s.arriving).length,
+    stars: stars.map(star => ({
+      depth: star.depth, size: star.size, cycle: star.cycle,
+      phase: star.phase, x: star.x, y: star.y,
+      shine: shineOf(star, performance.now()),
+    })),
+  });
 
   document.addEventListener('DOMContentLoaded', start);
 

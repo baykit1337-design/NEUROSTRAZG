@@ -60,6 +60,12 @@ class TestStructure(Base):
     def test_choice_is_remembered(self):
         self.assertIn("localStorage", self.settings)
 
+    def test_the_panel_says_what_the_system_setting_did(self):
+        """Замершее поле без пояснения не отличить от поломки (4.1 ТЗ)."""
+        self.assertIn("В системе включено «уменьшить движение»", self.settings)
+        self.assertIn("продолжает мерцать, но никуда не движется",
+                      self.settings)
+
     def test_reduced_motion_is_respected(self):
         """Системная настройка сильнее галочек."""
         self.assertIn("prefers-reduced-motion", self.settings)
@@ -243,10 +249,56 @@ class TestStars(Base):
         self.assertIn("visibilitychange", self.js)
         self.assertIn("if(document.hidden) stop();", self.js)
 
-    def test_calm_mode_leaves_the_field_still(self):
-        """Системное «уменьшить движение» сильнее любых галочек."""
-        self.assertIn("if(starsCalm()){ paint(performance.now()); return; }",
+    def test_calm_mode_moves_nothing(self):
+        """Системное «уменьшить движение» останавливает перемещения.
+
+        Раньше оно останавливало вообще всё: поле рисовало один кадр и
+        замирало — та самая статичная картинка из 4.1 ТЗ. Настройка,
+        однако, про перемещение, а не про яркость.
+        """
+        self.assertIn("if(calm) return;", self.js)
+        self.assertIn("const scroll = calm ? 0 : (window.scrollY || 0);",
                       self.js)
+
+    def test_calm_mode_still_lets_the_field_twinkle(self):
+        """Цикл кадров при тихом режиме больше не обрывается."""
+        self.assertNotIn("if(starsCalm()){ paint(performance.now()); return; }",
+                         self.js)
+        start = self.js.split("function start(){", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("requestAnimationFrame(frame)", start)
+        self.assertNotIn("starsCalm()", start)
+
+    def test_the_system_setting_is_read_once_not_every_frame(self):
+        """matchMedia шестьдесят раз в секунду — работа на ровном месте."""
+        self.assertIn("let calm = starsCalm();", self.js)
+        self.assertIn("addEventListener('change', noted)", self.js)
+
+    def test_a_changed_setting_is_picked_up_without_a_reload(self):
+        self.assertIn("calm = watchCalm.matches;", self.js)
+
+    def test_the_old_way_of_watching_the_setting_also_works(self):
+        """Safari до 14 знает только addListener."""
+        self.assertIn("watchCalm.addListener(noted)", self.js)
+
+    def test_the_field_says_what_it_is_doing(self):
+        """Поле на холсте: снаружи не видно ни точек, ни того, идёт ли цикл.
+
+        Дрейф здесь полтора пикселя в минуту — работающее поле от
+        застывшего на глаз не отличить, и проверить 4.1 без слепка нечем.
+        """
+        self.assertIn("window.starfieldState = () => ({", self.js)
+        for field in ("running,", "calm,", "frames,", "driftX, driftY"):
+            with self.subTest(field=field):
+                self.assertIn(field, self.js)
+
+    def test_the_frame_counter_grows_where_frames_are_drawn(self):
+        """Иначе по слепку не отличить «идёт» от «встало после первого»."""
+        frame = self.js.split("function frame(now){", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("frames++;", frame)
+
+    def test_the_snapshot_is_a_copy_not_the_stars_themselves(self):
+        """Через слепок менять нечего: он только для чтения."""
+        self.assertIn("stars: stars.map(star => ({", self.js)
 
     def test_the_layer_is_behind_and_deaf(self):
         block = self.css[self.css.index(".fx-stars .starfield{"):]
