@@ -293,6 +293,29 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+# ------------------------------------------------------- отказы модели
+
+
+#: Клиент модели заводится ДО `try` — иначе его нечем было бы закрыть в
+#: `finally`. Значит, «ключей нет» вылетало мимо всех перехватов и
+#: доезжало до браузера пятисоткой со стеком вместо строчки «добавьте
+#: ключ». Обработчики ловят это один раз на всё приложение: шесть
+#: одинаковых `try` вокруг шести вызовов разъехались бы через месяц.
+@app.errorhandler(NoKeysLeft)
+def _no_keys_left(exc):
+    return jsonify(error=str(exc)), 400
+
+
+@app.errorhandler(BadKey)
+def _bad_key(exc):
+    return jsonify(error=str(exc)), 401
+
+
+@app.errorhandler(LlmError)
+def _llm_failed(exc):
+    return jsonify(error=str(exc)), 502
+
+
 # ------------------------------------------------------------------- API
 
 

@@ -73,6 +73,16 @@ function starsOn(){
   return document.documentElement.classList.contains('fx-stars');
 }
 
+//: Свой дрейф у каждой точки: пикселей в минуту. Заметно больше общего
+//: сноса — то поле едет целиком, и глаз этого не ловит, а тут точки
+//: расходятся врозь, и движение читается по их взаимному смещению.
+const STARS_WANDER = 9;
+
+/** Включён ли опыт «звёзды расходятся врозь» (своя галочка эффектов). */
+function starsWander(){
+  return document.documentElement.classList.contains('fx-star-wander');
+}
+
 function starsCalm(){
   return window.matchMedia
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -152,6 +162,12 @@ function starsBetween(from, to){
       phase: Math.random() * Math.PI * 2,
       // Переезд: 0 — стоит на месте, иначе доля прожитого перехода.
       leaving: 0, arriving: 0, fade: 0,
+      // Свой дрейф: куда и с какой скоростью ползёт именно эта точка.
+      // Считается всегда, применяется только при включённой галочке —
+      // так опыт не переписывает поле, а добавляется к нему.
+      wanderAngle: Math.random() * Math.PI * 2,
+      wanderRate: starsBetween(STARS_WANDER * 0.4, STARS_WANDER),
+      wx: 0, wy: 0,
     };
   }
 
@@ -207,9 +223,20 @@ function starsBetween(from, to){
       turnAt = now + starsBetween(STARS_TURN_MIN, STARS_TURN_MAX);
     }
     // Пиксели в минуту переводим в пиксели за прошедшие миллисекунды.
-    const step = STARS_DRIFT * (elapsed / 60000);
+    // При включённом опыте общий снос выключается: иначе поле и едет
+    // целиком, и перемешивается — два движения сразу читаются как рябь.
+    const own = starsWander();
+    const step = own ? 0 : STARS_DRIFT * (elapsed / 60000);
     driftX += Math.cos(driftAngle) * step;
     driftY += Math.sin(driftAngle) * step;
+
+    if(own){
+      const minutes = elapsed / 60000;
+      for(const star of stars){
+        star.wx += Math.cos(star.wanderAngle) * star.wanderRate * minutes;
+        star.wy += Math.sin(star.wanderAngle) * star.wanderRate * minutes;
+      }
+    }
 
     if(now >= movedAt){
       relocate(now);
@@ -239,8 +266,8 @@ function starsBetween(from, to){
     for(const star of stars){
       // Ближние смещаются сильнее дальних — от этого поле кажется глубже.
       const depth = 1 + star.depth * (STARS_PARALLAX_DEPTH - 1) / 2;
-      const y = star.y + driftY - scroll * STARS_PARALLAX * depth;
-      const x = star.x + driftX;
+      const y = star.y + driftY + star.wy - scroll * STARS_PARALLAX * depth;
+      const x = star.x + driftX + star.wx;
 
       // Ушедшее за край возвращаем с другой стороны: дрейф бесконечен.
       const atX = ((x % width) + width) % width;
@@ -325,6 +352,9 @@ function starsBetween(from, to){
     stars: stars.map(star => ({
       depth: star.depth, size: star.size, cycle: star.cycle,
       phase: star.phase, x: star.x, y: star.y,
+      // Собственный дрейф точки: без него снаружи не отличить включённый
+      // опыт «расходятся врозь» от выключенного.
+      wx: star.wx, wy: star.wy,
       shine: shineOf(star, performance.now()),
     })),
   });

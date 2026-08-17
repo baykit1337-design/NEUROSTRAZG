@@ -304,11 +304,26 @@ def _page_data(html: str):
     """
     found = STATE_BLOCK.search(html or "")
     if found:
-        return _json(found.group(1), "страница книги")
+        return _book_branch(_json(found.group(1), "страница книги"))
     found = NEXT_BLOCK.search(html or "")
     if found:
-        return _json(found.group(1), "страница книги")
+        return _book_branch(_json(found.group(1), "страница книги"))
     return None
+
+
+def _book_branch(data):
+    """Ветка `page` — всё о книге лежит там.
+
+    Рядом с ней у состояния есть своя ветка `author` (карточка автора со
+    списком его книг). Поиск по ключу натыкался на неё первой, и в поле
+    «автор» уезжал целый объект настроек: «{'userInfo': {'username': ''…».
+    Сужаем область до книги — там имя автора это строка.
+    """
+    if isinstance(data, dict):
+        page = data.get("page")
+        if isinstance(page, dict) and page:
+            return page
+    return data
 
 
 def _dig(data, key: str):

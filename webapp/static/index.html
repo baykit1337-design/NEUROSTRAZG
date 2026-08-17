@@ -940,6 +940,13 @@
   <div id="hdInsideBox" hidden style="margin-top:14px">
     <label>Внутри файла</label>
     <p class="hint" id="hdInsideIntro"></p>
+    <!-- Находок бывают сотни. Снимать их по одной галке невозможно. -->
+    <div class="row" style="gap:6px;margin-bottom:8px">
+      <button class="ghost" id="hdInsideAll"
+              style="padding:3px 12px;font-size:12px">отметить все</button>
+      <button class="ghost" id="hdInsideNone"
+              style="padding:3px 12px;font-size:12px">снять все</button>
+    </div>
     <div class="table" id="hdInside"></div>
   </div>
 
@@ -3216,6 +3223,7 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/done-flash.css">
 <link rel="stylesheet" href="/static/css/effects/skeleton.css">
 <link rel="stylesheet" href="/static/css/effects/stars.css">
+<link rel="stylesheet" href="/static/css/effects/star-wander.css">
 <link rel="stylesheet" href="/static/css/effects/subtitle.css">
 <link rel="stylesheet" href="/static/css/effects/row-sweep.css">
 <link rel="stylesheet" href="/static/css/effects/tab-grow.css">

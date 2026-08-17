@@ -1247,6 +1247,31 @@ async function hdCopy(text, button){
 
 /** 3.5: находки внутри файла. У них своя подпись — не «в файлах», а
  *  «встречается N раз»: файл-то один. */
+//: Насколько часто строка должна встречаться, чтобы отметиться сама.
+//: Шапка стоит у каждой главы — значит, у почти каждого заголовка. Всё,
+//: что реже, находкой остаётся, но галку человек ставит сам.
+const HD_SURE_SHARE = 0.7;
+
+/** Похожа ли находка на шапку настолько, чтобы отметить её самому.
+ *
+ * Название книги над каждой главой встречается тысячу раз при тысяче
+ * глав — это шапка. Реплика «Yeah.» встречается двадцать раз при тысяче
+ * глав — это текст, и трогать его нельзя.
+ */
+function hdSure(rule){
+  if(rule.kind === 'manual' || rule.kind === 'pattern') return true;
+  const total = Number(rule.total) || 0;
+  const count = Number(rule.count) || 0;
+  return total > 0 && count / total >= HD_SURE_SHARE;
+}
+
+/** Отметить или снять разом весь список находок внутри файла. */
+function hdInsideAll(on){
+  hdInsideChosen = on ? new Set(hdInside.map(hdKey)) : new Set();
+  hdRenderInside();
+  hdCount();
+}
+
 function hdRenderInside(){
   const list = $('hdInside');
   list.innerHTML = '';
@@ -1442,7 +1467,11 @@ async function hdScan(source, quiet){
     hdFindings = data.findings || [];
     hdChosen = new Set(hdFindings.map(f => f.text));
     hdInside = data.inside || [];
-    hdInsideChosen = new Set(hdInside.map(hdKey));
+    // Отмечаем не всё подряд, а только то, что похоже на шапку наверняка.
+    // Реплика вроде «Yeah.» повторяется в книге двадцать раз — правило её
+    // находит, но шапкой она не является, а снимать пятьсот галок руками
+    // невозможно.
+    hdInsideChosen = new Set(hdInside.filter(hdSure).map(hdKey));
     hdPeekLines = data.peek || [];
 
     $('hdCard').hidden = false;
@@ -1524,6 +1553,8 @@ document.querySelectorAll('.hdOpen').forEach(button => {
   button.onclick = () => hdScan(button.dataset.source, false);
 });
 $('hdClean').onclick = hdClean;
+$('hdInsideAll').onclick = () => hdInsideAll(true);
+$('hdInsideNone').onclick = () => hdInsideAll(false);
 $('hdClose').onclick = () => { $('hdCard').hidden = true; };
 // 3.4: правило меняют и сразу смотрят, что найдётся — без предпросмотра
 // подбирать выражение вслепую невозможно.
