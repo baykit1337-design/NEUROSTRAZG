@@ -552,5 +552,59 @@ class TestPreviewBuildsItself(UiBase):
         self.assertIn("input.dispatchEvent(new Event('input'))", self.tabs)
 
 
+class TestTitleCursor(UiBase):
+    """4.2: над заголовком курсор был текстовым, а стал обычным."""
+
+    def rule(self) -> str:
+        return self.page.split("  .app-title, .sub{", 1)[1].split("}", 1)[0]
+
+    def test_the_cursor_is_an_arrow(self):
+        self.assertIn("cursor:default", self.rule())
+
+    def test_the_title_is_not_selectable(self):
+        """Текстовый курсор обещает выделение, а выделять тут нечего."""
+        self.assertIn("user-select:none", self.rule())
+
+    def test_the_subtitle_is_covered_too(self):
+        self.assertIn(".app-title, .sub{", self.page)
+
+
+class TestNoSyntaxWarning(unittest.TestCase):
+    """4.5: `\-` управляющей последовательностью не является."""
+
+    def test_the_source_compiles_without_warnings(self):
+        """Компилируем текст, а не перезагружаем модуль: перезагрузка
+        оставила бы в процессе второй экземпляр каждого класса, и чужие
+        проверки «это тот же самый класс» развалились бы."""
+        import warnings
+
+        source = (ROOT / "core" / "naming.py").read_text(encoding="utf-8")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            compile(source, "core/naming.py", "exec")
+        self.assertEqual([str(w.message) for w in caught], [])
+
+    def test_the_stray_backslash_is_gone_from_the_separators(self):
+        """Python оставлял его в наборе как обычный символ, а
+        разделителем между номером и названием он никогда не был."""
+        from core.naming import SEPARATOR_CHARS
+
+        self.assertNotIn("\\", SEPARATOR_CHARS)
+
+    def test_the_real_separators_are_all_still_there(self):
+        from core.naming import SEPARATOR_CHARS
+
+        for char in (" ", "\t", ".", ":", "_", "-", "–", "—", ")", "]", "}"):
+            with self.subTest(char=repr(char)):
+                self.assertIn(char, SEPARATOR_CHARS)
+
+    def test_names_are_still_parsed_the_same(self):
+        from core.naming import parse
+
+        found = parse("0012 - Глава 201. Название")
+        self.assertEqual(found.number, 201)
+        self.assertEqual(found.title, "Название")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
