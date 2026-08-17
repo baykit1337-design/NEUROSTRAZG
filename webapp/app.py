@@ -302,6 +302,21 @@ def api_sources():
     return jsonify(sources=[s.as_dict() for s in sources.all_sources()])
 
 
+def _found(novel) -> dict:
+    """Книга для интерфейса: к своим полям добавлены перевод и имя папки.
+
+    Имя папки считается здесь, а не в браузере (3.2 ТЗ): перевод названия
+    лежит на сервере, и правило «в пути не бывает иероглифов» должно быть
+    одно на всё приложение, а не двумя расходящимися копиями.
+    """
+    data = novel.to_dict()
+    translated = titles_op.known().get(str(novel.code), "")
+    data["translated"] = translated
+    data["folder"] = naming.folder_name(
+        novel.name, code=novel.code, translated=translated)
+    return data
+
+
 @app.post("/api/find")
 def api_find():
     payload = request.json or {}
@@ -317,7 +332,7 @@ def api_find():
     client = Client()
     try:
         novel = source.find(client, query)
-        return jsonify(novel=novel.to_dict(), source=source.key)
+        return jsonify(novel=_found(novel), source=source.key)
     except sources.SourceBroken as exc:
         # «Источник изменился» — не «не нашли»: жать «повторить» бесполезно.
         return jsonify(error=str(exc)), 502

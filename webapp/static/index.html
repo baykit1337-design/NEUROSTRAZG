@@ -2778,7 +2778,9 @@ async function find(fillRange = true){
     ].filter(Boolean).join('  ·  ');
     $('book').hidden = false;
     $('place').hidden = false;
-    $('folder').value = novel.name;
+    // Имя папки готовит сервер: у него есть перевод названия, и он же
+    // следит, чтобы в пути не оказалось иероглифов (3.2 ТЗ).
+    $('folder').value = novel.folder || novel.name;
     if(fillRange) $('last').value = novel.total_chapters;
     $('last').max = novel.total_chapters;
     $('first').max = novel.total_chapters;

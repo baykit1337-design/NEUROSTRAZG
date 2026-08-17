@@ -106,6 +106,57 @@ def has_forbidden(text: str) -> bool:
     return any(bad in text for bad in FORBIDDEN_MAP)
 
 
+#: Иероглифы, кана, хангыль и «широкая» пунктуация при них. Запрещённым
+#: символом ничто из этого не считается — беда в другом: часть файловых
+#: систем (FAT32 на флешке, сетевой диск, старый архиватор) хранит имена в
+#: своей кодировке, и путь с иероглифами разъезжается на части, а собрать
+#: его обратно нечем.
+CJK = re.compile(
+    "[⺀-⿿　-〿぀-ヿ㆐-㆟㇀-ㇿ"
+    "㈀-䶿一-鿿ꥠ-꥿가-퟿豈-﫿"
+    "︰-﹏＀-｠￠-￦]"
+    "|[\U00020000-\U0003ffff]"
+)
+
+#: Сколько знаков должно остаться от названия после выброса иероглифов,
+#: чтобы остаток годился в имя папки. «SSS级» даёт «SSS» — годится, «第一部»
+#: не даёт ничего.
+MIN_LATIN = 3
+
+
+def has_cjk(text: str) -> bool:
+    """Есть ли в строке иероглифы, кана или хангыль."""
+    return bool(CJK.search(text or ""))
+
+
+def _without_cjk(text: str) -> str:
+    """Что осталось от названия без иероглифов."""
+    rest = CJK.sub(" ", text)
+    return re.sub(r"\s+", " ", rest).strip(" .-–—·|,;:")
+
+
+def folder_name(name: str = "", code="", translated: str = "") -> str:
+    """Имя папки книги: перевод, латиница — но не иероглифы (3.2 ТЗ).
+
+    Порядок такой: русский перевод названия, если он уже есть; иначе своё
+    название книги, если оно записано не иероглифами; иначе латинская
+    часть названия, если в нём была хоть какая-то («SSS级» → «SSS»); в
+    самом конце — `book-{код}`: некрасиво, зато открывается везде.
+    """
+    for candidate in (translated, name):
+        text = (candidate or "").strip()
+        if not text:
+            continue
+        if not has_cjk(text):
+            return safe_filename(text)
+        rest = _without_cjk(text)
+        if len(rest) >= MIN_LATIN:
+            return safe_filename(rest)
+
+    code = str(code or "").strip()
+    return f"book-{code}" if code else ""
+
+
 @dataclass
 class NameParts:
     """Что вышло из имени файла."""

@@ -4538,6 +4538,11 @@ async function rkPick(row){
   $('last').value = '';
   if(typeof rangeNote === 'function') rangeNote('');
 
+  // Имя папки от прошлой книги здесь тем более лишнее: главы легли бы в
+  // чужую папку. Своё имя подставит поиск — его считает сервер, у него
+  // есть перевод названия (3.2 ТЗ).
+  $('folder').value = '';
+
   rkShowCard(row);
   rkCardFlash();
 
@@ -4547,12 +4552,29 @@ async function rkPick(row){
   }catch(err){ /* показать карточку важнее, чем найти книгу с первого раза */ }
 }
 
+/** Русское название книги из рейтинга, если оно уже переведено. */
+function rkTitleOf(bookId){
+  return (rkTitles[String(bookId)] || '').trim();
+}
+
+/** Название книги «оригинал / перевод» (3.1, 3.2 ТЗ).
+ *
+ * Одного перевода мало: по нему книгу не найти ни на сайте, ни в поиске.
+ * Одного оригинала мало тем более: непонятно, о чём книга. Поэтому видно
+ * оба, а если чего-то нет — то, что есть.
+ */
+function rkBothTitles(row){
+  const own = row.secret ? '' : (row.name || '').trim();
+  const ru_ = rkTitleOf(row.book_id);
+  if(own && ru_ && own !== ru_) return `${own} / ${ru_}`;
+  return own || ru_ || `книга ${row.book_id}`;
+}
+
 /** Карточка «что именно выбрано»: то, что о книге знает рейтинг. */
 function rkShowCard(row){
   const card = $('rkCard');
   card.hidden = false;
-  $('rkCardName').textContent = row.secret
-    ? `книга ${row.book_id}` : (rkTitles[row.book_id] || row.name);
+  $('rkCardName').textContent = rkBothTitles(row);
   $('rkCardMeta').textContent = [
     `код ${row.book_id}`,
     row.author && 'автор: ' + row.author,
