@@ -196,4 +196,108 @@ def parse_json(text: str) -> dict:
                     raise ValueError("ожидался объект JSON")
                 return data
 
+    # Досюда доходим, только если объект не закрылся: модель упёрлась в
+    # предел длины на середине. Часто данные ещё спасаются — достраиваем.
+    mended = mend_json(text[start:])
+    if mended is not None:
+        return mended
     raise ValueError("JSON в ответе не закрыт")
+
+
+def mend_json(text: str) -> dict | None:
+    """Достраивает оборванный JSON. `None` — спасать нечего (2.1 ТЗ).
+
+    Модель обрывается на середине, упёршись в предел длины. Всё, что она
+    успела сказать, при этом уже сказано, и терять его из-за недостающей
+    скобки обидно: в разборе главы это десятки имён и событий.
+
+    Способ прямолинейный: отбросить незаконченный хвост, закрыть строку,
+    если обрыв случился внутри неё, и добавить недостающие скобки.
+    """
+    text = (text or "").strip()
+    if not text.startswith("{"):
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    #: Куда обрезать: последнее место, где значение было целым.
+    safe = None
+    stack: list[str] = []
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                # Строка закрылась — на этом месте обрезать уже можно.
+                safe = index + 1
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+            depth += 1
+        elif char in "}]":
+            if stack:
+                stack.pop()
+            depth -= 1
+            safe = index + 1
+        elif char in ",":
+            # Запятая отделяет целые элементы: до неё всё договорено.
+            safe = index
+        elif char.isdigit() or char in "truefalsn.-+eE":
+            # Число или литерал могли оборваться посередине — на них
+            # обрезать нельзя, безопасное место остаётся прежним.
+            pass
+
+    if safe is None:
+        return None
+
+    chunk = text[:safe].rstrip().rstrip(",")
+    # Пересчитываем незакрытое уже по обрезанному куску: хвост мы отбросили.
+    closers = _unclosed(chunk)
+    for _ in range(3):
+        try:
+            data = json.loads(chunk + closers)
+        except ValueError:
+            # Последний элемент всё-таки оказался неполным — отбрасываем
+            # его и пробуем ещё раз.
+            cut = max(chunk.rfind(","), chunk.rfind("["), chunk.rfind("{"))
+            if cut <= 0:
+                return None
+            chunk = chunk[:cut].rstrip().rstrip(",")
+            closers = _unclosed(chunk)
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+
+def _unclosed(text: str) -> str:
+    """Каких скобок не хватает, чтобы `text` стал целым."""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]" and stack:
+            stack.pop()
+    # Оборвались внутри строки — сначала закрываем её.
+    return ('"' if in_string else "") + "".join(reversed(stack))

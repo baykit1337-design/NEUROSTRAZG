@@ -21,7 +21,7 @@ from core.models import OpReport
 from core.registry import Entity, Event, Link, Registry, slug
 from llm import prompts
 from llm.cache import Entry, FactsCache, fingerprint, parse_json
-from llm.client import CHARS_PER_TOKEN, NoKeysLeft
+from llm.client import CHARS_PER_TOKEN, NoKeysLeft, Truncated
 
 from .base import Progress, collect_files, read_all
 
@@ -88,6 +88,95 @@ def _root_of(files) -> Path:
     return first.parent if first.is_file() else first
 
 
+#: Насколько глубоко делим главу при обрыве по длине. Три деления — это
+#: восьмушка главы; если и она не влезает, дело не в длине.
+MAX_SPLIT = 3
+
+#: Короче этого делить бессмысленно: обрыв уже не из-за объёма.
+MIN_SPLIT = 400
+
+
+def _ask(client, chapter, model: str, text: str | None = None,
+         depth: int = 0, say=None) -> dict:
+    """Разбор одного куска главы. При обрыве по длине — делим пополам.
+
+    Раньше на обрыв уходили все попытки подряд, и все с тем же запросом:
+    в журнале три раза «JSON в ответе не закрыт», а глава разбиралась
+    только когда модель случайно уложилась покороче. Повторять то же
+    самое бессмысленно — надо давать меньше текста.
+    """
+    text = chapter.text if text is None else text
+    prompt = prompts.facts(chapter.number, chapter.title, text)
+
+    try:
+        return parse_json(client.generate(prompt, json_only=True, model=model))
+    except Truncated as cut:
+        # Сначала пробуем достроить пришедшее: часть фактов там уже есть,
+        # и терять их из-за недостающей скобки обидно.
+        if cut.text:
+            try:
+                found = parse_json(cut.text)
+            except ValueError:
+                found = None
+            if found:
+                if say:
+                    say(f"глава {chapter.label or '?'}: {cut}, "
+                        "достроили пришедшее", "warn")
+                return found
+
+        if depth >= MAX_SPLIT or len(text) < MIN_SPLIT:
+            raise
+
+        left, right = _halves(text)
+        if not left or not right:
+            raise
+        if say:
+            say(f"глава {chapter.label or '?'}: {cut}, "
+                f"делю кусок пополам ({len(text)} знаков)", "warn")
+        return _merge_facts(
+            _ask(client, chapter, model, left, depth + 1, say),
+            _ask(client, chapter, model, right, depth + 1, say))
+
+
+def _halves(text: str) -> tuple[str, str]:
+    """Делит текст пополам по границе абзаца, а не посреди слова."""
+    middle = len(text) // 2
+    cut = text.rfind("\n", 0, middle)
+    if cut <= 0:
+        cut = text.find("\n", middle)
+    if cut <= 0:
+        cut = middle
+    return text[:cut].strip(), text[cut:].strip()
+
+
+def _merge_facts(left: dict, right: dict) -> dict:
+    """Сводит факты двух половин главы в одни.
+
+    Списки складываются, повторы убираются: одно и то же лицо
+    упоминается в обеих половинах, и в реестре ему место одно.
+    """
+    found = dict(left or {})
+    for name in ("entities", "links", "events"):
+        merged = list((left or {}).get(name) or [])
+        seen = {_mark(item) for item in merged}
+        for item in (right or {}).get(name) or []:
+            mark = _mark(item)
+            if mark not in seen:
+                seen.add(mark)
+                merged.append(item)
+        if merged:
+            found[name] = merged
+    return found
+
+
+def _mark(item) -> str:
+    """Признак повтора. Словарь несравним, поэтому сводим к строке."""
+    if isinstance(item, dict):
+        return "\x00".join(f"{k}={item[k]}" for k in sorted(item)
+                            if not isinstance(item[k], (dict, list)))
+    return str(item)
+
+
 def collect(
     targets,
     client,
@@ -142,14 +231,12 @@ def collect(
     def one(chapter):
         nonlocal done
         progress.check()
-        prompt = prompts.facts(chapter.number, chapter.title, chapter.text)
         error = ""
 
         for attempt in range(retries + 1):
             progress.check()
             try:
-                answer = client.generate(prompt, json_only=True, model=model)
-                facts = parse_json(answer)
+                facts = _ask(client, chapter, model, say=say)
                 cache.put(Entry(
                     number=chapter.number,
                     title=chapter.title,
@@ -173,6 +260,14 @@ def collect(
                 # разобранное остаётся в кэше и продолжится потом.
                 say("ключи исчерпаны, работа остановлена", "stop")
                 raise
+            except Truncated as cut:
+                # Деление пополам уже испробовано и не помогло. Повторять
+                # тот же запрос незачем: он снова не поместится, а попытки
+                # уйдут впустую — ровно на это и жаловались.
+                error = f"{type(cut).__name__}: {cut}"
+                log.warning("Глава %s: %s, повторять бессмысленно",
+                            chapter.label, error)
+                break
             except Exception as exc:  # noqa: BLE001 — причину показываем целиком
                 error = f"{type(exc).__name__}: {exc}"
                 log.warning("Глава %s, попытка %s: %s",

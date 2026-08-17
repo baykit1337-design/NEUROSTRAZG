@@ -35,6 +35,20 @@ class LlmError(Exception):
     """Запрос к модели не удался."""
 
 
+class Truncated(LlmError):
+    """Модель упёрлась в предел длины и оборвала ответ на середине.
+
+    Отдельно от прочих: повторять тот же запрос бессмысленно — он снова
+    не поместится. Помогает уменьшить кусок, а до тех пор — попытаться
+    достроить то, что пришло.
+    """
+
+    def __init__(self, message: str, text: str = ""):
+        super().__init__(message)
+        #: Что успело прийти. Часто данные из этого куска ещё спасаются.
+        self.text = text
+
+
 class ModelBusy(LlmError):
     """Модель перегружена. Отвечает не прокси, а сам Gemini.
 
@@ -404,7 +418,7 @@ class LlmClient:
     # ---------------------------------------------------------- генерация
 
     def generate(self, prompt: str, json_only: bool = True,
-                 model: str = "") -> str:
+                 model: str = "", schema: dict | None = None) -> str:
         """Ответ модели на один запрос.
 
         `json_only` просит формат JSON на уровне API, а не в тексте
@@ -418,7 +432,18 @@ class LlmClient:
 
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         if json_only:
-            payload["generationConfig"] = {"responseMimeType": "application/json"}
+            # Формат просим на уровне API, а не в тексте промпта: так
+            # модель не добавит пояснений вокруг JSON. Предел ответа
+            # задаём явно — на разбор главы двух тысяч токенов мало, и
+            # ответ обрывался на середине (2.1 ТЗ).
+            payload["generationConfig"] = {
+                "responseMimeType": "application/json",
+                "maxOutputTokens": settings.llm.max_output_tokens,
+            }
+            if schema:
+                # Схема надёжнее любых просьб: с ней модель не сможет
+                # вернуть ни текст вокруг, ни оборванную структуру.
+                payload["generationConfig"]["responseSchema"] = schema
 
         path = f"{name}:generateContent"
         # Ключ мог кончиться прямо на этом запросе. Тогда переключаемся и
@@ -534,11 +559,25 @@ def _is_key_error(body: dict) -> bool:
     return "api key" in text or "api_key" in text or "invalid key" in text
 
 
+#: Чем Gemini объясняет обрыв ответа по длине.
+CUT_REASONS = ("MAX_TOKENS", "LENGTH")
+
+
 def _text_of(body: dict) -> str:
-    """Текст ответа из структуры Gemini."""
+    """Текст ответа из структуры Gemini.
+
+    Обрыв по длине распознаём здесь: модель честно пишет о нём в
+    `finishReason`, и гадать по виду JSON незачем (2.1 ТЗ).
+    """
     for candidate in body.get("candidates") or []:
         parts = (candidate.get("content") or {}).get("parts") or []
         text = "".join(part.get("text", "") for part in parts)
+        why = str(candidate.get("finishReason") or "").upper()
+        if why in CUT_REASONS:
+            used = (body.get("usageMetadata") or {}).get("candidatesTokenCount")
+            raise Truncated(
+                f"ответ оборван по пределу длины"
+                + (f", токенов пришло {used}" if used else ""), text)
         if text.strip():
             return text
     reason = (body.get("promptFeedback") or {}).get("blockReason")
