@@ -4,9 +4,16 @@
 Файл в корне проекта делает всё сам: доставляет зависимости, создаёт
 `proxies.txt` из образца и поднимает программу.
 
-Проверяется содержимое скриптов, а не их выполнение: `.bat` на этой
-машине запускать нечем, а сравнивать поведение двух файлов между собой
-всё равно надо.
+Сама работа — в `start.py`, общем для обеих систем. В `.bat` её нет и
+быть не может: `cmd.exe` читает батник побайтово в текущей кодовой
+странице и после каждой команды возвращается к запомненному смещению.
+Один не-ASCII байт сдвигает смещение, разбор продолжается с середины
+строки, `rem` теряется — и остаток русского комментария уходит в
+исполнение:
+
+    'ошибке' is not recognized as an internal or external command
+
+Поэтому здесь проверяются байты батника, а не только его слова.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 ROOT = Path(__file__).resolve().parent.parent
 BAT = ROOT / "Запустить.bat"
 COMMAND = ROOT / "Запустить.command"
+START = ROOT / "start.py"
 
 
 class TestBothExist(unittest.TestCase):
@@ -48,7 +56,43 @@ class ScriptsBase(unittest.TestCase):
     def setUpClass(cls):
         cls.bat = BAT.read_text(encoding="utf-8")
         cls.command = COMMAND.read_text(encoding="utf-8")
+        cls.start = START.read_text(encoding="utf-8")
         cls.both = {"Запустить.bat": cls.bat, "Запустить.command": cls.command}
+
+
+class TestTheBatIsReadableByCmd(ScriptsBase):
+    """Байты батника — не придирка, а причина поломки из отчёта."""
+
+    def test_not_a_single_non_ascii_byte(self):
+        """Один такой байт сдвигает разбор, и комментарий уходит в запуск."""
+        data = BAT.read_bytes()
+        bad = [(n, byte) for n, byte in enumerate(data) if byte > 127]
+        self.assertEqual(bad, [], f"не-ASCII байты в {BAT.name}: {bad[:5]}")
+
+    def test_the_code_page_is_not_switched_mid_file(self):
+        """`chcp` посреди файла и ломал разбор: смещение уезжало.
+
+        Ищем команду, а не слово: в пояснении рядом оно стоит законно.
+        """
+        commands = [line.strip() for line in self.bat.splitlines()
+                    if not line.strip().startswith("rem")]
+        self.assertEqual([line for line in commands if "chcp" in line], [])
+
+    def test_lines_end_the_way_cmd_expects(self):
+        """На одних LF cmd.exe спотыкается о блок в скобках, а он тут есть."""
+        data = BAT.read_bytes()
+        self.assertIn(b"(\r\n", data)
+        self.assertEqual(data.count(b"\n"), data.count(b"\r\n"))
+
+    def test_the_mac_one_has_no_carriage_returns(self):
+        """`\\r` в конце строки bash уводит в имя команды."""
+        self.assertNotIn(b"\r", COMMAND.read_bytes())
+
+    def test_git_is_told_to_leave_the_line_endings_alone(self):
+        """Иначе выгрузка на Windows вернула бы LF и поломку с ним."""
+        rules = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("*.bat -text", rules)
+        self.assertIn("*.command text eol=lf", rules)
 
 
 class TestWhatTheyDo(ScriptsBase):
@@ -57,31 +101,35 @@ class TestWhatTheyDo(ScriptsBase):
         self.assertIn('cd /d "%~dp0"', self.bat)
         self.assertIn('cd "$(dirname "$0")"', self.command)
 
-    def test_the_console_speaks_russian(self):
-        """Без этого русские буквы превращаются в кашу."""
-        self.assertIn("chcp 65001", self.bat)
-
-    def test_dependencies_are_checked_quietly(self):
+    def test_both_hand_the_work_to_the_shared_launcher(self):
+        """Две копии одного правила разъезжаются — здесь оно одно."""
         for name, text in self.both.items():
             with self.subTest(script=name):
-                self.assertIn("pip install -r requirements.txt", text)
-                self.assertIn("--quiet", text)
+                self.assertIn("start.py", text)
+
+    def test_the_shared_launcher_finds_its_own_folder(self):
+        """Двойной клик в Finder запускает из домашней папки."""
+        self.assertIn("ROOT = Path(__file__).resolve().parent", self.start)
+
+    def test_dependencies_are_checked_quietly(self):
+        self.assertIn('"-r", str(need)', self.start)
+        self.assertIn('"--quiet"', self.start)
+
+    def test_a_failed_install_does_not_stop_the_launch(self):
+        """Пакеты могли остаться с прошлого раза."""
+        self.assertIn("пробую запустить как есть", self.start)
 
     def test_the_proxy_list_is_created_from_the_example(self):
         """Без файла программа ругается при запуске на пустом месте."""
-        self.assertIn("proxies.example.txt", self.bat)
-        self.assertIn("proxies.txt", self.bat)
-        self.assertIn("proxies.example.txt", self.command)
+        self.assertIn("proxies.example.txt", self.start)
+        self.assertIn("proxies.txt", self.start)
 
     def test_an_existing_proxy_list_is_not_overwritten(self):
         """В нём адреса с паролями — затирать его нельзя."""
-        self.assertIn("if not exist proxies.txt", self.bat)
-        self.assertIn("[ ! -f proxies.txt ]", self.command)
+        self.assertIn("if mine.exists() or not example.is_file():", self.start)
 
-    def test_they_start_the_program(self):
-        for name, text in self.both.items():
-            with self.subTest(script=name):
-                self.assertIn("webapp/app.py", text)
+    def test_it_starts_the_program(self):
+        self.assertIn('ROOT / "webapp" / "app.py"', self.start)
 
     def test_the_window_stays_open_on_a_failure(self):
         """Иначе ошибка мелькнёт и окно закроется."""
@@ -89,9 +137,10 @@ class TestWhatTheyDo(ScriptsBase):
         self.assertIn("read -r -p", self.command)
 
     def test_a_missing_python_is_explained(self):
-        for name, text in self.both.items():
-            with self.subTest(script=name):
-                self.assertIn("Python не найден", text)
+        """По-русски сказать некому: питона, который сказал бы, ещё нет."""
+        self.assertIn("Python not found", self.bat)
+        self.assertIn("Python ne nayden", self.bat)
+        self.assertIn("Python не найден", self.command)
 
     def test_the_browser_is_not_opened_twice(self):
         """Программа открывает его сама, через секунду после старта —
@@ -99,6 +148,7 @@ class TestWhatTheyDo(ScriptsBase):
         вкладку с ошибкой соединения."""
         self.assertNotIn("start \"\" http", self.bat)
         self.assertNotIn("open http", self.command)
+        self.assertNotIn("webbrowser", self.start)
 
 
 class TestReadme(unittest.TestCase):
@@ -126,9 +176,10 @@ class TestReadme(unittest.TestCase):
 class TestItActuallyRuns(unittest.TestCase):
     """Скрипт для макоси и линукса можно и запустить — проверим.
 
-    Проверяется то, что делает сам скрипт: переход в свою папку и
-    создание списка прокси. Установку зависимостей и запуск сервера
-    подменяем — тесту ни то, ни другое не нужно.
+    Проверяется то, что делает связка целиком: переход в свою папку,
+    создание списка прокси и выход на программу. `requirements.txt` в
+    подставную папку не кладём — тогда установка честно пропускается сама,
+    без подмены строк в скрипте: она лезла бы в сеть, а тут не проверяется.
     """
 
     def setUp(self):
@@ -139,20 +190,12 @@ class TestItActuallyRuns(unittest.TestCase):
         self.root = Path(self.dir.name)
 
         shutil.copy(COMMAND, self.root / COMMAND.name)
-        shutil.copy(ROOT / "requirements.txt", self.root)
+        shutil.copy(START, self.root)
         shutil.copy(ROOT / "proxies.example.txt", self.root)
         (self.root / "webapp").mkdir()
         (self.root / "webapp" / "app.py").write_text(
             'print("подменённый сервер")\n', encoding="utf-8")
-
-        # Установку пакетов вырезаем: она лезет в сеть и тут не проверяется.
-        script = self.root / COMMAND.name
-        text = script.read_text(encoding="utf-8").replace(
-            '"$PY" -m pip install -r requirements.txt'
-            ' --quiet --disable-pip-version-check',
-            'echo "установка пропущена"')
-        script.write_text(text, encoding="utf-8")
-        script.chmod(0o755)
+        (self.root / COMMAND.name).chmod(0o755)
 
     def run_it(self):
         return subprocess.run([str(self.root / COMMAND.name)],

@@ -1,43 +1,42 @@
 @echo off
-rem NEUROSTRAZH — запуск одним файлом (5.1 ТЗ).
+rem NEUROSTRAZH -- one-click launcher for Windows (5.1).
 rem
-rem Кодовая страница 65001 — чтобы русские буквы в консоли не превратились
-rem в кашу. Переход в папку скрипта — чтобы файл работал из любого места,
-rem куда положили проект.
-chcp 65001 >nul
+rem ASCII ONLY. This is not a style choice. cmd.exe reads a .bat byte by
+rem byte in the current OEM code page and returns to a saved byte offset
+rem after every command. A non-ASCII byte here shifts that offset,
+rem parsing resumes in the middle of a line, the leading "rem" is lost,
+rem and the rest of a comment gets executed as a command:
+rem
+rem     'oshibke' is not recognized as an internal or external command
+rem
+rem Every Russian message lives in start.py instead. Python writes to the
+rem Windows console through WriteConsoleW and does not depend on the code
+rem page at all, so no chcp call is needed here either.
+rem
+rem Going to the script folder -- so the file works from wherever the
+rem project was unpacked.
 cd /d "%~dp0"
 
-rem На Windows питон чаще ставится вместе с лаунчером `py`, а `python` в
-rem PATH может и не оказаться — пробуем оба, иначе человек видит невнятное
-rem «не является внутренней или внешней командой».
+rem Windows usually ships the "py" launcher, while plain "python" may be
+rem missing from PATH. Try both before giving up.
 set PY=py
 %PY% --version >nul 2>&1 || set PY=python
 %PY% --version >nul 2>&1 || (
     echo.
-    echo   Python не найден. Поставьте его с python.org
-    echo   и при установке отметьте "Add Python to PATH".
+    echo   Python not found. Install it from https://www.python.org
+    echo   and tick "Add Python to PATH" during setup.
+    echo.
+    echo   Python ne nayden. Ustanovite ego s python.org i otmetite
+    echo   "Add Python to PATH" pri ustanovke.
     echo.
     pause
     exit /b 1
 )
 
-echo   Проверяю зависимости...
-%PY% -m pip install -r requirements.txt --quiet --disable-pip-version-check
+rem Dependencies, proxies.txt and the server itself -- all in start.py,
+rem shared with the macOS launcher.
+%PY% start.py
 
-rem Без списка прокси программа ругается при запуске. Кладём образец —
-rem адреса человек впишет сам, а падать на пустом месте она не будет.
-if not exist proxies.txt (
-    if exist proxies.example.txt copy proxies.example.txt proxies.txt >nul
-)
-
-echo   Запускаю NEUROSTRAZH...
-echo.
-rem Браузер открывает сама программа — через секунду после старта, когда
-rem сервер уже отвечает. Открывать его здесь значит получить вторую
-rem вкладку с ошибкой соединения.
-%PY% webapp/app.py
-
-rem Пауза в конце — чтобы при ошибке окно не закрылось и было видно, что
-rem именно случилось.
+rem The window must stay open on a failure, or the error just flashes by.
 echo.
 pause
