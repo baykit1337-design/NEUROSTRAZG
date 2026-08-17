@@ -599,21 +599,43 @@ def api_threads_check():
     with POOL_LOCK:
         pool = POOL
 
-    client = Client()
+    live = [p for p in getattr(pool, "proxies", []) if not p.disabled] \
+        if pool else []
+    if source.needs_proxy and not live:
+        # Источник без прокси не отвечает вовсе, и замер выродился бы в
+        # «сайт недоступен» — причина при этом не в потоках (3.3 ТЗ).
+        return jsonify(error=f"Источник «{source.name}» работает только через "
+                             "прокси, а живых адресов нет. Проверьте список "
+                             "на вкладке «Качалка».",
+                       step="прокси"), 400
+
+    # Оглавление берём через тот же прокси, что и всё остальное: голым
+    # клиентом сайт не отвечает, и замер падал с невнятным 502.
+    client = Client(proxy_url=live[0].url if live else None)
     downloader = Downloader(client=client, pool=pool, threads=threads,
                             source=source)
     try:
-        toc = source.toc(client, novel, first=1, last=count)
+        try:
+            toc = source.toc(client, novel, first=1, last=count)
+        except (sources.SourceBroken, HttpError, LookupError, ValueError) as exc:
+            # Разделяем шаги: «не собралось оглавление» и «не пошли потоки»
+            # чинятся по-разному, а общий 502 не говорит ни о том, ни о другом.
+            return jsonify(error=f"Не удалось собрать оглавление: {exc}",
+                           step="оглавление"), 502
+        if not toc.chapters:
+            return jsonify(error="У книги не нашлось глав — замерять нечего.",
+                           step="оглавление"), 400
+
         found = downloader.measure_threads(novel, toc.chapters, count)
-    except sources.SourceBroken as exc:
-        return jsonify(error=str(exc)), 502
-    except (LookupError, ValueError) as exc:
-        return jsonify(error=str(exc)), 404
-    except HttpError as exc:
-        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    except Exception as exc:  # noqa: BLE001 — замер не должен ронять сервер
+        log.exception("Замер многопоточности не удался")
+        return jsonify(error=f"Замер не удался: {type(exc).__name__}: {exc}",
+                       step="замер"), 502
     finally:
         client.close()
 
+    # Сам замер о своих бедах рассказывает в отчёте, а не кодом ответа:
+    # «ни один поток не создался» — это результат, а не отказ сервера.
     return jsonify(**found.as_dict())
 
 

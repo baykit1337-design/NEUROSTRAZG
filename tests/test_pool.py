@@ -603,5 +603,112 @@ class TestThreadsRoute(unittest.TestCase):
         self.assertNotIn("job", body)
 
 
+class TestThreadsRouteExplainsItself(unittest.TestCase):
+    """3.3: маршрут падал с 502 без единого слова о причине.
+
+    Оглавление он забирал голым клиентом, без прокси, — а источник без
+    прокси не отвечает вовсе. Ответ при этом не говорил ни что за шаг
+    сорвался, ни что дело вообще не в потоках.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import webapp.app as web
+
+        web.app.config["TESTING"] = True
+        cls.web = web
+        cls.app = web.app.test_client()
+        cls.real = web.sources.get
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.web.sources.get = cls.real
+
+    def setUp(self):
+        self.was = self.web.POOL
+        self.addCleanup(lambda: setattr(self.web, "POOL", self.was))
+
+    class Source:
+        key, name, hint, placeholder = "fanqie", "Fanqie", "", ""
+        needs_proxy = True
+
+        def __init__(self, toc=None):
+            self._toc = toc
+
+        def find(self, client, query):
+            return api.Novel(code=1, name="К", slug="", total_chapters=9)
+
+        def toc(self, client, novel, first=1, last=None, on_progress=None):
+            if callable(self._toc):
+                return self._toc()
+            from mvl.api import Toc
+
+            return Toc(chapters=[api.Chapter(number=n)
+                                 for n in range(first, (last or 6) + 1)])
+
+        def chapter(self, client, chapter):
+            time.sleep(0.02)
+            return f"Глава {chapter.number}", "текст"
+
+    def use(self, source, proxies: int):
+        self.web.sources.get = lambda key="": source
+
+        class Pool:
+            pass
+
+        if proxies:
+            Pool.proxies = [Addressed(f"10.0.0.{n}:8000")
+                            for n in range(1, proxies + 1)]
+            self.web.POOL = Pool()
+        else:
+            self.web.POOL = None
+
+    def check(self):
+        return self.app.post("/api/threads/check", json={
+            "novel": {"code": "7590221243043826712", "name": "К",
+                      "total_chapters": 9},
+            "source": "fanqie", "threads": 3})
+
+    def test_a_source_that_needs_a_proxy_says_so(self):
+        self.use(self.Source(), proxies=0)
+        res = self.check()
+        self.assertEqual(res.status_code, 400)
+        body = res.get_json()
+        self.assertIn("только через прокси", body["error"])
+        self.assertEqual(body["step"], "прокси")
+
+    def test_a_broken_toc_names_the_step(self):
+        from net import sources as sources_mod
+
+        def broken():
+            raise sources_mod.SourceBroken("разметка изменилась")
+
+        self.use(self.Source(toc=broken), proxies=3)
+        body = self.check().get_json()
+        self.assertEqual(body["step"], "оглавление")
+        self.assertIn("разметка изменилась", body["error"])
+
+    def test_a_book_without_chapters_is_not_a_server_failure(self):
+        from mvl.api import Toc
+
+        self.use(self.Source(toc=lambda: Toc(chapters=[])), proxies=3)
+        res = self.check()
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.get_json()["step"], "оглавление")
+
+    def test_the_toc_is_fetched_through_a_proxy(self):
+        """Голым клиентом сайт не отвечает — отсюда и брался 502."""
+        source = (Path(__file__).resolve().parent.parent
+                  / "webapp" / "app.py").read_text(encoding="utf-8")
+        body = source.split("def api_threads_check", 1)[1].split("\n@app.", 1)[0]
+        self.assertIn("Client(proxy_url=live[0].url if live else None)", body)
+
+    def test_a_good_run_still_answers_with_the_report(self):
+        self.use(self.Source(), proxies=3)
+        res = self.check()
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.get_json()["rows"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

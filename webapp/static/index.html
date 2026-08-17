@@ -2680,6 +2680,8 @@ async function call(url, body){
     err.needKeys = !!data.need_keys;
     // Журнал приезжает и с отказом: по нему видно, где именно встало.
     err.log = data.log;
+    // На каком шаге встало — если сервер это знает.
+    err.step = data.step;
     throw err;
   }
   return data;
@@ -3112,7 +3114,10 @@ async function thCheck(){
     note.textContent = said;
   }catch(err){
     note.textContent = said;
-    showError(err.message, $('thCheck'));
+    // На каком шаге встало — сервер говорит прямо: «оглавление» и
+    // «замер» чинятся по-разному, а общий отказ не говорит ни о чём.
+    showError(err.step ? `${err.message} (шаг: ${err.step})` : err.message,
+              $('thCheck'));
   }finally{
     $('thCheck').disabled = false;
   }
