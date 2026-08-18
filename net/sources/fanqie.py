@@ -152,7 +152,7 @@ class FanqieSource(Source):
         Сайт отдаёт данные страницы отдельным блоком JSON — из него они и
         берутся: разбирать вёрстку бессмысленно, она меняется чаще.
         """
-        data = _page_data(html)
+        data = _book_branch(_page_data(html))
         if data is not None:
             found = _dig(data, "bookName") or _dig(data, "book_name")
             # `chapterTotal` — то, чем сайт считает главы сейчас; прежние
@@ -224,7 +224,7 @@ class FanqieSource(Source):
 
     def _items(self, html: str) -> list[tuple[str, str]]:
         """Пары (id главы, название) в порядке чтения."""
-        data = _page_data(html)
+        data = _book_branch(_page_data(html))
         if data is not None:
             found = (_dig(data, "chapterListWithVolume")
                      or _dig(data, "allItemIds"))
@@ -332,10 +332,10 @@ def _page_data(html: str):
     """
     found = STATE_BLOCK.search(html or "")
     if found:
-        return _book_branch(_json(found.group(1), "страница книги"))
+        return _json(found.group(1), "страница книги")
     found = NEXT_BLOCK.search(html or "")
     if found:
-        return _book_branch(_json(found.group(1), "страница книги"))
+        return _json(found.group(1), "страница книги")
     return None
 
 
@@ -346,6 +346,10 @@ def _book_branch(data):
     списком его книг). Поиск по ключу натыкался на неё первой, и в поле
     «автор» уезжал целый объект настроек: «{'userInfo': {'username': ''…».
     Сужаем область до книги — там имя автора это строка.
+
+    Сужать так весь разбор нельзя: текст главы лежит в соседней ветке
+    `reader`, и из-под `page` его не достать. Поэтому сужение делает тот,
+    кому нужна именно книга, а не общий разборщик страницы.
     """
     if isinstance(data, dict):
         page = data.get("page")

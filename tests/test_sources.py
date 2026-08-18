@@ -759,3 +759,45 @@ class TestChapterStaysEncrypted(unittest.TestCase):
         from net.sources.fanqie import ChapterEncrypted
 
         self.assertTrue(_is_paid(ChapterEncrypted("нерасшифрована")))
+
+
+class TestChapterTextComesFromTheReaderBranch(unittest.TestCase):
+    """Текст главы лежит в ветке `reader`, рядом с `page`.
+
+    Разбор книги сужен до `page` — иначе в поле «автор» уезжает объект из
+    соседней ветки. Но сузить так весь разборщик страницы нельзя: из-под
+    `page` текст главы недостижим, и в файлы ложились две строки заголовка
+    без единого абзаца.
+    """
+
+    def setUp(self):
+        self.source = FanqieSource()
+
+    def test_the_body_is_found_next_to_the_book_branch(self):
+        from mvl.api import Chapter
+
+        client = FakeClient({
+            "/api/reader/full": "<html>не json</html>",
+            "/reader/": state_page({
+                "page": {"bookName": "книга", "chapterTotal": 100},
+                "reader": {"chapterData": {
+                    "title": "Глава 3",
+                    "content": "<p>Первый абзац.</p><p>Второй абзац.</p>"}},
+            }),
+        })
+        title, text = self.source.chapter(
+            client, Chapter(number=3, post_id="700000000000000001"))
+
+        self.assertEqual(title, "Глава 3")
+        self.assertIn("Первый абзац", text)
+        self.assertIn("Второй абзац", text)
+
+    def test_the_author_still_does_not_leak_from_its_own_branch(self):
+        """Сужение до `page` осталось там, где оно и нужно."""
+        client = FakeClient({"/page/": state_page({
+            "page": {"bookName": "книга", "author": "六口葫芦",
+                     "chapterTotal": 7},
+            "author": {"userInfo": {"username": "", "authorize_type": 0}},
+        })})
+        self.assertEqual(self.source.find(client, "7143038691944959011").author,
+                         "六口葫芦")

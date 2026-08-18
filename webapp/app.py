@@ -1619,10 +1619,29 @@ RANK_LOCK = threading.Lock()
 
 
 def _rank_client():
+    """Клиент для рейтинга — через прокси, даже если их ещё не проверяли.
+
+    `usable` значит «проверен и ответил двухсоткой», а до нажатия кнопки
+    проверки это ложь у всех адресов сразу. Рейтинг из-за этого уходил на
+    китайский сайт напрямую и молча ничего не привозил: снаружи выглядело
+    как «нажал срез — не произошло ничего». Непроверенный прокси мёртвым
+    не является; отключённый — является, его и пропускаем.
+    """
     with POOL_LOCK:
         pool = POOL
-    proxy = pool.current().url if pool and pool.usable_count else None
-    return Client(proxy_url=proxy)
+    return Client(proxy_url=_any_proxy(pool))
+
+
+def _any_proxy(pool) -> str | None:
+    """Адрес любого прокси, который не помечен непригодным."""
+    if not pool:
+        return None
+    if pool.usable_count:
+        return pool.current().url
+    for proxy in getattr(pool, "proxies", []):
+        if not proxy.disabled:
+            return proxy.url
+    return None
 
 
 def _rank_where(payload) -> tuple[str, str, str]:
