@@ -164,8 +164,51 @@ function renderChosen(listId){
     row.append(name, drop);
     box.append(row);
   }
+  syncPickPath(listId);
   updateListBar(listId);
 }
+
+/** Поле пути рядом с кнопкой «Выбрать…».
+ *
+ * Выбор файлов устроен одинаково во всех вкладках, а выглядел
+ * по-разному: где-то поле с адресом и кнопка справа, где-то — голая
+ * кнопка во всю строку. Поле здесь общее: показывает выбранное и
+ * принимает путь, вписанный руками, — без него окно выбора, которое не
+ * открылось, не обойти ничем.
+ *
+ * Поле есть не у каждого списка, и это не ошибка: у «Проверки» свой вид.
+ */
+function pickPathField(listId){
+  return document.querySelector(`.pickpath[data-list="${listId}"]`);
+}
+
+function syncPickPath(listId){
+  const field = pickPathField(listId);
+  if(!field || field === document.activeElement) return;  // не мешаем набирать
+
+  const paths = CHOSEN[listId] || [];
+  // Один путь показываем целиком: он и есть ответ на вопрос «что выбрано».
+  // Несколько — счётчиком, иначе строка превращается в кашу.
+  field.value = paths.length === 1 ? paths[0]
+    : (paths.length ? `выбрано ${paths.length} `
+        + plural(paths.length, 'путь', 'пути', 'путей') : '');
+  field.title = paths.join('\n');
+}
+
+document.querySelectorAll('.pickpath').forEach(field => {
+  const listId = field.dataset.list;
+  const apply = () => {
+    const typed = field.value.trim();
+    // Счётчик обратно в путь не превращаем: это наш текст, а не адрес.
+    if(/^выбрано \d+ /.test(typed)) return;
+    CHOSEN[listId] = typed ? [typed] : [];
+    renderChosen(listId);
+    const handler = $(listId).dataset.onchange;
+    if(handler && window[handler]) window[handler]();
+  };
+  field.addEventListener('change', apply);
+  field.addEventListener('keydown', e => { if(e.key === 'Enter') apply(); });
+});
 
 /** Счётчик и кнопка «Очистить список» у списка выбранных путей.
  *
@@ -223,7 +266,7 @@ document.querySelectorAll('.pickany').forEach(button => {
         if(handler && window[handler]) window[handler]();
       }
     }catch(err){
-      showError(err.message + ' Путь можно вписать вручную ниже.');
+      showError(err.message + ' Путь можно вписать в поле рядом.');
     }finally{
       button.disabled = false;
       button.textContent = label;

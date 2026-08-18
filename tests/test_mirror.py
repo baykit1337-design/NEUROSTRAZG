@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings  # noqa: E402
 from mvl.api import Chapter  # noqa: E402
 from net import sources  # noqa: E402
-from net.sources.base import SourceBroken  # noqa: E402
+from mvl.proxies import NoProxiesLeft  # noqa: E402
+from net.sources.base import SourceBroken, SourceUnreachable  # noqa: E402
 from net.sources.fanqie import ChapterEncrypted, PaidChapter  # noqa: E402
 from net.sources.fanqiemirror import FanqieMirrorSource  # noqa: E402
 
@@ -412,6 +413,90 @@ def api_novel(total=6):
     from mvl.api import Novel
 
     return Novel(code=1, name="Книга", slug="kniga", total_chapters=total)
+
+
+class TestADeadMirrorDoesNotEatTheProxies(unittest.TestCase):
+    """Молчание посредника выглядело как отказ прокси.
+
+    Посредник ходит своим прямым клиентом, но его таймаут прилетал
+    обычным `NetworkError`. Качалка перебирала весь список адресов по три
+    попытки на каждый, тратила на это минуты и заканчивала неправдой
+    «рабочих прокси не осталось» — при том, что ни один из них даже не
+    использовался.
+    """
+
+    class Pool:
+        """Пул, который помнит, просили ли его сменить адрес."""
+
+        def __init__(self):
+            self.proxies = []
+            self.switches = []
+            self.usable_count = 3
+
+        def switch(self, reason):
+            self.switches.append(reason)
+            raise RuntimeError("сюда заходить не должны")
+
+        def current(self):
+            raise NoProxiesLeft("нет адресов")
+
+    class Source:
+        needs_proxy = False
+        cancel = None
+        timeouts: dict = {}
+
+        def toc(self, client, novel, first=1, last=None, on_progress=None):
+            from mvl.api import Toc
+
+            return Toc(chapters=[Chapter(number=n, post_id=str(n))
+                                 for n in range(first, (last or 3) + 1)],
+                       missing=[])
+
+        def chapter(self, client, chapter):
+            raise SourceUnreachable(
+                "Посредник http://101.35.133.34:5000/api/raw_full не "
+                "отвечает: Timeout. Адрес меняется в config.json.")
+
+    def run_it(self):
+        import shutil
+        import tempfile
+        from mvl import client as client_mod, downloader as loader_mod
+        from mvl.downloader import Downloader
+
+        for module, name in ((client_mod, "SITE_PAUSE_RANGE"),
+                             (loader_mod, "BATCH_PAUSE_RANGE")):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, (0, 0))
+
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        pool = self.Pool()
+        site = FakeClient()
+        loader = Downloader(source=self.Source(), pool=pool, site_client=site,
+                            threads=1, probe=False)
+        report = loader.run(api_novel(3), Path(folder))
+        return report, pool
+
+    def test_not_a_single_proxy_is_thrown_away(self):
+        _, pool = self.run_it()
+        self.assertEqual(pool.switches, [])
+
+    def test_the_run_stops_instead_of_grinding_through_the_book(self):
+        """Молчит сервер — он молчит для всей книги, а не для главы."""
+        report, _ = self.run_it()
+        self.assertEqual(report.downloaded, 0)
+        self.assertEqual(report.blocked_at, None)
+        self.assertTrue(report.stopped_reason)
+
+    def test_the_reason_names_the_mirror_and_not_the_proxies(self):
+        report, _ = self.run_it()
+        self.assertIn("Посредник", report.stopped_reason)
+        self.assertNotIn("прокси не осталось", report.stopped_reason)
+
+    def test_it_says_where_the_address_is_changed(self):
+        """Сервер чужой и может исчезнуть совсем — это надо уметь пережить."""
+        report, _ = self.run_it()
+        self.assertIn("config.json", report.stopped_reason)
 
 
 class TestSkippedChaptersReachTheScreen(unittest.TestCase):

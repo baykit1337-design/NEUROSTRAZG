@@ -259,9 +259,19 @@
     box-shadow:0 6px 20px rgba(0,0,0,.5), 0 0 12px rgba(140,84,255,.25);
     opacity:0;
     /* Плавность с перелётом: пузырь чуть проскакивает свой размер и
-       возвращается — так он выглядит надутым, а не просто выросшим. */
-    transition:opacity .16s ease,
-               transform .34s cubic-bezier(.34, 1.56, .64, 1);
+       возвращается — так он выглядит надутым, а не просто выросшим.
+       За треть секунды рост не успевал прочитаться: получалось «навёл —
+       и сразу готовая подсказка», то есть эффекта как будто и нет.
+
+       Кривую берём с неспешным началом: у привычной «пружины» почти
+       весь рост укладывается в первые двести миллисекунд, а дальше
+       пузырь только доводит последние проценты — глазу это и читается
+       как «появилось сразу».
+
+       Проявление идёт не быстрее роста: иначе пузырь набирает цвет
+       раньше, чем размер, и надувания опять не видно. */
+    transition:opacity .5s ease,
+               transform .72s cubic-bezier(.45, .06, .32, 1.3);
     pointer-events:none;
     /* Выше всего остального: слой лежит последним в body и перекрывать
        его нечему, но выпадающие списки поднимают свою карточку до 200. */
@@ -1243,8 +1253,12 @@
   <!-- 1. Что разбиваем: файл книги целиком или папка -->
   <div class="card lit">
     <label>Что разбиваем — файл книги или папка с главами<span class="formats" data-formats="readable"></span></label>
+    <!-- Поле пути слева, «Выбрать…» справа — как во всех остальных
+         вкладках. Функция одна и та же, и выглядеть она должна одинаково. -->
     <div class="row">
-      <button class="ghost pickany" data-list="spList" style="flex:1">Выбрать…</button>
+      <input id="spPath" class="pickpath" data-list="spList" type="text"
+             placeholder="Путь к файлу или папке" autocomplete="off">
+      <button class="ghost pickany" data-list="spList">Выбрать…</button>
     </div>
     <div class="row" id="spListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="spCount" style="flex:1"></span>
@@ -1390,7 +1404,7 @@
   <div class="card lit">
     <label>Папка с главами<span class="formats" data-formats="readable"></span></label>
     <div class="row">
-      <input id="rnIn" type="text" placeholder="Путь к папке от WebToEpub" autocomplete="off">
+      <input id="rnIn" type="text" placeholder="Путь к файлу или папке" autocomplete="off">
       <button class="ghost browse" data-target="rnIn" data-kind="folder">Выбрать…</button>
     </div>
     <p class="hint" id="rnScanned">Папка читается сразу после выбора.</p>
@@ -1520,8 +1534,11 @@
 <section id="tab-merge" hidden>
   <div class="card lit">
     <label>Что объединяем — папка или отдельные файлы, форматы можно смешивать<span class="formats" data-formats="readable"></span></label>
+    <!-- Тот же блок, что и в «Разбить»: поле пути слева, кнопка справа. -->
     <div class="row">
-      <button class="ghost pickany" data-list="mgList" style="flex:1">Выбрать…</button>
+      <input id="mgPath" class="pickpath" data-list="mgList" type="text"
+             placeholder="Путь к файлу или папке" autocomplete="off">
+      <button class="ghost pickany" data-list="mgList">Выбрать…</button>
     </div>
     <div class="row" id="mgListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="mgCount" style="flex:1"></span>
@@ -3242,6 +3259,10 @@ async function thCheck(){
       novel,
       source: srcMenu ? srcMenu.value : '',
       threads: Number($('dlThreads').value) || 1,
+      // Замер должен ждать столько же, сколько и сам прогон: иначе он
+      // меряет не то, что потом будет качать.
+      timeout: Number($('tmRead').value) || 120,
+      connect_timeout: Number($('tmConnect').value) || 15,
     }));
     note.textContent = said;
   }catch(err){

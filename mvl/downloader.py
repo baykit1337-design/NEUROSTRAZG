@@ -182,8 +182,17 @@ class Downloader:
         probe: bool = True,
         source=None,
         on_event=None,
+        timeout: int | None = None,
+        connect_timeout: int | None = None,
     ):
         self.client = client or Client()
+        #: Сроки ожидания, выставленные человеком в интерфейсе. Раньше их
+        #: получал только клиент оглавления, а главы качал клиент витрины,
+        #: который качалка заводит сама — и заводила с умолчаниями. В
+        #: журнале поэтому стояло «15003 ms» независимо от того, что
+        #: выставлено на экране, и настройка выглядела не работающей.
+        self.timeout = timeout
+        self.connect_timeout = connect_timeout
         #: Откуда качаем. По умолчанию тот сайт, с которого всё начиналось,
         #: — иначе прежние вызовы пришлось бы править все разом.
         if source is None:
@@ -204,6 +213,9 @@ class Downloader:
         # нажатие «Остановить» ему сказать больше некому, и кнопка ждёт
         # всю лесенку его повторов.
         self.source.cancel = self.cancel
+        # Источнику со своим клиентом сроки ожидания тоже нужны: он ходит
+        # мимо нас, и настройка с экрана до него иначе не доходит.
+        self.source.timeouts = self._timeouts()
         self.progress = Progress()
         #: Множитель паузы, растёт после каждого 429.
         self.pause_multiplier = 1.0
@@ -413,6 +425,19 @@ class Downloader:
                             raise Cancelled() from exc
                         continue
 
+                    except _unreachable() as exc:
+                        # Молчит сервер самого источника, а не прокси.
+                        # Менять адрес бессмысленно: перебор всего списка
+                        # занимал минуты и заканчивался неправдой
+                        # «рабочих прокси не осталось» — при том, что ни
+                        # один из них даже не использовался.
+                        stopped_reason = scrub(str(exc))
+                        self._log_error(output_dir, chapter.number,
+                                        stopped_reason)
+                        state.mark_failed(chapter.number, stopped_reason)
+                        outcome = "stop"
+                        break
+
                     except (Blocked, NetworkError) as exc:
                         reason = scrub(str(exc))
                         if self.pool is None:
@@ -573,8 +598,21 @@ class Downloader:
             log.info("Работаем через прокси %s", proxy.label)
         return SiteClient(
             referer=novel.page_url, proxy_url=proxy.url if proxy else None,
-            cancel=self.cancel,
+            cancel=self.cancel, **self._timeouts(),
         )
+
+    def _timeouts(self) -> dict:
+        """Сроки ожидания для клиентов прогона.
+
+        Не выставлено — не подставляем ничего: у клиента свои умолчания,
+        и подменять их нулями или своими числами тут незачем.
+        """
+        chosen = {}
+        if self.timeout:
+            chosen["timeout"] = int(self.timeout)
+        if self.connect_timeout:
+            chosen["connect_timeout"] = int(self.connect_timeout)
+        return chosen
 
     def _proxy_label(self) -> str:
         if self.pool is None:
@@ -608,7 +646,7 @@ class Downloader:
             return SiteClient(referer=novel.page_url, proxy_url=proxy_url,
                               shared_session=shared_session,
                               max_attempts=settings.threads.probe_attempts,
-                              cancel=self.cancel)
+                              cancel=self.cancel, **self._timeouts())
 
         return make_client
 
@@ -897,6 +935,17 @@ def _is_refusal(error: BaseException) -> bool:
     if isinstance(error, (Blocked, RateLimited)):
         return True
     return isinstance(error, HttpError) and error.status in (403, 429)
+
+
+def _unreachable():
+    """Отказ «сервер источника молчит» — кортежем для `except`.
+
+    Ленивый импорт, как и у `_is_paid`: `net.sources` тянет за собой
+    `mvl.api` и клиентов, а качалку импортируют раньше них.
+    """
+    from net.sources.base import SourceUnreachable
+
+    return (SourceUnreachable,)
 
 
 def _is_dead_address(error: BaseException) -> bool:

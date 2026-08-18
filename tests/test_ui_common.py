@@ -229,9 +229,34 @@ class TestTheHintInflatesLikeABubble(UiBase):
         self.assertIn(".tooltip.visible{opacity:1;transform:scale(1)}",
                       self.page)
 
+    def curve(self):
+        """Кривая роста пузыря: длительность и четыре числа."""
+        found = re.search(
+            r"transform ([\d.]+)s cubic-bezier\(([^)]+)\)", self.page)
+        self.assertIsNotNone(found, "кривой роста нет вовсе")
+        return float(found.group(1)), [float(n) for n in
+                                       found.group(2).split(",")]
+
     def test_it_overshoots_a_little_on_the_way(self):
-        """Без перелёта пузырь не надувается, а просто вырастает."""
-        self.assertIn("cubic-bezier(.34, 1.56, .64, 1)", self.page)
+        """Без перелёта пузырь не надувается, а просто вырастает.
+
+        Сами числа подбираются на глаз и меняются; важно, что вторая
+        опорная точка забирается выше единицы — это и есть перелёт.
+        """
+        _, points = self.curve()
+        self.assertGreater(points[3], 1.0, "перелёта нет, пузырь не надувается")
+
+    def test_the_growing_is_slow_enough_to_be_seen(self):
+        """За треть секунды рост не читается: «навёл — и сразу готово»."""
+        seconds, _ = self.curve()
+        self.assertGreaterEqual(seconds, 0.5)
+
+    def test_the_colour_does_not_arrive_before_the_size(self):
+        """Иначе пузырь уже виден целиком, а надувается будто впустую."""
+        fade = re.search(r"transition:opacity ([\d.]+)s", self.page)
+        self.assertIsNotNone(fade)
+        seconds, _ = self.curve()
+        self.assertLessEqual(float(fade.group(1)), seconds)
 
     def test_it_grows_out_of_the_circle_and_not_out_of_its_own_middle(self):
         self.assertIn("transform-origin:var(--tip-x) 100%", self.page)
@@ -271,6 +296,70 @@ class TestTheHintInflatesLikeABubble(UiBase):
     def test_motion_can_be_turned_off_by_the_system(self):
         block = self.page.split("@media (prefers-reduced-motion: reduce){", 1)
         self.assertIn(".tooltip{transform:none", block[1][:400])
+
+
+class TestPickingFilesLooksTheSameEverywhere(UiBase):
+    """Выбор файлов устроен одинаково, а выглядел по-разному.
+
+    В «Переименовать» — поле пути и кнопка «Выбрать…» справа. В
+    «Разбить» и «Объединить» — голая кнопка во всю строку. Функция одна
+    и та же, и разнобой тут ничем не оправдан.
+    """
+
+    #: Поля, у которых должен быть одинаковый вид.
+    FIELDS = ("spPath", "mgPath", "rnIn")
+
+    def row_of(self, field):
+        """Строка разметки с этим полем и кнопкой рядом."""
+        before = self.page.split(f'id="{field}"', 1)[0]
+        return before.rsplit('<div class="row"', 1)[1] \
+            + self.page.split(f'id="{field}"', 1)[1].split("</div>", 1)[0]
+
+    def test_every_tab_has_a_path_field(self):
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(f'id="{field}"', self.page)
+
+    def test_the_button_stands_beside_it_and_not_across_the_row(self):
+        """`flex:1` растягивал кнопку на всю строку — оттуда и разнобой."""
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                row = self.row_of(field)
+                self.assertIn("Выбрать…", row)
+                self.assertNotIn('style="flex:1"', row)
+
+    def test_they_all_say_the_same_thing(self):
+        """«Путь к папке от WebToEpub» — про чужую программу и про папку.
+
+        Про саму WebToEpub на вкладке речь всё же идёт: кнопка «Ссылки»
+        собирает список именно для неё. Поэтому смотрим на заполнители
+        полей, а не на всю страницу.
+        """
+        self.assertEqual(self.page.count('placeholder="Путь к файлу или папке"'),
+                         len(self.FIELDS))
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                self.assertNotIn("WebToEpub", self.row_of(field))
+
+    def test_the_field_is_kept_in_step_with_the_choice(self):
+        self.assertIn("syncPickPath(listId);", self.tabs)
+        chosen = self.tabs.split("function renderChosen(listId)", 1)[1]
+        self.assertIn("syncPickPath(listId)", chosen.split("\n}", 1)[0])
+
+    def test_a_path_typed_by_hand_counts_as_chosen(self):
+        """Окно выбора может не открыться — иначе это тупик."""
+        body = self.tabs.split(".pickpath').forEach", 1)[1]
+        self.assertIn("CHOSEN[listId] = typed ? [typed] : [];", body)
+        self.assertIn("renderChosen(listId)", body)
+
+    def test_our_own_counter_is_not_mistaken_for_a_path(self):
+        """«выбрано 12 путей» — это наш текст, а не адрес на диске."""
+        body = self.tabs.split(".pickpath').forEach", 1)[1]
+        self.assertIn("/^выбрано \\d+ /.test(typed)", body)
+
+    def test_typing_is_not_interrupted_by_a_refresh(self):
+        body = self.tabs.split("function syncPickPath(listId)", 1)[1]
+        self.assertIn("field === document.activeElement", body)
 
 
 class TestHiddenReallyHides(UiBase):

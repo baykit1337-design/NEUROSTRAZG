@@ -624,6 +624,11 @@ def api_start():
             threads=threads,
             probe=probe,
             source=source,
+            # Те же сроки, что и у клиента оглавления. Раньше их получал
+            # только он, а главы качал клиент витрины с умолчаниями — и
+            # выставленное на экране число не влияло ни на что.
+            timeout=read_timeout,
+            connect_timeout=connect_timeout,
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
@@ -655,8 +660,14 @@ def api_threads_check():
     try:
         threads = max(1, int(payload.get("threads") or 1))
         count = max(2, min(int(payload.get("chapters") or CHECK_CHAPTERS), 20))
+        # Замер должен ждать столько же, сколько и прогон: иначе он меряет
+        # не то, что потом будет качать.
+        read_timeout = int(payload.get("timeout") or client_mod.TIMEOUT)
+        connect_timeout = int(payload.get("connect_timeout")
+                              or client_mod.CONNECT_TIMEOUT)
     except (TypeError, ValueError):
-        return jsonify(error="Потоки и число глав должны быть числами"), 400
+        return jsonify(error="Потоки, число глав и сроки ожидания должны "
+                             "быть числами"), 400
 
     novel = _novel_from_payload(novel_data)
     with POOL_LOCK:
@@ -676,9 +687,11 @@ def api_threads_check():
 
     # Оглавление берём через тот же прокси, что и всё остальное: голым
     # клиентом сайт не отвечает, и замер падал с невнятным 502.
-    client = Client(proxy_url=live[0].url if live else None)
+    client = Client(proxy_url=live[0].url if live else None,
+                    timeout=read_timeout, connect_timeout=connect_timeout)
     downloader = Downloader(client=client, pool=pool, threads=threads,
-                            source=source)
+                            source=source, timeout=read_timeout,
+                            connect_timeout=connect_timeout)
     try:
         try:
             toc = _toc_any_proxy(source, novel, client, live, count)

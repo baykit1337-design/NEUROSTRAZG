@@ -538,6 +538,50 @@ class TestTheStopFlagReachesEveryone(unittest.TestCase):
         self.assertIs(source.cancel, loader.cancel)
 
 
+class TestWaitingTimesReachTheChapters(unittest.TestCase):
+    """Выставленные сроки ожидания не доходили до скачивания глав.
+
+    `Client(timeout=…)` в веб-слое — это клиент оглавления. Главы качает
+    клиент витрины, который качалка заводит сама, и заводила с
+    умолчаниями: в журнале стояло «15003 ms» независимо от того, что
+    выставлено на экране, и настройка выглядела не работающей.
+    """
+
+    def novel(self):
+        return api.Novel(code=1, name="Книга", slug="kniga", total_chapters=2)
+
+    def loader(self, **kwargs):
+        return Downloader(timeout=77, connect_timeout=9, **kwargs)
+
+    def test_the_session_of_the_site_gets_them(self):
+        client = self.loader()._new_session(self.novel())
+        self.assertEqual((client.timeout, client.connect_timeout), (77, 9))
+
+    def test_the_clients_of_the_threads_get_them(self):
+        make = self.loader()._make_site_client(self.novel())
+        client = make()
+        self.assertEqual((client.timeout, client.connect_timeout), (77, 9))
+
+    def test_the_source_is_told_as_well(self):
+        """Источник со своим клиентом иначе ждёт по-своему."""
+        class Source:
+            cancel = None
+            timeouts: dict = {}
+
+        source = Source()
+        self.loader(source=source)
+        self.assertEqual(source.timeouts,
+                         {"timeout": 77, "connect_timeout": 9})
+
+    def test_nothing_is_forced_when_nothing_was_asked(self):
+        """Не выставлено — у клиента свои умолчания, подменять их нечем."""
+        loader = Downloader()
+        self.assertEqual(loader._timeouts(), {})
+        client = loader._new_session(self.novel())
+        self.assertEqual(client.timeout, client_mod.TIMEOUT)
+        self.assertEqual(client.connect_timeout, client_mod.CONNECT_TIMEOUT)
+
+
 # ------------------------------------------------------------- интеграционные
 
 

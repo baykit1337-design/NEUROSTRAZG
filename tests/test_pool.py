@@ -812,11 +812,50 @@ class TestThreadsRouteExplainsItself(unittest.TestCase):
         self.assertEqual(res.get_json()["step"], "оглавление")
 
     def test_the_toc_is_fetched_through_a_proxy(self):
-        """Голым клиентом сайт не отвечает — отсюда и брался 502."""
-        source = (Path(__file__).resolve().parent.parent
-                  / "webapp" / "app.py").read_text(encoding="utf-8")
-        body = source.split("def api_threads_check", 1)[1].split("\n@app.", 1)[0]
-        self.assertIn("Client(proxy_url=live[0].url if live else None)", body)
+        """Голым клиентом сайт не отвечает — отсюда и брался 502.
+
+        Спрашиваем сам клиент, а не текст вызова: имена переменных и
+        набор параметров меняются, а «оглавление идёт через прокси» —
+        нет, и ломаться тест должен только на этом.
+        """
+        seen = []
+        source = self.Source()
+        original = source.toc
+
+        def watched(client, *args, **kwargs):
+            seen.append(getattr(client, "proxy_url", None))
+            return original(client, *args, **kwargs)
+
+        source.toc = watched
+        self.use(source, proxies=3)
+        self.check()
+
+        self.assertTrue(seen, "оглавление вообще не собиралось")
+        self.assertIn("10.0.0.", seen[0] or "")
+
+    def test_the_waiting_times_reach_the_measurement(self):
+        """Замер должен ждать столько же, сколько потом будет качать.
+
+        Иначе он меряет не то: в журнале стояло «15003 ms» независимо от
+        того, что выставлено на экране.
+        """
+        seen = []
+        source = self.Source()
+        original = source.toc
+
+        def watched(client, *args, **kwargs):
+            seen.append((client.timeout, client.connect_timeout))
+            return original(client, *args, **kwargs)
+
+        source.toc = watched
+        self.use(source, proxies=3)
+        self.app.post("/api/threads/check", json={
+            "novel": {"code": "7590221243043826712", "name": "К",
+                      "total_chapters": 9},
+            "source": "fanqie", "threads": 3,
+            "timeout": 77, "connect_timeout": 9})
+
+        self.assertEqual(seen[0], (77, 9))
 
     def test_a_good_run_still_answers_with_the_report(self):
         self.use(self.Source(), proxies=3)

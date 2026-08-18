@@ -30,9 +30,10 @@ import re
 import threading
 
 from config import settings
-from mvl.client import Client
+from mvl.client import Client, HttpError, NetworkError
+from mvl.proxies import scrub
 
-from .base import Chapter, SourceBroken
+from .base import Chapter, SourceBroken, SourceUnreachable
 from .fanqie import (PAID_MARKERS, ChapterEncrypted, FanqieSource, PaidChapter,
                      _check_readable, _clean, _json)
 
@@ -82,12 +83,16 @@ class FanqieMirrorSource(FanqieSource):
             return client
         with self._lock:
             if self._direct is None:
+                # Сроки с экрана важнее наших: человек их для того и
+                # выставлял. Нет их — берём из настроек посредника.
+                waits = {"timeout": max(1, int(settings.mirror.timeout or 30))}
+                waits.update(self.timeouts or {})
                 self._direct = Client(
                     max_attempts=max(1, int(settings.mirror.retries or 1)),
-                    timeout=max(1, int(settings.mirror.timeout or 30)),
                     # Иначе «Остановить» ждёт лесенку повторов: клиент
                     # этот наш, и о нажатии кнопки ему сказать некому.
                     cancel=self.cancel,
+                    **waits,
                 )
             return self._direct
 
@@ -109,7 +114,24 @@ class FanqieMirrorSource(FanqieSource):
                 "Адрес посредника не задан: config.json, раздел mirror, "
                 "поле url. Без него этот способ работать не может.")
 
-        raw = self.reader(client).get_text(f"{address}?item_id={item_id}")
+        # Через кого пошли — важно для разбора отказа. Свой прямой клиент
+        # прокси не использует, и его молчание к пулу отношения не имеет.
+        reader = self.reader(client)
+        direct = reader is not client
+        try:
+            raw = reader.get_text(f"{address}?item_id={item_id}")
+        except (NetworkError, HttpError) as exc:
+            if not direct:
+                # Шли через прокси — пусть с ним и разбирается качалка.
+                raise
+            raise SourceUnreachable(
+                f"Посредник {address} не отвечает: {scrub(str(exc))}. "
+                f"Это чужой сервер по голому адресу — он мог исчезнуть "
+                f"совсем. Адрес меняется в config.json, раздел mirror; "
+                f"там же можно включить via_proxy, чтобы идти к нему "
+                f"через прокси. Обычный способ «Fanqie» работает и без "
+                f"посредника, но закрытые главы пропускает."
+            ) from exc
         data = _json(raw, "текст главы от посредника")
 
         code = data.get("code")
@@ -144,4 +166,5 @@ def _strip_voice(html: str) -> str:
     return VOICE_MARK.sub("", VOICE_BLOCK.sub("", html))
 
 
-__all__ = ["ChapterEncrypted", "FanqieMirrorSource", "PaidChapter"]
+__all__ = ["ChapterEncrypted", "FanqieMirrorSource", "PaidChapter",
+           "SourceUnreachable"]
