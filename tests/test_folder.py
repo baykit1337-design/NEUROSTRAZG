@@ -168,7 +168,7 @@ class TestBrowserOnlyFillsItIn(unittest.TestCase):
         self.assertIn("$('folder').value = '';", self.tabs)
 
     def test_the_card_shows_the_original_and_the_translation(self):
-        self.assertIn("$('rkCardName').textContent = rkBothTitles(row);",
+        self.assertIn("$('bookName').textContent = rkBothTitles(row);",
                       self.tabs)
         self.assertIn("return `${own} / ${ru_}`;", self.tabs)
 

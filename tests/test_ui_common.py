@@ -149,8 +149,15 @@ class TestRankHandsOverToTheDownloader(UiBase):
         останавливает работу покидаемой — своей ветки быть не должно."""
         self.assertIn("button.click()", self.page)
 
-    def test_the_source_becomes_fanqie(self):
-        self.assertIn("srcMenu.set('fanqie', {notify: true})", self.pick())
+    def test_the_source_becomes_the_mirror(self):
+        """Обычный способ на этих книгах — сплошные пропуски.
+
+        У книги на тысячу двести глав открыто десять: прогон вырождается
+        в перечень недоступных. Посредник отдаёт их все, и способ виден
+        в поле «Источник» — меняется одним щелчком.
+        """
+        self.assertIn("srcMenu.set('fanqie-mirror', {notify: true})",
+                      self.pick())
 
     def test_the_hint_changes_with_the_source(self):
         """Без `notify` заполнитель поля остался бы от прошлого источника."""
@@ -176,10 +183,20 @@ class TestRankHandsOverToTheDownloader(UiBase):
                       self.page)
 
     def test_the_chosen_book_is_shown(self):
-        self.assertIn('id="rkCard"', self.page)
-        for part in ("rkCardCover", "rkCardName", "rkCardMeta"):
+        self.assertIn('id="book"', self.page)
+        for part in ("bookCover", "bookName", "bookMeta"):
             with self.subTest(part=part):
                 self.assertIn(f'id="{part}"', self.page)
+
+    def test_there_is_only_one_card_for_the_book(self):
+        """Две карточки подряд с одинаковыми обложками — одна и та же книга.
+
+        Откуда она взялась — выбрана в срезе или код вставлен руками —
+        читателю безразлично, а картинок он видел две.
+        """
+        self.assertNotIn('id="rkCard"', self.page)
+        self.assertNotIn('id="rkCardCover"', self.page)
+        self.assertEqual(self.page.count('class="book-name"'), 1)
 
     def test_the_card_says_what_the_rank_knows(self):
         card = self.tabs.split("function rkShowCard(row)", 1)[1]
@@ -197,7 +214,88 @@ class TestRankHandsOverToTheDownloader(UiBase):
         self.assertIn("void card.offsetWidth;", self.tabs)
 
     def test_the_card_goes_away_when_the_link_is_edited_by_hand(self):
-        self.assertIn("$('rkCard').hidden = true;", self.page)
+        self.assertIn("$('book').hidden = true;", self.page)
+
+
+class TestTheHintInflatesLikeABubble(UiBase):
+    """Подсказка должна вылетать пузырём из самого кружка с вопросом."""
+
+    def show(self):
+        return self.page.split("function tipShow(anchor, text)", 1)[1].split(
+            "\n}", 1)[0]
+
+    def test_it_grows_from_a_small_size(self):
+        self.assertIn("transform:scale(.2)", self.page)
+        self.assertIn(".tooltip.visible{opacity:1;transform:scale(1)}",
+                      self.page)
+
+    def test_it_overshoots_a_little_on_the_way(self):
+        """Без перелёта пузырь не надувается, а просто вырастает."""
+        self.assertIn("cubic-bezier(.34, 1.56, .64, 1)", self.page)
+
+    def test_it_grows_out_of_the_circle_and_not_out_of_its_own_middle(self):
+        self.assertIn("transform-origin:var(--tip-x) 100%", self.page)
+        self.assertIn("--tip-x", self.show())
+
+    def test_turned_down_it_grows_from_the_other_side(self):
+        """Кружок сверху — значит, и расти надо сверху вниз."""
+        self.assertIn(".tooltip.below{transform-origin:var(--tip-x) 0}",
+                      self.page)
+        self.assertIn("classList.toggle('below', below)", self.show())
+
+    def test_there_is_a_tail_pointing_at_the_circle(self):
+        self.assertIn(".tooltip::after", self.page)
+        self.assertIn("left:var(--tip-x)", self.page)
+
+    def test_the_tail_does_not_slide_off_the_corner(self):
+        """У края экрана подсказку сдвигает, и центр кружка уходит за неё."""
+        self.assertIn("TIP_TAIL_EDGE", self.show())
+
+    def test_the_size_is_measured_before_it_starts_growing(self):
+        """`getBoundingClientRect` вернул бы размер сжатого пузыря.
+
+        Подсказка встала бы мимо места: ширина в момент замера — пятая
+        часть настоящей.
+        """
+        body = self.show()
+        self.assertIn("tip.offsetWidth", body)
+        self.assertIn("tip.offsetHeight", body)
+        self.assertNotIn("tip.getBoundingClientRect()", body)
+
+    def test_it_is_placed_before_it_is_shown(self):
+        """Иначе пузырь надувается на старом месте и прыгает на новое."""
+        body = self.show()
+        self.assertLess(body.index("tip.style.top"),
+                        body.index("classList.add('visible')"))
+
+    def test_motion_can_be_turned_off_by_the_system(self):
+        block = self.page.split("@media (prefers-reduced-motion: reduce){", 1)
+        self.assertIn(".tooltip{transform:none", block[1][:400])
+
+
+class TestHiddenReallyHides(UiBase):
+    """`hidden` не работал на всём, у чего задан свой `display`.
+
+    Атрибут прячет через `display:none` из браузерного набора правил, а
+    он слабее любого авторского. В «Разбить» и «Объединить» над формой
+    из-за этого висела пустая полоса `.schema` и кнопка «Очистить
+    список» в `.row` — при том, что выбирать было ещё нечего.
+    """
+
+    def test_there_is_one_rule_for_the_whole_page(self):
+        self.assertIn("[hidden]{display:none !important}", self.page)
+
+    def test_the_blocks_that_showed_through_are_marked_hidden(self):
+        """Разметка была права — не работало правило."""
+        for part in ("spSchema", "mgSchema", "spListBar", "mgListBar"):
+            with self.subTest(part=part):
+                block = self.page.split(f'id="{part}"', 1)[1].split(">", 1)[0]
+                self.assertIn("hidden", block)
+
+    def test_those_blocks_still_declare_their_own_display(self):
+        """Иначе тест зелёный, а причина ушла — и вернётся с новым блоком."""
+        self.assertIn(".schema{margin-top:12px;", self.page)
+        self.assertIn(".row{display:flex", self.page)
 
 
 class TestFoundBookHasACoverToo(UiBase):
@@ -233,6 +331,16 @@ class TestFoundBookHasACoverToo(UiBase):
         """Пустая рамка на месте обложки хуже её отсутствия."""
         self.assertIn("onerror", self.cover())
         self.assertIn("hidden = true", self.cover())
+
+    def test_the_same_address_twice_does_not_hide_it_forever(self):
+        """Из рейтинга карточку заполняют дважды: срезом и поиском.
+
+        Второй `onload` на тот же src браузер не пришлёт, и обложка
+        осталась бы спрятанной навсегда.
+        """
+        body = self.cover()
+        self.assertIn("cover.getAttribute('src') === src", body)
+        self.assertIn("cover.complete && cover.naturalWidth", body)
 
     def test_the_search_asks_for_it(self):
         self.assertIn("showCover(novel);", self.page)
@@ -408,11 +516,14 @@ class TestTooltipLayer(UiBase):
         self.assertIn("anchor.getBoundingClientRect()", self.show())
 
     def test_it_flips_down_when_there_is_no_room_above(self):
-        self.assertIn("if(top < TIP_EDGE) top = box.bottom + TIP_GAP;",
-                      self.show())
+        """Сверху не поместилась — уходит под элемент, а не за край."""
+        body = self.show()
+        self.assertIn("top < TIP_EDGE", body)
+        self.assertIn("box.bottom + TIP_GAP", body)
 
     def test_it_slides_left_when_there_is_no_room_right(self):
-        self.assertIn("window.innerWidth - size.width - TIP_EDGE", self.show())
+        self.assertIn("window.innerWidth", self.show())
+        self.assertIn("TIP_EDGE", self.show())
 
     def test_it_never_goes_off_the_left_edge_either(self):
         self.assertIn("Math.max(left, TIP_EDGE)", self.show())

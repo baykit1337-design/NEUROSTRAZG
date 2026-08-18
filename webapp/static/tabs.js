@@ -4649,10 +4649,16 @@ async function rkPick(row){
   rkPicked = row;
   goTab('download');
 
-  // Источник — Fanqie: рейтинг больше ниоткуда не берётся.
+  // Источник — Фанкью через посредника. Обычный способ на этих книгах
+  // упирается в закрытые главы: у книги на тысячу двести открыто десять,
+  // и прогон вырождается в сплошные пропуски. Посредник отдаёт их все —
+  // ценой того, что и книга, и запрос идут через чужой сервер открытым
+  // текстом. Способ виден в поле «Источник» и меняется одним щелчком.
   // С `notify`: вместе с источником меняются заполнитель поля и пояснение
   // под ним — у Фанкью в ссылке не слаг, а числовой код.
-  if(typeof srcMenu !== 'undefined' && srcMenu) srcMenu.set('fanqie', {notify: true});
+  if(typeof srcMenu !== 'undefined' && srcMenu){
+    srcMenu.set('fanqie-mirror', {notify: true});
+  }
   $('q').value = row.book_id;
 
   // Диапазон чистим сразу, до поиска: пустые поля означают «вся книга»,
@@ -4696,10 +4702,14 @@ function rkBothTitles(row){
 
 /** Карточка «что именно выбрано»: то, что о книге знает рейтинг. */
 function rkShowCard(row){
-  const card = $('rkCard');
+  // Карточка одна на оба пути — та же, что показывает найденную книгу.
+  // Двух одинаковых обложек одна под другой быть не должно: книга одна,
+  // и откуда её взяли, читателю безразлично. Сюда кладём то, что знает
+  // срез; ответит сайт — `find` перепишет теми же полями.
+  const card = $('book');
   card.hidden = false;
-  $('rkCardName').textContent = rkBothTitles(row);
-  $('rkCardMeta').textContent = [
+  $('bookName').textContent = rkBothTitles(row);
+  $('bookMeta').textContent = [
     `код ${row.book_id}`,
     row.author && 'автор: ' + row.author,
     row.readers && `${ru(row.readers)} читающих`,
@@ -4707,10 +4717,12 @@ function rkShowCard(row){
     row.status,
     row.place && `место ${row.place} в срезе`,
   ].filter(Boolean).join('  ·  ');
+  // Перевод названия у среза уже может быть — тогда переводить нечего.
+  $('bookTranslate').hidden = !!rkTitleOf(row.book_id);
 
   // Через свой кэш, как и миниатюра в строке: ссылка с сайта подписана и
   // живёт недолго, а карточка может провисеть на экране весь вечер.
-  const cover = $('rkCardCover');
+  const cover = $('bookCover');
   cover.hidden = !row.book_id;
   if(row.book_id){
     cover.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
@@ -4721,7 +4733,7 @@ function rkShowCard(row){
 
 /** Доскроллить и подсветить: иначе непонятно, куда книга уехала. */
 function rkCardFlash(){
-  const card = $('rkCard');
+  const card = $('book');
   card.scrollIntoView({behavior: 'smooth', block: 'center'});
   card.classList.remove('flash');
   // Перезапуск анимации: без чтения раскладки браузер снятие и возврат

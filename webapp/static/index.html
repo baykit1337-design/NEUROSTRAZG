@@ -101,6 +101,15 @@
   }
   .card[hidden]{display:none}
 
+  /* Атрибут `hidden` прячет через `display:none` из браузерного набора
+     правил, а он слабее любого нашего `display`. Поэтому `.row[hidden]`
+     и `.schema[hidden]` оставались на экране: в «Разбить» и
+     «Объединить» над формой висела пустая фиолетовая полоса и кнопка
+     «Очистить список» — при том, что выбирать было ещё нечего.
+     Точечно это уже чинили четырежды (`.card`, `.modal`, `section`,
+     `.dropdown-menu`); правило ниже закрывает и все будущие случаи. */
+  [hidden]{display:none !important}
+
   label{display:block;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
 
   input[type=text],input[type=number],input[type=password],textarea{
@@ -230,7 +239,13 @@
      Внутри карточки её обрезала бы граница — прочитать нельзя. */
   .tooltip{
     position:fixed;left:0;top:0;
-    transform:translateY(4px);
+    /* Откуда надувается пузырь. По горизонтали — центр кружка с
+       вопросом, по вертикали — та сторона подсказки, что к нему
+       обращена. Обе величины считаются на месте: они зависят от того,
+       где кружок оказался на экране. */
+    --tip-x:50%;
+    transform-origin:var(--tip-x) 100%;
+    transform:scale(.2);
     background:#15151d;
     color:#e5e5ec;
     border:1px solid #6d28d9;
@@ -243,13 +258,40 @@
     text-align:left;text-transform:none;letter-spacing:0;font-weight:400;
     box-shadow:0 6px 20px rgba(0,0,0,.5), 0 0 12px rgba(140,84,255,.25);
     opacity:0;
-    transition:opacity .2s ease, transform .2s ease;
+    /* Плавность с перелётом: пузырь чуть проскакивает свой размер и
+       возвращается — так он выглядит надутым, а не просто выросшим. */
+    transition:opacity .16s ease,
+               transform .34s cubic-bezier(.34, 1.56, .64, 1);
     pointer-events:none;
     /* Выше всего остального: слой лежит последним в body и перекрывать
        его нечему, но выпадающие списки поднимают свою карточку до 200. */
     z-index:400;
   }
-  .tooltip.visible{opacity:1;transform:translateY(0)}
+  /* Подсказка развёрнута вниз — значит, кружок над ней. */
+  .tooltip.below{transform-origin:var(--tip-x) 0}
+  .tooltip.visible{opacity:1;transform:scale(1)}
+
+  /* Хвостик пузыря: указывает на тот самый кружок, из которого он
+     вылетел. Без него подсказка — просто окошко посреди экрана. */
+  .tooltip::after{
+    content:'';position:absolute;
+    left:var(--tip-x);margin-left:-5px;
+    width:9px;height:9px;
+    background:#15151d;
+    border:1px solid #6d28d9;
+    transform:rotate(45deg);
+  }
+  .tooltip::after{bottom:-5px;border-top:none;border-left:none}
+  .tooltip.below::after{
+    bottom:auto;top:-5px;
+    border:1px solid #6d28d9;border-bottom:none;border-right:none;
+  }
+
+  /* Кому движение мешает — тому просто проявление, без надувания. */
+  @media (prefers-reduced-motion: reduce){
+    .tooltip{transform:none;transition:opacity .12s ease}
+    .tooltip.visible{transform:none}
+  }
 
   /* 5.3 Свой выпадающий список — нативный был белым и нечитаемым. */
   .dropdown{position:relative}
@@ -1067,11 +1109,15 @@
        числовой код книги.</p>
   </div>
 
-  <!-- 2. Книга найдена -->
+  <!-- 2. Выбранная книга. Карточка одна на оба пути: и когда книгу
+       выбрали в рейтинге, и когда код вставили руками. Раньше их было
+       две, одна под другой, с двумя одинаковыми обложками — а книга-то
+       одна, и откуда она взялась, читателю безразлично.
+
+       Из рейтинга она заполняется сразу тем, что известно срезу, и
+       уточняется, как только ответит сайт: ждать ответа с пустым
+       экраном — значит не понимать, что вообще выбрано. -->
   <div class="card lit" id="book" hidden>
-    <!-- Обложка тут та же и в том же виде, что в карточке из рейтинга:
-         одна и та же книга не должна выглядеть по-разному оттого, что
-         её код вставили руками, а не выбрали в срезе. -->
     <div class="picked-row" style="margin-top:0">
       <img id="bookCover" alt="" hidden>
       <div style="flex:1;min-width:0">
@@ -1081,19 +1127,6 @@
              рейтинга. Тогда её имя — иероглифы, и в папку они не пойдут. -->
         <button class="ghost" id="bookTranslate" hidden
                 style="margin-top:10px;padding:3px 12px">перевести название</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 2.1: книга пришла из рейтинга. Пока она не найдена на сайте, видно
-       хотя бы то, что о ней знает рейтинг — иначе непонятно, что выбрано. -->
-  <div class="card lit picked" id="rkCard" hidden>
-    <label>Выбрано в рейтинге</label>
-    <div class="picked-row">
-      <img id="rkCardCover" alt="" hidden>
-      <div style="flex:1;min-width:0">
-        <div class="book-name" id="rkCardName"></div>
-        <div class="meta" id="rkCardMeta"></div>
       </div>
     </div>
   </div>
@@ -2555,27 +2588,46 @@ function tipLayer(){
   return TIP_LAYER;
 }
 
+/** Насколько близко к углу пузыря может подойти хвостик. */
+const TIP_TAIL_EDGE = 14;
+
 function tipShow(anchor, text){
   if(!text || !anchor.isConnected) return;
   const tip = tipLayer();
   tip.textContent = text;
-  // Ширину и высоту можно измерить только когда текст уже на месте.
-  tip.classList.add('visible');
+  tip.classList.remove('visible', 'below');
+
+  // Размер берём у раскладки, а не у `getBoundingClientRect`: пузырь
+  // начинает надуваться с малого масштаба, и прямоугольник вернул бы
+  // размер сжатой подсказки — она встала бы мимо места.
+  const width = tip.offsetWidth;
+  const height = tip.offsetHeight;
   const box = anchor.getBoundingClientRect();
-  const size = tip.getBoundingClientRect();
 
   // Обычное место — над элементом. Не помещается сверху — разворачиваем
   // вниз; не помещается справа — сдвигаем влево. Обрезать её при этом
   // всё равно нечем, но читать подсказку за краем экрана невозможно.
-  let top = box.top - size.height - TIP_GAP;
-  if(top < TIP_EDGE) top = box.bottom + TIP_GAP;
+  let top = box.top - height - TIP_GAP;
+  const below = top < TIP_EDGE;
+  if(below) top = box.bottom + TIP_GAP;
 
-  let left = box.left + box.width / 2 - size.width / 2;
-  left = Math.min(left, window.innerWidth - size.width - TIP_EDGE);
+  let left = box.left + box.width / 2 - width / 2;
+  left = Math.min(left, window.innerWidth - width - TIP_EDGE);
   left = Math.max(left, TIP_EDGE);
 
   tip.style.left = Math.round(left) + 'px';
   tip.style.top = Math.round(top) + 'px';
+
+  // Точка, из которой пузырь надувается, и куда смотрит хвостик, —
+  // центр кружка. У края экрана подсказку сдвигает, и центр может уйти
+  // за её пределы: тогда прижимаем хвостик к углу, но не дальше.
+  const middle = box.left + box.width / 2 - left;
+  const tail = Math.max(TIP_TAIL_EDGE,
+                        Math.min(width - TIP_TAIL_EDGE, middle));
+  tip.style.setProperty('--tip-x', Math.round(tail) + 'px');
+
+  tip.classList.toggle('below', below);
+  tip.classList.add('visible');
 }
 
 function tipHide(){
@@ -2800,12 +2852,22 @@ async function proxyAction(url, button, busyText){
  */
 function showCover(novel){
   const cover = $('bookCover');
-  cover.hidden = true;
-  if(!novel || !novel.code) return;
+  if(!novel || !novel.code){ cover.hidden = true; return; }
+
+  const src = `/api/rank/cover/${encodeURIComponent(novel.code)}`
+    + (novel.cover ? `?url=${encodeURIComponent(novel.cover)}` : '');
   cover.onerror = () => { cover.hidden = true; };
   cover.onload = () => { cover.hidden = false; };
-  cover.src = `/api/rank/cover/${encodeURIComponent(novel.code)}`
-    + (novel.cover ? `?url=${encodeURIComponent(novel.cover)}` : '');
+
+  if(cover.getAttribute('src') === src){
+    // Карточку уже заполнил рейтинг тем же адресом. Второй `onload` на
+    // тот же src браузер не пришлёт, и обложка осталась бы спрятанной
+    // навсегда — смотрим на саму картинку, а не ждём события.
+    cover.hidden = !(cover.complete && cover.naturalWidth);
+    return;
+  }
+  cover.hidden = true;
+  cover.src = src;
 }
 
 async function find(fillRange = true){
@@ -3196,8 +3258,9 @@ $('thCheck').onclick = thCheck;
 
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
-// Ссылку правят руками — значит, книга уже не та, что выбрана в рейтинге.
-$('q').addEventListener('input', () => { $('rkCard').hidden = true; });
+// Ссылку правят руками — значит, в карточке уже не та книга, что будет
+// найдена. Показывать её до нового поиска нечестно.
+$('q').addEventListener('input', () => { $('book').hidden = true; });
 $('folder').addEventListener('input', updateFinalPath);
 
 /** Перевод названия найденной книги и имя папки вместе с ним (3.1, 3.2). */
