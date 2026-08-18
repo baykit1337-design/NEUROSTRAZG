@@ -204,3 +204,64 @@ class TestLicenceIsHonoured(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnUnusableChapterDoesNotKillTheRun(unittest.TestCase):
+    """Платная и нерасшифрованная глава пропускаются, а не роняют книгу.
+
+    Последовательный путь ловил только сетевые ошибки. `PaidChapter` и
+    `ChapterEncrypted` — обычные исключения, они пролетали мимо всех
+    перехватов и убивали задачу целиком: «скачано 0, пропущено 0,
+    ошибок 0» и стек в логе. Многопоточный путь такое умел давно —
+    расходились две ветки одного и того же.
+    """
+
+    def test_both_kinds_count_as_skippable(self):
+        from mvl.downloader import _is_paid
+
+        self.assertTrue(_is_paid(PaidChapter("платная")))
+        self.assertTrue(_is_paid(ChapterEncrypted("нерасшифрована")))
+
+    def test_a_network_error_is_not_skippable(self):
+        """Сетевую осечку повтор лечит — её пропускать нельзя."""
+        from mvl.downloader import _is_paid
+
+        self.assertFalse(_is_paid(OSError("сеть отвалилась")))
+
+    def test_the_sequential_path_handles_them_too(self):
+        source = (ROOT / "mvl" / "downloader.py").read_text(encoding="utf-8")
+        loop = source.split("for index, chapter in enumerate(pending)", 1)[1]
+        loop = loop.split("def _finish", 1)[0]
+
+        self.assertIn("if not _is_paid(exc):", loop)
+        self.assertIn("paid += 1", loop)
+
+    def test_skipped_chapters_reach_the_report(self):
+        """Иначе в итоге стоит «пропущено 0» при пропущенных главах."""
+        source = (ROOT / "mvl" / "downloader.py").read_text(encoding="utf-8")
+        self.assertIn("skipped + paid", source)
+
+
+class TestProxyOrderPrefersCheckedOnes(unittest.TestCase):
+    """Замер утыкался в мёртвый адрес, хотя рядом было восемь рабочих.
+
+    `disabled` ставится только на ходу, а проверка кнопкой помечает
+    иначе — через `alive` и `status`. Список «не disabled» поэтому
+    включал и провалившие проверку, и первым по порядку в файле шёл
+    мёртвый.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
+
+    def test_checked_proxies_go_first(self):
+        self.assertIn("good = [p for p in everything if p.usable]", self.app)
+
+    def test_unchecked_ones_are_not_thrown_away(self):
+        """До нажатия кнопки пригодных нет вовсе — остаться без адреса хуже."""
+        self.assertIn("good + [p for p in everything if not p.usable]",
+                      self.app)
+
+    def test_the_threads_check_uses_that_order(self):
+        self.assertIn("live = _working_proxies(pool)", self.app)

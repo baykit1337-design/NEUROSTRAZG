@@ -302,6 +302,9 @@ class Downloader:
         stopped_reason = ""
         rate_limit_streak = 0
         threads_downgraded = False
+        #: Главы, которые не взять в принципе: платные и нерасшифрованные.
+        #: В «ошибки» им не место — повтор их не откроет.
+        paid = 0
 
         fetcher = None
         if self.threads > 1 and pending:
@@ -417,11 +420,27 @@ class Downloader:
                         failed.append(chapter.number)
                         break
 
+                    except Exception as exc:
+                        # Глава, которую не взять в принципе: платная либо
+                        # оставшаяся зашифрованной. Повтор её не откроет, но
+                        # и ронять из-за неё всю книгу нельзя — раньше такое
+                        # исключение пролетало мимо всех перехватов и убивало
+                        # прогон с «скачано 0, пропущено 0, ошибок 0».
+                        if not _is_paid(exc):
+                            raise
+                        reason = scrub(str(exc))
+                        log.info("Глава %s пропущена: %s", chapter.number, reason)
+                        state.mark_failed(chapter.number, reason)
+                        self._log_error(output_dir, chapter.number, reason)
+                        paid += 1
+                        break
+
                 self._emit(
-                    done=downloaded + len(failed),
+                    done=downloaded + len(failed) + paid,
                     downloaded=downloaded,
                     failed=len(failed),
-                    message=f"Глава {chapter.number} из {last}",
+                    message=(f"Глава {chapter.number} из {last}"
+                             + (f" · пропущено {paid}" if paid else "")),
                 )
                 state.save()
 
@@ -438,8 +457,10 @@ class Downloader:
             if site is not self.site_client:
                 site.close()
 
+        # Пропущенные считаем вместе с уже готовыми: и то и другое —
+        # «качать не будем», а не «не смогли».
         return self._finish(
-            novel, output_dir, toc, downloaded, skipped, failed,
+            novel, output_dir, toc, downloaded, skipped + paid, failed,
             blocked_at, stopped_reason, threads_downgraded,
         )
 

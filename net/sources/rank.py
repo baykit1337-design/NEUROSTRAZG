@@ -434,7 +434,11 @@ def book_page(html: str, table: dict | None = None) -> dict:
         "category": text("category", "categoryName"),
         "tags": _tags(book),
         "words": number("wordNumber", "word_number"),
-        "chapters": number("serialCount", "chapterNumber", "chapter_count"),
+        # `chapterTotal` — то, чем сайт считает главы сейчас. Прежние имена
+        # оставлены на случай отката: без нового в карточке книги стояло
+        # «глав —», хотя число лежало рядом.
+        "chapters": number("chapterTotal", "serialCount", "chapterNumber",
+                           "chapter_count"),
         "status": "завершена" if str(book.get("creationStatus")) == "0"
                   else "продолжается",
         "last_chapter": str(book.get("lastChapterTitle") or ""),

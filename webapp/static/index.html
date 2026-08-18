@@ -656,6 +656,14 @@
     position:sticky;top:0;background:#0d0b12;
   }
   .ptable td{padding:6px 8px;border-top:1px solid rgba(255,255,255,.05)}
+  /* Адрес не переносим: «191.96.254.138:6185» посреди строки ломался
+     пополам, и таблица выглядела съехавшей. Остальным колонкам ширины
+     хватает — они короткие. */
+  .ptable td:first-child, .ptable th:first-child{white-space:nowrap}
+  /* Тип («с ключом») тоже держим в строку — он рвался на два слова. */
+  .ptable td:nth-child(2), .ptable th:nth-child(2){white-space:nowrap}
+  /* Если места всё же мало, таблица едет вбок целиком, а не рвётся. */
+  .ptable{overflow-x:auto}
   .ptable tr.dead td{color:#6f6a82}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px}
   /* Статус OK в таблице прокси — тоже фиолетовый, не зелёный. */
@@ -1175,6 +1183,9 @@
       <div class="table" id="probeTable" style="margin-top:10px"></div>
     </details>
     <div class="pnow" id="sProxy"></div>
+    <!-- Каким источником качали. Способов у Фанкью два, и по итогу должно
+         быть видно, какой сработал: результат у них разный. -->
+    <div class="pnow" id="sSource"></div>
     <!-- Способ скачивания, подобранный автопробой: «3 потока · 3 прокси». -->
     <div class="pnow" id="sMethod"></div>
     <div class="row" style="margin-top:16px">
@@ -2930,6 +2941,10 @@ async function start(){
       last,
     });
     jobId = data.job.id;
+    // Способов у Фанкью два, и результат у них разный: по итогу должно
+    // быть видно, каким качали, а не только что «не скачалось».
+    $('sSource').textContent = srcMenu
+      ? 'источник: ' + (srcMenu.label || srcMenu.value) : '';
     $('place').hidden = true;
     $('progress').hidden = false;
     $('again').hidden = true;
@@ -3020,6 +3035,7 @@ function reset(){
   jobId = null;
   probeShown = false;
   $('sMethod').textContent = '';
+  $('sSource').textContent = '';
   $('probeBox').hidden = true;
   $('progress').hidden = true;
   $('place').hidden = false;

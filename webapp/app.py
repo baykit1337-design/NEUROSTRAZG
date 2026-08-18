@@ -661,8 +661,10 @@ def api_threads_check():
     with POOL_LOCK:
         pool = POOL
 
-    live = [p for p in getattr(pool, "proxies", []) if not p.disabled] \
-        if pool else []
+    # Порядок важен: первым должен идти проверенный адрес, а не первый по
+    # порядку в файле. Иначе замер утыкается в мёртвый прокси и обрывается,
+    # хотя рядом лежит восемь рабочих.
+    live = _working_proxies(pool)
     if source.needs_proxy and not live:
         # Источник без прокси не отвечает вовсе, и замер выродился бы в
         # «сайт недоступен» — причина при этом не в потоках (3.3 ТЗ).
@@ -1632,16 +1634,28 @@ def _rank_client():
     return Client(proxy_url=_any_proxy(pool))
 
 
-def _any_proxy(pool) -> str | None:
-    """Адрес любого прокси, который не помечен непригодным."""
+def _working_proxies(pool) -> list:
+    """Прокси в порядке пригодности: сперва проверенные, потом остальные.
+
+    `disabled` ставится только на ходу, когда адрес подвёл во время
+    прогона. Проверка кнопкой помечает иначе — через `alive` и `status`,
+    — поэтому «не disabled» включает и те, что проверку провалили.
+    Раньше отсюда брался первый по порядку в файле, и замер утыкался в
+    мёртвый адрес, хотя рядом было восемь рабочих.
+    """
     if not pool:
-        return None
-    if pool.usable_count:
-        return pool.current().url
-    for proxy in getattr(pool, "proxies", []):
-        if not proxy.disabled:
-            return proxy.url
-    return None
+        return []
+    everything = [p for p in getattr(pool, "proxies", []) if not p.disabled]
+    good = [p for p in everything if p.usable]
+    # Непроверенные идут следом: пока кнопку не нажимали, пригодных нет
+    # вовсе, и остаться совсем без адреса хуже, чем взять неизвестный.
+    return good + [p for p in everything if not p.usable]
+
+
+def _any_proxy(pool) -> str | None:
+    """Адрес лучшего доступного прокси."""
+    found = _working_proxies(pool)
+    return found[0].url if found else None
 
 
 def _rank_where(payload) -> tuple[str, str, str]:

@@ -122,7 +122,19 @@ function makeDropdown(node, onChange){
     return true;
   }
 
-  return {get value(){ return value; }, set};
+  /** Подпись выбранного пункта — то, что человек видит в списке.
+   *
+   * Наружу нужна там, где о выборе сообщают уже потом: в итоге
+   * скачивания «источник: Fanqie (через посредника)» понятно, а
+   * «источник: fanqie-mirror» — это ключ, и читать его человеку незачем.
+   */
+  function chosenLabel(){
+    const found = options.find(o => o[0] === value);
+    return found ? found[1] : value;
+  }
+
+  return {get value(){ return value; },
+          get label(){ return chosenLabel(); }, set};
 }
 
 /* -------------------------------------- одна кнопка «Выбрать…» на всё */
