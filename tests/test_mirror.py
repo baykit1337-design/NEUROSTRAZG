@@ -294,6 +294,67 @@ class TestProxyOrderPrefersCheckedOnes(unittest.TestCase):
     def test_no_pool_at_all_is_not_a_crash(self):
         self.assertEqual(self.order(None), [])
 
-    def test_the_threads_check_uses_that_order(self):
-        app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("live = _working_proxies(pool)", app)
+    def test_the_web_layer_and_the_downloader_share_one_rule(self):
+        """Своя копия правила в вебе оставила качалку с прежней поломкой."""
+        from mvl.proxies import working_proxies
+        from webapp.app import _working_proxies
+
+        pool = self.FakePool(("мёртвый", False), ("рабочий", True))
+        self.assertEqual([p.url for p in _working_proxies(pool)],
+                         [p.url for p in working_proxies(pool)])
+
+
+class TestTheMeasurementPicksCheckedAddresses(unittest.TestCase):
+    """Замер и автопроба отбирали прокси по-своему.
+
+    Отбор чинили в вебе, а `measure_threads` и `_autoprobe` продолжали
+    брать «все, кто не disabled» и первым по порядку в файле упирались в
+    мёртвый адрес. Наружу это выглядело так: «прогрев 0.0 с ·
+    последовательно 0.0 с · фактически 0.0 с · ускорение 0.0×».
+    """
+
+    class Address:
+        def __init__(self, label, usable):
+            self.label, self.usable, self.disabled = label, usable, False
+            self.url = f"http://{label}"
+
+    class Pool:
+        def __init__(self, *rows):
+            self.proxies = [TestTheMeasurementPicksCheckedAddresses.Address(*r)
+                            for r in rows]
+
+    class Source:
+        """Витрина, которая только запоминает адрес потока."""
+
+        needs_proxy = True
+
+        def __init__(self):
+            self.used = []
+
+        def chapter(self, client, chapter):
+            self.used.append(client.proxy_url)
+            return ("Глава", "Текст главы.")
+
+    def measure(self, pool):
+        from mvl.downloader import Downloader
+
+        source = self.Source()
+        loader = Downloader(pool=pool, threads=1, source=source, probe=False)
+        chapters = [Chapter(number=n, post_id=str(n)) for n in (1, 2)]
+        loader.measure_threads(api_novel(), chapters, count=2)
+        return source.used
+
+    def test_the_checked_address_is_the_one_that_works(self):
+        pool = self.Pool(("мёртвый", False), ("рабочий", True))
+        self.assertEqual(set(self.measure(pool)), {"http://рабочий"})
+
+    def test_unchecked_addresses_are_still_used_when_nothing_is_checked(self):
+        """До нажатия кнопки проверки пригодных нет ни одного."""
+        pool = self.Pool(("первый", False))
+        self.assertEqual(set(self.measure(pool)), {"http://первый"})
+
+
+def api_novel():
+    from mvl.api import Novel
+
+    return Novel(code=1, name="Книга", slug="kniga", total_chapters=2)

@@ -24,7 +24,7 @@ from .client import (
     site_pause,
 )
 from .paths import chapter_filename, write_chapter
-from .proxies import NoProxiesLeft, ProxyPool, scrub
+from .proxies import NoProxiesLeft, ProxyPool, scrub, working_proxies
 
 import sys
 
@@ -561,9 +561,7 @@ class Downloader:
         """
         from net import pool as netpool
 
-        proxies = []
-        if self.pool is not None:
-            proxies = [p for p in self.pool.proxies if not p.disabled]
+        proxies = working_proxies(self.pool)
 
         # Единственный адрес — тоже адрес: раздача по потокам при нём
         # выдаёт его всем, и это правильно. Прежний порог «хотя бы два»
@@ -599,9 +597,7 @@ class Downloader:
         """
         from net import pool as netpool
 
-        proxies = []
-        if self.pool is not None:
-            proxies = [p for p in self.pool.proxies if not p.disabled]
+        proxies = working_proxies(self.pool)
 
         def fetch(client, chapter):
             return self.source.chapter(client, chapter)[1]
@@ -610,6 +606,7 @@ class Downloader:
             list(chapters)[:max(2, int(count or 6))],
             self._make_site_client(novel), fetch,
             threads=self.threads, proxies=proxies, cancel=self.cancel,
+            swap_when=_is_dead_address,
         )
 
     def _autoprobe(self, novel: api.Novel, pending):
@@ -622,9 +619,7 @@ class Downloader:
         from net import pool as netpool
 
         sample = pending[:settings.threads.probe_chapters]
-        proxies = []
-        if self.pool is not None:
-            proxies = [p for p in self.pool.proxies if not p.disabled]
+        proxies = working_proxies(self.pool)
 
         make_client = self._make_site_client(novel)
 
@@ -837,6 +832,16 @@ def _is_refusal(error: BaseException) -> bool:
     if isinstance(error, (Blocked, RateLimited)):
         return True
     return isinstance(error, HttpError) and error.status in (403, 429)
+
+
+def _is_dead_address(error: BaseException) -> bool:
+    """Молчит сам прокси, а не сайт: лечится переездом на другой адрес.
+
+    Отказ сайта переездом не лечится, а платная или нерасшифрованная
+    глава не лечится вовсе — за такое помечать адреса мёртвыми нельзя,
+    иначе одна закрытая глава выкосит весь список.
+    """
+    return isinstance(error, NetworkError) and not _is_refusal(error)
 
 
 #: Та же отмена, что и у остальных операций, — см. `ops/base.py`.

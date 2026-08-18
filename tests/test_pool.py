@@ -521,6 +521,75 @@ class TestMeasure(unittest.TestCase):
         self.assertTrue(written)
 
 
+class TestOneDeadAddressDoesNotKillTheMeasurement(unittest.TestCase):
+    """Замер утыкался в мёртвый адрес и выдавал нули по всем графам.
+
+    Прогрев идёт первым и первым же падает: исключение вылетает из
+    `.result()`, `warmup`, `seconds` и `expected` остаются нулями, и в
+    отчёте выходит «прогрев 0.0 с · последовательно 0.0 с · фактически
+    0.0 с · ускорение 0.0×» — при восьми рабочих адресах рядом.
+    Скачивание давно умеет переезжать на другой прокси, замер — нет.
+    """
+
+    def proxies(self, count: int = 3):
+        return [Addressed(f"10.0.0.{n}:8000") for n in range(1, count + 1)]
+
+    def dead_first(self, dead="10.0.0.1:8000"):
+        """Качалка, у которой первый адрес молчит, а остальные отвечают."""
+        def fetch(client, chapter):
+            if dead in (getattr(client, "proxy_url", "") or ""):
+                raise ConnectionError(f"не достучаться до {dead}")
+            time.sleep(0.02)
+            return "Текст главы."
+        return fetch
+
+    def swap(self, exc):
+        return isinstance(exc, ConnectionError)
+
+    def test_the_measurement_finishes_on_the_other_addresses(self):
+        found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+                             proxies=self.proxies(3), swap_when=self.swap)
+
+        self.assertFalse(found.error, found.error)
+        self.assertGreater(found.seconds, 0)
+        self.assertEqual(sorted(n for row in found.rows for n in row.chapters),
+                         [c.number for c in CHAPTERS])
+
+    def test_the_dead_address_is_left_out_of_the_work(self):
+        proxies = self.proxies(3)
+        pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+                     proxies=proxies, swap_when=self.swap)
+
+        dead = next(p for p in proxies if p.label == "10.0.0.1:8000")
+        self.assertTrue(dead.disabled, "мёртвый адрес остался в работе")
+
+    def test_without_the_rule_it_behaves_as_before(self):
+        """Правило приходит снаружи: без него замер ничего не решает сам."""
+        found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+                             proxies=self.proxies(3))
+        self.assertTrue(found.error)
+
+    def test_a_refusal_is_not_blamed_on_the_address(self):
+        """Иначе одна закрытая глава пометит мёртвыми все прокси разом."""
+        proxies = self.proxies(3)
+
+        def paid(client, chapter):
+            raise ValueError("глава платная")
+
+        pool.measure(CHAPTERS, maker(), paid, threads=3, proxies=proxies,
+                     swap_when=self.swap)
+        self.assertFalse([p.label for p in proxies if p.disabled])
+
+    def test_the_last_address_left_is_not_swapped_into_nothing(self):
+        """Менять не на что — осечку показываем, а не глотаем."""
+        def dead(client, chapter):
+            raise ConnectionError("молчит")
+
+        found = pool.measure(CHAPTERS, maker(), dead, threads=1,
+                             proxies=self.proxies(1), swap_when=self.swap)
+        self.assertTrue(found.error)
+
+
 class TestThreadsWord(unittest.TestCase):
     def test_russian_endings(self):
         self.assertEqual(pool.threads_word(1), "поток")

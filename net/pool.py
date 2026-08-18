@@ -301,13 +301,21 @@ DIRECT_LABEL = "напрямую"
 
 def measure(chapters, make_client, fetch, threads: int,
             proxies: list | None = None,
-            cancel: threading.Event | None = None) -> Measurement:
+            cancel: threading.Event | None = None,
+            swap_when=None) -> Measurement:
     """Качает несколько глав и рассказывает, кто и через что их достал.
 
     Отличие от `probe_method` в том, что здесь ничего не выбирается:
     задача — показать, работает ли параллельность на живом сайте, и через
     какой адрес шёл каждый поток. Если адрес один на всех, параллельности
     нет, и по отчёту это видно сразу.
+
+    `swap_when` решает, считать ли осечку виной адреса. Скачивание давно
+    умеет переезжать на другой прокси, а замер — нет: один мёртвый адрес
+    ронял его целиком, и в отчёте выходили нули по всем графам при восьми
+    рабочих адресах рядом. Правило приходит снаружи, потому что здесь
+    ничего не известно ни про виды отказов сайта, ни про то, какие из них
+    лечатся сменой адреса. Без него замер ведёт себя как раньше.
 
     Скачанное не сохраняется: это замер, а не скачивание.
     """
@@ -342,7 +350,21 @@ def measure(chapters, make_client, fetch, threads: int,
         client = fetcher.client()
         proxy = fetcher.proxy_of_thread()
         begin = time.monotonic()
-        text = fetch(client, chapter)
+        try:
+            text = fetch(client, chapter)
+        except Exception as exc:  # noqa: BLE001 — решает `swap_when`
+            if swap_when is None or not swap_when(exc):
+                raise
+            # Адрес не отвечает. Переезжаем на следующий свободный и
+            # повторяем ту же главу — ровно как это делает скачивание.
+            replacement = fetcher.replace(_reason(exc))
+            if replacement is None:
+                raise
+            log.info("Замер: поток сменил адрес (%s)", _reason(exc))
+            client = replacement
+            proxy = fetcher.proxy_of_thread()
+            begin = time.monotonic()
+            text = fetch(client, chapter)
         spent = time.monotonic() - begin
         number = getattr(chapter, "number", None)
 

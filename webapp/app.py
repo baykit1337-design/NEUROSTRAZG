@@ -70,7 +70,8 @@ from mvl import downloader as downloader_mod  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
 from mvl import proxies as proxies_mod  # noqa: E402
-from mvl.proxies import PROXY_FILE, ProxyPool, scrub  # noqa: E402
+from mvl.proxies import (  # noqa: E402
+    PROXY_FILE, ProxyPool, scrub, working_proxies)
 from mvl.word import Style  # noqa: E402
 from config import settings  # noqa: E402
 
@@ -1635,26 +1636,13 @@ def _rank_client():
 
 
 def _working_proxies(pool) -> list:
-    """Прокси в порядке пригодности: сперва проверенные, потом остальные.
+    """Тот же отбор, что и в качалке: правило одно на всю программу.
 
-    `disabled` ставится только на ходу, когда адрес подвёл во время
-    прогона. Проверка кнопкой помечает иначе — через `alive` и `status`,
-    — поэтому «не disabled» включает и те, что проверку провалили.
-    Раньше отсюда брался первый по порядку в файле, и замер утыкался в
-    мёртвый адрес, хотя рядом было восемь рабочих.
+    Держать здесь свою копию было ошибкой: замер и автопроба в
+    `mvl/downloader.py` отбирали прокси по-своему и продолжали утыкаться
+    в мёртвый адрес после того, как отбор починили тут.
     """
-    if not pool:
-        return []
-    everything = [p for p in getattr(pool, "proxies", [])
-                  if not getattr(p, "disabled", False)]
-    # `usable` спрашиваем мягко: пул приходит снаружи, и не всякий объект
-    # в нём носит признак проверки. Нет признака — значит, не проверялся,
-    # и место ему в конце, а не в отказе.
-    checked = [p for p in everything if getattr(p, "usable", False)]
-    # Непроверенные идут следом: пока кнопку не нажимали, пригодных нет
-    # вовсе, и остаться совсем без адреса хуже, чем взять неизвестный.
-    return checked + [p for p in everything
-                      if not getattr(p, "usable", False)]
+    return working_proxies(pool)
 
 
 def _any_proxy(pool) -> str | None:
