@@ -638,6 +638,27 @@ def api_start():
     return jsonify(job=start_job(job, work).snapshot())
 
 
+#: Флажок отмены идущего замера. Замер работает синхронно внутри своего
+#: запроса, и остановить его можно только снаружи — вторым запросом.
+#: Своей кнопки у него не было, а «Остановить» у прогона до него не
+#: доходит: после отмены скачивания замер крутился ещё три минуты,
+#: долбился в недоступный адрес и помечал прокси нерабочими — теми
+#: самыми, которыми потом качать.
+CHECK_LOCK = threading.Lock()
+CHECK_CANCEL: threading.Event | None = None
+
+
+@app.post("/api/threads/cancel")
+def api_threads_cancel():
+    """Останавливает идущий замер. Не идёт — так и говорим."""
+    with CHECK_LOCK:
+        cancel = CHECK_CANCEL
+    if cancel is None:
+        return jsonify(running=False)
+    cancel.set()
+    return jsonify(running=True)
+
+
 @app.post("/api/threads/check")
 def api_threads_check():
     """Замер многопоточности на живых главах (часть 6 ТЗ).
@@ -687,11 +708,21 @@ def api_threads_check():
 
     # Оглавление берём через тот же прокси, что и всё остальное: голым
     # клиентом сайт не отвечает, и замер падал с невнятным 502.
+    # Флажок отмены — свой на каждый замер. Кладём его туда, где его
+    # найдёт `/api/threads/cancel`: замер идёт синхронно, и достучаться
+    # до него можно только вторым запросом.
+    cancel = threading.Event()
+    global CHECK_CANCEL
+    with CHECK_LOCK:
+        CHECK_CANCEL = cancel
+
     client = Client(proxy_url=live[0].url if live else None,
-                    timeout=read_timeout, connect_timeout=connect_timeout)
+                    timeout=read_timeout, connect_timeout=connect_timeout,
+                    cancel=cancel)
     downloader = Downloader(client=client, pool=pool, threads=threads,
                             source=source, timeout=read_timeout,
-                            connect_timeout=connect_timeout)
+                            connect_timeout=connect_timeout,
+                            cancel_event=cancel)
     try:
         try:
             toc = _toc_any_proxy(source, novel, client, live, count)
@@ -714,6 +745,11 @@ def api_threads_check():
         # Источник мог завести свой клиент мимо прокси — закрыть его,
         # кроме нас, тут некому: `run` сюда не заходит.
         downloader.close_source()
+        # Убираем за собой, но только своё: пока мы доигрывали, мог
+        # начаться следующий замер, и гасить его отмену нельзя.
+        with CHECK_LOCK:
+            if CHECK_CANCEL is cancel:
+                CHECK_CANCEL = None
 
     # Сам замер о своих бедах рассказывает в отчёте, а не кодом ответа:
     # «ни один поток не создался» — это результат, а не отказ сервера.

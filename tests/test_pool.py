@@ -535,11 +535,17 @@ class TestOneDeadAddressDoesNotKillTheMeasurement(unittest.TestCase):
         return [Addressed(f"10.0.0.{n}:8000") for n in range(1, count + 1)]
 
     def dead_first(self, dead="10.0.0.1:8000"):
-        """Качалка, у которой первый адрес молчит, а остальные отвечают."""
+        """Качалка, у которой первый адрес молчит, а остальные отвечают.
+
+        Отказ занимает столько же времени, сколько успех. Мгновенный
+        отказ делал поток на мёртвом адресе быстрее всех остальных, и он
+        успевал разобрать всю очередь глав раньше, чем рабочие потоки
+        вообще начинали работать.
+        """
         def fetch(client, chapter):
+            time.sleep(0.02)
             if dead in (getattr(client, "proxy_url", "") or ""):
                 raise ConnectionError(f"не достучаться до {dead}")
-            time.sleep(0.02)
             return "Текст главы."
         return fetch
 
@@ -609,11 +615,25 @@ class TestOneDeadAddressDoesNotKillTheMeasurement(unittest.TestCase):
         self.assertIn("note", empty.as_dict())
 
     def test_a_measurement_that_got_something_is_not_called_broken(self):
-        """Иначе поверх нормального отчёта висит «Замер прервался»."""
-        found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+        """Иначе поверх нормального отчёта висит «Замер прервался».
+
+        Осечку вешаем на главу, а не на адрес: кто из потоков какую главу
+        возьмёт, решает планировщик, и «одна глава не вышла, остальные
+        вышли» — единственная формулировка, не зависящая от него.
+        """
+        def fetch(client, chapter):
+            time.sleep(0.02)
+            if chapter.number == CHAPTERS[0].number:
+                raise ConnectionError("не достучаться до 10.0.0.1:8000")
+            return "Текст главы."
+
+        found = pool.measure(CHAPTERS, maker(), fetch, threads=3,
                              proxies=self.proxies(3))
+
         self.assertFalse(found.error, found.error)
         self.assertGreater(found.seconds, 0)
+        self.assertEqual(sorted(n for row in found.rows for n in row.chapters),
+                         [c.number for c in CHAPTERS[1:]])
 
     def test_a_refusal_is_not_blamed_on_the_address(self):
         """Иначе одна закрытая глава пометит мёртвыми все прокси разом."""
@@ -832,6 +852,53 @@ class TestThreadsRouteExplainsItself(unittest.TestCase):
 
         self.assertTrue(seen, "оглавление вообще не собиралось")
         self.assertIn("10.0.0.", seen[0] or "")
+
+    def test_a_running_measurement_can_be_stopped(self):
+        """Замер жил отдельно от прогона, и остановить его было нечем.
+
+        После отмены скачивания он крутился ещё три минуты, долбился в
+        недоступный адрес и помечал прокси нерабочими — теми самыми,
+        которыми потом качать.
+        """
+        source = self.Source()
+        began = threading.Event()
+
+        def crawl(client, chapter):
+            began.set()
+            time.sleep(0.3)
+            return f"Глава {chapter.number}", "текст"
+
+        source.chapter = crawl
+        self.use(source, proxies=3)
+
+        answer = {}
+
+        def run():
+            answer["body"] = self.check().get_json()
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        self.addCleanup(worker.join, 10)
+
+        self.assertTrue(began.wait(5), "замер так и не начался")
+        stopped = self.app.post("/api/threads/cancel", json={})
+        self.assertTrue(stopped.get_json()["running"])
+
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(), "замер не остановился")
+        self.assertIn("остановлено", answer["body"].get("error", ""))
+
+    def test_stopping_when_nothing_runs_is_not_an_error(self):
+        answer = self.app.post("/api/threads/cancel", json={})
+        self.assertEqual(answer.status_code, 200)
+        self.assertFalse(answer.get_json()["running"])
+
+    def test_the_flag_is_let_go_when_the_measurement_ends(self):
+        """Иначе следующая остановка гасит уже закончившийся замер."""
+        self.use(self.Source(), proxies=3)
+        self.check()
+        self.assertFalse(self.app.post("/api/threads/cancel",
+                                       json={}).get_json()["running"])
 
     def test_the_waiting_times_reach_the_measurement(self):
         """Замер должен ждать столько же, сколько потом будет качать.

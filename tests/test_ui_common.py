@@ -298,6 +298,36 @@ class TestTheHintInflatesLikeABubble(UiBase):
         self.assertIn(".tooltip{transform:none", block[1][:400])
 
 
+class TestTheMeasurementHasItsOwnStop(UiBase):
+    """Замер живёт отдельно от прогона, а кнопки у него не было.
+
+    «Остановить» у скачивания до него не дотягивается: после отмены
+    прогона замер крутился ещё три минуты и помечал прокси нерабочими —
+    теми самыми, которыми потом качать.
+    """
+
+    def test_the_button_is_there(self):
+        self.assertIn('id="thStop"', self.page)
+
+    def test_it_is_hidden_until_the_measurement_starts(self):
+        row = self.page.split('id="thStop"', 1)[1].split(">", 1)[0]
+        self.assertIn("hidden", row)
+
+    def test_it_appears_together_with_the_measurement(self):
+        body = self.page.split("async function thCheck()", 1)[1]
+        start = body.split("try{", 1)[0]
+        self.assertIn("$('thStop').hidden = false;", start)
+
+    def test_it_goes_away_when_the_measurement_ends(self):
+        body = self.page.split("async function thCheck()", 1)[1]
+        end = body.split("}finally{", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("$('thStop').hidden = true;", end)
+
+    def test_pressing_it_asks_the_server_to_stop(self):
+        body = self.page.split("$('thStop').onclick", 1)[1]
+        self.assertIn("/api/threads/cancel", body)
+
+
 class TestPickingFilesLooksTheSameEverywhere(UiBase):
     """Выбор файлов устроен одинаково, а выглядел по-разному.
 

@@ -1203,9 +1203,14 @@
 
     <!-- Часть 6: убедиться, что параллельность работает на живом сайте,
          не прогоняя книгу целиком. -->
+    <!-- Своя кнопка остановки: замер живёт отдельно от скачивания, и
+         «Остановить» у прогона до него не дотягивалось. После отмены
+         прогона он крутился ещё три минуты, долбился в мёртвый адрес и
+         помечал прокси нерабочими — теми самыми, которыми потом качать. -->
     <div class="row" style="margin-top:14px">
       <button id="thCheck" class="ghost" style="flex:1">Проверить
         многопоточность</button>
+      <button id="thStop" class="ghost" hidden>Остановить</button>
     </div>
     <p class="hint" id="thNote">Качает шесть глав и показывает, какой поток
        через какой адрес шёл. Скачанное не сохраняется.</p>
@@ -3251,6 +3256,10 @@ async function thCheck(){
   showError('');
   if(!novel){ showError('Сначала найдите книгу', $('thCheck')); return; }
   $('thCheck').disabled = true;
+  // Пока замер идёт, его должно быть чем остановить: он живёт отдельно
+  // от прогона, и кнопка «Остановить» у скачивания до него не доходит.
+  $('thStop').hidden = false;
+  $('thStop').disabled = false;
   const note = $('thNote');
   const said = note.textContent;
   note.innerHTML = '<span class="spin"></span>Качаем шесть глав…';
@@ -3273,9 +3282,25 @@ async function thCheck(){
               $('thCheck'));
   }finally{
     $('thCheck').disabled = false;
+    $('thStop').hidden = true;
   }
 }
 $('thCheck').onclick = thCheck;
+
+/** Остановить замер.
+ *
+ * Ответ приходит сразу, а сам замер доигрывает текущий запрос и
+ * заканчивается сам — поэтому кнопку гасим здесь, а прячет её `finally`
+ * основного вызова, когда тот вернётся.
+ */
+$('thStop').onclick = async () => {
+  $('thStop').disabled = true;
+  $('thStop').textContent = 'Останавливаем…';
+  try{
+    await call('/api/threads/cancel', {});
+  }catch(err){ showError(err.message, $('thCheck')); }
+  finally{ $('thStop').textContent = 'Остановить'; }
+};
 
 $('find').onclick = find;
 $('q').addEventListener('keydown', e => { if(e.key === 'Enter') find(); });
