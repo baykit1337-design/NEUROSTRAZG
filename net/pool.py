@@ -247,12 +247,17 @@ class ThreadRow:
     chapters: list = field(default_factory=list)
     seconds: float = 0.0
     failed: list = field(default_factory=list)
+    #: Почему у этого потока не вышло. Без причины строка «ни одной
+    #: главы» ничего не объясняет: непонятно, адрес мёртв, сайт закрыл
+    #: доступ или глава платная, а чинится это по-разному.
+    note: str = ""
 
     def as_dict(self) -> dict:
         return {"number": self.number, "proxy": self.proxy or DIRECT_LABEL,
                 "chapters": list(self.chapters),
                 "seconds": round(self.seconds, 2),
-                "failed": list(self.failed)}
+                "failed": list(self.failed),
+                "note": self.note}
 
 
 @dataclass
@@ -344,57 +349,91 @@ def measure(chapters, make_client, fetch, threads: int,
     lock = threading.Lock()
     durations: list[float] = []
 
+    troubles: list[str] = []
+
+    def row_of(proxy) -> ThreadRow:
+        """Строка отчёта для текущего потока. Звать под замком."""
+        row = seen.get(threading.get_ident())
+        if row is None:
+            row = ThreadRow(number=len(seen) + 1,
+                            proxy=getattr(proxy, "label", "") or "")
+            seen[threading.get_ident()] = row
+        elif not row.proxy:
+            # Поток мог переехать на другой адрес — показываем тот, на
+            # котором он работает сейчас, а не тот, с которого начал.
+            row.proxy = getattr(proxy, "label", "") or ""
+        return row
+
     def one(chapter):
+        """Одна глава. Время или None, если так и не вышло.
+
+        Осечку наружу не выпускаем: замер должен досказать, какой поток
+        через какой адрес что смог. Раньше первая же неудача убивала
+        весь прогон, и при одиннадцати прокси в отчёте стояли нули по
+        всем графам — не отличить от «потоки не создались».
+        """
         if cancel is not None and cancel.is_set():
             raise ProbeFailed("остановлено")
-        client = fetcher.client()
-        proxy = fetcher.proxy_of_thread()
-        begin = time.monotonic()
-        try:
-            text = fetch(client, chapter)
-        except Exception as exc:  # noqa: BLE001 — решает `swap_when`
-            if swap_when is None or not swap_when(exc):
-                raise
-            # Адрес не отвечает. Переезжаем на следующий свободный и
-            # повторяем ту же главу — ровно как это делает скачивание.
-            replacement = fetcher.replace(_reason(exc))
-            if replacement is None:
-                raise
-            log.info("Замер: поток сменил адрес (%s)", _reason(exc))
-            client = replacement
+
+        number = getattr(chapter, "number", None)
+        # Переезжать есть смысл ровно столько раз, сколько адресов.
+        attempts = max(1, len(live)) if swap_when is not None else 1
+        proxy = None
+        trouble = ""
+
+        for _ in range(attempts):
+            client = fetcher.client()
             proxy = fetcher.proxy_of_thread()
             begin = time.monotonic()
-            text = fetch(client, chapter)
-        spent = time.monotonic() - begin
-        number = getattr(chapter, "number", None)
+            try:
+                text = fetch(client, chapter)
+            except Exception as exc:  # noqa: BLE001 — решает `swap_when`
+                trouble = _reason(exc)
+                if swap_when is None or not swap_when(exc):
+                    break
+                # Адрес не отвечает. Переезжаем на следующий свободный и
+                # повторяем ту же главу — как это делает скачивание.
+                if fetcher.replace(trouble) is None:
+                    break
+                log.info("Замер: поток сменил адрес (%s)", trouble)
+                continue
+
+            spent = time.monotonic() - begin
+            with lock:
+                row = row_of(proxy)
+                row.seconds += spent
+                if (text or "").strip():
+                    row.chapters.append(number)
+                else:
+                    row.failed.append(number)
+                    row.note = row.note or "глава пришла пустой"
+            return spent
 
         with lock:
-            row = seen.get(threading.get_ident())
-            if row is None:
-                row = ThreadRow(number=len(seen) + 1,
-                                proxy=getattr(proxy, "label", "") or "")
-                seen[threading.get_ident()] = row
-            row.seconds += spent
-            if (text or "").strip():
-                row.chapters.append(number)
-            else:
-                row.failed.append(number)
-        return spent
+            row = row_of(proxy)
+            row.failed.append(number)
+            row.note = row.note or trouble
+            troubles.append(trouble)
+        return None
 
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # Прогрев отдельно: первый запрос всегда дольше — рукопожатие
-            # TLS и кука Cloudflare. В замер он не идёт.
+            # TLS и кука Cloudflare. В замер он не идёт. Провалился —
+            # это ещё не приговор: прогрев щупает один адрес из многих.
             warmed = time.monotonic()
             pool.submit(one, chapters[0]).result()
             found.warmup = time.monotonic() - warmed
             with lock:
                 seen.clear()
+                troubles.clear()
 
             started = time.monotonic()
             futures = [pool.submit(one, chapter) for chapter in chapters]
             for future in as_completed(futures):
-                durations.append(future.result())
+                spent = future.result()
+                if spent is not None:
+                    durations.append(spent)
             found.seconds = time.monotonic() - started
     except ProbeFailed as exc:
         found.error = str(exc)
@@ -408,6 +447,9 @@ def measure(chapters, make_client, fetch, threads: int,
         # Оценка последовательного времени: самая быстрая глава показывает,
         # во что обходится один запрос без соседей.
         found.expected = min(durations) * len(durations)
+    elif not found.error and troubles:
+        # Не вышло вообще ничего — вот тогда это отказ, а не отчёт.
+        found.error = troubles[0]
     return found
 
 

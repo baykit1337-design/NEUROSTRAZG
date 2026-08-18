@@ -3145,7 +3145,10 @@ function thDraw(data){
     if(row.failed && row.failed.length){
       const bad = document.createElement('span');
       bad.className = 'tag warn';
-      bad.textContent = 'пусто: ' + row.failed.join(', ');
+      // Причина рядом с номерами глав: без неё «не вышло» не отличить
+      // от «адрес мёртв», а чинится это по-разному.
+      bad.textContent = 'не вышло: ' + row.failed.join(', ')
+        + (row.note ? ' — ' + row.note : '');
       line.append(bad);
     }
     list.append(line);

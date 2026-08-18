@@ -555,6 +555,28 @@ class TestOneDeadAddressDoesNotKillTheMeasurement(unittest.TestCase):
         self.assertEqual(sorted(n for row in found.rows for n in row.chapters),
                          [c.number for c in CHAPTERS])
 
+    def test_several_bad_addresses_in_a_row_are_stepped_over(self):
+        """Переезд был один-единственный, и второй плохой адрес добивал.
+
+        Ровно то, что видел человек: одиннадцать прокси в пуле, а в
+        отчёте «Замер прервался: NetworkError: прокси ответил HTTP 502».
+        """
+        dead = {"10.0.0.1:8000", "10.0.0.2:8000", "10.0.0.3:8000"}
+
+        def fetch(client, chapter):
+            where = getattr(client, "proxy_url", "") or ""
+            if any(bad in where for bad in dead):
+                raise ConnectionError("прокси ответил HTTP 502")
+            time.sleep(0.02)
+            return "Текст главы."
+
+        found = pool.measure(CHAPTERS, maker(), fetch, threads=3,
+                             proxies=self.proxies(8), swap_when=self.swap)
+
+        self.assertFalse(found.error, found.error)
+        self.assertEqual(sorted(n for row in found.rows for n in row.chapters),
+                         [c.number for c in CHAPTERS])
+
     def test_the_dead_address_is_left_out_of_the_work(self):
         proxies = self.proxies(3)
         pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
@@ -563,11 +585,35 @@ class TestOneDeadAddressDoesNotKillTheMeasurement(unittest.TestCase):
         dead = next(p for p in proxies if p.label == "10.0.0.1:8000")
         self.assertTrue(dead.disabled, "мёртвый адрес остался в работе")
 
-    def test_without_the_rule_it_behaves_as_before(self):
-        """Правило приходит снаружи: без него замер ничего не решает сам."""
+    def test_without_the_rule_the_thread_stays_on_the_dead_address(self):
+        """Правило приходит снаружи: без него переезжать замер не станет.
+
+        Ронять весь прогон он теперь не станет тоже — просто у одного
+        потока не выйдет ни одной главы, и это будет видно в отчёте.
+        """
+        proxies = self.proxies(3)
+        found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+                             proxies=proxies)
+
+        self.assertFalse([p.label for p in proxies if p.disabled])
+        empty = [row for row in found.rows if not row.chapters]
+        self.assertTrue(empty, "поток на мёртвом адресе должен быть виден")
+        self.assertIn("10.0.0.1:8000", empty[0].note)
+
+    def test_the_report_says_why_a_thread_brought_nothing(self):
+        """«Ни одной главы» без причины ничего не объясняет."""
         found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
                              proxies=self.proxies(3))
-        self.assertTrue(found.error)
+        empty = [row for row in found.rows if not row.chapters][0]
+        self.assertIn("не достучаться", empty.note)
+        self.assertIn("note", empty.as_dict())
+
+    def test_a_measurement_that_got_something_is_not_called_broken(self):
+        """Иначе поверх нормального отчёта висит «Замер прервался»."""
+        found = pool.measure(CHAPTERS, maker(), self.dead_first(), threads=3,
+                             proxies=self.proxies(3))
+        self.assertFalse(found.error, found.error)
+        self.assertGreater(found.seconds, 0)
 
     def test_a_refusal_is_not_blamed_on_the_address(self):
         """Иначе одна закрытая глава пометит мёртвыми все прокси разом."""

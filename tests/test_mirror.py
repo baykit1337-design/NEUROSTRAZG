@@ -45,10 +45,64 @@ def reply(content="", code=200, message=""):
 class MirrorBase(unittest.TestCase):
     def setUp(self):
         self.source = FanqieMirrorSource()
+        # К посреднику источник ходит своим клиентом, мимо прокси. Здесь
+        # проверяется разбор ответа, а не выбор клиента, — поэтому берём
+        # тот, что передали. Сам выбор проверяется отдельно, в
+        # `TestTheMirrorGoesRoundTheProxy`; без этой подмены тесты
+        # ушли бы в настоящую сеть и повисли на таймауте.
+        self.source.reader = lambda client: client
 
     def chapter(self):
         return Chapter(number=4, post_id="7496032198177325593",
                        ch_name="Глава 4")
+
+
+class TestTheMirrorGoesRoundTheProxy(unittest.TestCase):
+    """Запросы к посреднику шли через прокси, и тот отвечал 502.
+
+    Прокси в пуле нужны, чтобы попасть на китайский сайт. Посредник ему
+    не родственник: сторонний сервер на нестандартном порту, и такие
+    запросы прокси не пропускал. Клиент видел сетевой сбой и повторял с
+    нарастающей паузой — снаружи это выглядело как «запросы каждую
+    секунду, а не скачалось ничего».
+    """
+
+    def setUp(self):
+        self.source = FanqieMirrorSource()
+        self.addCleanup(self.source.close)
+        saved = settings.mirror.via_proxy
+        self.addCleanup(setattr, settings.mirror, "via_proxy", saved)
+
+    def test_it_does_not_take_the_client_of_the_site(self):
+        site = FakeClient(reply("<p>Текст.</p>"))
+        settings.mirror.via_proxy = False
+        self.assertIsNot(self.source.reader(site), site)
+
+    def test_its_own_client_has_no_proxy(self):
+        settings.mirror.via_proxy = False
+        self.assertIsNone(self.source.reader(FakeClient()).proxy_url)
+
+    def test_the_same_client_serves_every_chapter(self):
+        """Новая сессия на главу — это рукопожатие на каждую главу."""
+        settings.mirror.via_proxy = False
+        first = self.source.reader(FakeClient())
+        self.assertIs(self.source.reader(FakeClient()), first)
+
+    def test_the_setting_can_send_it_through_the_proxy_after_all(self):
+        """На случай, когда напрямую посредник не отвечает."""
+        site = FakeClient()
+        settings.mirror.via_proxy = True
+        self.assertIs(self.source.reader(site), site)
+
+    def test_closing_lets_the_session_go(self):
+        settings.mirror.via_proxy = False
+        self.source.reader(FakeClient())
+        self.source.close()
+        self.assertIsNone(self.source._direct)
+
+    def test_the_site_still_gets_the_proxied_client(self):
+        """Страницу книги без прокси не видно — её клиент не подменяем."""
+        self.assertTrue(self.source.needs_proxy)
 
 
 class TestChoiceIsDeliberate(unittest.TestCase):

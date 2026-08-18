@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 
 from config import settings
+from mvl.client import Client
 
 from .base import Chapter, SourceBroken
 from .fanqie import (PAID_MARKERS, ChapterEncrypted, FanqieSource, PaidChapter,
@@ -58,6 +60,44 @@ class FanqieMirrorSource(FanqieSource):
             "шифрования: и книга, и запросы видны его владельцу. Адрес "
             "меняется в config.json, раздел mirror.")
 
+    def __init__(self):
+        #: Свой клиент к посреднику. Заводится по первой главе и живёт до
+        #: конца прогона: сессия переиспользуется, как и у витрины.
+        self._direct: Client | None = None
+        self._lock = threading.Lock()
+
+    def reader(self, client):
+        """Кто идёт к посреднику — свой прямой клиент или клиент витрины.
+
+        Прокси в пуле нужны, чтобы попасть на китайский сайт. Посредник
+        сайту не родственник: это сторонний сервер на нестандартном
+        порту, и такие запросы прокси не пропускал — отвечал 502. Клиент
+        видел сетевой сбой и повторял с нарастающей паузой, отсюда и
+        «запросы каждую секунду, а глав ноль».
+
+        Настройка `mirror.via_proxy` оставлена на случай, когда сам
+        посредник напрямую не отвечает.
+        """
+        if settings.mirror.via_proxy:
+            return client
+        with self._lock:
+            if self._direct is None:
+                self._direct = Client(
+                    max_attempts=max(1, int(settings.mirror.retries or 1)),
+                    timeout=max(1, int(settings.mirror.timeout or 30)),
+                    # Иначе «Остановить» ждёт лесенку повторов: клиент
+                    # этот наш, и о нажатии кнопки ему сказать некому.
+                    cancel=self.cancel,
+                )
+            return self._direct
+
+    def close(self) -> None:
+        """Закрывает свой клиент. Качалка зовёт это в конце прогона."""
+        with self._lock:
+            if self._direct is not None:
+                self._direct.close()
+                self._direct = None
+
     def chapter(self, client, chapter: Chapter) -> tuple[str, str]:
         item_id = chapter.post_id
         if not item_id:
@@ -69,7 +109,7 @@ class FanqieMirrorSource(FanqieSource):
                 "Адрес посредника не задан: config.json, раздел mirror, "
                 "поле url. Без него этот способ работать не может.")
 
-        raw = client.get_text(f"{address}?item_id={item_id}")
+        raw = self.reader(client).get_text(f"{address}?item_id={item_id}")
         data = _json(raw, "текст главы от посредника")
 
         code = data.get("code")

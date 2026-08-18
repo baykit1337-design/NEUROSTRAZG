@@ -234,7 +234,13 @@ class Client:
         proxy_url: str | None = None,
         connect_timeout: int = CONNECT_TIMEOUT,
         shared_session: bool = False,
+        cancel: threading.Event | None = None,
     ):
+        #: Флажок остановки прогона. Между попытками клиент ждёт секунды —
+        #: при трёх попытках это шесть, а с подменой прокси и того больше.
+        #: Без этого флажка «Остановить» замечалось только на следующей
+        #: главе, и кнопка выглядела сломанной.
+        self.cancel = cancel
         self.max_attempts = max_attempts
         self.timeout = timeout
         self.connect_timeout = connect_timeout
@@ -267,14 +273,35 @@ class Client:
                 self._sessions.append(session)
         return session
 
+    def _stopping(self) -> bool:
+        """Попросили остановиться."""
+        return self.cancel is not None and self.cancel.is_set()
+
+    def _wait(self, seconds: float) -> bool:
+        """Пауза между попытками. True — прервали, ждать больше не надо.
+
+        Обычный `time.sleep` тут держал прогон до конца лесенки ретраев:
+        нажатие «Остановить» замечалось только на следующей главе.
+        """
+        if self.cancel is None:
+            time.sleep(seconds)
+            return False
+        return self.cancel.wait(seconds)
+
     def get(self, url: str, params=None, headers: dict[str, str] | None = None) -> Any:
         """GET с ретраями. Возвращает объект ответа; кидает HttpError."""
         last_error = "unknown"
         last_status: int | None = None
         network_failure = False
+        tried = 0
         request_headers = {**self.headers, **(headers or {})}
 
         for attempt in range(1, self.max_attempts + 1):
+            if self._stopping():
+                # Останавливаемся, не начиная новую попытку: смысла в ней
+                # нет, а прогон ждёт её до самого таймаута.
+                break
+            tried = attempt
             try:
                 if params is not None:
                     full_url = f"{url}?{encode_params(params)}"
@@ -323,9 +350,16 @@ class Client:
             if attempt < self.max_attempts:
                 delay = (2**attempt) + random.uniform(0, 0.5)
                 log.debug("retry %s/%s in %.1fs (%s)", attempt, self.max_attempts, delay, last_error)
-                time.sleep(delay)
+                if self._wait(delay):
+                    break
 
-        message = f"{last_error} после {self.max_attempts} попыток: {url}"
+        if self._stopping():
+            # Число попыток тут ни при чём: мы прервались сами. Врать про
+            # «после трёх попыток» не надо — по журналу потом не понять,
+            # остановили прогон или он сдался.
+            raise NetworkError(f"остановлено: {url}", status=last_status)
+
+        message = f"{last_error} после {tried} попыток: {url}"
         if network_failure:
             raise NetworkError(message, status=last_status)
         raise HttpError(message, status=last_status)

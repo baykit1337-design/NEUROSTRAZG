@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import api
+from . import client as client_mod
 from .client import (
     SITE_PAUSE_RANGE,
     Blocked,
@@ -199,6 +200,10 @@ class Downloader:
         #: «сколько», а на вопрос «через что именно» отвечает журнал.
         self.on_event = on_event
         self.cancel = cancel_event or threading.Event()
+        # Источник может ходить своим клиентом мимо нас — тогда про
+        # нажатие «Остановить» ему сказать больше некому, и кнопка ждёт
+        # всю лесенку его повторов.
+        self.source.cancel = self.cancel
         self.progress = Progress()
         #: Множитель паузы, растёт после каждого 429.
         self.pause_multiplier = 1.0
@@ -251,6 +256,33 @@ class Downloader:
     # ------------------------------------------------------------- основное
 
     def run(
+        self,
+        novel: api.Novel,
+        output_dir: Path,
+        first: int = 1,
+        last: int | None = None,
+    ) -> Report:
+        """Прогон целиком. Всё, что завёл источник, закрывается здесь.
+
+        Клиента витрины заводит и закрывает качалка, но источник может
+        ходить и мимо него — к стороннему серверу, которому прокси не
+        нужен. Выходов из прогона несколько, поэтому закрытие вынесено
+        сюда, а не расставлено по веткам.
+        """
+        try:
+            return self._run(novel, output_dir, first, last)
+        finally:
+            self.close_source()
+
+    def close_source(self) -> None:
+        closing = getattr(self.source, "close", None)
+        if callable(closing):
+            try:
+                closing()
+            except Exception as exc:  # noqa: BLE001 — уборка не роняет прогон
+                log.warning("Источник не закрылся: %s", exc)
+
+    def _run(
         self,
         novel: api.Novel,
         output_dir: Path,
@@ -540,7 +572,8 @@ class Downloader:
         if proxy is not None:
             log.info("Работаем через прокси %s", proxy.label)
         return SiteClient(
-            referer=novel.page_url, proxy_url=proxy.url if proxy else None
+            referer=novel.page_url, proxy_url=proxy.url if proxy else None,
+            cancel=self.cancel,
         )
 
     def _proxy_label(self) -> str:
@@ -555,19 +588,27 @@ class Downloader:
         return len(self.pool.switches) if self.pool else 0
 
     def _pause(self) -> None:
-        """Пауза между главами, с учётом накопленного множителя после 429."""
-        if self.pause_multiplier <= 1:
-            site_pause()
-            return
-        low, high = SITE_PAUSE_RANGE
-        time.sleep(random.uniform(low, high) * self.pause_multiplier)
+        """Пауза между главами, с учётом накопленного множителя после 429.
+
+        Ждём через флажок остановки, а не `time.sleep`: после серии 429
+        множитель разгоняет паузу до десятков секунд, и всё это время
+        «Остановить» выглядело бы нажатым впустую.
+
+        Диапазон берётся у клиента в момент вызова, а не при импорте:
+        это единственная точка, где его подменяют — иначе прогон в
+        тестах спал бы по-настоящему.
+        """
+        low, high = client_mod.SITE_PAUSE_RANGE
+        self.cancel.wait(random.uniform(low, high)
+                         * max(1.0, self.pause_multiplier))
 
     def _make_site_client(self, novel: api.Novel):
         """Как заводить клиента витрины — одинаково для пробы и ручного."""
         def make_client(proxy_url=None, shared_session=False):
             return SiteClient(referer=novel.page_url, proxy_url=proxy_url,
                               shared_session=shared_session,
-                              max_attempts=settings.threads.probe_attempts)
+                              max_attempts=settings.threads.probe_attempts,
+                              cancel=self.cancel)
 
         return make_client
 

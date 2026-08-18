@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -433,6 +434,108 @@ class TestSiteClientConfig(unittest.TestCase):
 
     def test_api_client_still_retries_429(self):
         self.assertEqual(Client.block_statuses, frozenset())
+
+
+class TestStopIsNoticedDuringRetries(unittest.TestCase):
+    """«Остановить» ждало всю лесенку повторов и выглядело сломанным.
+
+    Между попытками клиент спал `2**attempt` секунд обычным `time.sleep`.
+    При трёх попытках это шесть секунд на главу, а с подменой прокси и
+    того больше: нажатие замечалось только на следующей главе.
+    """
+
+    class Dead:
+        """Сессия, которая всегда молчит."""
+
+        def __init__(self, seen):
+            self.seen = seen
+
+        def get(self, *args, **kwargs):
+            self.seen.append(1)
+            raise OSError("не отвечает")
+
+        def close(self):
+            pass
+
+    def client(self, cancel=None, attempts=3):
+        self.tries = []
+        client = Client(max_attempts=attempts, cancel=cancel)
+        client._session = lambda: self.Dead(self.tries)
+        return client
+
+    def test_a_set_flag_stops_it_without_waiting(self):
+        stop = threading.Event()
+        stop.set()
+        began = time.monotonic()
+
+        with self.assertRaises(NetworkError):
+            self.client(stop).get("http://example.invalid/глава")
+
+        # Шесть секунд ожидания превратились бы в провал по времени.
+        self.assertLess(time.monotonic() - began, 1.0)
+
+    def test_it_does_not_even_start_a_request(self):
+        stop = threading.Event()
+        stop.set()
+        with self.assertRaises(NetworkError):
+            self.client(stop).get("http://example.invalid/глава")
+        self.assertEqual(self.tries, [], "запрос ушёл после нажатия «Остановить»")
+
+    def test_the_reason_says_it_was_stopped(self):
+        """Иначе по журналу не понять: остановили или сам сдался."""
+        stop = threading.Event()
+        stop.set()
+        with self.assertRaises(NetworkError) as caught:
+            self.client(stop).get("http://example.invalid/глава")
+        self.assertIn("остановлено", str(caught.exception))
+
+    def test_the_flag_set_midway_cuts_the_wait_short(self):
+        stop = threading.Event()
+        client = self.client(stop, attempts=3)
+        threading.Timer(0.2, stop.set).start()
+        began = time.monotonic()
+
+        with self.assertRaises(NetworkError):
+            client.get("http://example.invalid/глава")
+
+        self.assertLess(time.monotonic() - began, 2.5)
+        self.assertTrue(self.tries, "до нажатия попытки должны были идти")
+
+    def test_without_a_flag_nothing_changes(self):
+        """Клиент без флажка ведёт себя как раньше — повторяет и сдаётся."""
+        with self.assertRaises(NetworkError) as caught:
+            self.client(None, attempts=1).get("http://example.invalid/глава")
+        self.assertEqual(len(self.tries), 1)
+        self.assertIn("после 1 попыток", str(caught.exception))
+
+
+class TestTheStopFlagReachesEveryone(unittest.TestCase):
+    """Флажок бесполезен, пока о нём не знают те, кто ждёт.
+
+    Клиенты витрины заводит качалка, а свой клиент мимо неё может
+    завести источник — и тогда сказать ему про нажатие некому.
+    """
+
+    def novel(self):
+        return api.Novel(code=1, name="Книга", slug="kniga", total_chapters=2)
+
+    def test_the_session_of_the_site_knows_about_it(self):
+        loader = Downloader()
+        self.assertIs(loader._new_session(self.novel()).cancel, loader.cancel)
+
+    def test_the_clients_of_the_threads_know_about_it(self):
+        loader = Downloader()
+        make = loader._make_site_client(self.novel())
+        self.assertIs(make().cancel, loader.cancel)
+
+    def test_the_source_is_told(self):
+        """Посредник ходит своим клиентом — иначе он ждёт свою лесенку."""
+        class Source:
+            cancel = None
+
+        source = Source()
+        loader = Downloader(source=source)
+        self.assertIs(source.cancel, loader.cancel)
 
 
 # ------------------------------------------------------------- интеграционные
