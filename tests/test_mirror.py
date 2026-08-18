@@ -251,17 +251,49 @@ class TestProxyOrderPrefersCheckedOnes(unittest.TestCase):
     мёртвый.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
+    class FakePool:
+        """Пул из пар «пригоден, отключён» в порядке файла."""
 
-    def test_checked_proxies_go_first(self):
-        self.assertIn("good = [p for p in everything if p.usable]", self.app)
+        class Address:
+            def __init__(self, url, usable=False, disabled=False):
+                self.url, self.usable, self.disabled = url, usable, disabled
+
+        def __init__(self, *rows):
+            self.proxies = [self.Address(*row) for row in rows]
+
+    def order(self, pool):
+        from webapp.app import _working_proxies
+
+        return [p.url for p in _working_proxies(pool)]
+
+    def test_a_checked_address_beats_the_first_one_in_the_file(self):
+        """Ровно тот случай из отчёта: мёртвый первый, рабочие следом."""
+        pool = self.FakePool(("мёртвый", False), ("рабочий", True))
+        self.assertEqual(self.order(pool)[0], "рабочий")
 
     def test_unchecked_ones_are_not_thrown_away(self):
-        """До нажатия кнопки пригодных нет вовсе — остаться без адреса хуже."""
-        self.assertIn("good + [p for p in everything if not p.usable]",
-                      self.app)
+        """До нажатия кнопки пригодных нет вовсе — без адреса хуже."""
+        pool = self.FakePool(("первый", False), ("второй", False))
+        self.assertEqual(self.order(pool), ["первый", "второй"])
+
+    def test_disabled_ones_are_left_out(self):
+        """Отключённый на ходу — единственный, кто действительно мёртв."""
+        pool = self.FakePool(("выбывший", True, True), ("живой", True))
+        self.assertEqual(self.order(pool), ["живой"])
+
+    def test_an_address_without_the_checked_flag_counts_as_unchecked(self):
+        """Пул приходит снаружи; не всякий объект носит признак проверки."""
+        class Bare:
+            url, disabled = "без признака", False
+
+        class Pool:
+            proxies = [Bare()]
+
+        self.assertEqual(self.order(Pool()), ["без признака"])
+
+    def test_no_pool_at_all_is_not_a_crash(self):
+        self.assertEqual(self.order(None), [])
 
     def test_the_threads_check_uses_that_order(self):
-        self.assertIn("live = _working_proxies(pool)", self.app)
+        app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("live = _working_proxies(pool)", app)

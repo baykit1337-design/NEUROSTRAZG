@@ -1645,11 +1645,16 @@ def _working_proxies(pool) -> list:
     """
     if not pool:
         return []
-    everything = [p for p in getattr(pool, "proxies", []) if not p.disabled]
-    good = [p for p in everything if p.usable]
+    everything = [p for p in getattr(pool, "proxies", [])
+                  if not getattr(p, "disabled", False)]
+    # `usable` спрашиваем мягко: пул приходит снаружи, и не всякий объект
+    # в нём носит признак проверки. Нет признака — значит, не проверялся,
+    # и место ему в конце, а не в отказе.
+    checked = [p for p in everything if getattr(p, "usable", False)]
     # Непроверенные идут следом: пока кнопку не нажимали, пригодных нет
     # вовсе, и остаться совсем без адреса хуже, чем взять неизвестный.
-    return good + [p for p in everything if not p.usable]
+    return checked + [p for p in everything
+                      if not getattr(p, "usable", False)]
 
 
 def _any_proxy(pool) -> str | None:
