@@ -354,7 +354,96 @@ class TestTheMeasurementPicksCheckedAddresses(unittest.TestCase):
         self.assertEqual(set(self.measure(pool)), {"http://первый"})
 
 
-def api_novel():
+def api_novel(total=6):
     from mvl.api import Novel
 
-    return Novel(code=1, name="Книга", slug="kniga", total_chapters=2)
+    return Novel(code=1, name="Книга", slug="kniga", total_chapters=total)
+
+
+class TestSkippedChaptersReachTheScreen(unittest.TestCase):
+    """В плитке стояло «пропущено 0», а в строке рядом — «пропущено 5».
+
+    Счётчик недоступных глав в плитку просто не передавался. На
+    многопоточном пути он терялся ещё и в итоговом отчёте: `_run_batches`
+    его считал, но наружу не возвращал.
+    """
+
+    class Source:
+        """Витрина, где часть глав зашифрована наглухо."""
+
+        needs_proxy = False
+
+        def __init__(self, closed=(2, 3, 4)):
+            self.closed = set(closed)
+
+        def toc(self, client, novel, first=1, last=None, on_progress=None):
+            from mvl.api import Toc
+
+            rows = [Chapter(number=n, post_id=str(n), ch_name=f"Глава {n}")
+                    for n in range(first, (last or novel.total_chapters) + 1)]
+            return Toc(chapters=rows, missing=[])
+
+        def chapter(self, client, chapter):
+            if chapter.number in self.closed:
+                raise ChapterEncrypted(
+                    f"Глава {chapter.number}: расшифровать шрифт не удалось")
+            return (f"Глава {chapter.number}", "Текст главы.")
+
+    def setUp(self):
+        """Паузы между главами обнуляем: здесь считают, а не ждут."""
+        from mvl import client as client_mod, downloader as loader_mod
+
+        for module, name in ((client_mod, "SITE_PAUSE_RANGE"),
+                             (loader_mod, "SITE_PAUSE_RANGE"),
+                             (loader_mod, "BATCH_PAUSE_RANGE")):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, (0, 0))
+
+    def download(self, threads=1, closed=(2, 3, 4)):
+        import shutil
+        import tempfile
+        from mvl.downloader import Downloader
+
+        seen = []
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        loader = Downloader(source=self.Source(closed), threads=threads,
+                            probe=False,
+                            on_progress=lambda p: seen.append(p.as_dict()))
+        report = loader.run(api_novel(), Path(folder))
+        return report, seen
+
+    def test_the_tile_matches_the_line_beside_it(self):
+        report, seen = self.download()
+        during = [row for row in seen if row["message"].startswith("Глава ")]
+        skipping = [row for row in during if "пропущено" in row["message"]]
+
+        self.assertTrue(skipping, "ни одна глава не пропущена — нечего проверять")
+        for row in skipping:
+            with self.subTest(message=row["message"]):
+                self.assertGreater(row["skipped"], 0)
+
+    def test_the_report_counts_them(self):
+        report, _ = self.download()
+        self.assertEqual(report.downloaded, 3)
+        self.assertEqual(report.unavailable, 3)
+        self.assertEqual(report.skipped, 3)
+        self.assertEqual(report.failed, 0, "недоступная глава — не ошибка")
+
+    def test_the_parallel_path_counts_them_too(self):
+        """`_run_batches` считал пропуски и терял их на выходе."""
+        report, _ = self.download(threads=3)
+        self.assertEqual(report.downloaded, 3)
+        self.assertEqual(report.unavailable, 3)
+        self.assertEqual(report.skipped, 3)
+
+    def test_the_last_word_names_both_kinds(self):
+        """«Пропущено 3» без разбивки читается как сбой."""
+        _, seen = self.download()
+        last = seen[-1]["message"]
+        self.assertIn("(уже было) 0", last)
+        self.assertIn("недоступно 3", last)
+
+    def test_nothing_extra_is_said_when_everything_came_through(self):
+        _, seen = self.download(closed=())
+        self.assertNotIn("недоступно", seen[-1]["message"])

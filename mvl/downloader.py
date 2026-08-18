@@ -82,7 +82,12 @@ class Report:
     mode: str = ""
     requested: int = 0
     downloaded: int = 0
+    #: Не качали: и уже готовые, и недоступные. Плитка в интерфейсе одна.
     skipped: int = 0
+    #: Сколько из них недоступны в принципе — платные и нерасшифрованные.
+    #: Повтор их не откроет, поэтому в «ошибки» им не место, но и молчать
+    #: о них нельзя: «пропущено 7» без разбивки выглядит как сбой.
+    unavailable: int = 0
     failed: int = 0
     failed_chapters: list[int] = field(default_factory=list)
     missing_in_toc: list[int] = field(default_factory=list)
@@ -322,9 +327,10 @@ class Downloader:
         if self.threads > 1:
             # Пачками: смена прокси и повтор главы тут не делаются — по ТЗ
             # первый же 403 или 429 останавливает весь прогон.
-            downloaded, failed, blocked_at, stopped_reason, threads_downgraded = (
+            (downloaded, failed, blocked_at, stopped_reason,
+             threads_downgraded, paid) = (
                 self._run_batches(pending, novel, output_dir, site, state, last,
-                                  fetcher=fetcher)
+                                  fetcher=fetcher, already=skipped)
             )
             if fetcher is not None:
                 fetcher.close()
@@ -332,8 +338,8 @@ class Downloader:
             if site is not self.site_client:
                 site.close()
             return self._finish(
-                novel, output_dir, toc, downloaded, skipped, failed,
-                blocked_at, stopped_reason, threads_downgraded,
+                novel, output_dir, toc, downloaded, skipped + paid, failed,
+                blocked_at, stopped_reason, threads_downgraded, unavailable=paid,
             )
 
         try:
@@ -438,6 +444,10 @@ class Downloader:
                 self._emit(
                     done=downloaded + len(failed) + paid,
                     downloaded=downloaded,
+                    # Плитка «пропущено» стояла на нуле, пока в строке
+                    # состояния шло «пропущено 5»: счётчик в неё просто
+                    # не передавался.
+                    skipped=skipped + paid,
                     failed=len(failed),
                     message=(f"Глава {chapter.number} из {last}"
                              + (f" · пропущено {paid}" if paid else "")),
@@ -461,14 +471,18 @@ class Downloader:
         # «качать не будем», а не «не смогли».
         return self._finish(
             novel, output_dir, toc, downloaded, skipped + paid, failed,
-            blocked_at, stopped_reason, threads_downgraded,
+            blocked_at, stopped_reason, threads_downgraded, unavailable=paid,
         )
 
     def _finish(
         self, novel, output_dir, toc, downloaded, skipped, failed,
-        blocked_at, stopped_reason, threads_downgraded=False,
+        blocked_at, stopped_reason, threads_downgraded=False, unavailable=0,
     ) -> Report:
-        """Собирает отчёт и последнее сообщение — общее для обоих путей."""
+        """Собирает отчёт и последнее сообщение — общее для обоих путей.
+
+        `skipped` приходит уже общим числом «не качали»; `unavailable` —
+        сколько из них недоступны в принципе.
+        """
         report = Report(
             novel=novel.to_dict(),
             output_dir=str(output_dir),
@@ -476,6 +490,7 @@ class Downloader:
             requested=len(toc.chapters) + len(toc.missing),
             downloaded=downloaded,
             skipped=skipped,
+            unavailable=unavailable,
             failed=len(failed),
             failed_chapters=sorted(failed),
             missing_in_toc=toc.missing,
@@ -501,11 +516,15 @@ class Downloader:
                 failed=len(failed),
             )
         else:
+            # Недоступные называем отдельно: «пропущено 7» без разбивки
+            # читается как сбой, хотя это закрытые главы.
+            was = skipped - unavailable
             self._emit(
                 stage="done",
                 message=(
-                    f"Готово. Скачано {downloaded}, пропущено (уже было) {skipped}, "
-                    f"ошибок {len(failed)}."
+                    f"Готово. Скачано {downloaded}, пропущено (уже было) {was}"
+                    + (f", недоступно {unavailable}" if unavailable else "")
+                    + f", ошибок {len(failed)}."
                 ),
                 downloaded=downloaded,
                 skipped=skipped,
@@ -651,8 +670,12 @@ class Downloader:
         return netpool.Fetcher(report.method, make_client, proxies)
 
     def _run_batches(self, pending, novel, output_dir, site, state, last,
-                     fetcher=None):
+                     fetcher=None, already=0):
         """Качает главы пачками по числу потоков.
+
+        `already` — сколько глав было готово до запуска. Нужен только для
+        плитки «пропущено»: недоступные главы прибавляются к нему, иначе
+        плитка стоит на нуле при непустой строке состояния.
 
         Своя сессия у каждого потока получается сама: `Client` держит сессии
         в thread-local, поэтому куки Cloudflare переиспользуются в пределах
@@ -722,6 +745,7 @@ class Downloader:
                     self._emit(
                         done=downloaded + len(failed) + paid,
                         downloaded=downloaded,
+                        skipped=already + paid,
                         failed=len(failed),
                         message=(f"Глава {chapter.number} из {last}"
                                  + (f" · платных пропущено {paid}" if paid else "")),
@@ -733,7 +757,7 @@ class Downloader:
             if blocked_at is not None:
                 # Потоки снижаем до одного для следующего запуска.
                 self.threads = 1
-                return downloaded, failed, blocked_at, stopped_reason, True
+                return downloaded, failed, blocked_at, stopped_reason, True, paid
 
             if start + self.threads < len(pending):
                 # Пауза между пачками, а не между каждой главой.
@@ -741,7 +765,7 @@ class Downloader:
                 if self.cancel.wait(random.uniform(low, high) * self.pause_multiplier):
                     raise Cancelled()
 
-        return downloaded, failed, blocked_at, stopped_reason, False
+        return downloaded, failed, blocked_at, stopped_reason, False, paid
 
     def _one_guarded(self, chapter, novel, output_dir, site, state, fetcher=None):
         """`_one` для потока: исключение возвращается, а не улетает наверх."""
