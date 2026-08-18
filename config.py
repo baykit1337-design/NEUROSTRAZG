@@ -58,6 +58,26 @@ class Proxies:
 
 
 @dataclass
+class Mirror:
+    """Сторонний посредник для закрытых глав Фанкью.
+
+    Веб-версия сайта отдаёт закрытые главы только своим, и без входа их
+    оттуда не взять. Посредник — чужая машина, у которой этот текст уже
+    есть: она и отвечает за нас.
+
+    Адрес вынесен в настройки не для красоты. Это чей-то сервер по голому
+    IP: он может исчезнуть в любой день, и тогда строку надо будет просто
+    заменить, не дожидаясь правки программы. Заодно видно, куда именно
+    уходят запросы — по такому адресу и текст книги, и сам факт запроса
+    идут через постороннего в открытом виде.
+    """
+
+    url: str = "http://101.35.133.34:5000/api/raw_full"
+    timeout: int = 30
+    retries: int = 3
+
+
+@dataclass
 class Output:
     """Значения по умолчанию для вывода."""
 
@@ -106,6 +126,7 @@ class Config:
     network: Network = field(default_factory=Network)
     threads: Threads = field(default_factory=Threads)
     proxies: Proxies = field(default_factory=Proxies)
+    mirror: Mirror = field(default_factory=Mirror)
     output: Output = field(default_factory=Output)
     llm: Llm = field(default_factory=Llm)
     #: Метод многопоточности, сработавший в прошлый раз, — пробуем первым.

@@ -16,9 +16,13 @@ from .base import Source, SourceBroken
 #: Порядок здесь же и порядок в списке на экране.
 def all_sources() -> list:
     from .fanqie import FanqieSource
+    from .fanqiemirror import FanqieMirrorSource
     from .mvlempyr import MvlempyrSource
 
-    return [MvlempyrSource(), FanqieSource()]
+    # Посредник идёт последним и по умолчанию не выбран намеренно: он
+    # забирает закрытые главы, но ценой чужого сервера без шифрования.
+    # Такой размен человек делает сам, а не получает молча.
+    return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource()]
 
 
 def get(name: str) -> Source:
