@@ -31,6 +31,11 @@ class Novel:
     author: str = ""
     status: str = ""
     language: str = ""
+    #: Адрес обложки у источника. Нужен карточке найденной книги: из
+    #: рейтинга обложка приходила, а по коду или ссылке — нет, и одна и
+    #: та же книга выглядела по-разному в зависимости от того, как её
+    #: открыли. Источник, у которого обложек нет, оставляет пустым.
+    cover: str = ""
 
     @property
     def read_link(self) -> str:
@@ -54,6 +59,7 @@ class Novel:
             "author": self.author,
             "status": self.status,
             "language": self.language,
+            "cover": self.cover,
         }
 
 

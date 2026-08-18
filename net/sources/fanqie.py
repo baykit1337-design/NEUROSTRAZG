@@ -144,6 +144,7 @@ class FanqieSource(Source):
             author=info.get("author", ""),
             status=info.get("status", ""),
             language="zh",
+            cover=info.get("cover", ""),
         )
 
     def _book_info(self, html: str, code: str) -> dict:
@@ -177,6 +178,10 @@ class FanqieSource(Source):
                            else ("завершена" if str(done) == "0"
                                  else "продолжается")),
                 "total": int(total or 0),
+                # Тот же ключ, из которого обложку берёт рейтинг, — и
+                # страница книги там же одна и та же.
+                "cover": str(_dig(data, "thumbUri")
+                             or _dig(data, "audioThumbUri") or ""),
             }
 
         # Запасной разбор: заголовок страницы. Хуже, но лучше пустоты.

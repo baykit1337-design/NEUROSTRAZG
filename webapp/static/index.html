@@ -1069,12 +1069,20 @@
 
   <!-- 2. Книга найдена -->
   <div class="card lit" id="book" hidden>
-    <div class="book-name" id="bookName"></div>
-    <div class="meta" id="bookMeta"></div>
-    <!-- Перевода названия может не быть: книгу нашли по коду, мимо
-         рейтинга. Тогда её имя — иероглифы, и в папку они не пойдут. -->
-    <button class="ghost" id="bookTranslate" hidden
-            style="margin-top:10px;padding:3px 12px">перевести название</button>
+    <!-- Обложка тут та же и в том же виде, что в карточке из рейтинга:
+         одна и та же книга не должна выглядеть по-разному оттого, что
+         её код вставили руками, а не выбрали в срезе. -->
+    <div class="picked-row" style="margin-top:0">
+      <img id="bookCover" alt="" hidden>
+      <div style="flex:1;min-width:0">
+        <div class="book-name" id="bookName"></div>
+        <div class="meta" id="bookMeta"></div>
+        <!-- Перевода названия может не быть: книгу нашли по коду, мимо
+             рейтинга. Тогда её имя — иероглифы, и в папку они не пойдут. -->
+        <button class="ghost" id="bookTranslate" hidden
+                style="margin-top:10px;padding:3px 12px">перевести название</button>
+      </div>
+    </div>
   </div>
 
   <!-- 2.1: книга пришла из рейтинга. Пока она не найдена на сайте, видно
@@ -2782,6 +2790,24 @@ async function proxyAction(url, button, busyText){
  *  нарочно пуст и означает «вся книга». Если заполнить его здесь, при
  *  медленном поиске поля успевают моргнуть чужими числами.
  */
+/* Обложка найденной книги.
+ *
+ * Картинка идёт через свой кэш, как и в рейтинге: адрес у сайта подписан
+ * и с сроком действия, а книга по коду может открыться и через месяц.
+ * Адрес передаём, только если источник его дал; без него сервер отдаст
+ * то, что уже лежит в кэше, — книгу могли смотреть в срезе раньше.
+ * Не получилось ничего — прячем: пустая рамка хуже её отсутствия.
+ */
+function showCover(novel){
+  const cover = $('bookCover');
+  cover.hidden = true;
+  if(!novel || !novel.code) return;
+  cover.onerror = () => { cover.hidden = true; };
+  cover.onload = () => { cover.hidden = false; };
+  cover.src = `/api/rank/cover/${encodeURIComponent(novel.code)}`
+    + (novel.cover ? `?url=${encodeURIComponent(novel.cover)}` : '');
+}
+
 async function find(fillRange = true){
   const query = $('q').value.trim();
   if(!query) return;
@@ -2804,6 +2830,7 @@ async function find(fillRange = true){
       novel.status,
       `код ${novel.code}`
     ].filter(Boolean).join('  ·  ');
+    showCover(novel);
     $('book').hidden = false;
     // Кнопка нужна, только пока перевода нет: с ним переводить нечего.
     $('bookTranslate').hidden = !!novel.translated;
@@ -2818,6 +2845,9 @@ async function find(fillRange = true){
     updateFinalPath();
   }catch(err){
     showError(err.message);
+    // Обложку убираем вместе с карточкой: иначе от прошлой книги
+    // осталась бы одна картинка без имени.
+    $('bookCover').hidden = true;
     $('book').hidden = true;
     $('place').hidden = true;
   }finally{

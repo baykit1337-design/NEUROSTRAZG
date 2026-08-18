@@ -200,6 +200,50 @@ class TestRankHandsOverToTheDownloader(UiBase):
         self.assertIn("$('rkCard').hidden = true;", self.page)
 
 
+class TestFoundBookHasACoverToo(UiBase):
+    """Из рейтинга обложка приходила, а по вставленному коду — нет.
+
+    Одна и та же книга выглядела по-разному в зависимости от того, как её
+    открыли: карточкой с картинкой или голой строкой текста.
+    """
+
+    def cover(self):
+        return self.page.split("function showCover(novel)", 1)[1].split(
+            "\n}", 1)[0]
+
+    def test_the_card_has_a_place_for_it(self):
+        card = self.page.split('id="book" hidden', 1)[1].split("</div>\n  </div>",
+                                                               1)[0]
+        self.assertIn('id="bookCover"', card)
+
+    def test_it_looks_the_same_as_in_the_rank(self):
+        """Та же раскладка и тот же размер — иначе это две разные вещи."""
+        card = self.page.split('id="book" hidden', 1)[1].split("<!-- 2.1", 1)[0]
+        self.assertIn('class="picked-row"', card)
+
+    def test_the_picture_goes_through_our_own_cache(self):
+        """Адрес у сайта подписан и протухает, а книгу открывают и через месяц."""
+        self.assertIn("/api/rank/cover/", self.cover())
+
+    def test_the_address_is_passed_only_when_the_source_gave_one(self):
+        """Без него сервер отдаёт то, что уже в кэше, — это не пустой ответ."""
+        self.assertIn("novel.cover ?", self.cover())
+
+    def test_a_picture_that_did_not_load_is_hidden(self):
+        """Пустая рамка на месте обложки хуже её отсутствия."""
+        self.assertIn("onerror", self.cover())
+        self.assertIn("hidden = true", self.cover())
+
+    def test_the_search_asks_for_it(self):
+        self.assertIn("showCover(novel);", self.page)
+
+    def test_a_failed_search_takes_the_cover_away(self):
+        """Иначе от прошлой книги остаётся одна картинка без имени."""
+        find = self.page.split("async function find(fillRange = true){", 1)[1]
+        fail = find.split("}catch(err){", 1)[1].split("}finally{", 1)[0]
+        self.assertIn("$('bookCover').hidden = true;", fail)
+
+
 class TestRangeMessage(UiBase):
     """2.1: про неверный диапазон говорится у самих полей."""
 

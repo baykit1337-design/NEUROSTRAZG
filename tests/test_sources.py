@@ -212,6 +212,26 @@ class TestFanqieBook(unittest.TestCase):
         with self.assertRaises(SourceBroken):
             self.source.find(client, "7143038691944959011")
 
+    def test_the_cover_comes_along_with_the_book(self):
+        """Из рейтинга обложка приходила, а по коду — нет.
+
+        Одна и та же книга выглядела по-разному в зависимости от того,
+        как её открыли: карточкой с картинкой или голой строкой.
+        """
+        client = FakeClient({"/page/": state_page({"page": {
+            "bookName": "книга", "chapterTotal": 5,
+            "thumbUri": "https://p.example/cover.jpeg"}})})
+        novel = self.source.find(client, "7143038691944959011")
+
+        self.assertEqual(novel.cover, "https://p.example/cover.jpeg")
+        self.assertEqual(novel.to_dict()["cover"], "https://p.example/cover.jpeg")
+
+    def test_a_book_without_a_cover_is_not_a_breakage(self):
+        client = FakeClient({"/page/": state_page({"page": {
+            "bookName": "книга", "chapterTotal": 5}})})
+        self.assertEqual(self.source.find(client, "7143038691944959011").cover,
+                         "")
+
 
 class TestFanqieToc(unittest.TestCase):
     def setUp(self):
