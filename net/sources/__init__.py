@@ -18,11 +18,17 @@ def all_sources() -> list:
     from .fanqie import FanqieSource
     from .fanqiemirror import FanqieMirrorSource
     from .mvlempyr import MvlempyrSource
+    from .novelcms import NovelCmsSource
 
     # Посредник идёт последним и по умолчанию не выбран намеренно: он
     # забирает закрытые главы, но ценой чужого сервера без шифрования.
     # Такой размен человек делает сам, а не получает молча.
-    return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource()]
+    #
+    # Сайт-слив — запасной путь на случай, когда молчат и Фанкью, и
+    # посредник: там книга лежит открыто, но сайт сторонний и живёт
+    # своей жизнью, поэтому тоже выбирается руками.
+    return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource(),
+            NovelCmsSource()]
 
 
 def get(name: str) -> Source:
