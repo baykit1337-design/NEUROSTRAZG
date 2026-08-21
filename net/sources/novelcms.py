@@ -4,65 +4,113 @@
 чужая машина, которая однажды просто замолчала. Эти сайты держат тот же
 текст открытым: ни входа, ни оплаты, ни расшифровки шрифта.
 
-Почему один модуль на несколько сайтов. `novel543.com` и `timotxt.com`
-собраны на одном движке: у них совпадает разметка до имён классов —
-список глав в `.chaplist`, текст в `#chapterWarp .chapter-content
-.content`, абзацы обычными `<p>`. Различаются только адреса и вид ссылок
-на главу. Поэтому правило разбора одно, а сайты — просто список хостов,
-и следующий такой же добавляется одной строкой.
+Откуда правила разбора. Из расширения `dteviot/WebToEpub` (GPL-3.0): у
+него на каждый сайт заведён свой разборщик, и там записано то, что
+снаружи не угадать — где лежит полный список глав и как отличить
+продолжение той же главы от следующей. Само расширение встроить нельзя:
+это JavaScript, живущий внутри вкладки браузера, библиотеки для Python
+там нет. Взяты именно правила: адреса и селекторы. См. README.
 
-Про WebToEpub. Задача пришла как «встроить репозиторий WebToEpub», но
-встроить его нельзя: это расширение браузера на JavaScript, оно живёт
-внутри вкладки и ходит в сеть от имени открытой страницы. Библиотеки,
-которую можно позвать из Python, там нет. Ценное в нём — правила разбора
-для конкретных сайтов, по три десятка строк на сайт; здесь написано
-такое же правило для этого движка.
+Почему один модуль на несколько сайтов. Движок у них общий: текст главы
+в `.chapter-content`, полный список — по адресу `/{код}/dir`. Отличаются
+мелочи, и они вынесены в таблицу правил: следующий такой же сайт
+добавляется одной записью, а не новым модулем.
 
-Границы честности. Разметка взята из живых страниц обоих сайтов, но
-сами сайты из окружения разработки недоступны, и прогнать модуль по ним
-не удалось: проверять его надо на настоящей книге. Поэтому ни один адрес
-здесь не собирается по догадке — ссылки берутся из самой страницы. Если
-разметка окажется другой, модуль скажет «источник изменился», а не
-принесёт молча половину книги.
+Границы честности. Сайты из окружения разработки недоступны, прогнать
+модуль по живой книге не удалось. Поэтому разбор устроен так, чтобы
+молчаливой полукниги не вышло: не нашлось списка глав или текста —
+модуль говорит «источник изменился», а не отдаёт пустоту.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 from .base import Chapter, Novel, Source, SourceBroken, Toc
 
 log = logging.getLogger(__name__)
 
-#: Сайты на этом движке. Ключ — хост, значение — как зовётся на экране.
-#: Список открытый: следующий такой же сайт добавляется одной строкой,
-#: разбор для него уже написан.
-KNOWN_HOSTS = {
-    "novel543.com": "novel543",
-    "timotxt.com": "timotxt",
-}
+
+@dataclass(frozen=True)
+class SiteRule:
+    """Где у сайта что лежит.
+
+    Списки селекторов — по порядку: первый подошедший и работает.
+    Запасные держим намеренно: разметку правят, и лучше найти текст
+    вторым способом, чем остановить книгу целиком.
+    """
+
+    name: str
+    hosts: tuple[str, ...]
+    #: Список глав целиком. Страница книги показывает только последние.
+    toc_lists: tuple[str, ...]
+    content: tuple[str, ...]
+    title: tuple[str, ...]
+    author: tuple[str, ...] = ()
+    cover: tuple[str, ...] = ()
+    #: Глава может быть разложена по страницам.
+    paged: bool = False
+
+
+#: Общие запасные селекторы: если сайт перерисуют, разбор не встанет
+#: намертво. В начале всегда идут точные, из правил сайта.
+FALLBACK_CONTENT = ("#chapterWarp .chapter-content", ".chapter-content",
+                    "#chapterWarp .content", "#content")
+FALLBACK_TITLE = (".chapter-content h1", "#chapterWarp h1", "h1")
+FALLBACK_TOC = ("div.chaplist ul", "#chaplist ul", ".chapter-list")
+
+SITES: tuple[SiteRule, ...] = (
+    SiteRule(
+        name="novel543",
+        # Тот же движок обслуживает и второй адрес — так у WebToEpub.
+        hosts=("novel543.com", "twbook.cc"),
+        # На странице `/dir` два списка: первый — последние главы,
+        # второй — все. Нужен именно второй.
+        toc_lists=("div.chaplist ul:nth-of-type(2)", "ul.all"),
+        content=("div.chapter-content",),
+        title=("h1.title",),
+        author=("span.author",),
+        cover=("div.cover img",),
+        paged=True,
+    ),
+    SiteRule(
+        name="timotxt",
+        hosts=("timotxt.com",),
+        toc_lists=("ul.all",),
+        content=(".chapter-content",),
+        title=("h1",),
+        author=("#detail span.author",),
+        cover=("#detail img",),
+        paged=False,
+    ),
+)
+
+#: Полный список глав — отдельная страница у обоих сайтов.
+TOC_PAGE = "dir"
 
 #: Номер главы в её названии: «第1056章 ...».
 CHAPTER_NUMBER = re.compile(r"第\s*(\d+)\s*[章节節]")
 
-#: Пометка о том, что глава разложена по страницам: «(1/2)» в заголовке.
-PAGE_OF = re.compile(r"[(（]\s*(\d+)\s*/\s*(\d+)\s*[)）]")
+#: Пометка «страница такая-то из стольких-то» в заголовке: «(1/2)».
+PAGE_OF = re.compile(r"[(（]\s*\d+\s*/\s*\d+\s*[)）]")
 
-#: Подписи ссылки «дальше по этой же главе». У движка их несколько
-#: написаний, и полагаться на адрес нельзя — только на текст ссылки.
-NEXT_PAGE_WORDS = ("下一页", "下一頁", "下页", "下頁")
+#: Адрес главы: «8096_1062.html», продолжение — «8096_1062_2.html».
+#: Первые два числа — это и есть глава; хвост «_2» означает вторую
+#: страницу той же главы, а не следующую главу.
+CHAPTER_FILE = re.compile(r"/(\d+_\d+)(?:_\d+)?\.html")
 
-#: Ссылка на полный список глав. На странице книги показаны только
-#: последние, а весь список — за отдельной ссылкой.
-MORE_WORDS = ("查看全部", "全部章节", "全部章節", "更多", "目录", "目錄")
+#: Ссылки «дальше» стоят в подвале главы. Последняя из них ведёт либо на
+#: следующую страницу той же главы, либо уже на следующую главу.
+FOOT_NAV = ".foot-nav a"
 
 #: Куски внутри текста главы, которые к книге отношения не имеют.
-JUNK_CLASSES = ("gadblock", "adblock", "ad", "ads", "banner")
+JUNK_CLASSES = ("gadblock", "adblock", "banner", "foot-nav", "header")
 
 #: Сколько страниц одной главы готовы пройти. Разложенная на части глава
-#: — обычное дело, бесконечная — признак того, что мы ходим по кругу.
+#: — обычное дело, бесконечная — признак хождения по кругу.
 MAX_PAGES = 20
 
 
@@ -84,16 +132,29 @@ def _host_of(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _known(host: str) -> str:
-    """Имя движка по хосту. Пусто — сайт не из списка."""
-    for known, name in KNOWN_HOSTS.items():
-        if host == known or host.endswith("." + known):
-            return name
-    return ""
+def rule_for(url: str) -> SiteRule | None:
+    """Правило разбора по адресу. None — сайт не из списка."""
+    host = _host_of(url)
+    if not host:
+        return None
+    for rule in SITES:
+        for known in rule.hosts:
+            if host == known or host.endswith("." + known):
+                return rule
+    return None
+
+
+def _pick(page, selectors, extra=()):
+    """Первый подошедший селектор из списка, потом из запасных."""
+    for where in tuple(selectors) + tuple(extra):
+        found = page.select_one(where)
+        if found is not None:
+            return found
+    return None
 
 
 def _junk(tag) -> bool:
-    """Реклама и счётчики внутри текста главы."""
+    """Реклама, счётчики и навигация внутри блока с текстом."""
     if tag.name in ("script", "style", "ins", "iframe", "noscript"):
         return True
     if tag.get("data-ad") is not None:
@@ -120,19 +181,20 @@ class NovelCmsSource(Source):
     def code_of(self, query: str) -> str:
         """Код книги из адреса. Пусто — адрес не от этих сайтов."""
         text = (query or "").strip()
-        if not _known(_host_of(text)):
+        if rule_for(text) is None:
             return ""
         path = [part for part in urlparse(text).path.split("/") if part]
         return path[0] if path else ""
 
-    def find(self, client, query: str) -> Novel:
+    def _book_url(self, query: str) -> tuple[SiteRule, str, str]:
+        """Правило, код книги и адрес её страницы."""
         address = (query or "").strip()
-        host = _host_of(address)
-        if not _known(host):
+        rule = rule_for(address)
+        if rule is None:
+            known = ", ".join(sorted(h for r in SITES for h in r.hosts))
             raise SourceBroken(
                 "Этот источник принимает только полный адрес книги с "
-                "поддерживаемого сайта: "
-                + ", ".join(sorted(KNOWN_HOSTS)) + ". "
+                f"поддерживаемого сайта: {known}. "
                 "Пример: https://www.novel543.com/0407653271/")
 
         code = self.code_of(address)
@@ -141,20 +203,25 @@ class NovelCmsSource(Source):
                 f"В адресе «{address}» нет кода книги. Он идёт сразу за "
                 "именем сайта: https://www.novel543.com/0407653271/")
 
-        page = _soup(client.get_text(address))
-        name = self._book_name(page, code)
-        rows = self._links(client, page, address)
+        parts = urlparse(address)
+        return rule, code, f"{parts.scheme}://{parts.netloc}/{code}/"
+
+    def find(self, client, query: str) -> Novel:
+        rule, code, book = self._book_url(query)
+        page = _soup(client.get_text(book))
+        rows = self._links(client, rule, book)
 
         return Novel(
             code=self._as_number(code),
-            name=name,
-            #: Полный адрес книги: по нему потом строятся ссылки на главы,
-            #: и терять его нельзя — код у каждого сайта свой.
-            slug=address,
+            name=self._book_name(page, code),
+            #: Полный адрес книги: по нему строятся все остальные, и
+            #: терять его нельзя — код у каждого сайта свой.
+            slug=book,
             total_chapters=len(rows),
-            author=self._labelled(page, "作者"),
-            status=self._labelled(page, "分類"),
+            author=self._text(page, rule.author),
+            status="",
             language="zh",
+            cover=self._cover(page, rule, book),
         )
 
     @staticmethod
@@ -168,43 +235,47 @@ class NovelCmsSource(Source):
         return int(digits) if digits else 0
 
     def _book_name(self, page, code: str) -> str:
-        for where in ("#detail h1", ".book-name", "h1"):
+        for where in ("#detail h1", "h1.title", ".book-name", "h1"):
             found = page.select_one(where)
             if found and found.get_text(strip=True):
                 return found.get_text(strip=True)
         title = page.find("title")
         if title and title.get_text(strip=True):
-            # У движка заголовок вида «Название - Сайт»: берём до тире.
+            # Заголовок вида «Название - Сайт»: берём до разделителя.
             return re.split(r"\s*[-|_｜]\s*", title.get_text(strip=True))[0]
         return f"book-{code}"
 
     @staticmethod
-    def _labelled(page, label: str) -> str:
-        """Значение подписи вида «作者：имя» из шапки книги."""
-        text = page.get_text("\n", strip=True)
-        found = re.search(rf"{label}\s*[:：]\s*(.+)", text)
-        return found.group(1).strip() if found else ""
+    def _text(page, selectors) -> str:
+        found = _pick(page, selectors)
+        return found.get_text(strip=True) if found else ""
+
+    @staticmethod
+    def _cover(page, rule: SiteRule, book: str) -> str:
+        found = _pick(page, rule.cover)
+        src = (found.get("src") or found.get("data-src") or "") if found else ""
+        return urljoin(book, src) if src else ""
 
     # ------------------------------------------------------- оглавление
 
     def toc(self, client, novel: Novel, first: int = 1, last: int | None = None,
             on_progress=None) -> Toc:
-        address = novel.slug
-        if not address:
-            raise SourceBroken("У книги не сохранён адрес — найдите её заново.")
+        book = novel.slug
+        rule = rule_for(book) if book else None
+        if rule is None:
+            raise SourceBroken(
+                "У книги не сохранён адрес сайта — найдите её заново.")
 
-        page = _soup(client.get_text(address))
-        rows = self._links(client, page, address)
+        rows = self._links(client, rule, book)
         if not rows:
             raise SourceBroken(
-                "Источник изменился: на странице книги не нашлось списка "
-                "глав. Скачивание невозможно, пока модуль не поправят.")
+                "Источник изменился: список глав не нашёлся. Скачивание "
+                "невозможно, пока модуль не поправят.")
 
-        chapters = [
-            Chapter(number=number, post_id=link, ch_name=title, link=link)
-            for number, title, link in rows
-        ]
-        upto = last or (chapters[-1].number if chapters else 0)
+        chapters = [Chapter(number=number, post_id=link, ch_name=title,
+                            link=link)
+                    for number, title, link in rows]
+        upto = last or chapters[-1].number
         wanted = [c for c in chapters if first <= c.number <= upto]
         if on_progress:
             on_progress(len(wanted), len(wanted))
@@ -213,56 +284,46 @@ class NovelCmsSource(Source):
         missing = [n for n in range(first, upto + 1) if n not in have]
         return Toc(chapters=wanted, missing=missing)
 
-    def _links(self, client, page, address: str):
-        """Список глав: (номер, название, полный адрес).
+    def _links(self, client, rule: SiteRule, book: str):
+        """Все главы: (номер, название, полный адрес).
 
-        На странице книги показаны только последние главы, а весь список
-        — за отдельной ссылкой. Её адрес не выдумываем: идём по той
-        ссылке, что есть на самой странице.
+        Страница книги показывает только последние главы; весь список
+        лежит по отдельному адресу `/{код}/dir` — это не догадка, так
+        устроены оба сайта.
         """
-        rows = self._from_list(page, address)
-        full = self._more_link(page, address)
-        if full and full != address:
-            try:
-                whole = self._from_list(_soup(client.get_text(full)), full)
-            except Exception as exc:  # noqa: BLE001 — частичный список лучше пустого
-                log.warning("Полный список глав не открылся (%s): %s", full, exc)
-            else:
-                if len(whole) > len(rows):
-                    rows = whole
-        return rows
+        listing = urljoin(book, TOC_PAGE)
+        page = _soup(client.get_text(listing))
+        menu = _pick(page, rule.toc_lists, FALLBACK_TOC)
+        if menu is None:
+            return []
 
-    @staticmethod
-    def _from_list(page, address: str):
         rows = []
         seen = set()
-        for link in page.select(".chaplist a[href], #chaplist a[href], "
-                                ".chapter-list a[href]"):
+        for link in menu.select("a[href]"):
             href = (link.get("href") or "").strip()
             title = link.get_text(strip=True)
             if not href or not title or href.startswith("#"):
                 continue
-            full = urljoin(address, href)
+            full = urljoin(listing, href)
             if full in seen:
                 continue
             seen.add(full)
             rows.append([None, title, full])
 
-        # Номер берём из названия главы. Его там может не быть — тогда
-        # нумеруем по порядку: без номера качалка не соберёт диапазон.
-        for order, row in enumerate(rows, 1):
-            found = CHAPTER_NUMBER.search(row[1])
-            row[0] = int(found.group(1)) if found else order
-        rows.sort(key=lambda row: row[0])
-        return [tuple(row) for row in rows]
+        # Номер берём из названия главы. Есть у всех — считаем его
+        # настоящим и сортируем по нему. Нет хотя бы у одной — нумеруем
+        # по порядку списка и порядок не трогаем: на странице `/dir`
+        # главы и так идут подряд.
+        numbers = [CHAPTER_NUMBER.search(row[1]) for row in rows]
+        if rows and all(numbers):
+            for row, found in zip(rows, numbers):
+                row[0] = int(found.group(1))
+            rows.sort(key=lambda row: row[0])
+        else:
+            for order, row in enumerate(rows, 1):
+                row[0] = order
 
-    @staticmethod
-    def _more_link(page, address: str) -> str:
-        for link in page.select("a[href]"):
-            words = link.get_text(strip=True)
-            if any(mark in words for mark in MORE_WORDS):
-                return urljoin(address, link["href"])
-        return ""
+        return [tuple(row) for row in rows]
 
     # ------------------------------------------------------------ глава
 
@@ -271,24 +332,25 @@ class NovelCmsSource(Source):
         if not address:
             raise SourceBroken(f"У главы {chapter.number} нет адреса.")
 
+        rule = rule_for(address)
+        if rule is None:
+            raise SourceBroken(f"Адрес главы {chapter.number} не с того сайта.")
+
         title = ""
         pieces: list[str] = []
-        seen = set()
+        seen: set[str] = set()
 
-        # Глава может быть разложена по страницам — «(1/2)» в заголовке.
-        # Ходим по ссылке «дальше», а не по придуманному адресу: у
-        # движка он не выводится из первого.
         for _ in range(MAX_PAGES):
             if address in seen:
                 break
             seen.add(address)
 
             page = _soup(client.get_text(address))
-            head, text = self._one_page(page, chapter)
+            head, text = self._one_page(page, rule, chapter)
             title = title or head
             pieces.extend(text)
 
-            following = self._next_page(page, address)
+            following = self._next_page(page, address) if rule.paged else ""
             if not following:
                 break
             address = following
@@ -300,23 +362,21 @@ class NovelCmsSource(Source):
 
         return (title or chapter.title), "\n\n".join(pieces)
 
-    def _one_page(self, page, chapter: Chapter):
-        body = page.select_one("#chapterWarp .content, .chapter-content .content,"
-                               " #content, .content")
+    def _one_page(self, page, rule: SiteRule, chapter: Chapter):
+        body = _pick(page, rule.content, FALLBACK_CONTENT)
         if body is None:
             raise SourceBroken(
                 f"Источник изменился: в главе {chapter.number} не нашлось "
                 "блока с текстом.")
 
-        head = page.select_one(".chapter-content h1, #chapterWarp h1, h1")
-        title = head.get_text(strip=True) if head else ""
-        # Номер страницы в заголовке — служебная пометка, в книге ей не
-        # место: «Глава 1056 (1/2)» и «(2/2)» это одна глава.
-        title = PAGE_OF.sub("", title).strip()
+        head = _pick(page, rule.title, FALLBACK_TITLE)
+        # Номер страницы в заголовке — служебная пометка: «(1/2)» и
+        # «(2/2)» это одна глава, а не две.
+        title = PAGE_OF.sub("", head.get_text(strip=True)).strip() if head else ""
 
         rows = []
         for para in body.find_all("p"):
-            if para.find_parent(_junk) is not None or _junk(para):
+            if _junk(para) or para.find_parent(_junk) is not None:
                 continue
             words = para.get_text(" ", strip=True)
             if words:
@@ -326,23 +386,40 @@ class NovelCmsSource(Source):
             # Разметка без `<p>`: берём текст блока, выкинув мусор.
             for bad in body.find_all(_junk):
                 bad.decompose()
-            rows = [line.strip() for line in
-                    body.get_text("\n", strip=True).splitlines() if line.strip()]
+            rows = [line.strip() for line
+                    in body.get_text("\n", strip=True).splitlines()
+                    if line.strip()]
+
+        # Заголовок нередко повторён первой строкой текста — в книге он
+        # окажется дважды, и «убрать название» этого уже не поправит.
+        if rows and title and rows[0].strip() == title:
+            rows = rows[1:]
 
         return title, rows
 
     @staticmethod
     def _next_page(page, address: str) -> str:
-        """Ссылка «дальше по этой же главе». Пусто — глава кончилась.
+        """Следующая страница той же главы. Пусто — глава кончилась.
 
-        Именно по этой же: «следующая глава» рядом выглядит так же, но
-        уводит на другую главу, и книга собралась бы с дырами.
+        В подвале стоят ссылки «назад / оглавление / вперёд», и
+        последняя ведёт либо на продолжение этой главы, либо уже на
+        следующую. Отличаем по адресу: продолжение начинается с того же
+        «8096_1062», к нему лишь дописан номер страницы. Без этой
+        проверки главы склеились бы, а книга собралась с дырами.
         """
-        for link in page.select("a[href]"):
-            words = link.get_text(strip=True)
-            if any(mark in words for mark in NEXT_PAGE_WORDS):
-                return urljoin(address, link["href"])
-        return ""
+        here = CHAPTER_FILE.search(address)
+        if not here:
+            return ""
+
+        links = page.select(FOOT_NAV)
+        if not links:
+            return ""
+        href = (links[-1].get("href") or "").strip()
+        if not href:
+            return ""
+
+        following = urljoin(address, href)
+        return following if f"/{here.group(1)}_" in following else ""
 
 
-__all__ = ["NovelCmsSource", "KNOWN_HOSTS"]
+__all__ = ["NovelCmsSource", "SiteRule", "SITES", "rule_for"]
