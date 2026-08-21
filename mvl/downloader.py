@@ -178,6 +178,7 @@ class Downloader:
         pool: ProxyPool | None = None,
         on_progress=None,
         cancel_event: threading.Event | None = None,
+        pause_event: threading.Event | None = None,
         threads: int = 1,
         probe: bool = True,
         source=None,
@@ -209,6 +210,10 @@ class Downloader:
         #: «сколько», а на вопрос «через что именно» отвечает журнал.
         self.on_event = on_event
         self.cancel = cancel_event or threading.Event()
+        #: Пауза: поднят — прогон стоит на границе главы и ждёт. Нужна для
+        #: обрыва сети: чинить связь, пока прогон ждёт, лучше, чем
+        #: заканчивать книгу на середине.
+        self.paused = pause_event or threading.Event()
         # Источник может ходить своим клиентом мимо нас — тогда про
         # нажатие «Остановить» ему сказать больше некому, и кнопка ждёт
         # всю лесенку его повторов.
@@ -248,6 +253,26 @@ class Downloader:
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
             raise Cancelled()
+        self._hold()
+
+    def _hold(self) -> None:
+        """Стоим, пока не снимут паузу. Отмена сильнее — она разбудит.
+
+        Ждём на границе главы, а не посреди запроса: начатую главу надо
+        дописать, иначе на диске останется огрызок. Скачанное никуда не
+        девается, продолжение идёт с той же главы.
+        """
+        if not self.paused.is_set():
+            return
+
+        was = self.progress.message
+        self._emit(stage="paused", message="Пауза. Нажмите «Продолжить».")
+        while self.paused.is_set():
+            # Ждём на флажке отмены, а не в пустом цикле: так нажатие
+            # «Остановить» замечается сразу, а не через долю секунды.
+            if self.cancel.wait(0.2):
+                raise Cancelled()
+        self._emit(stage="download", message=was or "Продолжаем…")
 
     def _log_error(self, output_dir: Path, number: int, reason: str) -> None:
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")

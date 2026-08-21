@@ -103,6 +103,9 @@ class Job:
     report: dict | None = None
     error: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
+    #: Пауза: поднят — работа стоит на ближайшей границе главы и ждёт.
+    #: Отмена сильнее паузы, иначе из паузы было бы не выйти.
+    paused: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     #: Когда началась и когда закончилась. Время меряет сервер, а не
     #: страница: перезагрузка вкладки не должна сбрасывать секундомер.
@@ -129,6 +132,7 @@ class Job:
             "report": self.report,
             "error": self.error,
             "cancelled": self.cancel.is_set(),
+            "paused": self.paused.is_set(),
             "elapsed": round(self.elapsed, 1),
             "running": self.running,
         }
@@ -621,6 +625,7 @@ def api_start():
             on_progress=lambda p: job.progress.update(p.as_dict()),
             on_event=job.log.add,
             cancel_event=job.cancel,
+            pause_event=job.paused,
             threads=threads,
             probe=probe,
             source=source,
@@ -2908,6 +2913,33 @@ def api_cancel(job_id: str):
     if not job:
         return jsonify(error="Задача не найдена"), 404
     job.cancel.set()
+    # Из паузы надо выйти, иначе поток так и будет стоять в ожидании и
+    # отмену заметит только когда его отпустят.
+    job.paused.clear()
+    return jsonify(job=job.snapshot())
+
+
+@app.post("/api/job/<job_id>/pause")
+def api_pause(job_id: str):
+    """Останавливает работу на ближайшей границе главы, не бросая её.
+
+    Оборвалась сеть или нужно освободить канал — прогон ждёт, а не
+    заканчивается. Скачанное остаётся на месте, продолжение идёт с той
+    же главы.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify(error="Задача не найдена"), 404
+    job.paused.set()
+    return jsonify(job=job.snapshot())
+
+
+@app.post("/api/job/<job_id>/resume")
+def api_resume(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify(error="Задача не найдена"), 404
+    job.paused.clear()
     return jsonify(job=job.snapshot())
 
 

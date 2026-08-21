@@ -1245,6 +1245,10 @@
     <!-- Способ скачивания, подобранный автопробой: «3 потока · 3 прокси». -->
     <div class="pnow" id="sMethod"></div>
     <div class="row" style="margin-top:16px">
+      <!-- Пауза рядом с полосой: оборвалась сеть — прогон ждёт, а не
+           заканчивается на середине. Скачанное остаётся, продолжение
+           идёт с той же главы. -->
+      <button id="hold" class="ghost">Пауза</button>
       <button id="stop" class="ghost">Остановить</button>
       <button id="again" class="ghost" hidden>Новая книга</button>
     </div>
@@ -3073,6 +3077,10 @@ async function start(){
     $('progress').hidden = false;
     $('again').hidden = true;
     $('stop').hidden = false;
+    // Новый прогон начинается не на паузе, чем бы ни кончился прошлый.
+    held = false;
+    $('hold').hidden = false;
+    showHold();
     $('summary').textContent = 'Папка: ' + data.job.output_dir;
     poll = setInterval(tick, 700);
     tick();
@@ -3086,7 +3094,10 @@ async function start(){
 const STAGES = {
   queued:'Запускаем', search:'Ищем книгу', toc:'Собираем оглавление',
   download:'Качаем главы', done:'Готово', error:'Ошибка',
-  cancelled:'Остановлено', blocked:'Доступ закрыт'
+  cancelled:'Остановлено', blocked:'Доступ закрыт',
+  // Пауза не конечное состояние: работа стоит и ждёт продолжения,
+  // поэтому её нет в списке ниже и опрос не прекращается.
+  paused:'Пауза'
 };
 const TERMINAL = ['done','error','cancelled','blocked'];
 
@@ -3101,6 +3112,12 @@ async function tick(){
     const label = (STAGES[p.stage] || p.stage || '')
       + (p.message ? ' — ' + p.message : '');
     LAST_JOB = job;
+    // Состояние паузы держит сервер: перезагрузка страницы посреди
+    // прогона не должна показывать «Пауза» у идущей работы и наоборот.
+    if(job.paused !== undefined && job.paused !== held){
+      held = job.paused;
+      showHold();
+    }
     drawResult({...p, message: label}, 'fill', 'status', 'sPct');
     // Качалка опрашивает задачу сама, поэтому таймеры зовём отдельно.
     drawTimers('sStatus', job);
@@ -3125,6 +3142,9 @@ async function tick(){
     if(!busy){
       clearInterval(poll);
       $('stop').hidden = true;
+      // Ставить на паузу нечего — работа кончилась.
+      $('hold').hidden = true;
+      held = false;
       $('again').hidden = false;
       if(p.stage === 'done') $('fill').style.width = '100%';
       if(job.report){
@@ -3152,6 +3172,33 @@ async function stop(){
   try{ await call('/api/job/' + jobId + '/cancel', {}); }
   catch(err){ showError(err.message); }
   finally{ $('stop').disabled = false; }
+}
+
+/* Пауза и продолжение.
+ *
+ * Прогон встаёт на границе главы: начатую надо дописать, иначе на диске
+ * останется огрызок. Скачанное никуда не девается — продолжение идёт с
+ * той же главы, а не с начала книги.
+ */
+let held = false;
+
+async function hold(){
+  if(!jobId) return;
+  const button = $('hold');
+  button.disabled = true;
+  try{
+    await call(`/api/job/${jobId}/${held ? 'resume' : 'pause'}`, {});
+    held = !held;
+    showHold();
+  }catch(err){ showError(err.message); }
+  finally{ button.disabled = false; }
+}
+
+function showHold(){
+  const button = $('hold');
+  button.textContent = held ? 'Продолжить' : 'Пауза';
+  // На паузе продолжение — главное действие на экране.
+  button.classList.toggle('primary', held);
 }
 
 function reset(){
@@ -3383,6 +3430,7 @@ document.querySelectorAll('.tabs button').forEach(btn => {
 });
 
 $('stop').onclick = stop;
+$('hold').onclick = hold;
 $('again').onclick = reset;
 </script>
 <!-- Вкладки «Разбить», «Объединить», «Переименовать» и «Проверка» —

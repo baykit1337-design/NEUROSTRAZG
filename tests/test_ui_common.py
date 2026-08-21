@@ -328,6 +328,38 @@ class TestTheMeasurementHasItsOwnStop(UiBase):
         self.assertIn("/api/threads/cancel", body)
 
 
+class TestTheRunCanBeHeldInstead(UiBase):
+    """Обрыв сети заканчивал книгу на середине — теперь её можно держать."""
+
+    def test_the_button_stands_by_the_bar(self):
+        card = self.page.split('id="progress"', 1)[1].split("</div>\n  </div>",
+                                                            1)[0]
+        self.assertIn('id="hold"', card)
+
+    def test_it_asks_the_server_to_hold_and_to_carry_on(self):
+        body = self.page.split("async function hold()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("resume", body)
+        self.assertIn("pause", body)
+
+    def test_the_label_changes_with_the_state(self):
+        body = self.page.split("function showHold()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("Продолжить", body)
+        self.assertIn("Пауза", body)
+
+    def test_a_pause_is_not_the_end_of_the_work(self):
+        """Иначе опрос прекратится и продолжения никто не дождётся."""
+        self.assertIn("paused:'Пауза'", self.page)
+        terminal = self.page.split("const TERMINAL = ", 1)[1].split(";", 1)[0]
+        self.assertNotIn("paused", terminal)
+
+    def test_the_state_is_taken_from_the_server(self):
+        """Перезагрузка страницы не должна врать про идущую работу."""
+        self.assertIn("job.paused !== held", self.page)
+
+    def test_a_finished_run_has_nothing_to_hold(self):
+        self.assertIn("$('hold').hidden = true;", self.page)
+
+
 class TestEveryTabCanTurnOffTheTitle(UiBase):
     """В «Переименовать» галки не было, и заголовок писался всегда.
 

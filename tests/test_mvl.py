@@ -538,6 +538,109 @@ class TestTheStopFlagReachesEveryone(unittest.TestCase):
         self.assertIs(source.cancel, loader.cancel)
 
 
+class TestPauseHoldsTheRunInstead(unittest.TestCase):
+    """Обрыв сети не должен заканчивать книгу на середине.
+
+    Прогон встаёт на границе главы и ждёт: начатую надо дописать, иначе
+    на диске останется огрызок. Скачанное никуда не девается,
+    продолжение идёт с той же главы.
+    """
+
+    class Source:
+        needs_proxy = False
+        cancel = None
+        timeouts: dict = {}
+
+        def __init__(self, seen, gate):
+            self.seen, self.gate = seen, gate
+
+        def toc(self, client, novel, first=1, last=None, on_progress=None):
+            rows = [api.Chapter(number=n, post_id=str(n))
+                    for n in range(first, (last or 6) + 1)]
+            return api.Toc(chapters=rows, missing=[])
+
+        def chapter(self, client, chapter):
+            self.seen.append(chapter.number)
+            self.gate.set()
+            return f"Глава {chapter.number}", "Текст главы."
+
+    def run_in_background(self):
+        import shutil
+        import tempfile
+
+        for module, name in ((client_mod, "SITE_PAUSE_RANGE"),
+                             (downloader_mod, "BATCH_PAUSE_RANGE")):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, (0, 0))
+
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.seen: list[int] = []
+        self.gate = threading.Event()
+        self.pause = threading.Event()
+        self.stop = threading.Event()
+
+        loader = Downloader(source=self.Source(self.seen, self.gate),
+                            threads=1, probe=False,
+                            cancel_event=self.stop, pause_event=self.pause)
+        novel = api.Novel(code=1, name="Книга", slug="k", total_chapters=6)
+        worker = threading.Thread(
+            target=lambda: loader.run(novel, Path(folder)), daemon=True)
+        worker.start()
+        self.addCleanup(self.stop.set)
+        self.addCleanup(worker.join, 5)
+        return loader, worker
+
+    def test_a_paused_run_stops_taking_chapters(self):
+        loader, worker = self.run_in_background()
+        self.assertTrue(self.gate.wait(5), "прогон не начался")
+
+        self.pause.set()
+        time.sleep(0.4)
+        held = len(self.seen)
+        time.sleep(0.4)
+
+        self.assertEqual(len(self.seen), held, "на паузе главы продолжали идти")
+
+    def test_resuming_carries_on_from_the_same_place(self):
+        loader, worker = self.run_in_background()
+        self.assertTrue(self.gate.wait(5))
+        self.pause.set()
+        time.sleep(0.3)
+        held = list(self.seen)
+
+        self.pause.clear()
+        worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive(), "прогон не продолжился")
+        self.assertEqual(self.seen[:len(held)], held, "главы пошли заново")
+        self.assertEqual(self.seen[-1], 6, "книга не дошла до конца")
+
+    def test_stopping_wakes_it_out_of_the_pause(self):
+        """Иначе из паузы было бы не выйти вовсе."""
+        loader, worker = self.run_in_background()
+        self.assertTrue(self.gate.wait(5))
+        self.pause.set()
+        time.sleep(0.3)
+
+        self.stop.set()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "отмена не разбудила паузу")
+
+    def test_the_screen_is_told_it_is_a_pause(self):
+        """«Ничего не происходит» без пояснения читается как зависание."""
+        said = []
+        loader = Downloader(threads=1, probe=False,
+                            on_progress=lambda p: said.append(
+                                (p.stage, p.message)))
+        loader.paused.set()
+        threading.Timer(0.3, loader.paused.clear).start()
+        loader._check_cancel()
+
+        self.assertIn("paused", [stage for stage, _ in said])
+        self.assertTrue(any("Пауза" in text for _, text in said))
+
+
 class TestWaitingTimesReachTheChapters(unittest.TestCase):
     """Выставленные сроки ожидания не доходили до скачивания глав.
 
