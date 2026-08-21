@@ -2958,7 +2958,10 @@ def main() -> None:
     import argparse
     import webbrowser
 
-    parser = argparse.ArgumentParser(description="Веб-интерфейс качалки MVLEMPYR")
+    # Название одно на всю программу — то же, что в шапке страницы.
+    # MVLEMPYR здесь стоять не может: это имя одного из источников, а
+    # не программы, и в консоли оно противоречило экрану.
+    parser = argparse.ArgumentParser(description="NEUROSTRAZH — веб-интерфейс")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1", help="менять не рекомендуется")
     parser.add_argument("--no-browser", action="store_true")
@@ -2974,7 +2977,7 @@ def main() -> None:
         print(f"  Прокси не загружены ({scrub(str(exc))}). Укажите файл в интерфейсе.")
 
     url = f"http://{args.host}:{args.port}"
-    print(f"\n  MVLEMPYR downloader → {url}\n  Ctrl+C чтобы остановить\n")
+    print(f"\n  NEUROSTRAZH → {url}\n  Ctrl+C чтобы остановить\n")
 
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()

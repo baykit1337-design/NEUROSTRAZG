@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""CLI: скачивание глав книги с MVLEMPYR.
+"""NEUROSTRAZH из командной строки: скачивание глав книги.
+
+Примеры ниже — для источника MVLEMPYR, с которого всё начиналось.
 
     python cli.py https://www.mvlempyr.io/novel/insect-tamers-ascension
     python cli.py 6615 --out ~/Books --name "Insect Tamer"
@@ -26,7 +28,8 @@ from mvl.proxies import PROXY_FILE, Proxy, ProxyPool
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Качалка глав с MVLEMPYR", formatter_class=argparse.RawDescriptionHelpFormatter
+        description="NEUROSTRAZH — качалка глав",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("book", nargs="?", help="ссылка на книгу, слаг или числовой код")
     parser.add_argument("--out", "-o", default=".", help="куда класть папку с главами (по умолчанию: текущая)")
