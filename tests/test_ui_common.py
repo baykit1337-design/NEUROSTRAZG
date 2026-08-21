@@ -909,6 +909,69 @@ class TestGlowHasRoom(UiBase):
         self.assertNotIn("overflow", wrap)
 
 
+class TestTabRowHasRoomForEveryTab(UiBase):
+    """Строке вкладок не хватало ширины, и края кнопок пропадали.
+
+    Причин было две, и обе видны только в браузере. Первая: строка была
+    заперта потолком в 1340 пикселей, и на экране в 1920 десяти вкладкам
+    не хватало места, хотя рядом пустовало почти шестьсот. Вторая: завеса
+    по краям висела всегда, и крайняя кнопка теряла край даже тогда,
+    когда прокручивать было нечего.
+    """
+
+    def panel(self) -> str:
+        return self.page.split("  .tabs{", 1)[1].split("\n  }", 1)[0]
+
+    def test_the_row_is_not_kept_narrower_than_the_window(self):
+        """Потолок остаётся — но выше того, что нужно десяти вкладкам."""
+        import re
+
+        found = re.search(r"width:min\(100vw - \d+px,\s*(\d+)px\)",
+                          self.panel())
+        self.assertIsNotNone(found, "ширина строки задаётся не так")
+        self.assertGreaterEqual(int(found.group(1)), 1500)
+
+    def test_the_fade_width_is_set_from_the_scroll_position(self):
+        """Постоянная завеса и была тем, что откусывало край кнопки."""
+        panel = self.panel()
+        self.assertIn("var(--fade-left)", panel)
+        self.assertIn("var(--fade-right)", panel)
+        self.assertIn("--fade-left:0px", panel)
+        self.assertIn("--fade-right:0px", panel)
+
+    def test_the_fade_follows_the_real_scroll(self):
+        body = self.page.split("function tabsEdges()", 1)[1] \
+            .split("\n}", 1)[0]
+        self.assertIn("nav.scrollLeft", body)
+        self.assertIn("nav.scrollWidth - nav.clientWidth", body)
+        self.assertIn("setProperty('--fade-left'", body)
+        self.assertIn("setProperty('--fade-right'", body)
+
+    def test_it_is_recounted_when_something_moves(self):
+        """Иначе завеса остаётся от прежнего размера окна."""
+        self.assertIn("addEventListener('scroll', tabsEdges", self.page)
+        self.assertIn("addEventListener('resize', tabsEdges)", self.page)
+
+    def test_it_is_counted_at_the_start_too(self):
+        """До первой прокрутки завеса тоже должна быть верной."""
+        self.assertIn("\ntabsEdges();", self.page)
+
+    def test_a_tab_beyond_the_edge_is_brought_into_view(self):
+        """В узком окне строка всё же прокручивается — и нажатая кнопка
+        не должна остаться наполовину за краем."""
+        self.assertIn("btn.scrollIntoView({block: 'nearest'", self.page)
+
+    def test_icons_leave_before_the_row_starts_scrolling(self):
+        """Порог взят по замеру: со значками десять вкладок влезают
+        начиная примерно с 1440."""
+        import re
+
+        found = re.search(r"@media \(max-width:(\d+)px\)\{ \.tabs button svg",
+                          self.page)
+        self.assertIsNotNone(found, "значки прячутся не так")
+        self.assertGreaterEqual(int(found.group(1)), 1400)
+
+
 class TestPreviewBuildsItself(UiBase):
     """4.4: предпросмотр не должен ждать, пока тронут галочки."""
 

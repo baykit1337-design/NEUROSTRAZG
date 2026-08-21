@@ -358,28 +358,41 @@
        его нечем. Раскладку это не трогает — панель просто выше. */
     padding:12px 0;
     /* Колонка карточек узкая (660px), а меню ей следовать не обязано:
-       выносим его на ширину окна, чтобы вкладки помещались подольше. */
-    width:min(100vw - 24px, 1340px);
+       выносим его на ширину окна, чтобы вкладки помещались подольше.
+       Прежний потолок в 1340px был тесен уже для десяти вкладок: на
+       экране в 1920 строке не хватало 68 пикселей, хотя свободного
+       места рядом оставалось почти шестьсот. */
+    width:min(100vw - 24px, 1720px);
     position:relative;left:50%;transform:translateX(-50%);
-    /* Края растворяются — видно, что строка продолжается вбок. */
-    -webkit-mask-image:linear-gradient(90deg,transparent,#000 18px,
-                       #000 calc(100% - 18px),transparent);
-    mask-image:linear-gradient(90deg,transparent,#000 18px,
-               #000 calc(100% - 18px),transparent);
+    /* Края растворяются — видно, что строка продолжается вбок. Но
+       только та сторона, где действительно есть продолжение: раньше
+       завеса висела с обеих сторон всегда и откусывала край крайней
+       кнопки даже тогда, когда прокручивать было нечего. Ширину завесы
+       ставит `tabsEdges()` по настоящему положению прокрутки. */
+    --fade-left:0px; --fade-right:0px;
+    -webkit-mask-image:linear-gradient(90deg,transparent,
+                       #000 var(--fade-left),
+                       #000 calc(100% - var(--fade-right)),transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 var(--fade-left),
+               #000 calc(100% - var(--fade-right)),transparent);
   }
   .tabs::-webkit-scrollbar{height:0;display:none}
   .tabs button{
     flex:0 0 auto;white-space:nowrap;
-    padding:9px clamp(8px,1.3vw,16px);
+    padding:9px clamp(8px,1.15vw,15px);
     font-size:clamp(11.5px,1.05vw,13px);
     border-color:var(--stroke-soft);
     display:inline-flex;align-items:center;gap:clamp(4px,.5vw,7px);
   }
   .tabs button svg{flex:none}
   /* Совсем узкий экран: значки уходят, названия остаются читаемыми. */
-  /* Значки — роскошь: когда вкладок девять, важнее, чтобы все подписи
-     влезли без прокрутки. Уходят они первыми. */
-  @media (max-width:1240px){ .tabs button svg{display:none} }
+  /* Значки — роскошь: когда вкладок десять, важнее, чтобы все подписи
+     влезли без прокрутки. Уходят они первыми.
+
+     Порог взят по замеру, а не на глаз: со значками десять вкладок
+     занимают около 1370 пикселей, и до 1430 включительно места им уже
+     не хватает — там строка начинала прокручиваться. */
+  @media (max-width:1430px){ .tabs button svg{display:none} }
   .tabs button.on{
     border-color:var(--neon);background:rgba(176,108,255,.16);
     box-shadow:0 0 20px rgba(176,108,255,.28);
@@ -3582,8 +3595,32 @@ function goTab(name){
   return !!button;
 }
 
+/** Растворять край строки вкладок только там, где есть продолжение.
+ *
+ *  Завеса по краям показывает, что строка едет дальше вбок. Висела она
+ *  всегда с обеих сторон — и когда прокручивать было нечего, тоже, —
+ *  поэтому у крайней кнопки просто пропадал край, без всякой причины.
+ */
+function tabsEdges(){
+  const nav = document.querySelector('.tabs');
+  if(!nav) return;
+  const before = nav.scrollLeft;
+  const after = nav.scrollWidth - nav.clientWidth - before;
+  // Округление ширин даёт остаток в доли пикселя даже у строки, которая
+  // никуда не прокручивается: порог отсекает эту мелочь.
+  nav.style.setProperty('--fade-left', before > 1 ? '18px' : '0px');
+  nav.style.setProperty('--fade-right', after > 1 ? '18px' : '0px');
+}
+
+document.querySelector('.tabs')?.addEventListener('scroll', tabsEdges,
+                                                  {passive: true});
+addEventListener('resize', tabsEdges);
+tabsEdges();
+
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.onclick = () => {
+    // Кнопка могла быть за краем: подводим её целиком в видимую часть.
+    btn.scrollIntoView({block: 'nearest', inline: 'nearest'});
     // Уход с вкладки останавливает её работу: анализ на пятистах главах
     // иначе продолжал бы жечь ключи, пока человек смотрит в другое место.
     // Прогресс не теряется — сессия позволяет продолжить с того же места.

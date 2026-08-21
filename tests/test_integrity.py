@@ -533,9 +533,17 @@ class TestNeurostrazhStyles(unittest.TestCase):
         self.assertNotIn("flex-wrap:wrap", block[:600])
 
     def test_icons_give_way_to_labels(self):
-        """Девять вкладок в строку влезают только без значков."""
-        self.assertIn("@media (max-width:1240px){ .tabs button svg{display:none} }",
-                      self.html)
+        """На узком экране значки уходят первыми — важнее подписи.
+
+        Сам порог не закреплён: он двигается вместе с числом вкладок и
+        берётся замером в браузере. Закреплено то, что значки прячутся
+        именно шириной окна, а не чем-то ещё.
+        """
+        import re
+
+        self.assertRegex(
+            self.html,
+            r"@media \(max-width:\d+px\)\{ \.tabs button svg\{display:none\} \}")
 
     def test_open_dropdown_covers_the_next_card(self):
         """Карточка размывает фон и делает свой слой: без подъёма самой
