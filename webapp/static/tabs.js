@@ -479,6 +479,9 @@ function rnPayload(){
     splits: rnSplits,
     renumber: $('rnRenumber').checked,
     renumber_from: $('rnStart').value,
+    // Без этого сервер брал умолчание `True`, и название главы
+    // дописывалось в файл всегда — выключить его было нечем.
+    headings: $('rnHeadings').checked,
     // Отмеченные строки. Понятия «служебный файл», который выпадает сам,
     // больше нет: что не нужно, человек снимает галочкой.
     chosen: [...rnChosen],
@@ -588,7 +591,12 @@ function rnRenderList(build = true){
 
     const size = document.createElement('span');
     size.className = 'num';
-    size.textContent = chapter.size.toLocaleString('ru') + ' симв.';
+    // Объём известен не всегда: тяжёлые форматы (.docx, .rtf) при показе
+    // списка не читаются — разбор .docx стоит 46 мс на файл, и на
+    // пятистах это полминуты перед пустым экраном. Текст возьмут при
+    // записи, а здесь честно ставим прочерк.
+    size.textContent = chapter.size == null
+      ? '—' : chapter.size.toLocaleString('ru') + ' симв.';
 
     row.append(box, name);
     if(chapter.suspect){

@@ -328,6 +328,28 @@ class TestTheMeasurementHasItsOwnStop(UiBase):
         self.assertIn("/api/threads/cancel", body)
 
 
+class TestEveryTabCanTurnOffTheTitle(UiBase):
+    """В «Переименовать» галки не было, и заголовок писался всегда.
+
+    Сервер брал умолчание `True`, выключить его было нечем: у книги, где
+    название главы уже есть в самом тексте, оно попадало в файл дважды.
+    """
+
+    def test_all_three_tabs_have_the_tick(self):
+        for box in ("spHeadings", "mgHeadings", "rnHeadings"):
+            with self.subTest(box=box):
+                self.assertIn(f'id="{box}"', self.page)
+
+    def test_the_rename_tab_sends_it_to_the_server(self):
+        payload = self.tabs.split("function rnPayload()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("headings: $('rnHeadings').checked,", payload)
+
+    def test_the_other_two_still_send_theirs(self):
+        for box in ("spHeadings", "mgHeadings"):
+            with self.subTest(box=box):
+                self.assertIn(f"headings: $('{box}').checked", self.tabs)
+
+
 class TestPickingFilesLooksTheSameEverywhere(UiBase):
     """Выбор файлов устроен одинаково, а выглядел по-разному.
 

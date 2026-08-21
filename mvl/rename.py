@@ -74,9 +74,13 @@ class Chapter:
 
     path: Path
     parts_of_name: NameParts
-    size: int = 0
+    #: Объём в знаках. `None` — файл ещё не читали (см. `HEAVY`).
+    size: int | None = 0
     part: int | None = None
     text_parts: list[str] = field(default_factory=list)
+    #: Прочитано ли тело файла. У тяжёлых форматов при показе списка —
+    #: нет: читаются они только тогда, когда текст действительно нужен.
+    loaded: bool = True
     #: Номер, присвоенный по порядку в папке, когда в имени числа не было.
     assigned: int | None = None
     #: Разбор вызывает сомнения: номера нет или он выбивается из диапазона.
@@ -96,6 +100,18 @@ class Chapter:
     def title(self) -> str:
         return self.parts_of_name.title
 
+    def body(self) -> list[str]:
+        """Абзацы главы. Тяжёлый файл читается здесь, и только раз."""
+        if not self.loaded:
+            try:
+                self.text_parts = read_paragraphs(self.path)
+            except Exception as exc:  # noqa: BLE001 — один файл не рушит папку
+                log.warning("Не прочитан %s: %s", self.path.name, exc)
+                self.text_parts = []
+            self.size = sum(len(p) for p in self.text_parts)
+            self.loaded = True
+        return self.text_parts
+
     def as_dict(self) -> dict:
         return {
             "path": str(self.path),
@@ -109,6 +125,14 @@ class Chapter:
             # Номер не из имени, а присвоен по порядку в папке.
             "assigned": self.parts_of_name.number is None,
         }
+
+
+#: Форматы, чтение которых стоит дорого. Замерено на главах по сорок
+#: абзацев: .docx — 46 мс на файл, .rtf — 13 мс, всё остальное меньше
+#: двух. На папке в пятьсот глав это разница между «сразу» и «полминуты
+#: перед пустым экраном» — а список строится по именам, текст ему не
+#: нужен. Поэтому такие файлы читаются лениво, к моменту записи.
+HEAVY = frozenset({".docx", ".rtf"})
 
 
 def read_paragraphs(path: Path) -> list[str]:
@@ -133,6 +157,18 @@ def scan(folder: str | Path, pattern: str | None = None) -> list[Chapter]:
         if not path.is_file() or path.suffix.lower() not in READABLE:
             continue
         parts = parse_name(path.stem, pattern)
+
+        # Тяжёлые форматы при показе списка не читаем: разбор .docx стоит
+        # 46 мс на файл, и на пятистах это полминуты ожидания перед
+        # пустым экраном — а список строится по именам, текст ему не
+        # нужен вовсе. Прочитаем, когда дело дойдёт до записи.
+        if path.suffix.lower() in HEAVY:
+            chapters.append(
+                Chapter(path=path, parts_of_name=parts, part=parts.part,
+                        size=None, loaded=False)
+            )
+            continue
+
         try:
             paragraphs = read_paragraphs(path)
         except Exception as exc:
@@ -291,6 +327,10 @@ class PlanRow:
     #: Разбор вызывает сомнения — строка помечается, но переименовывается.
     suspect: bool = False
     paragraphs: list[str] = field(default_factory=list)
+    #: Лежит ли текст здесь. `False` — файл тяжёлый и ещё не читан, его
+    #: возьмут с диска в момент записи. Отличать это от «глава пустая»
+    #: обязательно: иначе пустой файл затирал бы содержимое исходного.
+    loaded: bool = True
 
     def as_dict(self) -> dict:
         return {
@@ -355,7 +395,9 @@ def make_plan(
 
         count = max(1, int(splits.get(str(chapter.path), 1) or 1))
         if count > 1:
-            pieces = split_into_parts(chapter.text_parts, count)
+            # Резать без текста нельзя — эту главу читаем сейчас. Их
+            # обычно единицы, а не вся папка.
+            pieces = split_into_parts(chapter.body(), count)
             # У разрезанной главы номер части в имени обязателен: без него
             # все части получат одно имя и затрут друг друга.
             part_fmt = fmt if fmt.part else replace(fmt, part=True)
@@ -378,7 +420,10 @@ def make_plan(
                     new_name=build_name(number, chapter.part, chapter.title, fmt),
                     number=number, part=chapter.part, title=chapter.title,
                     size=chapter.size, suspect=chapter.suspect,
+                    # Текст не тянем: если файл ещё не читан, его прочтёт
+                    # запись. Предпросмотр имён в тексте не нуждается.
                     paragraphs=chapter.text_parts,
+                    loaded=chapter.loaded,
                 )
             )
 
@@ -441,12 +486,17 @@ def apply_plan(
         name = f"{safe_filename(row.new_name) or f'{index:04d}'}.{suffix}"
         try:
             target = output_dir / name
+            # Тяжёлый файл до сих пор не читан — вот теперь он и нужен.
+            # Список глав строится по именам, и заставлять человека
+            # ждать разбора всей папки ради предпросмотра незачем.
+            paragraphs = (list(row.paragraphs) if row.loaded
+                          else read_paragraphs(Path(row.source)))
             # Пишем через общий слой: он знает все форматы и применяет ту
             # же подготовку текста, что и остальные пути вывода.
             formats.write(
                 target,
                 [OutChapter(number=row.number, part=row.part, title=row.title,
-                            paragraphs=list(row.paragraphs), source=row.source)],
+                            paragraphs=paragraphs, source=row.source)],
                 prep=prep, style=style, headings=headings, encoding=encoding,
             )
             report.written += 1

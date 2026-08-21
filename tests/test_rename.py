@@ -235,6 +235,86 @@ class TestScanAndPlan(RenameFolderTest):
         self.assertIn("Глава 202.1 - Название 202", names)
 
 
+class TestHeavyFilesAreNotReadForTheList(RenameFolderTest):
+    """Список глав строился ценой разбора всей папки.
+
+    `.docx` стоит 46 мс на файл, и папка читалась трижды: на показе
+    списка, на предпросмотре имён и на записи. На пятистах главах это
+    минуты ожидания перед пустым экраном. Список нужен по именам —
+    текст ему не нужен вовсе.
+    """
+
+    def docx_folder(self, count=3):
+        from core import formats
+        from core.models import Chapter as OutChapter
+
+        folder = self.tmp / "docx"
+        folder.mkdir()
+        body = OutChapter(title="Название",
+                          paragraphs=["Первый абзац.", "Второй абзац."])
+        for n in range(1, count + 1):
+            formats.write(folder / f"{n:04d} - Глава {n}. Название {n}.docx",
+                          [body])
+        return folder
+
+    def test_the_body_is_not_read_while_listing(self):
+        chapters = rename.scan(self.docx_folder())
+        self.assertTrue(chapters)
+        for chapter in chapters:
+            with self.subTest(name=chapter.path.name):
+                self.assertFalse(chapter.loaded)
+                self.assertEqual(chapter.text_parts, [])
+
+    def test_light_formats_are_still_read_at_once(self):
+        """Они стоят меньше двух миллисекунд — прятать нечего."""
+        for chapter in rename.scan(self.folder):
+            with self.subTest(name=chapter.path.name):
+                self.assertTrue(chapter.loaded)
+                self.assertIsNotNone(chapter.size)
+
+    def test_the_size_is_honestly_unknown_until_then(self):
+        """Лучше прочерк, чем выдуманное число."""
+        chapter = rename.scan(self.docx_folder())[0]
+        self.assertIsNone(chapter.size)
+        self.assertIsNone(chapter.as_dict()["size"])
+
+    def test_asking_for_the_body_reads_it_and_fills_the_size(self):
+        chapter = rename.scan(self.docx_folder())[0]
+        self.assertIn("Первый абзац.", chapter.body())
+        self.assertTrue(chapter.loaded)
+        self.assertGreater(chapter.size, 0)
+
+    def test_the_text_still_reaches_the_written_file(self):
+        """Главное: ленивое чтение не должно оставить пустые файлы."""
+        rows = rename.make_plan(rename.scan(self.docx_folder()), NameFormat())
+        out = self.tmp / "из-docx"
+        report = rename.apply_plan(rows, out, fmt="txt")
+
+        self.assertEqual(report.written, 3)
+        for file in sorted(out.glob("*.txt")):
+            with self.subTest(file=file.name):
+                self.assertIn("Первый абзац.", file.read_text(encoding="utf-8"))
+
+    def test_a_chapter_to_be_cut_is_read_after_all(self):
+        """Резать без текста нечего — эту главу читаем сразу."""
+        chapters = rename.scan(self.docx_folder())
+        rows = rename.make_plan(chapters, NameFormat(),
+                                splits={str(chapters[0].path): 2})
+
+        pieces = [r for r in rows if r.source == str(chapters[0].path)]
+        self.assertEqual(len(pieces), 2)
+        self.assertTrue(all(r.paragraphs for r in pieces))
+
+    def test_an_empty_chapter_is_not_mistaken_for_an_unread_one(self):
+        """Иначе пустой файл молча взял бы текст из исходного."""
+        empty = self.tmp / "пусто"
+        empty.mkdir()
+        (empty / "0001 - Глава 1. Ничего.txt").write_text("", encoding="utf-8")
+
+        rows = rename.make_plan(rename.scan(empty), NameFormat())
+        self.assertTrue(rows[0].loaded)
+
+
 class TestApplyPlan(RenameFolderTest):
     def test_writes_to_new_folder_and_keeps_originals(self):
         before = sorted(p.name for p in self.folder.iterdir())
@@ -244,6 +324,31 @@ class TestApplyPlan(RenameFolderTest):
 
         self.assertEqual(report.written, 4)
         self.assertEqual(sorted(p.name for p in self.folder.iterdir()), before)
+
+    def first_line(self, headings: bool) -> str:
+        """Первая строка готовой главы 201: у неё известно и то и другое.
+
+        Заголовок — «Название 201», текст начинается с «Абзац 1». По
+        первой строке сразу видно, дописали название или нет.
+        """
+        rows = rename.make_plan(rename.scan(self.folder), NameFormat())
+        out = self.tmp / f"вывод-{headings}"
+        rename.apply_plan(rows, out, headings=headings)
+        file = next(p for p in out.glob("*.txt") if "201" in p.name)
+        return file.read_text(encoding="utf-8").strip().splitlines()[0]
+
+    def test_the_title_can_be_left_out_of_the_file(self):
+        """Галки на вкладке не было вовсе, и заголовок писался всегда.
+
+        Сервер брал умолчание `True`, выключить его было нечем: у книги,
+        где название главы уже есть в самом тексте, оно оказывалось в
+        файле дважды.
+        """
+        self.assertTrue(self.first_line(False).startswith("Абзац"),
+                        self.first_line(False))
+
+    def test_the_title_is_still_written_when_asked(self):
+        self.assertIn("Название 201", self.first_line(True))
 
     def test_docx_output(self):
         rows = rename.make_plan(rename.scan(self.folder), NameFormat())
