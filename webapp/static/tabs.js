@@ -1146,11 +1146,132 @@ async function mgStart(){
   }
 }
 
+/* -------------------------------------------------------- Конвертация */
+
+/* Третья из семьи. «Разбить» делает из одного много, «Объединить» — из
+ * многого одно, здесь число не меняется вовсе: меняется формат. Раньше
+ * ради этого запускали «Объединить» по разу на главу.
+ */
+
+const cvState = {format: '.docx', job: null, menus: {}, scan: null};
+
+function cvUpdateFinal(){
+  const base = $('cvBase').value.trim();
+  const name = $('cvFolder').value.trim() || 'Конвертация';
+  $('cvFinal').textContent = base
+    ? `Файлы лягут в: ${base}/${name}  (${cvState.format})` : '';
+  toggleOptions('cv', cvState.format);
+  cvDrawSchema();
+}
+
+/** «5 файлов .txt → перегнать → 5 файлов .docx»: число одно и то же. */
+function cvDrawSchema(){
+  const data = cvState.scan;
+  if(!data){ $('cvSchema').hidden = true; return; }
+  drawSchema('cvSchema',
+    {count: data.file_count, formats: extensions(data.files)},
+    'перегнать',
+    {count: data.file_count, format: cvState.format});
+}
+
+/** Пересчёт после выбора. Содержимое не читается — только имена файлов. */
+async function cvScan(){
+  const targets = CHOSEN.cvList || [];
+  if(!targets.length){
+    cvState.scan = null;
+    ['cvOpts', 'cvPlace', 'cvStyle', 'cvPrep', 'cvSchema', 'cvSkipped']
+      .forEach(id => { $(id).hidden = true; });
+    $('cvScanned').textContent = 'Каждый файл превращается в свой: главы '
+      + 'внутри не режутся и не склеиваются.';
+    return;
+  }
+  showError('');
+  try{
+    const data = await call('/api/convert/scan', {targets});
+    cvState.scan = data;
+    updateListBar('cvList', data.file_count);
+    const kinds = formatBreakdown(data.files);
+    $('cvScanned').textContent =
+      `Выбрано ${data.file_count} `
+      + `${plural(data.file_count, 'файл', 'файла', 'файлов')}`
+      + (kinds ? `: ${kinds}` : '')
+      + `. Столько же и получится.`;
+    $('cvSkipped').hidden = !data.skipped?.length;
+    if(data.skipped?.length){
+      const shown = data.skipped.slice(0, 8).join(', ');
+      $('cvSkipped').textContent =
+        `Пропущено по формату: ${data.skipped.length} `
+        + `(${shown}${data.skipped.length > 8 ? ' и другие' : ''}).`;
+    }
+    $('cvOpts').hidden = false;
+    $('cvPlace').hidden = false;
+    cvUpdateFinal();
+  }catch(err){
+    showError(err.message, $('cvScanned'));
+    $('cvOpts').hidden = true;
+    $('cvPlace').hidden = true;
+  }
+}
+window.cvScan = cvScan;
+
+async function cvStart(){
+  showError('');
+  $('cvStart').disabled = true;
+  $('cvErrors').hidden = true;
+  try{
+    const {job} = await call('/api/convert/start', {
+      targets: CHOSEN.cvList || [],
+      base: $('cvBase').value.trim(),
+      folder: $('cvFolder').value.trim(),
+      format: cvState.format,
+      encoding: cvState.menus.encoding ? cvState.menus.encoding.value : 'utf-8',
+      headings: $('cvHeadings').checked,
+      style: styleOf('cv', cvState.menus),
+      prep: prepOf('cv', cvState.menus),
+    });
+    cvState.job = job.id;
+    ownJob('convert', job.id);
+    $('cvProgress').hidden = false;
+    $('cvStop').hidden = false;
+    $('cvSummary').textContent = 'Папка: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('cvWritten').textContent = p.written || p.done || 0;
+        $('cvFailed').textContent = p.failed || 0;
+        return drawResult(p, 'cvFill', 'cvStatus', 'cvPct');
+      },
+      job => {
+        $('cvStop').hidden = true;
+        if(job.error){ showError(job.error, $('cvSummary')); return; }
+        $('cvSummary').textContent =
+          'Папка: ' + (job.report?.output || job.output_dir);
+        // Перегон в тот же формат не ошибка — но человек мог выбрать
+        // формат по ошибке, и молчать об этом не стоит.
+        // `extra` в отчёте раскладывается по верхнему уровню, отдельного
+        // ключа `extra` в ответе нет.
+        const same = job.report?.same_format;
+        if(same){
+          $('cvSummary').textContent += ` · ${same} `
+            + `${plural(same, 'файл', 'файла', 'файлов')} уже были в `
+            + `${cvState.format}`;
+        }
+        showFailures('cvErrors', job.report?.failures);
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('cvStart').disabled = false;
+  }
+}
+
 /* ------------------------------------------------------------ привязка */
 
 for(const [p, state, update, scan] of [
   ['sp', spState, spUpdateFinal, spScan],
   ['mg', mgState, mgUpdateFinal, mgScan],
+  ['cv', cvState, cvUpdateFinal, cvScan],
 ]){
   state.menus.font = makeDropdown($(p + 'Font'), value => {
     // «Другой…» открывает поле для ручного ввода.
@@ -1161,7 +1282,7 @@ for(const [p, state, update, scan] of [
   state.menus.encoding = makeDropdown($(p + 'Encoding'));
   $(p + 'List').dataset.onchange = p + 'Scan';
   $(p + 'Stop').onclick = () => stopJob(state.job);
-  $(p + 'Start').onclick = p === 'sp' ? spStart : mgStart;
+  $(p + 'Start').onclick = {sp: spStart, mg: mgStart, cv: cvStart}[p];
   $(p + 'Base').addEventListener('input', update);
 }
 
@@ -1177,10 +1298,13 @@ mgState.menus.separator = makeDropdown($('mgSeparator'), value => {
   $('mgCustom').hidden = value !== 'custom';
 });
 
+$('cvFolder').addEventListener('input', cvUpdateFinal);
+
 // Списки форматов строятся по ответу сервера, а не по своему перечню.
 function buildAllFormats(){
   buildFormats('spFormats', spState, spUpdateFinal);
   buildFormats('mgFormats', mgState, mgUpdateFinal);
+  buildFormats('cvFormats', cvState, cvUpdateFinal);
   buildFormats('rnFormats', rnState, () => {});
   writeFormatCaptions();
 }

@@ -36,6 +36,7 @@ from ops import covers  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
+from ops import convert as convert_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, NoKeysLeft, mask, short  # noqa: E402
 from llm import keys as keys_mod  # noqa: E402
 from llm.keys import store as keystore  # noqa: E402
@@ -1314,6 +1315,76 @@ def api_merge_start():
 
     return jsonify(job=start_job(job, work).snapshot())
 
+
+# ------------------------------------------- вкладка «Конвертация»
+
+
+@app.post("/api/convert/scan")
+def api_convert_scan():
+    """Пересчёт выбранного. Содержимое не читается — только имена."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**convert_op.scan(targets))
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/convert/start")
+def api_convert_start():
+    """Перегон файлов в другой формат: сколько выбрали, столько и выйдет.
+
+    Раньше для этого брали «Объединить» — она читает любой формат и
+    пишет любой, но склеивает всё в один файл. Чтобы получить те же
+    двести глав в `.docx`, её запускали двести раз.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+    out_format = _out_format(payload)
+    try:
+        encoding = _encoding(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите, куда сохранить"), 400
+    if out_format not in formats.WRITABLE:
+        return jsonify(error=f"Неизвестный формат: {out_format}"), 400
+
+    base_dir = Path(base).expanduser()
+    if not base_dir.is_dir():
+        return jsonify(error=f"Папка не найдена: {base_dir}"), 400
+
+    # Пишем в подпапку, а не рядом с исходниками: перегон в тот же
+    # формат иначе затирал бы то, что читает.
+    output = base_dir / (naming.safe_filename(folder) or "Конвертация")
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="convert",
+        meta={"targets": targets, "format": out_format},
+        output_dir=str(output),
+    )
+    job.progress = {"stage": "convert", "message": "Читаем выбранное…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    def work(job: Job):
+        _finish(job, convert_op.run(
+            targets, Path(job.output_dir),
+            out_format=out_format,
+            encoding=encoding,
+            headings=bool(payload.get("headings", True)),
+            prep=PrepOptions.from_dict(payload.get("prep")),
+            style=Style.from_dict(payload.get("style")),
+            progress=_progress(job, "Файл"),
+        ), "Перегнано")
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 # ------------------------------------------------ вкладка «Анализ»

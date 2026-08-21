@@ -64,7 +64,7 @@ class TestTabsUseTheSameList(unittest.TestCase):
         self.assertNotIn('data-fmt="docx"', self.html)
 
     def test_every_tab_builds_its_row_from_the_server(self):
-        for row in ("spFormats", "mgFormats", "rnFormats"):
+        for row in ("spFormats", "mgFormats", "cvFormats", "rnFormats"):
             self.assertIn(f'id="{row}"', self.html, row)
             self.assertIn(f"buildFormats('{row}'", self.js, row)
 

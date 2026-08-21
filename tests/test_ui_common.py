@@ -447,7 +447,7 @@ class TestPickingFilesLooksTheSameEverywhere(UiBase):
     """
 
     #: Поля, у которых должен быть одинаковый вид.
-    FIELDS = ("spPath", "mgPath", "rnIn")
+    FIELDS = ("spPath", "mgPath", "cvPath", "rnIn")
 
     def row_of(self, field):
         """Строка разметки с этим полем и кнопкой рядом."""
@@ -474,6 +474,10 @@ class TestPickingFilesLooksTheSameEverywhere(UiBase):
         Про саму WebToEpub на вкладке речь всё же идёт: кнопка «Ссылки»
         собирает список именно для неё. Поэтому смотрим на заполнители
         полей, а не на всю страницу.
+
+        Число берётся из `FIELDS`, а не пишется цифрой: вкладок с выбором
+        файлов становится больше, и новая должна попадать в проверку, а
+        не ронять её.
         """
         self.assertEqual(self.page.count('placeholder="Путь к файлу или папке"'),
                          len(self.FIELDS))

@@ -951,6 +951,17 @@
         <path d="M13.5 12h6m0 0-2.5-2.5M19.5 12 17 14.5" stroke="#8c54ff"
               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>Объединить</button>
+    <!-- Перегон формата стоит рядом с «Разбить» и «Объединить»: работа
+         та же, меняется только то, сколько файлов выходит. -->
+    <button data-tab="convert">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <rect x="3" y="4" width="8" height="10" rx="1.6" stroke="#c084fc"
+              stroke-width="1.6"/>
+        <rect x="13" y="10" width="8" height="10" rx="1.6" stroke="#c084fc"
+              stroke-width="1.6"/>
+        <path d="M11.5 9h4m0 0-1.8-1.8M15.5 9l-1.8 1.8" stroke="#8c54ff"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>Конвертация</button>
     <button data-tab="rename">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <path d="M4 6h10M4 12h7M4 18h10" stroke="#c084fc" stroke-width="1.6"
@@ -1705,6 +1716,137 @@
     </div>
     <p class="result-path" id="mgSummary"></p>
     <div class="table" id="mgErrors" hidden></div>
+  </div>
+</section>
+
+
+<!-- ===================== Конвертация формата =====================
+     Сколько файлов выбрали, столько и выйдет — меняется только формат.
+     Раньше для этого брали «Объединить», а она склеивает всё в один
+     файл: чтобы получить те же двести глав в .docx, её запускали
+     двести раз. -->
+<section id="tab-convert" hidden>
+  <div class="card lit">
+    <label>Что перегоняем — файлы или папка, форматы можно смешивать<span class="formats" data-formats="readable"></span></label>
+    <div class="row">
+      <input id="cvPath" class="pickpath" data-list="cvList" type="text"
+             placeholder="Путь к файлу или папке" autocomplete="off">
+      <button class="ghost pickany" data-list="cvList">Выбрать…</button>
+    </div>
+    <div class="row" id="cvListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="cvCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="cvList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="cvList"></div>
+    <p class="hint" id="cvScanned">Каждый файл превращается в свой: главы
+       внутри не режутся и не склеиваются.</p>
+    <!-- Что лежало рядом, но по формату не подошло: иначе недостача
+         обнаружится только в готовой папке. -->
+    <p class="hint warn" id="cvSkipped" hidden></p>
+    <div class="schema" id="cvSchema" hidden></div>
+  </div>
+
+  <div class="card" id="cvOpts" hidden>
+    <label>Формат на выходе</label>
+    <div class="row" id="cvFormats"></div>
+
+    <div class="row" style="margin-top:14px">
+      <div style="flex:1">
+        <label>кодировка<i class="hint-icon" data-tip="Для текстовых форматов. Windows-1251 нужна старым читалкам.">?</i></label>
+        <div class="dropdown" id="cvEncoding"
+             data-options='[["utf-8","UTF-8"],["windows-1251","Windows-1251"]]'></div>
+      </div>
+    </div>
+
+    <label class="chk" style="margin-top:14px">
+      <input type="checkbox" id="cvHeadings" checked> добавлять название главы перед текстом
+      <i class="hint-icon" data-tip="Если название уже есть в самом тексте, снимите галку — иначе оно окажется в файле дважды.">?</i></label>
+  </div>
+
+  <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
+  <div class="card" id="cvStyle" hidden>
+    <label>Оформление документа</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label>шрифт</label>
+        <div class="dropdown" id="cvFont"
+             data-options='[["Times New Roman","Times New Roman"],["Georgia","Georgia"],["Arial","Arial"],["Calibri","Calibri"],["other","другой…"]]'></div>
+        <input id="cvFontOther" type="text" placeholder="Название шрифта"
+               style="margin-top:8px" hidden autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label for="cvSize">кегль<i class="hint-icon" data-tip="Размер шрифта в пунктах. 12 — стандарт для книг.">?</i></label>
+        <input id="cvSize" type="number" value="12" min="6" max="48">
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label for="cvSpacing">интервал<i class="hint-icon" data-tip="Расстояние между строками. 1,5 — стандарт.">?</i></label>
+        <input id="cvSpacing" type="number" value="1.5" step="0.1" min="0.8" max="3">
+      </div>
+      <div style="flex:1">
+        <label for="cvIndent">отступ первой строки, см<i class="hint-icon" data-tip="«Красная строка» в начале абзаца, в сантиметрах. По умолчанию 0.">?</i></label>
+        <input id="cvIndent" type="number" value="0" step="0.05" min="0" max="5">
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="cvBreak" checked> разрыв страницы между главами
+      <i class="hint-icon" data-tip="Работает, если в файле не одна глава: каждая начнётся с новой страницы.">?</i></label>
+  </div>
+
+  <div class="card" id="cvPrep" hidden>
+    <label>Обработка текста</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label>выравнивание</label>
+        <div class="dropdown" id="cvAlign"
+             data-options='[["left","по левому краю"],["justify","по ширине"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>вид разделителя сцен</label>
+        <div class="dropdown" id="cvScene"
+             data-options='[["stars","* * * по центру"],["dash","— — — по центру"],["blank","пустая строка"],["keep","как в исходнике"]]'></div>
+      </div>
+    </div>
+    <label class="chk" style="margin-top:12px">
+      <input type="checkbox" id="cvStripTitle" checked> убирать название главы из текста
+      <i class="hint-icon" data-tip="Если название главы повторено первой строкой текста, оно уберётся оттуда.">?</i></label>
+    <label class="chk" style="margin-top:8px">
+      <input type="checkbox" id="cvItalicSystem"> выделять системные сообщения курсивом</label>
+  </div>
+
+  <div class="card" id="cvPlace" hidden>
+    <label>Куда сохранить</label>
+    <div class="row">
+      <input id="cvBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="cvBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:12px">
+      <label for="cvFolder">имя папки<i class="hint-icon" data-tip="Готовые файлы кладутся в подпапку. Так перегон в тот же формат не затирает исходники.">?</i></label>
+      <input id="cvFolder" type="text" placeholder="Конвертация" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:18px">
+      <button id="cvStart" class="primary" style="flex:1">Перегнать</button>
+    </div>
+    <p class="hint" id="cvFinal"></p>
+  </div>
+
+  <div class="card lit" id="cvProgress" hidden>
+    <div class="status result-block"><span class="result-dot"></span>
+      <span class="result-text" id="cvStatus"></span></div>
+    <div class="bar"><i id="cvFill"></i></div>
+    <div class="stats">
+      <span>перегнано <b id="cvWritten">0</b></span>
+      <span>ошибок <b id="cvFailed">0</b></span>
+      <span id="cvPct"></span>
+        <span class="timers" id="cvTimers"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="cvStop" class="ghost">Остановить</button>
+    </div>
+    <p class="result-path" id="cvSummary"></p>
+    <div class="table" id="cvErrors" hidden></div>
   </div>
 </section>
 
