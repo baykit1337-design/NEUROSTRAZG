@@ -468,6 +468,10 @@ function rnFormat(){
     title: $('rnTitle').checked,
     prefix: $('rnPrefix').value,
     separator: rnSepMenu ? rnSepMenu.value : ': ',
+    // Как писать часть: «22.2» или «22. Часть 2». Обе записи
+    // равноправны — выбор нужен, чтобы продолжение книги не сбивало
+    // вид уже собранных глав.
+    part_style: rnPartMenu ? rnPartMenu.value : 'dot',
   };
 }
 
@@ -511,7 +515,11 @@ function rnUpdateExample(){
   let head = '';
   if(fmt.number && first.number !== null){
     head = fmt.prefix ? `${fmt.prefix} ${first.number}` : String(first.number);
-    if(fmt.part && part) head += '.' + part;
+    // Обе записи, как и на сервере: пример обязан совпадать с тем, что
+    // получится на диске, иначе он вводит в заблуждение.
+    if(fmt.part && part){
+      head += fmt.part_style === 'word' ? `. Часть ${part}` : '.' + part;
+    }
   }
   let name = head;
   if(fmt.title && first.title) name = head ? head + fmt.separator + first.title : first.title;
@@ -807,6 +815,8 @@ $('rnRenumber').onchange = () => {
   $(id).addEventListener('input', () => { rnUpdateExample(); rnBuildPreview(); });
 });
 const rnSepMenu = makeDropdown($('rnSep'), () => { rnUpdateExample(); rnBuildPreview(); });
+const rnPartMenu = makeDropdown($('rnPartStyle'),
+                                () => { rnUpdateExample(); rnBuildPreview(); });
 $('rnPattern').addEventListener('keydown', e => { if(e.key === 'Enter') rnScan(); });
 //: Формат на выходе у «Переименовать». Хранится так же, как у остальных
 //: вкладок, чтобы кнопки строились общей функцией.

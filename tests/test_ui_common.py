@@ -328,6 +328,62 @@ class TestTheMeasurementHasItsOwnStop(UiBase):
         self.assertIn("/api/threads/cancel", body)
 
 
+class TestThePartCanBeWrittenTwoWays(UiBase):
+    """«Глава 22.2» или «Глава 22. Часть 2» — на выбор."""
+
+    def test_there_is_a_choice_on_the_tab(self):
+        self.assertIn('id="rnPartStyle"', self.page)
+        self.assertIn("Глава 22. Часть 2", self.page)
+
+    def test_the_choice_is_sent_to_the_server(self):
+        body = self.tabs.split("function rnFormat()", 1)[1].split("\n}", 1)[0]
+        self.assertIn("part_style:", body)
+
+    def test_the_live_example_shows_the_same_thing(self):
+        """Пример обязан совпадать с тем, что окажется на диске."""
+        body = self.tabs.split("function rnUpdateExample()", 1)[1]
+        self.assertIn("fmt.part_style === 'word'", body.split("\n}", 1)[0])
+
+    def test_changing_it_redraws_the_preview(self):
+        self.assertIn("rnPartMenu", self.tabs)
+
+
+class TestTheDownloadCarriesItsSettings(UiBase):
+    """Настройки прогона до сервера не доходили.
+
+    В запрос на запуск уходили только книга, папка и диапазон. Числа
+    потоков там не было вовсе, сервер брал умолчание — один, — и
+    выставленное на экране не влияло ни на что.
+    """
+
+    def payload(self):
+        body = self.page.split("await call('/api/start', {", 1)[1]
+        return body.split("});", 1)[0]
+
+    def test_the_number_of_threads_is_sent(self):
+        self.assertIn("threads:", self.payload())
+        self.assertIn("dlThreads", self.payload())
+
+    def test_the_chosen_mode_is_sent(self):
+        """Ручной режим пропускает автопробу — сервер должен знать о нём."""
+        self.assertIn("mode: dlMode", self.payload())
+
+    def test_the_waiting_times_are_sent_too(self):
+        body = self.payload()
+        self.assertIn("timeout:", body)
+        self.assertIn("connect_timeout:", body)
+
+    def test_the_screen_says_how_many_threads_actually_work(self):
+        """Прежняя строка показывала вердикт пробы и только в авторежиме."""
+        self.assertIn("$('sMethod').textContent = many", self.page)
+        self.assertIn("'в один поток'", self.page)
+
+    def test_a_single_thread_is_marked_out(self):
+        """Это не поломка, но и не то, о чём просили."""
+        self.assertIn(".pnow.warn{", self.page)
+        self.assertIn("classList.toggle('warn', !many)", self.page)
+
+
 class TestTheRunCanBeHeldInstead(UiBase):
     """Обрыв сети заканчивал книгу на середине — теперь её можно держать."""
 

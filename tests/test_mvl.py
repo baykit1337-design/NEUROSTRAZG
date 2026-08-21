@@ -968,6 +968,39 @@ class TestWebApp(MockSiteTestCase):
         self.assertEqual(len(data["links"]), 5)
         self.assertTrue(data["links"][0].endswith(f"/chapter/{NOVEL_CODE}-1"))
 
+    def test_the_number_of_threads_reaches_the_job(self):
+        """Страница не присылала это поле, и сервер брал умолчание — один.
+
+        Выставленное на экране число не влияло ни на что: книга качалась
+        в одну нитку, сколько бы потоков ни просили.
+        """
+        from webapp.app import JOBS
+
+        novel = self.app.post("/api/find",
+                              json={"query": NOVEL_SLUG}).get_json()["novel"]
+        res = self.app.post("/api/start", json={
+            "novel": novel, "base": self.tmp.name, "folder": "Три потока",
+            "first": 1, "last": 3, "threads": 3, "mode": "manual"})
+
+        job_id = res.get_json()["job"]["id"]
+        self.assertEqual(JOBS[job_id].meta["threads"], 3)
+        JOBS[job_id].cancel.set()
+        JOBS[job_id].thread.join(timeout=60)
+
+    def test_without_that_field_it_is_still_one_thread(self):
+        """Умолчание не меняем: молча качать в три потока тоже неверно."""
+        from webapp.app import JOBS
+
+        novel = self.app.post("/api/find",
+                              json={"query": NOVEL_SLUG}).get_json()["novel"]
+        res = self.app.post("/api/start", json={
+            "novel": novel, "base": self.tmp.name, "folder": "Умолчание",
+            "first": 1, "last": 2})
+
+        job_id = res.get_json()["job"]["id"]
+        self.assertEqual(JOBS[job_id].meta["threads"], 1)
+        JOBS[job_id].thread.join(timeout=60)
+
     def test_start_requires_folder(self):
         res = self.app.post(
             "/api/start", json={"novel": {"code": NOVEL_CODE}, "base": self.tmp.name, "folder": ""}

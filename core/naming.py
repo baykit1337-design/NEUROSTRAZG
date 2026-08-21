@@ -23,6 +23,22 @@ NUMBER_GROUP = re.compile(r"(?<!\d)(\d{1,5})(?!\d)")
 #: не часть, а начало названия — «Глава 5. 100 дней».
 PART_AFTER = re.compile(r"^[.,](\d{1,3})(?!\d)")
 
+#: Та же часть, но словом: «Глава 22. Часть 2». Так её пишут, когда
+#: точка с цифрой сбивает вид у остальных глав. Разбирать обе записи
+#: обязательно: иначе папку, названную одним способом, не переименовать
+#: в другой — «Часть 2» осядет в названии главы и останется там навсегда.
+PART_WORD = re.compile(
+    r"^[.,]?\s*(?:часть|ч\.|part|pt\.?)\s*(\d{1,3})(?!\d)", re.I)
+
+#: Как писать номер части в имени. Обе записи равноправны — выбор нужен,
+#: чтобы продолжение книги не сбивало вид уже собранных глав.
+PART_DOT = "dot"      # Глава 22.2
+PART_WORD_STYLE = "word"   # Глава 22. Часть 2
+PART_STYLES = (PART_DOT, PART_WORD_STYLE)
+
+#: Слово перед номером части в словесной записи.
+PART_LABEL = "Часть"
+
 #: Разделители между номером и названием — в любом сочетании и количестве.
 #: Сюда же китайская и японская пунктуация: имена приходят на любом языке.
 #: Экранировать здесь нечего: это набор символов, а не выражение — в
@@ -208,7 +224,9 @@ def parse(stem: str, pattern: str | None = None) -> NameParts:
     rest = text[head.end():]
 
     part = None
-    piece = PART_AFTER.match(rest)
+    # Сначала короткая запись «22.2», потом словесная «22. Часть 2».
+    # Порядок важен: у короткой границы жёстче, и спутать их нельзя.
+    piece = PART_AFTER.match(rest) or PART_WORD.match(rest)
     if piece:
         part = int(piece.group(1))
         rest = rest[piece.end():]
@@ -314,6 +332,10 @@ class NameFormat:
     title: bool = True
     prefix: str = DEFAULT_PREFIX
     separator: str = DEFAULT_SEPARATOR
+    #: Как писать номер части: `dot` — «Глава 22.2», `word` — «Глава 22.
+    #: Часть 2». Записи равноправны, и выбор нужен ровно затем, чтобы у
+    #: книги, начатой одним способом, продолжение не сбивало вид.
+    part_style: str = PART_DOT
 
     @classmethod
     def from_dict(cls, data: dict | None) -> NameFormat:
@@ -327,6 +349,9 @@ class NameFormat:
             # Приставку можно очистить, поэтому проверяем на None.
             prefix=DEFAULT_PREFIX if prefix is None else str(prefix),
             separator=DEFAULT_SEPARATOR if separator is None else str(separator),
+            part_style=(str(data.get("part_style") or PART_DOT).lower()
+                        if str(data.get("part_style") or "").lower() in PART_STYLES
+                        else PART_DOT),
         )
 
 
@@ -340,7 +365,8 @@ def build(number: int | None, part: int | None, title: str, fmt: NameFormat) -> 
     if fmt.number and number is not None:
         head = f"{fmt.prefix} {number}".strip() if fmt.prefix else str(number)
         if fmt.part and part is not None:
-            head = f"{head}.{part}"
+            head = (f"{head}. {PART_LABEL} {part}"
+                    if fmt.part_style == PART_WORD_STYLE else f"{head}.{part}")
 
     name = head
     if fmt.title and title:

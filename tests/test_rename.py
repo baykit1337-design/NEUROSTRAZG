@@ -235,6 +235,72 @@ class TestScanAndPlan(RenameFolderTest):
         self.assertIn("Глава 202.1 - Название 202", names)
 
 
+class TestPartCanBeWrittenTwoWays(unittest.TestCase):
+    """«Глава 22.2» и «Глава 22. Часть 2» — одно и то же.
+
+    Записи равноправны, выбор нужен затем, чтобы продолжение книги не
+    сбивало вид уже собранных глав. Разбирать надо обе: иначе папку,
+    названную одним способом, во второй не переименовать — «Часть 2»
+    осела бы в названии главы и осталась там навсегда.
+    """
+
+    def name(self, style, number=22, part=2, title="Название"):
+        from core import naming
+
+        return naming.build(number, part, title,
+                            NameFormat(part_style=style, separator=" - "))
+
+    def test_the_dot_form_is_built(self):
+        self.assertEqual(self.name("dot"), "Глава 22.2 - Название")
+
+    def test_the_word_form_is_built(self):
+        self.assertEqual(self.name("word"), "Глава 22. Часть 2 - Название")
+
+    def test_both_forms_are_understood(self):
+        from core import naming
+
+        for stem in ("Глава 22.2. Название", "Глава 22. Часть 2. Название"):
+            with self.subTest(stem=stem):
+                parts = naming.parse(stem)
+                self.assertEqual((parts.number, parts.part), (22, 2))
+                self.assertEqual(parts.title, "Название")
+
+    def test_one_form_converts_into_the_other(self):
+        """Ровно то, ради чего выбор и заводился."""
+        from core import naming
+
+        was = naming.parse("Глава 22.2. Название")
+        became = naming.build(was.number, was.part, was.title,
+                              NameFormat(part_style="word", separator=" - "))
+        self.assertEqual(became, "Глава 22. Часть 2 - Название")
+
+    def test_and_back_again(self):
+        from core import naming
+
+        was = naming.parse("Глава 22. Часть 2 - Название")
+        became = naming.build(was.number, was.part, was.title,
+                              NameFormat(part_style="dot", separator=" - "))
+        self.assertEqual(became, "Глава 22.2 - Название")
+
+    def test_a_number_in_the_title_is_still_not_a_part(self):
+        """«Глава 5. 100 дней» — название, а не сотая часть."""
+        from core import naming
+
+        parts = naming.parse("Глава 5. 100 дней")
+        self.assertIsNone(parts.part)
+        self.assertEqual(parts.title, "100 дней")
+
+    def test_the_dot_form_stays_the_default(self):
+        """Умолчание не меняем: у кого книга собрана точками — не тронем."""
+        self.assertEqual(NameFormat().part_style, "dot")
+
+    def test_an_unknown_style_falls_back_to_the_dot(self):
+        from core.naming import NameFormat as Fmt
+
+        self.assertEqual(Fmt.from_dict({"part_style": "ерунда"}).part_style,
+                         "dot")
+
+
 class TestPartsDissolveIntoAStraightCount(unittest.TestCase):
     """Книга, поделённая на части, сводится к сплошной нумерации.
 

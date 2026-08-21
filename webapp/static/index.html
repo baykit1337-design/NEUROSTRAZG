@@ -723,6 +723,9 @@
   .dot.warn{background:#ffc86b;box-shadow:0 0 8px rgba(255,200,107,.7)}
   .dot.bad{background:#5a5468}
   .pnow{color:var(--neon);font-size:12px;margin-top:10px}
+  /* «В один поток» — не поломка, но и не то, чего просили: строка
+     должна отличаться от обычной, иначе её не заметят. */
+  .pnow.warn{color:#ffc86b}
   .spin{display:inline-block;width:11px;height:11px;border-radius:50%;
     border:2px solid rgba(176,108,255,.25);border-top-color:var(--neon);
     animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
@@ -1453,6 +1456,16 @@
         <div class="dropdown" id="rnSep"
              data-options='[[": ",": (двоеточие)"],[". ",". (точка)"],[" — "," — (тире)"],[" - "," - (дефис)"]]'></div>
       </div>
+    </div>
+
+    <!-- Как писать часть. Записи равноправны: выбор нужен затем, чтобы
+         продолжение книги не сбивало вид уже собранных глав. Разбор
+         понимает обе, поэтому папку из одной записи можно переименовать
+         в другую и обратно. -->
+    <div style="margin-top:12px">
+      <label for="rnPartStyle">номер части пишется</label>
+      <div class="dropdown" id="rnPartStyle"
+           data-options='[["dot","Глава 22.2"],["word","Глава 22. Часть 2"]]'></div>
     </div>
     <p class="hint">пример: <b id="rnExample">—</b></p>
     <p class="hint" id="rnForbidden" hidden></p>
@@ -3067,6 +3080,13 @@ async function start(){
       folder: $('folder').value.trim(),
       first,
       last,
+      // Без этих полей сервер брал умолчания: один поток и авторежим.
+      // Выставленное на экране число не влияло ни на что, и книга
+      // качалась в одну нитку, сколько бы потоков ни просили.
+      threads: Number($('dlThreads').value) || 1,
+      mode: dlMode,
+      timeout: Number($('tmRead').value) || 120,
+      connect_timeout: Number($('tmConnect').value) || 15,
     });
     jobId = data.job.id;
     // Способов у Фанкью два, и результат у них разный: по итогу должно
@@ -3133,10 +3153,19 @@ async function tick(){
       probeShown = true;
       toast(p.probe.message);
       drawProbe(p.probe);
-      $('sMethod').textContent = p.probe.parallel
-        ? `${p.probe.threads} потока` +
-          (p.probe.proxies ? ` · ${p.probe.proxies} прокси` : '')
-        : 'по очереди';
+    }
+
+    // Сколько потоков работает на самом деле. Раньше эта строка
+    // показывала вердикт автопробы и только в авторежиме: в ручном она
+    // оставалась пустой, а после отката пробы на один поток —
+    // устаревшей. Теперь берётся из самого прогона на каждом опросе.
+    if(busy || p.threads){
+      const many = (p.threads || 1) > 1;
+      $('sMethod').textContent = many
+        ? `${p.threads} ${plural(p.threads, 'поток', 'потока', 'потоков')}`
+          + (p.proxies ? ` · ${p.proxies} прокси` : '')
+        : 'в один поток';
+      $('sMethod').classList.toggle('warn', !many);
     }
 
     if(!busy){
