@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -253,8 +254,23 @@ class TestStars(Base):
         self.assertIn("< STARS_APART", self.js)
 
     def test_the_whole_field_drifts_by_itself(self):
-        self.assertIn("STARS_DRIFT = 1.5", self.js)
+        """Скорость подбирается на глаз и меняется — важно, что она есть.
+
+        Прежний вариант был прибит к числу, и правка скорости роняла
+        тест, хотя дрейф никуда не девался.
+        """
+        found = re.search(r"STARS_DRIFT = ([\d.]+)", self.js)
+        self.assertIsNotNone(found, "дрейфа нет вовсе")
+        self.assertGreater(float(found.group(1)), 0)
         self.assertIn("driftAngle", self.js)
+
+    def test_the_drift_is_visible_within_a_run(self):
+        """Полтора пикселя в минуту — семь пикселей за прогон книги.
+
+        Это неподвижное поле: снаружи не отличить от застывшего.
+        """
+        found = re.search(r"STARS_DRIFT = ([\d.]+)", self.js)
+        self.assertGreaterEqual(float(found.group(1)), 5)
 
     def test_the_drift_turns_now_and_then(self):
         self.assertIn("STARS_TURN_MIN = 120000", self.js)

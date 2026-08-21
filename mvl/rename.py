@@ -376,6 +376,14 @@ def make_plan(
     `renumber_from` — нумеровать заново подряд, игнорируя номер из имени.
     `chosen` — пути отмеченных галочками файлов; None означает «все».
 
+    Сплошная нумерация растворяет старые части. Книга, поделённая на
+    151.1, 151.2, 151.3, — это триста файлов, и при нумерации подряд
+    каждый становится отдельной главой: 151, 152, 153. Оставлять при
+    этом прежний номер части нельзя, иначе выходит «Глава 151.1, Глава
+    152.1» — число, которое уже ничего не значит. Часть, нарезанная
+    здесь и сейчас, — другое дело: она остаётся, без неё куски главы
+    получили бы одно имя и затёрли друг друга.
+
     Понятия «служебный файл» нет: из списка сам по себе не выпадает ни один
     файл. Что не нужно, человек снимает галочкой.
     """
@@ -413,12 +421,14 @@ def make_plan(
                     )
                 )
         else:
+            # Нумеруем подряд — прежняя часть растворяется в новом номере.
+            part = None if renumber_from is not None else chapter.part
             rows.append(
                 PlanRow(
                     source=str(chapter.path),
                     old_name=chapter.path.name,
-                    new_name=build_name(number, chapter.part, chapter.title, fmt),
-                    number=number, part=chapter.part, title=chapter.title,
+                    new_name=build_name(number, part, chapter.title, fmt),
+                    number=number, part=part, title=chapter.title,
                     size=chapter.size, suspect=chapter.suspect,
                     # Текст не тянем: если файл ещё не читан, его прочтёт
                     # запись. Предпросмотр имён в тексте не нуждается.

@@ -235,6 +235,68 @@ class TestScanAndPlan(RenameFolderTest):
         self.assertIn("Глава 202.1 - Название 202", names)
 
 
+class TestPartsDissolveIntoAStraightCount(unittest.TestCase):
+    """Книга, поделённая на части, сводится к сплошной нумерации.
+
+    151.1, 151.2, 151.3 — это триста файлов; при нумерации подряд каждый
+    становится отдельной главой: 151, 152, 153. Прежний номер части при
+    этом уже ничего не значит, и «Глава 151.1, Глава 152.1» — мусор.
+    """
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.folder = Path(self.tmpdir.name) / "части"
+        self.folder.mkdir()
+        order = 0
+        for number in (151, 152, 153):
+            for part in (1, 2, 3):
+                order += 1
+                name = f"{order:04d} - Глава {number}.{part}. Название {number}"
+                # Несколько абзацев: из одного нарезать две части нечем.
+                body = "\n\n".join(f"Абзац {n} главы {number}.{part}."
+                                   for n in range(1, 7))
+                (self.folder / f"{name}.txt").write_text(body, encoding="utf-8")
+
+    def plan(self, **kwargs):
+        return rename.make_plan(rename.scan(self.folder),
+                                NameFormat(part=True), **kwargs)
+
+    def test_the_files_are_counted_one_after_another(self):
+        names = [row.new_name for row in self.plan(renumber_from=151)]
+        self.assertEqual(names[0], "Глава 151 - Название 151")
+        self.assertEqual(names[1], "Глава 152 - Название 151")
+        self.assertEqual(names[-1], "Глава 159 - Название 153")
+
+    def test_the_old_part_number_is_gone(self):
+        """Даже когда галка «номер части» осталась включённой."""
+        for row in self.plan(renumber_from=151):
+            with self.subTest(name=row.new_name):
+                self.assertIsNone(row.part)
+                self.assertNotIn(".1", row.new_name)
+
+    def test_the_order_of_parts_is_kept(self):
+        """151.2 не должна оказаться раньше 151.1."""
+        rows = self.plan(renumber_from=1)
+        came = [Path(row.source).stem.split(" - ", 1)[1] for row in rows]
+        self.assertEqual(came, sorted(came))
+
+    def test_nothing_changes_without_renumbering(self):
+        """Прежнее поведение трогать нельзя: часть на месте."""
+        rows = self.plan()
+        self.assertEqual(rows[0].part, 1)
+        self.assertIn("151.1", rows[0].new_name)
+
+    def test_a_part_cut_right_now_is_still_kept(self):
+        """Иначе куски одной главы получат одно имя и затрут друг друга."""
+        first = sorted(self.folder.iterdir())[0]
+        rows = self.plan(renumber_from=1, splits={str(first): 2})
+
+        pieces = [row for row in rows if row.source == str(first)]
+        self.assertEqual([p.part for p in pieces], [1, 2])
+        self.assertEqual(len({p.new_name for p in pieces}), 2)
+
+
 class TestHeavyFilesAreNotReadForTheList(RenameFolderTest):
     """Список глав строился ценой разбора всей папки.
 
