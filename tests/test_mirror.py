@@ -21,6 +21,7 @@ from net import sources  # noqa: E402
 from mvl.proxies import NoProxiesLeft  # noqa: E402
 from net.sources.base import SourceBroken, SourceUnreachable  # noqa: E402
 from net.sources.fanqie import ChapterEncrypted, PaidChapter  # noqa: E402
+from net.sources import fanqiemirror as mirror_mod  # noqa: E402
 from net.sources.fanqiemirror import FanqieMirrorSource  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,70 @@ class TestTheMirrorGoesRoundTheProxy(unittest.TestCase):
         self.assertTrue(self.source.needs_proxy)
 
 
+class TestThereIsMoreThanOneMirror(unittest.TestCase):
+    """Адрес был один, и его смерть выключила способ целиком.
+
+    Отдельная беда — сохранённый config.json: он перекрывал умолчание, и
+    обновление программы не давало человеку ничего. Поэтому настройки
+    встроенный список дополняют, а не заменяют.
+    """
+
+    def setUp(self):
+        self.source = FanqieMirrorSource()
+        for name in ("url", "spare"):
+            saved = getattr(settings.mirror, name)
+            self.addCleanup(setattr, settings.mirror, name, saved)
+
+    def test_the_built_in_list_has_more_than_one(self):
+        self.assertGreater(len(mirror_mod.KNOWN), 1)
+
+    def test_a_saved_dead_address_does_not_cut_off_the_rest(self):
+        """Ровно случай обновления: в настройках лежит умерший адрес."""
+        dead = "http://101.35.133.34:5000/api/raw_full"
+        settings.mirror.url = dead
+        settings.mirror.spare = []
+
+        order = self.source.addresses()
+        self.assertIn("http://yuefanqie.jingluo.love/content", order)
+        self.assertGreater(len(order), 1)
+
+    def test_the_ones_known_to_be_silent_go_last(self):
+        """Иначе их таймаут съедается перед каждой главой."""
+        settings.mirror.url = "http://101.35.133.34:5000/api/raw_full"
+        settings.mirror.spare = []
+
+        order = self.source.addresses()
+        self.assertNotIn(order[0], mirror_mod.RETIRED)
+        self.assertIn(order[-1], mirror_mod.RETIRED)
+
+    def test_an_address_of_ones_own_is_tried_first(self):
+        """Нашёлся рабочий — вписал, и он должен идти первым."""
+        settings.mirror.url = "http://свой.адрес/content"
+        self.assertEqual(self.source.addresses()[0], "http://свой.адрес/content")
+
+    def test_extra_addresses_are_added_not_substituted(self):
+        settings.mirror.url = ""
+        settings.mirror.spare = ["http://ещё.один/content"]
+
+        order = self.source.addresses()
+        self.assertIn("http://ещё.один/content", order)
+        for known in mirror_mod.KNOWN:
+            with self.subTest(known=known):
+                self.assertIn(known, order)
+
+    def test_the_same_address_is_not_tried_twice(self):
+        settings.mirror.url = mirror_mod.KNOWN[0]
+        settings.mirror.spare = [mirror_mod.KNOWN[0]]
+
+        order = self.source.addresses()
+        self.assertEqual(len(order), len(set(order)))
+
+    def test_both_conventions_of_success_are_accepted(self):
+        """Один сервер пишет code 200, другой — 0. Оба значат «держи»."""
+        self.assertIn(0, mirror_mod.OK_CODES)
+        self.assertIn(200, mirror_mod.OK_CODES)
+
+
 class TestChoiceIsDeliberate(unittest.TestCase):
     """Способ выбирается руками: он меняет книгу на чужой сервер."""
 
@@ -171,14 +236,48 @@ class TestMirrorRefusals(MirrorBase):
     """Отказ посредника не должен выглядеть как поломка нашего разбора."""
 
     def test_its_own_code_is_repeated_back(self):
+        """Отказали все — их собственные слова должны дойти до человека.
+
+        «Ни один не ответил» без подробностей чинить нечем: у сервера в
+        сообщении сказано, что именно у него не вышло.
+        """
         client = FakeClient(reply(code=500, message="ничего не найдено"))
-        with self.assertRaises(SourceBroken) as caught:
+        with self.assertRaises(SourceUnreachable) as caught:
             self.source.chapter(client, self.chapter())
 
         said = str(caught.exception)
         self.assertIn("500", said)
         self.assertIn("ничего не найдено", said)
         self.assertIn(settings.mirror.url, said, "адрес должен быть в отказе")
+
+    def test_a_refusal_sends_us_to_the_next_one(self):
+        """У одного главы нет, у соседнего может быть."""
+        answers = [reply(code=500, message="нет такой"),
+                   reply("<p>Текст главы.</p>")]
+        client = FakeClient()
+        client.get_text = lambda url, **kw: answers.pop(0)
+
+        _, text = self.source.chapter(client, self.chapter())
+        self.assertIn("Текст главы.", text)
+        self.assertEqual(answers, [], "второй адрес так и не спросили")
+
+    def test_the_one_that_answered_is_asked_first_next_time(self):
+        """Иначе молчащий съедает свой таймаут перед каждой главой."""
+        asked = []
+
+        def answer(url, **kw):
+            asked.append(url)
+            if len(asked) == 1:
+                return reply(code=500, message="нет такой")
+            return reply("<p>Текст главы.</p>")
+
+        client = FakeClient()
+        client.get_text = answer
+        self.source.chapter(client, self.chapter())
+        working = asked[1].split("?", 1)[0]
+
+        self.source.chapter(client, self.chapter())
+        self.assertEqual(asked[2].split("?", 1)[0], working)
 
     def test_an_empty_chapter_counts_as_closed(self):
         with self.assertRaises(PaidChapter):
@@ -210,15 +309,19 @@ class TestMirrorRefusals(MirrorBase):
             self.source.chapter(FakeClient(reply(f"<p>Начало.{secret}</p>")),
                                 self.chapter())
 
-    def test_an_empty_address_says_so_plainly(self):
+    def test_an_empty_address_falls_back_to_the_built_in_list(self):
+        """Пустое поле — не тупик: встроенные адреса никуда не делись.
+
+        Раньше это был отказ, и по той же причине сохранённый в
+        настройках мёртвый адрес отрезал от всех остальных.
+        """
         saved = settings.mirror.url
         settings.mirror.url = ""
         self.addCleanup(setattr, settings.mirror, "url", saved)
 
-        with self.assertRaises(SourceBroken) as caught:
-            self.source.chapter(FakeClient(reply("<p>Текст.</p>")),
-                                self.chapter())
-        self.assertIn("mirror", str(caught.exception))
+        _, text = self.source.chapter(FakeClient(reply("<p>Текст.</p>")),
+                                      self.chapter())
+        self.assertIn("Текст.", text)
 
 
 class TestBookStillComesFromTheSite(MirrorBase):
