@@ -140,6 +140,25 @@ class TestThePapers(unittest.TestCase):
         for secret in ("proxies.txt", "config.json", "data/"):
             self.assertIn(secret, ignored, secret)
 
+    def test_finished_books_are_ignored_too(self):
+        """Репозиторий публичный, а книги чужие. Две штуки однажды уехали
+        сюда «на пробу» и пролежали в открытом доступе всю разработку —
+        правило дешевле, чем помнить об этом каждый раз."""
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
+        for kind in ("*.epub", "*.fb2", "*.mobi"):
+            self.assertIn(kind, ignored, kind)
+
+    def test_no_book_is_lying_in_the_repository(self):
+        """Правило в `.gitignore` не убирает то, что уже добавлено
+        руками: файл под учётом остаётся под учётом."""
+        import subprocess
+
+        listed = subprocess.run(["git", "ls-files"], cwd=ROOT,
+                                capture_output=True, text=True, timeout=120)
+        books = [name for name in listed.stdout.splitlines()
+                 if name.lower().endswith((".epub", ".fb2", ".mobi"))]
+        self.assertEqual(books, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
