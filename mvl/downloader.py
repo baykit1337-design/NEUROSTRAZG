@@ -947,8 +947,14 @@ def _is_paid(error: BaseException) -> bool:
     нельзя, но и всю книгу из-за неё ронять незачем.
     """
     from net.sources.fanqie import ChapterEncrypted, PaidChapter
+    from net.sources.webnovel import ChapterLocked, ChapterScrambled
 
-    return isinstance(error, (PaidChapter, ChapterEncrypted))
+    # Беды одинаковые, а имена у сайтов свои: у Фанкью глава «платная» и
+    # «зашифрованная», у Webnovel — «закрытая» и «со своим шрифтом».
+    # Сводить их в один класс значило бы переписывать работающий разбор
+    # Фанкью ради красоты; перечислить здесь дешевле и безопаснее.
+    return isinstance(error, (PaidChapter, ChapterEncrypted,
+                              ChapterLocked, ChapterScrambled))
 
 
 def _is_refusal(error: BaseException) -> bool:
