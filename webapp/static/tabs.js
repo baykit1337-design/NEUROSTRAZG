@@ -4208,13 +4208,62 @@ loadSources();
 
 let rkRows = [], rkTitles = {}, rkPicked = null;
 let rkAudMenu = null, rkKindMenu = null, rkCatMenu = null, rkCats = {};
+let rkSiteMenu = null, rkBoardMenu = null, rkSites = [];
+
+/** Выбранный сайт целиком, а не только его ключ. */
+function rkSite(){
+  const key = rkSiteMenu ? rkSiteMenu.value : '';
+  return rkSites.find(s => s.key === key) || rkSites[0] || {key: '', boards: []};
+}
 
 function rkWhere(){
+  const site = rkSite();
   return {
+    site: site.key,
+    // Доска есть только у сайтов без деления на аудиторию и жанр. Слать
+    // её всегда безвредно: у Фанкью сервер её просто не читает.
+    board: rkBoardMenu ? rkBoardMenu.value : '',
     audience: rkAudMenu ? rkAudMenu.value : '1',
     kind: rkKindMenu ? rkKindMenu.value : '2',
     category: rkCatMenu ? rkCatMenu.value : '',
   };
+}
+
+/** Что за сайт выбран — то и показываем.
+ *
+ * У Фанкью рейтинг делится на аудиторию, вид и жанр; у MVLEMPYR ничего
+ * этого нет, там три доски по сроку. Оставлять на экране выпадашки,
+ * которые ни на что не влияют, — врать человеку.
+ */
+function rkApplySite(){
+  const site = rkSite();
+  const fanqie = !site.key;
+
+  $('rkFanqieWhere').hidden = !fanqie;
+  $('rkCategory').hidden = !fanqie;
+  $('rkBoard').hidden = fanqie || !(site.boards || []).length;
+
+  if(!fanqie && (site.boards || []).length){
+    const box = $('rkBoard');
+    const want = JSON.stringify(site.boards.map(b => [b.key, b.name]));
+    if(box.dataset.options !== want){
+      box.dataset.options = want;
+      box.innerHTML = '';
+      rkBoardMenu = makeDropdown(box, () => rkState());
+    }
+  }
+
+  $('rkAbout').textContent = fanqie
+    ? 'Сайт отдаёт только суточный срез: рейтингов «за неделю» и «за месяц» '
+      + 'у него нет. Срезы складываются к себе, и движение считается уже по '
+      + 'своей истории — видно не просто популярное, а то, что набирает '
+      + 'обороты. По расписанию ничего не запрашивается: срез снимается '
+      + 'кнопкой.'
+    : 'Своей страницы рейтинга у сайта нет: витрина забирает весь каталог и '
+      + 'сортирует его в браузере. Здесь то же самое — берём каталог и '
+      + 'сортируем по выбранной доске. Число читающих сайт не показывает, '
+      + 'зато есть средний балл и число глав. Движение по местам, как и '
+      + 'везде, считается своей историей.';
 }
 
 function rkMove(value){
@@ -4259,16 +4308,31 @@ function rkRender(){
     name.textContent = row.secret ? `книга ${row.book_id}` : row.name;
     name.title = [row.author && 'автор: ' + row.author,
                   row.words && `${ru(row.words)} знаков`,
-                  row.status, row.last_chapter && 'последняя: ' + row.last_chapter]
+                  row.chapters && `${ru(row.chapters)} глав`,
+                  row.status,
+                  // У Фанкью это название последней главы, у MVLEMPYR —
+                  // язык оригинала: подписи разные, а поле одно.
+                  row.last_chapter && (row.site ? row.last_chapter
+                                                : 'последняя: ' + row.last_chapter)]
                  .filter(Boolean).join(' · ');
     if(row.secret) name.style.opacity = '.7';
     tr.append(name);
 
-    const readers = document.createElement('span');
-    readers.className = 'num';
-    readers.textContent = ru(row.readers);
-    readers.title = 'читающих';
-    tr.append(readers);
+    // Числа читающих у второго сайта нет вовсе, зато есть балл. Показывать
+    // вместо него ноль значило бы сказать «книгу никто не читает».
+    const count = document.createElement('span');
+    count.className = 'num';
+    if(row.readers){
+      count.textContent = ru(row.readers);
+      count.title = 'читающих';
+    }else if(row.score){
+      count.textContent = '★ ' + row.score;
+      count.title = 'средний балл';
+    }else{
+      count.textContent = '—';
+      count.title = 'сайт не показывает ни числа читающих, ни балла';
+    }
+    tr.append(count);
 
     // Движение: за сутки и за неделю считаем по своей истории, а `diff` —
     // то, что посчитал сам сайт.
@@ -4324,6 +4388,16 @@ function rkRender(){
 //: Адрес книги на сайте. Собирается из кода — другого способа нет.
 const RK_LINK = 'https://fanqienovel.com/page/';
 
+/** Ссылка на книгу из строки рейтинга.
+ *
+ * Складывать её из кода можно было, пока сайт был один. У MVLEMPYR
+ * адрес книги строится из слага, а не из кода, и вычислить его здесь
+ * уже нечем — сервер кладёт готовую ссылку в саму строку.
+ */
+function rkLink(row){
+  return row.link || (RK_LINK + row.book_id);
+}
+
 /** Миниатюра обложки в строке рейтинга (2.3 ТЗ).
  *
  * Картинка идёт через свой кэш, а не по ссылке с сайта: та подписана и
@@ -4334,6 +4408,16 @@ const RK_LINK = 'https://fanqienovel.com/page/';
  * все обложки разом незачем. Пока картинка не пришла, на её месте
  * пульсирует заготовка, а не пустота.
  */
+/** Имя обложки в кэше: сайт и код книги.
+ *
+ * Строка среза помнит свой сайт сама (`row.site`), а не берёт его из
+ * выпадашки: во вчерашнем срезе Фанкью строки должны остаться
+ * фанкьюшными, даже если сейчас на экране другой рейтинг.
+ */
+function rkCoverKey(row){
+  return row.site ? `${row.site}-${row.book_id}` : String(row.book_id);
+}
+
 function rkCover(row){
   const box = document.createElement('span');
   box.className = 'cover';
@@ -4344,7 +4428,11 @@ function rkCover(row){
   img.loading = 'lazy';
   img.decoding = 'async';
   img.alt = '';
-  img.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
+  // Ключ кэша с приставкой сайта. Коды у сайтов свои и независимые: у
+  // MVLEMPYR это четыре цифры, у Фанкью девятнадцать, но совпасть они
+  // однажды могут — и тогда в одном рейтинге показалась бы обложка из
+  // другого. Разбираться в такой путанице было бы нечем.
+  img.src = `/api/rank/cover/${encodeURIComponent(rkCoverKey(row))}`
     + (row.cover ? `?url=${encodeURIComponent(row.cover)}` : '');
   img.onload = () => box.classList.add('ready');
   // Обложки может не быть вовсе — тогда остаётся заготовка, и это лучше
@@ -4373,7 +4461,7 @@ function rkCopyMenu(row){
   button.onclick = e => {
     e.stopPropagation();
     openMenu(button, [
-      ['ссылку', () => put(RK_LINK + row.book_id, 'Ссылка скопирована')],
+      ['ссылку', () => put(rkLink(row), 'Ссылка скопирована')],
       ['id', () => put(String(row.book_id), 'Код книги скопирован')],
     ]);
   };
@@ -4489,6 +4577,14 @@ async function rkLoadCategories(fetchFromSite){
     const data = await call('/api/rank/categories'
                             + (fetchFromSite ? '?fetch=1' : ''));
     rkCats = data.categories || {};
+    rkSites = data.sites || [];
+
+    if(!rkSiteMenu && rkSites.length){
+      const box = $('rkSite');
+      box.dataset.options = JSON.stringify(rkSites.map(s => [s.key, s.name]));
+      box.innerHTML = '';
+      rkSiteMenu = makeDropdown(box, () => { rkApplySite(); rkState(); });
+    }
 
     if(!rkAudMenu){
       const aud = $('rkAudience');
@@ -4502,6 +4598,7 @@ async function rkLoadCategories(fetchFromSite){
       rkKindMenu = makeDropdown(kind, () => rkState());
     }
     rkFillCategories();
+    rkApplySite();
   }catch(err){ showError(err.message); }
 }
 
@@ -4787,7 +4884,7 @@ function rkCardBody(row, data){
   open.textContent = 'Открыть на сайте';
   open.onclick = e => {
     e.stopPropagation();
-    window.open(data.link || (RK_LINK + row.book_id), '_blank', 'noopener');
+    window.open(data.link || rkLink(row), '_blank', 'noopener');
   };
 
   const copy = document.createElement('button');
@@ -4797,8 +4894,8 @@ function rkCardBody(row, data){
     e.stopPropagation();
     openMenu(copy, [
       ['ссылку', async () => toast(
-        await copyText(RK_LINK + row.book_id) ? 'Ссылка скопирована'
-                                              : 'Скопировать не вышло')],
+        await copyText(rkLink(row)) ? 'Ссылка скопирована'
+                                    : 'Скопировать не вышло')],
       ['id', async () => toast(
         await copyText(String(row.book_id)) ? 'Код книги скопирован'
                                             : 'Скопировать не вышло')],
@@ -4841,8 +4938,15 @@ async function rkPick(row){
   // текстом. Способ виден в поле «Источник» и меняется одним щелчком.
   // С `notify`: вместе с источником меняются заполнитель поля и пояснение
   // под ним — у Фанкью в ссылке не слаг, а числовой код.
+  //
+  // Всё сказанное — про Фанкью. У строки из другого рейтинга и источник
+  // другой, и берётся он не отсюда, а из ответа сервера: там же, где
+  // объявлен сам рейтинг. Иначе третий сайт пришлось бы вписывать сюда
+  // руками, а список сайтов — снова в двух местах.
   if(typeof srcMenu !== 'undefined' && srcMenu){
-    srcMenu.set('fanqie-mirror', {notify: true});
+    const known = rkSites.find(s => s.key === (row.site || ''));
+    const source = row.site ? (known && known.source) : 'fanqie-mirror';
+    if(source) srcMenu.set(source, {notify: true});
   }
   $('q').value = row.book_id;
 

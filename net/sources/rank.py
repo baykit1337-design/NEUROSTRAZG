@@ -48,11 +48,13 @@ class RankRow:
     """Одна строка рейтинга."""
 
     __slots__ = ("place", "book_id", "name", "author", "readers", "category",
-                 "diff", "words", "status", "last_chapter", "secret", "cover")
+                 "diff", "words", "status", "last_chapter", "secret", "cover",
+                 "site", "link", "score", "chapters")
 
     def __init__(self, place=0, book_id="", name="", author="", readers=0,
                  category="", diff=None, words=0, status="", last_chapter="",
-                 secret=False, cover=""):
+                 secret=False, cover="", site="", link="", score=None,
+                 chapters=0):
         self.place = place
         self.book_id = str(book_id)
         self.name = name
@@ -69,6 +71,19 @@ class RankRow:
         #: Адрес обложки на сайте. Он подписан и живёт недолго, поэтому
         #: наружу отдаётся не он, а путь к своей копии.
         self.cover = cover
+        #: С какого сайта строка. Пусто — Фанкью: так писались все срезы
+        #: до появления второго рейтинга, и переписывать их задним числом
+        #: значило бы потерять накопленную историю.
+        self.site = site
+        #: Ссылка на книгу. У Фанкью она складывается из кода, у прочих
+        #: сайтов — из слага, и вычислить её здесь уже нельзя.
+        self.link = link
+        #: Оценка. У Фанкью её нет, у MVLEMPYR это средний балл, у
+        #: Webnovel — вес в рейтинге. Общее у них одно: чем больше, тем
+        #: выше, и сравнивать между сайтами эти числа бессмысленно.
+        self.score = score
+        #: Сколько глав всего. У Фанкью вместо этого знаки — `words`.
+        self.chapters = chapters
 
     def as_dict(self) -> dict:
         return {"place": self.place, "book_id": self.book_id, "name": self.name,
@@ -76,8 +91,9 @@ class RankRow:
                 "category": self.category, "diff": self.diff,
                 "words": self.words, "status": self.status,
                 "last_chapter": self.last_chapter, "secret": self.secret,
-                "cover": self.cover,
-                "link": f"{SITE}/page/{self.book_id}"}
+                "cover": self.cover, "site": self.site, "score": self.score,
+                "chapters": self.chapters,
+                "link": self.link or f"{SITE}/page/{self.book_id}"}
 
     @classmethod
     def from_dict(cls, data: dict) -> RankRow:
@@ -95,6 +111,10 @@ class RankRow:
             last_chapter=str(data.get("last_chapter") or ""),
             secret=bool(data.get("secret")),
             cover=str(data.get("cover") or ""),
+            site=str(data.get("site") or ""),
+            link=str(data.get("link") or ""),
+            score=data.get("score"),
+            chapters=int(data.get("chapters") or 0),
         )
 
     def __eq__(self, other):

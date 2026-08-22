@@ -30,6 +30,7 @@ from core.text import PrepOptions  # noqa: E402
 from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
+from net.sources import mvlrank as mvl_rank_net  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
 from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
@@ -1779,6 +1780,30 @@ def _any_proxy(pool) -> str | None:
     return found[0].url if found else None
 
 
+#: Рейтинги, которые программа умеет снимать.
+#:
+#: Ключ пустой у Фанкью намеренно: с него всё начиналось, его срезы
+#: лежат в файлах без приписки сайта, и переименовывать их задним числом
+#: значило бы выбросить накопленную историю — а движение по рейтингу
+#: считается только по ней.
+RANK_SITES = {
+    "": {"name": "Фанкью", "source": "fanqie", "boards": {}},
+    mvl_rank_net.SITE_KEY: {
+        "name": "MVLEMPYR",
+        # С какого источника качать книгу, если нажать «скачать» в строке.
+        "source": "mvlempyr",
+        "boards": mvl_rank_net.BOARDS,
+    },
+}
+
+
+def _rank_site(payload) -> str:
+    """Какой сайт спрашивают. Незнакомый — это Фанкью, как и раньше."""
+    get = payload.get if hasattr(payload, "get") else (lambda k, d=None: d)
+    site = str(get("site") or "").strip()
+    return site if site in RANK_SITES else ""
+
+
 def _rank_where(payload) -> tuple[str, str, str]:
     """Аудитория, вид и категория из запроса."""
     get = payload.get if hasattr(payload, "get") else (lambda k, d=None: d)
@@ -1786,6 +1811,25 @@ def _rank_where(payload) -> tuple[str, str, str]:
     kind = str(get("kind") or rank_cats.READING)
     category = str(get("category") or "")
     return audience, kind, category
+
+
+def _rank_board(payload, site: str) -> tuple[str, str]:
+    """Доска и категория для этого сайта.
+
+    У Фанкью доска складывается из пола и вида, у остальных она приходит
+    прямо. Разводить это по вызовам пришлось бы в каждой ручке, поэтому
+    сведено в одно место.
+    """
+    if not site:
+        audience, kind, category = _rank_where(payload)
+        return rank_cats.board_key(audience, kind), category
+
+    get = payload.get if hasattr(payload, "get") else (lambda k, d=None: d)
+    boards = RANK_SITES[site]["boards"]
+    board = str(get("board") or "").strip()
+    if board not in boards:
+        board = next(iter(boards))
+    return board, ""
 
 
 @app.get("/api/rank/categories")
@@ -1818,16 +1862,24 @@ def api_rank_categories():
         audiences=[{"key": k, "name": v} for k, v in rank_cats.AUDIENCES.items()],
         kinds=[{"key": k, "name": v} for k, v in rank_cats.KINDS.items()],
         boards=[{"key": k, "name": v} for k, v in rank_cats.BOARDS.items()],
+        # Какие рейтинги вообще есть и какие доски у каждого. Список
+        # приходит с сервера, а не вписан в страницу: добавить третий
+        # сайт иначе значило бы править ещё и разметку.
+        sites=[{"key": key, "name": site["name"], "source": site["source"],
+                "boards": [{"key": k, "name": v}
+                           for k, v in site["boards"].items()]}
+               for key, site in RANK_SITES.items()],
     )
 
 
 @app.get("/api/rank/state")
 def api_rank_state():
     """Что уже накоплено по этому разделу и категории."""
-    audience, kind, category = _rank_where(request.args)
-    board = rank_cats.board_key(audience, kind)
+    site = _rank_site(request.args)
+    audience, kind, _ = _rank_where(request.args)
+    board, category = _rank_board(request.args, site)
     try:
-        moved = rank_op.movement(board, category=category)
+        moved = rank_op.movement(board, category=category, site=site)
     except rank_op.RankError as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(titles=titles_op.known(), audience=audience, kind=kind,
@@ -1841,13 +1893,21 @@ def api_rank_refresh():
     Только по кнопке: по расписанию сайт не опрашивается.
     """
     payload = request.json or {}
-    audience, kind, category = _rank_where(payload)
-    board = rank_cats.board_key(audience, kind)
+    site = _rank_site(payload)
+    audience, kind, _ = _rank_where(payload)
+    board, category = _rank_board(payload, site)
 
     client = _rank_client()
     try:
-        found = rank_net.fetch(client, audience=audience, kind=kind,
-                               category=category)
+        if site == mvl_rank_net.SITE_KEY:
+            # У MVLEMPYR нет ни шрифта, ни аудитории, ни жанровых досок:
+            # весь рейтинг — это каталог, отсортированный по одному из
+            # трёх полей. Поэтому и вызов у него свой.
+            found = mvl_rank_net.fetch(client, board=board)
+            found.setdefault("font", {})
+        else:
+            found = rank_net.fetch(client, audience=audience, kind=kind,
+                                   category=category)
     except rank_net.Diagnosis as exc:
         # Подробности вместо общих слов: по ним видно, сел ли сайт,
         # сменилась ли разметка или дело только в шрифте.
@@ -1862,19 +1922,21 @@ def api_rank_refresh():
     finally:
         client.close()
 
-    previous = rank_op.load(rank_op.days(board, category)[0], board, category) \
-        if rank_op.days(board, category) else None
+    have = rank_op.days(board, category, site)
+    previous = rank_op.load(have[0], board, category, site) if have else None
     same = previous is not None and previous.version and \
         previous.version == found["version"]
 
     rank_op.save(found["rows"], board, category=found["category"],
-                 version=found["version"], stats_date=found["stats_date"])
+                 version=found["version"], stats_date=found["stats_date"],
+                 site=site)
     return jsonify(saved=len(found["rows"]), decoded=found["decoded"],
                    same_version=same, audience=audience, kind=kind,
                    # 2.5: подробности разбора шрифта. Без них «названия
                    # расшифровать не удалось» не говорит, что чинить.
                    font=found.get("font") or {},
-                   **rank_op.movement(board, category=found["category"]))
+                   **rank_op.movement(board, category=found["category"],
+                                      site=site))
 
 
 @app.get("/api/rank/cover/<book_id>")
@@ -2025,14 +2087,15 @@ def api_find_translate():
 def api_rank_translate():
     """Прогоняет названия через модель. Кэш по book_id."""
     payload = request.json or {}
-    audience, kind, category = _rank_where(payload)
-    board = rank_cats.board_key(audience, kind)
+    site = _rank_site(payload)
+    board, category = _rank_board(payload, site)
     day = (payload.get("day") or "").strip()
 
-    snapshot = rank_op.load(day, board, category) if day else None
+    snapshot = rank_op.load(day, board, category, site) if day else None
     if snapshot is None:
-        found = rank_op.days(board, category)
-        snapshot = rank_op.load(found[0], board, category) if found else None
+        found = rank_op.days(board, category, site)
+        snapshot = rank_op.load(found[0], board, category, site) if found \
+            else None
     if snapshot is None:
         return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
 

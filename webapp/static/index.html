@@ -2488,13 +2488,16 @@
 <!-- ====================== Рейтинг ====================== -->
 <section id="tab-rank" hidden>
   <div class="card lit">
-    <label>Рейтинг Фанкью</label>
-    <p class="hint">Сайт отдаёт только суточный срез: рейтингов «за неделю»
-       и «за месяц» у него нет. Срезы складываются к себе, и движение
-       считается уже по своей истории — видно не просто популярное, а то,
-       что набирает обороты. По расписанию ничего не запрашивается: срез
-       снимается кнопкой.</p>
-    <div class="row" style="margin-top:12px">
+    <label>Рейтинг</label>
+    <!-- Сайт выбирается первым: от него зависит, что показывать ниже.
+         У Фанкью рейтинг делится на аудиторию, вид и жанр, у MVLEMPYR —
+         на три доски по сроку. Общего между ними только история. -->
+    <div class="row" style="margin-top:10px">
+      <div class="dropdown" id="rkSite" style="flex:1" data-options='[]'></div>
+      <div class="dropdown" id="rkBoard" style="flex:1" data-options='[]' hidden></div>
+    </div>
+    <p class="hint" id="rkAbout"></p>
+    <div class="row" style="margin-top:12px" id="rkFanqieWhere">
       <div class="dropdown" id="rkAudience" style="flex:1" data-options='[]'></div>
       <div class="dropdown" id="rkKind" style="flex:1" data-options='[]'></div>
     </div>

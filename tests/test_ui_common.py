@@ -149,15 +149,22 @@ class TestRankHandsOverToTheDownloader(UiBase):
         останавливает работу покидаемой — своей ветки быть не должно."""
         self.assertIn("button.click()", self.page)
 
-    def test_the_source_becomes_the_mirror(self):
+    def test_a_fanqie_row_becomes_the_mirror(self):
         """Обычный способ на этих книгах — сплошные пропуски.
 
         У книги на тысячу двести глав открыто десять: прогон вырождается
         в перечень недоступных. Посредник отдаёт их все, и способ виден
         в поле «Источник» — меняется одним щелчком.
         """
-        self.assertIn("srcMenu.set('fanqie-mirror', {notify: true})",
-                      self.pick())
+        pick = self.pick()
+        self.assertIn("'fanqie-mirror'", pick)
+        self.assertIn("srcMenu.set(source, {notify: true})", pick)
+
+    def test_a_row_from_another_rating_takes_its_own_source(self):
+        """Иначе строка с MVLEMPYR уехала бы качаться с китайского сайта."""
+        pick = self.pick()
+        self.assertIn("row.site", pick)
+        self.assertIn("rkSites.find(", pick)
 
     def test_the_hint_changes_with_the_source(self):
         """Без `notify` заполнитель поля остался бы от прошлого источника."""
@@ -804,9 +811,22 @@ class TestCopyMenu(UiBase):
         self.assertIn("'ссылку'", menu)
         self.assertIn("'id'", menu)
 
-    def test_the_link_is_built_from_the_code(self):
+    def test_the_link_comes_from_the_row(self):
+        """Раньше ссылка складывалась из кода прямо здесь.
+
+        Сайт был один, и это работало. У второго рейтинга адрес книги
+        строится из слага, а не из кода, и вычислить его на странице уже
+        нечем — готовую ссылку кладёт в строку сервер. Поэтому проверяем
+        не формулу, а то, что меню берёт ссылку у строки.
+        """
+        self.assertIn("rkLink(row)", self.menu())
+
+    def test_a_row_without_its_own_link_still_points_at_fanqie(self):
+        """Срезы лежат месяцами: в старых поля `link` нет вовсе."""
+        block = self.tabs.split("function rkLink(row)", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("row.link", block)
+        self.assertIn("RK_LINK + row.book_id", block)
         self.assertIn("https://fanqienovel.com/page/", self.tabs)
-        self.assertIn("RK_LINK + row.book_id", self.menu())
 
     def test_copying_says_so(self):
         self.assertIn("toast(await copyText(text) ? said", self.tabs)
