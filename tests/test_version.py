@@ -150,12 +150,19 @@ class TestThePapers(unittest.TestCase):
 
     def test_no_book_is_lying_in_the_repository(self):
         """Правило в `.gitignore` не убирает то, что уже добавлено
-        руками: файл под учётом остаётся под учётом."""
+        руками: файл под учётом остаётся под учётом.
+
+        Имена берутся через `-z`, а не построчно. Кириллицу в путях git
+        по умолчанию экранирует восьмеричными кодами и оборачивает в
+        кавычки — на такой строке проверка «кончается на .epub» не
+        срабатывает, и книга с русским именем проходит мимо. Ровно так
+        одна из двух и пролежала в репозитории всю разработку.
+        """
         import subprocess
 
-        listed = subprocess.run(["git", "ls-files"], cwd=ROOT,
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
                                 capture_output=True, text=True, timeout=120)
-        books = [name for name in listed.stdout.splitlines()
+        books = [name for name in listed.stdout.split("\0")
                  if name.lower().endswith((".epub", ".fb2", ".mobi"))]
         self.assertEqual(books, [])
 

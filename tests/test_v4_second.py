@@ -72,11 +72,53 @@ class BracketTestCase(unittest.TestCase):
     def test_balanced_straight_quotes_are_clean(self):
         self.assertEqual(self.check('Он сказал "привет" и ушёл.'), [])
 
-    def test_real_book_has_no_bracket_noise(self):
-        """На реальной книге игровые блоки давали 44 ложных находки."""
-        book = Path(__file__).resolve().parent.parent / "ГОТОВЫЙ_Insect_T..._201-365.epub"
-        if not book.is_file():
-            self.skipTest("Книги нет рядом")
+    def test_a_whole_book_of_game_blocks_has_no_bracket_noise(self):
+        """Проверка на целой книге, а не на одном абзаце.
+
+        Раньше здесь лежала настоящая скачанная книга: на ней игровые
+        блоки давали 44 ложных находки. Книгу убрали — чужой текст в
+        публичном репозитории, — а вместе с ней ушла и проверка: тест
+        молча пропускался, и было незаметно, что он ничего не сторожит.
+
+        Теперь книга собирается прямо здесь. Важно не то, что она
+        настоящая, а то, чем она отличается от абзацев выше: полторы
+        сотни глав, чтение через разбор epub, а не голый текст, и
+        блоки, которые открываются в одной главе и закрываются в ней же
+        через несколько абзацев. Ровно на этом счёт по абзацам и
+        рассыпался.
+        """
+        import zipfile
+
+        block = ("<p>[Статус:</p><p>уровень 12</p><p>сила 40</p>"
+                 "<p>ловкость 31</p><p>]</p>")
+        talk = ("<p>«Опять эта дрянь», — сказал он и сплюнул.</p>"
+                "<p>{Награда:</p><p>эссенция ×3</p><p>}</p>")
+        pages, items, refs = {}, [], []
+        for number in range(1, 151):
+            pages[f"OEBPS/ch{number}.xhtml"] = (
+                f"<html><body><h1>Глава {number}</h1>"
+                f"<p>Обычный абзац. {LONG}</p>{block}{talk}"
+                f"<p>Ещё абзац (со скобкой внутри) и хвост. {LONG}</p>"
+                "</body></html>")
+            items.append(f'<item id="c{number}" href="ch{number}.xhtml" '
+                         f'media-type="application/xhtml+xml"/>')
+            refs.append(f'<itemref idref="c{number}"/>')
+
+        book = self.tmp / "книга.epub"
+        with zipfile.ZipFile(book, "w") as archive:
+            archive.writestr(
+                "META-INF/container.xml",
+                '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:'
+                'opendocument:xmlns:container"><rootfiles>'
+                '<rootfile full-path="OEBPS/book.opf"/></rootfiles></container>')
+            for name, content in pages.items():
+                archive.writestr(name, content)
+            archive.writestr(
+                "OEBPS/book.opf",
+                '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf">'
+                f'<manifest>{"".join(items)}</manifest>'
+                f'<spine>{"".join(refs)}</spine></package>')
+
         self.assertEqual(textcheck.check(book, ["pairs"]).findings, [])
 
 
