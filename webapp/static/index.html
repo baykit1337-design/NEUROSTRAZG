@@ -3323,6 +3323,13 @@ async function tick(){
       $('sMethod').classList.toggle('warn', !many);
     }
 
+    // Дождь под карточкой живёт с тех же чисел, что и строка выше:
+    // струй в нём столько, сколько потоков. Своего опроса он не ведёт —
+    // эффекту нечего знать про задачи и запросы.
+    if(window.rainTune) rainTune({
+      busy, held, threads: p.threads || 0, failed: p.failed || 0,
+    });
+
     if(!busy){
       clearInterval(poll);
       $('stop').hidden = true;
@@ -3387,6 +3394,9 @@ function showHold(){
 
 function reset(){
   clearInterval(poll);
+  // Карточку сейчас спрячут — дождь должен знать, что работы больше нет,
+  // иначе на следующем прогоне он начнёт с недогашенного холста.
+  if(window.rainTune) rainTune({busy: false, held: false, threads: 0, failed: 0});
   jobId = null;
   probeShown = false;
   $('sMethod').textContent = '';
@@ -3650,6 +3660,7 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/skeleton.css">
 <link rel="stylesheet" href="/static/css/effects/stars.css">
 <link rel="stylesheet" href="/static/css/effects/star-wander.css">
+<link rel="stylesheet" href="/static/css/effects/rain.css">
 <link rel="stylesheet" href="/static/css/effects/subtitle.css">
 <link rel="stylesheet" href="/static/css/effects/row-sweep.css">
 <link rel="stylesheet" href="/static/css/effects/tab-grow.css">
@@ -3659,6 +3670,7 @@ $('again').onclick = reset;
 <script src="/static/js/effects/feedback.js"></script>
 <script src="/static/js/effects/pointer.js"></script>
 <script src="/static/js/effects/stars.js"></script>
+<script src="/static/js/effects/rain.js"></script>
 <script src="/static/js/effects/subtitle.js"></script>
 </body>
 </html>
