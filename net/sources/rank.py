@@ -49,12 +49,12 @@ class RankRow:
 
     __slots__ = ("place", "book_id", "name", "author", "readers", "category",
                  "diff", "words", "status", "last_chapter", "secret", "cover",
-                 "site", "link", "score", "chapters")
+                 "site", "link", "score", "chapters", "metric")
 
     def __init__(self, place=0, book_id="", name="", author="", readers=0,
                  category="", diff=None, words=0, status="", last_chapter="",
                  secret=False, cover="", site="", link="", score=None,
-                 chapters=0):
+                 chapters=0, metric=""):
         self.place = place
         self.book_id = str(book_id)
         self.name = name
@@ -84,6 +84,14 @@ class RankRow:
         self.score = score
         #: Сколько глав всего. У Фанкью вместо этого знаки — `words`.
         self.chapters = chapters
+        #: Как называется то, что лежит в `score`.
+        #:
+        #: У MVLEMPYR это средний балл и подпись очевидна. У Webnovel в
+        #: том же поле оказывается вес доски, а доски там разные: где-то
+        #: это голоса, где-то покупки, где-то добавления в библиотеку.
+        #: Подписать всё звёздочкой значило бы соврать про число, которое
+        #: человек будет читать как оценку.
+        self.metric = metric
 
     def as_dict(self) -> dict:
         return {"place": self.place, "book_id": self.book_id, "name": self.name,
@@ -92,7 +100,7 @@ class RankRow:
                 "words": self.words, "status": self.status,
                 "last_chapter": self.last_chapter, "secret": self.secret,
                 "cover": self.cover, "site": self.site, "score": self.score,
-                "chapters": self.chapters,
+                "chapters": self.chapters, "metric": self.metric,
                 "link": self.link or f"{SITE}/page/{self.book_id}"}
 
     @classmethod
@@ -115,6 +123,7 @@ class RankRow:
             link=str(data.get("link") or ""),
             score=data.get("score"),
             chapters=int(data.get("chapters") or 0),
+            metric=str(data.get("metric") or ""),
         )
 
     def __eq__(self, other):

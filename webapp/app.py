@@ -32,6 +32,7 @@ from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import mvlrank as mvl_rank_net  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
+from net.sources import webnovelrank as wn_rank_net  # noqa: E402
 from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
@@ -1787,12 +1788,35 @@ def _any_proxy(pool) -> str | None:
 #: значило бы выбросить накопленную историю — а движение по рейтингу
 #: считается только по ней.
 RANK_SITES = {
-    "": {"name": "Фанкью", "source": "fanqie", "boards": {}},
+    "": {
+        "name": "Фанкью",
+        "source": "fanqie",
+        "boards": {},
+        "about": "Сайт отдаёт только суточный срез: рейтингов «за неделю» и "
+                 "«за месяц» у него нет — видно не просто популярное, а то, "
+                 "что набирает обороты. Названия зашифрованы шрифтом и "
+                 "расшифровываются на месте.",
+    },
     mvl_rank_net.SITE_KEY: {
         "name": "MVLEMPYR",
         # С какого источника качать книгу, если нажать «скачать» в строке.
         "source": "mvlempyr",
         "boards": mvl_rank_net.BOARDS,
+        "about": "Своей страницы рейтинга у сайта нет: витрина забирает весь "
+                 "каталог и сортирует его в браузере. Здесь то же самое — "
+                 "берём каталог и сортируем по выбранной доске. Числа "
+                 "читающих сайт не показывает, зато есть средний балл и "
+                 "число глав.",
+    },
+    wn_rank_net.SITE_KEY: {
+        "name": "Webnovel",
+        "source": "webnovel",
+        "boards": wn_rank_net.BOARDS,
+        "about": "Рейтинг приходит готовой страницей — ни входа, ни токена. "
+                 "Число рядом с книгой на каждой доске своё: голоса, покупки "
+                 "или добавления в библиотеку, — поэтому оно подписано. "
+                 "Скачать удастся не всякую книгу: часть глав там платная, и "
+                 "такие остаются пропусками.",
     },
 }
 
@@ -1866,6 +1890,7 @@ def api_rank_categories():
         # приходит с сервера, а не вписан в страницу: добавить третий
         # сайт иначе значило бы править ещё и разметку.
         sites=[{"key": key, "name": site["name"], "source": site["source"],
+                "about": site["about"],
                 "boards": [{"key": k, "name": v}
                            for k, v in site["boards"].items()]}
                for key, site in RANK_SITES.items()],
@@ -1904,6 +1929,11 @@ def api_rank_refresh():
             # весь рейтинг — это каталог, отсортированный по одному из
             # трёх полей. Поэтому и вызов у него свой.
             found = mvl_rank_net.fetch(client, board=board)
+            found.setdefault("font", {})
+        elif site == wn_rank_net.SITE_KEY:
+            # Webnovel отдаёт рейтинг готовой страницей: ни токена, ни
+            # входа, ни шрифта — разбирается вёрстка.
+            found = wn_rank_net.fetch(client, board=board)
             found.setdefault("font", {})
         else:
             found = rank_net.fetch(client, audience=audience, kind=kind,
