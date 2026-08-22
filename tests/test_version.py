@@ -67,41 +67,32 @@ class TestItReachesEveryoneWhoShowsIt(unittest.TestCase):
         self.assertEqual(got["version"], __version__)
         self.assertEqual(got["name"], "NEUROSTRAZH")
 
-    def test_the_page_asks_the_server_and_does_not_guess(self):
-        """Страница кэшируется браузером: вписанная в неё версия
-        оставалась бы прошлой ещё сутки после обновления."""
+    def test_the_page_does_not_show_it_anywhere(self):
+        """Версии в интерфейсе нет и быть не должно.
+
+        Её показывали дважды: в подзаголовке и в подвале. Оба раза она
+        никому не понадобилась и оба раза мешала — номер сборки не
+        отвечает ни на один вопрос, который человек задаёт, открыв
+        качалку. Кому он нужен, тот спросит `cli.py --version` или
+        `GET /api/about`.
+        """
+        page = (ROOT / "webapp" / "static" / "index.html").read_text(
+            encoding="utf-8")
         tabs = (ROOT / "webapp" / "static" / "tabs.js").read_text(
             encoding="utf-8")
-        self.assertIn("/api/about", tabs)
-        self.assertIn("showVersion()", tabs)
+        self.assertNotIn("appVersion", page)
+        self.assertNotIn("appVersion", tabs)
+        self.assertNotIn("appfoot", page)
+        # И самого запроса тоже: незачем ходить за тем, что не покажут.
+        self.assertNotIn("'/api/about'", tabs)
 
-    def test_the_page_has_somewhere_to_put_it(self):
+    def test_the_version_number_is_not_written_into_the_page(self):
+        """Убрать показ — не повод вписать номер в разметку «на всякий
+        случай»: страница кэшируется браузером, и такой номер начнёт
+        врать через сутки после обновления."""
         page = (ROOT / "webapp" / "static" / "index.html").read_text(
             encoding="utf-8")
-        self.assertIn('id="appVersion"', page)
-
-    def test_it_is_not_in_the_subtitle(self):
-        """Подзаголовок — это про то, что программа делает. Номер сборки
-        там ни о чём не говорит и только сбивает первую строку, которую
-        человек читает, открыв программу."""
-        page = (ROOT / "webapp" / "static" / "index.html").read_text(
-            encoding="utf-8")
-        subtitle = re.search(r'class="sub"[^>]*>(.*?)</p>', page, re.S)
-        self.assertIsNotNone(subtitle)
-        self.assertNotIn("appVersion", subtitle.group(1))
-
-    def test_it_sits_at_the_foot_of_the_page(self):
-        page = (ROOT / "webapp" / "static" / "index.html").read_text(
-            encoding="utf-8")
-        spot = page.index('id="appVersion"')
-        head = page.index('class="sub"')
-        self.assertGreater(spot, head)
-
-    def test_an_empty_label_does_not_hang_in_the_header(self):
-        """Сервер не ответил — лучше пусто, чем «версия неизвестна»."""
-        page = (ROOT / "webapp" / "static" / "index.html").read_text(
-            encoding="utf-8")
-        self.assertIn("#appVersion:empty{display:none}", page)
+        self.assertNotIn(__version__, page)
 
     def test_the_command_line_says_it_too(self):
         done = subprocess.run(

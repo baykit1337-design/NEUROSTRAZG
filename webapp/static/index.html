@@ -73,26 +73,6 @@
     user-select:none;
     -webkit-user-select:none;
   }
-  /* Версия внизу страницы: мелко, в стороне и не в глаза. Выделять и
-     копировать её как раз можно — её диктуют в переписке. */
-  .appfoot{
-    text-align:center;
-    margin-top:34px;
-    min-height:18px;
-  }
-  #appVersion{
-    padding:1px 7px;
-    border:1px solid var(--stroke);
-    border-radius:999px;
-    font-size:11px;
-    letter-spacing:.4px;
-    color:var(--muted);
-    user-select:text;
-    -webkit-user-select:text;
-    cursor:text;
-  }
-  #appVersion:empty{display:none}
-
   /* Раздел 5: неоновая обводка у всех карточек без исключения. */
   /* Раздел 1: базовое свечение есть у каждой карточки, не только при
      наведении. Эталон — форма «Файл книги» на вкладке «Разбить». */
@@ -2560,11 +2540,6 @@
   </div>
 </section>
 </div>
-
-<!-- Версия внизу страницы, а не в подзаголовке: в шапке она лезла в
-     глаза каждую секунду, а нужна раз в месяц — когда её диктуют в
-     переписке. Здесь она не мешает и находится там, где такое ищут. -->
-<p class="appfoot"><span id="appVersion"></span></p>
 
 
 <script>

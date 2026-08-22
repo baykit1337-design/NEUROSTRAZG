@@ -207,6 +207,23 @@ def load_proxies(path: str | Path) -> list[Proxy]:
 # --------------------------------------------------------------------- проверка
 
 
+#: Чем прокси отвечает на CONNECT, когда не пропускает.
+#:
+#: Это ответ посредника о себе, а не о сайте, и путать их нельзя: «402»
+#: здесь не значит, что за книгу просят денег, — это тариф самого
+#: посредника. Список короткий нарочно: сюда попадают только те коды, у
+#: которых в этом месте есть внятный смысл; остальное показываем числом.
+_TUNNEL = {
+    "401": "нужен логин",
+    "402": "тариф или трафик исчерпан",
+    "403": "адрес запрещён тарифом",
+    "407": "не принял логин/пароль",
+    "429": "слишком часто",
+    "502": "не дозвонился до сайта",
+    "503": "перегружен",
+}
+
+
 def short_reason(exc: Exception | str) -> str:
     """Короткая причина отказа вместо простыни от curl."""
     text = scrub(exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}")
@@ -216,6 +233,15 @@ def short_reason(exc: Exception | str) -> str:
         return "таймаут"
     if "proxy authentication" in low or "407" in low:
         return "прокси не принял логин/пароль"
+
+    # Прокси ответил на CONNECT своим кодом — то есть до сайта дело не
+    # дошло вовсе, отказал сам посредник. Без разбора на экране висела
+    # строка «ProxyError: Failed to perform, curl: (56) CONNECT tunnel
+    # failed, response 402», из которой человек не мог понять ни того,
+    # что виноват посредник, ни того, что именно он ответил.
+    tunnel = re.search(r"connect tunnel failed,\s*response\s*(\d{3})", low)
+    if tunnel:
+        return f"посредник отказал: {_TUNNEL.get(tunnel.group(1), 'HTTP ' + tunnel.group(1))}"
     if "could not resolve" in low or "resolve host" in low:
         return "DNS не резолвится"
     if "connection reset" in low or "recv failure" in low:
@@ -227,6 +253,24 @@ def short_reason(exc: Exception | str) -> str:
     # Отрезаем хвост со ссылкой на документацию curl.
     text = text.split(". See https://", 1)[0]
     return text[:80]
+
+
+def common_refusal(proxies) -> str:
+    """Причина, по которой отказали **все** адреса, если она одна.
+
+    Разница между «список протух» и «кончился тариф» видна только так:
+    поодиночке строки в таблице ничего не решают, а вот когда два десятка
+    разных адресов отвечают одним и тем же — дело не в адресах.
+
+    Пустая строка значит «причины разные» — тогда и говорить нечего,
+    человек читает таблицу.
+    """
+    reasons = {(p.error or "").strip() for p in proxies if not p.usable}
+    if not reasons or len(reasons) > 1:
+        return ""
+    only = reasons.pop()
+    # Отвечает сам посредник — это про учётную запись, а не про адреса.
+    return only if only.startswith("посредник отказал") else ""
 
 
 def check_proxy(
