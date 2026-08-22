@@ -434,6 +434,49 @@ class TestTheRouteEndToEnd(unittest.TestCase):
                                                site=mvlrank.SITE_KEY)), 1)
 
 
+class TestRowsOfOtherSitesDoNotGoToFanqie(unittest.TestCase):
+    """Раскрытие строки — только для Фанкью.
+
+    Подробности книги умеет читать один сайт: у него есть отдельный
+    запрос с описанием, автором и главами. У MVL и Webnovel такого нет,
+    а строку раскрыть можно у любой. Раньше в этом случае уходил запрос
+    на фанкьюшный адрес с чужим кодом, и человек читал под строкой MVL
+    ошибку про Фанкью — то есть чистое враньё о том, что произошло.
+    """
+
+    def setUp(self):
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+        self.tabs = (Path(__file__).resolve().parent.parent / "webapp"
+                     / "static" / "tabs.js").read_text(encoding="utf-8")
+
+    def test_the_page_does_not_even_ask_for_a_foreign_row(self):
+        block = self.tabs[self.tabs.index("rkCardBody") - 3000:]
+        block = block[:block.index("rkCardBody")]
+        self.assertIn("row.site", block)
+
+    def test_the_server_refuses_instead_of_answering_about_another_book(self):
+        """Даже если запрос всё-таки уйдёт — в ответ должно прийти
+        объяснение, а не подробности случайной фанкьюшной книги."""
+        got = self.client.get("/api/rank/book/12345?site=" + mvlrank.SITE_KEY)
+        self.assertEqual(got.status_code, 400)
+        self.assertIn("error", got.get_json())
+
+    def test_the_refusal_names_the_site_the_row_came_from(self):
+        got = self.client.get("/api/rank/book/12345?site=" + mvlrank.SITE_KEY)
+        said = got.get_json()["error"]
+        self.assertIn("MVL", said.upper())
+
+    def test_a_bad_code_is_still_the_first_thing_checked(self):
+        """Отказ по чужому сайту не должен подменять собой проверку
+        кода: «12345abc?» — это плохой код, кто бы его ни прислал."""
+        got = self.client.get("/api/rank/book/..%2Fetc?site="
+                              + mvlrank.SITE_KEY)
+        self.assertIn(got.status_code, (400, 404))
+
+
 class TestOldRowsStillLoad(unittest.TestCase):
     """У строки прибавилось полей — старые срезы должны читаться."""
 

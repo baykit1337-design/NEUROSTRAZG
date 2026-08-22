@@ -491,6 +491,29 @@ class TestMagnetic(Base):
     def test_small_buttons_are_skipped(self):
         self.assertIn("FX_MAGNET_MIN", self.js)
 
+    def test_ordinary_buttons_are_not_skipped(self):
+        """Порог отсекал всё уже девяноста пикселей, а такой ширины у
+        нас «Найти», «Пауза», «скачать» в строке рейтинга и все кнопки
+        форматов. Половина кнопок программы стояла мёртвой, и со
+        стороны это читалось как поломка, а не как замысел."""
+        least = int(re.search(r"FX_MAGNET_MIN = (\d+)", self.js).group(1))
+        # Кнопка с коротким словом — это примерно шестьдесят пикселей.
+        self.assertLess(least, 60)
+
+    def test_a_small_button_is_pulled_less_than_a_wide_one(self):
+        """Отменить порог, оставив всем одну силу, нельзя: четыре
+        пикселя у кнопки в сорок пикселей — это десятая часть её
+        ширины, и она уезжает с места."""
+        block = self.js[self.js.index("function fxPull("):]
+        block = block[:block.index("\n}")]
+        self.assertIn("width", block)
+        self.assertIn("FX_MAGNET", block)
+
+    def test_the_pull_never_runs_past_the_old_limit(self):
+        """Крупные кнопки тянутся ровно как тянулись."""
+        block = self.js[self.js.index("function fxPull("):]
+        self.assertRegex(block[:200], r"Math\.min\(FX_MAGNET\b")
+
     def test_returns_with_a_spring(self):
         self.assertIn("cubic-bezier(.34,1.56,.64,1)", self.js)
 
@@ -538,6 +561,47 @@ class TestDetails(Base):
         css = (CSS / "static-cards.css").read_text(encoding="utf-8")
         self.assertIn("cursor:default", css)
         self.assertIn(":hover", css)
+
+    def test_every_muted_class_of_the_page_lights_up(self):
+        """Разгорались три класса из десятка, и в одной карточке
+        половина текста откликалась, а половина нет — строка книги под
+        названием, путь к папке, «здесь пусто». Это заметнее, чем если
+        бы эффекта не было вовсе."""
+        css = (CSS / "static-cards.css").read_text(encoding="utf-8")
+        lit = css[css.index(":hover"):]
+        # Правила вида «.что-то { … color:var(--muted) … }» — один класс
+        # и никаких вложений: составные разбирать незачем, они и так
+        # попадают внутрь карточки через свой корневой класс.
+        classes = {
+            found.group(1)
+            for found in re.finditer(r"\n\s*\.([a-z-]+)\{([^}]*)\}",
+                                     self.html, re.S)
+            if "color:var(--muted)" in found.group(2).replace(" ", "")
+        }
+        # Приглушённое, но не про карточки: строки таблицы рейтинга,
+        # стрелка раскрытия, подзаголовки выпадающих списков.
+        skip = {"num", "arrow", "place", "flat", "said", "formats", "dirs"}
+        # Разъедется разбор — список опустеет, и проверка станет пустой.
+        self.assertGreater(len(classes - skip), 5)
+        for name in sorted(classes - skip):
+            with self.subTest(name):
+                self.assertIn("." + name, lit)
+
+    def test_the_light_comes_on_smoothly(self):
+        """Без перехода текст меняет цвет рывком, и это читается как
+        подёргивание, а не как отклик."""
+        css = (CSS / "static-cards.css").read_text(encoding="utf-8")
+        self.assertIn("transition:color", css.replace(" ", ""))
+
+    def test_the_step_is_big_enough_to_notice(self):
+        """#8f8aa3 → #a9a4b8 глазом не ловится: разница меньше, чем
+        разброс подсветки экрана."""
+        css = (CSS / "static-cards.css").read_text(encoding="utf-8")
+        muted = re.search(r"--muted:#([0-9a-f]{6})", self.html).group(1)
+        was = int(muted[0:2], 16) + int(muted[2:4], 16) + int(muted[4:6], 16)
+        for hit in re.findall(r"color:#([0-9a-f]{6})", css):
+            now = int(hit[0:2], 16) + int(hit[2:4], 16) + int(hit[4:6], 16)
+            self.assertGreater(now, was + 60, f"#{hit} едва отличим от #{muted}")
 
 
 class TestExistingLookSurvives(Base):

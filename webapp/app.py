@@ -386,6 +386,43 @@ def _found(novel) -> dict:
     return data
 
 
+def _find_via_proxy(source, query: str, direct):
+    """Вторая попытка найти книгу — через прокси.
+
+    Книга искалась голым клиентом всегда, у любого источника. Для
+    китайских сайтов это работало: они из России открываются через раз,
+    но открываются. Webnovel не открывается вовсе — в журнале это
+    выглядело как «Could not resolve host», то есть как поломка сети, а
+    на экране как «книга не найдена». Качать при этом было нечего:
+    скачивание начинается с найденной книги.
+
+    Почему второй попыткой, а не первой. Прямой запрос сейчас работает
+    у всех остальных источников, а прокси до нажатия «проверить» никем
+    не проверен: поставить его первым значит разменять работающее на
+    непроверенное. Лишний заход стоит одного таймаута и только там, где
+    без него всё равно ничего не выйдет.
+
+    Возвращает найденную книгу либо None — тогда наверх уходит первая
+    ошибка, а не менее внятная вторая.
+    """
+    if not getattr(source, "needs_proxy", False):
+        return None
+    with POOL_LOCK:
+        pool = POOL
+    address = _any_proxy(pool)
+    if not address:
+        return None
+    log.info("«%s» не ответил напрямую (%s) — пробуем через %s",
+             source.name, direct, mask(address))
+    spare = Client(proxy_url=address)
+    try:
+        return source.find(spare, query)
+    except HttpError:
+        return None
+    finally:
+        spare.close()
+
+
 @app.post("/api/find")
 def api_find():
     payload = request.json or {}
@@ -400,7 +437,13 @@ def api_find():
 
     client = Client()
     try:
-        novel = source.find(client, query)
+        try:
+            novel = source.find(client, query)
+        except HttpError as direct:
+            spare = _find_via_proxy(source, query, direct)
+            if spare is None:
+                raise
+            novel = spare
         return jsonify(novel=_found(novel), source=source.key)
     except sources.SourceBroken as exc:
         # «Источник изменился» — не «не нашли»: жать «повторить» бесполезно.
@@ -2024,6 +2067,16 @@ def api_rank_book(book_id: str):
     """
     if not covers.safe_id(book_id):
         return jsonify(error="Плохой код книги"), 400
+
+    # Страницу книги умеем читать только у Фанкью. Раньше сюда попадал
+    # запрос с любого рейтинга, и код с MVLEMPYR уходил на китайский
+    # сайт: человек видел «HTTP 404 fanqienovel.com/page/13571» и не мог
+    # понять из этого ничего. Отказ по делу лучше чужой ошибки.
+    site = _rank_site(request.args)
+    if site:
+        return jsonify(
+            error=f"Подробности книги умеем читать только у Фанкью, "
+                  f"а эта строка с {RANK_SITES[site]['name']}."), 400
 
     # Перевод описания приезжает вместе с карточкой (3.1 ТЗ): переключатель
     # «原/RU» должен знать сразу, есть ли что показывать по второй кнопке.

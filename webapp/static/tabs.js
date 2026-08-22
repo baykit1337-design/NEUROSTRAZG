@@ -4706,7 +4706,15 @@ async function rkToggle(row, tr){
       + '<span class="spin"></span>Читаем страницу книги…</div>';
     rkOpen(box);
     try{
-      const data = await call(`/api/rank/book/${encodeURIComponent(row.book_id)}`);
+      // Страницу книги умеем читать только у Фанкью. У остальных
+      // рейтингов строка и так знает про книгу всё, что мы про неё
+      // собрали, — карточка строится из неё. Раньше сюда уходил запрос
+      // независимо от сайта, и на строке MVLEMPYR человек получал
+      // «HTTP 404 fanqienovel.com/page/13571»: код чужой, сайт чужой,
+      // понять из этого нельзя ничего.
+      const data = row.site
+        ? {}
+        : await call(`/api/rank/book/${encodeURIComponent(row.book_id)}`);
       box.innerHTML = '';
       box.append(rkCardBody(row, data));
       box.dataset.filled = '1';
@@ -4831,7 +4839,10 @@ function rkCardBody(row, data){
   cover.className = 'rkcard-cover';
   cover.alt = '';
   cover.loading = 'lazy';
-  cover.src = `/api/rank/cover/${encodeURIComponent(row.book_id)}`
+  // Тот же ключ кэша, что и у миниатюры в строке: без приставки сайта
+  // раскрытая карточка ходила бы за обложкой по чужому имени и в
+  // половине случаев не находила её вовсе.
+  cover.src = `/api/rank/cover/${encodeURIComponent(rkCoverKey(row))}`
     + ((data.cover || row.cover) ? `?url=${encodeURIComponent(data.cover || row.cover)}` : '');
   cover.onerror = () => { cover.hidden = true; };
 

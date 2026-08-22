@@ -73,11 +73,14 @@
     user-select:none;
     -webkit-user-select:none;
   }
-  /* Версия рядом с подзаголовком: мелко и в стороне. Спрашивают её
-     редко, но когда спрашивают — искать её по папкам не должны.
-     Выделять и копировать её как раз можно: её диктуют в переписке. */
+  /* Версия внизу страницы: мелко, в стороне и не в глаза. Выделять и
+     копировать её как раз можно — её диктуют в переписке. */
+  .appfoot{
+    text-align:center;
+    margin-top:34px;
+    min-height:18px;
+  }
   #appVersion{
-    margin-left:10px;
     padding:1px 7px;
     border:1px solid var(--stroke);
     border-radius:999px;
@@ -87,7 +90,6 @@
     user-select:text;
     -webkit-user-select:text;
     cursor:text;
-    vertical-align:1px;
   }
   #appVersion:empty{display:none}
 
@@ -948,7 +950,7 @@
 <div id="toasts"></div>
 <div class="wrap">
   <h1 class="app-title">NEUROSTRAZH 2.0</h1>
-  <p class="sub">качалка глав и работа с текстом<span id="appVersion"></span></p>
+  <p class="sub">качалка глав и работа с текстом</p>
 
   <nav class="tabs">
     <button class="on" data-tab="download">
@@ -2559,6 +2561,11 @@
 </section>
 </div>
 
+<!-- Версия внизу страницы, а не в подзаголовке: в шапке она лезла в
+     глаза каждую секунду, а нужна раз в месяц — когда её диктуют в
+     переписке. Здесь она не мешает и находится там, где такое ищут. -->
+<p class="appfoot"><span id="appVersion"></span></p>
+
 
 <script>
 const $ = id => document.getElementById(id);
@@ -3274,6 +3281,7 @@ async function start(){
     $('stop').hidden = false;
     // Новый прогон начинается не на паузе, чем бы ни кончился прошлый.
     held = false;
+    stopping = false;
     $('hold').hidden = false;
     showHold();
     $('summary').textContent = 'Папка: ' + data.job.output_dir;
@@ -3346,8 +3354,13 @@ async function tick(){
     // Дождь под карточкой живёт с тех же чисел, что и строка выше:
     // струй в нём столько, сколько потоков. Своего опроса он не ведёт —
     // эффекту нечего знать про задачи и запросы.
+    // Нажали «Остановить» — потоков для дождя больше нет, даже если
+    // сервер ещё дописывает начатые главы. Иначе стена струй стоит до
+    // самого конца остановки, и на экране не видно разницы между «идёт»
+    // и «останавливаемся»: как раз на это и жаловались.
     if(window.rainTune) rainTune({
-      busy, held, threads: p.threads || 0, failed: p.failed || 0,
+      busy, held, threads: stopping ? 0 : (p.threads || 0),
+      failed: p.failed || 0,
     });
 
     if(!busy){
@@ -3374,12 +3387,24 @@ async function tick(){
     }
   }catch(err){
     clearInterval(poll);
+    // Опрос оборвался — качалка больше ничего не расскажет. Дождь про
+    // это узнать неоткуда, а идти он будет вечно: гасим здесь.
+    if(window.rainTune) rainTune({busy: false, held: false, threads: 0, failed: 0});
     showError(err.message);
   }
 }
 
+/* Остановку попросили, но она ещё не случилась.
+ *
+ * Прогон встаёт на границе главы: начатые дописываются, и до конца
+ * этого сервер честно отвечает «качаем». Экран при этом должен
+ * показывать не работу, а её сворачивание.
+ */
+let stopping = false;
+
 async function stop(){
   $('stop').disabled = true;
+  stopping = true;
   try{ await call('/api/job/' + jobId + '/cancel', {}); }
   catch(err){ showError(err.message); }
   finally{ $('stop').disabled = false; }
@@ -3418,6 +3443,7 @@ function reset(){
   // иначе на следующем прогоне он начнёт с недогашенного холста.
   if(window.rainTune) rainTune({busy: false, held: false, threads: 0, failed: 0});
   jobId = null;
+  stopping = false;
   probeShown = false;
   $('sMethod').textContent = '';
   $('sSource').textContent = '';

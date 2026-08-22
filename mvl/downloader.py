@@ -804,9 +804,18 @@ class Downloader:
         )
 
         paid = 0
-        for start in range(0, len(pending), self.threads):
+        downgraded = False
+        #: Позиция считается сама, а не шагом `range`: число потоков может
+        #: измениться посреди прогона, а `range` берёт шаг один раз.
+        start = 0
+        while start < len(pending):
             self._check_cancel()
             batch = pending[start:start + self.threads]
+            start += len(batch)
+            #: Что вышло из этой пачки — по ней и решаем, не пора ли
+            #: сбавить обороты.
+            batch_ok = 0
+            batch_bad = 0
 
             with ThreadPoolExecutor(max_workers=self.threads) as pool:
                 futures = {
@@ -820,6 +829,7 @@ class Downloader:
 
                     if error is None:
                         downloaded += 1
+                        batch_ok += 1
                     elif _is_paid(error):
                         # Платную главу мы не трогаем. Это не осечка: она
                         # не станет доступной от повторной попытки, и в
@@ -845,6 +855,7 @@ class Downloader:
                             state.mark_failed(chapter.number, reason)
                         self._log_error(output_dir, chapter.number, reason)
                         failed.append(chapter.number)
+                        batch_bad += 1
 
                     self._emit(
                         done=downloaded + len(failed) + paid,
@@ -863,13 +874,29 @@ class Downloader:
                 self.threads = 1
                 return downloaded, failed, blocked_at, stopped_reason, True, paid
 
-            if start + self.threads < len(pending):
+            # Пачка не принесла ни одной главы, и все её главы отвалились
+            # по сети. Продолжать в том же темпе бессмысленно: чаще всего
+            # это значит, что сайт не тянет столько одновременных
+            # запросов, — а раньше прогон так и шёл до конца книги,
+            # исправно складывая каждую главу в «не скачано». Сбавляем до
+            # одного потока и идём дальше: медленно, зато с главами.
+            if self.threads > 1 and batch_ok == 0 and batch_bad == len(batch):
+                self.threads = 1
+                downgraded = True
+                log.info("Ни одной главы из пачки — переходим в один поток")
+                self._emit(
+                    threads=1,
+                    proxies=self.pool.usable_count if self.pool is not None else 0,
+                    message="Пачка не прошла целиком — дальше в один поток",
+                )
+
+            if start < len(pending):
                 # Пауза между пачками, а не между каждой главой.
                 low, high = BATCH_PAUSE_RANGE
                 if self.cancel.wait(random.uniform(low, high) * self.pause_multiplier):
                     raise Cancelled()
 
-        return downloaded, failed, blocked_at, stopped_reason, False, paid
+        return downloaded, failed, blocked_at, stopped_reason, downgraded, paid
 
     def _one_guarded(self, chapter, novel, output_dir, site, state, fetcher=None):
         """`_one` для потока: исключение возвращается, а не улетает наверх."""

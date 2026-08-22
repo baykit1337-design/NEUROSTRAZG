@@ -521,6 +521,100 @@ class TestItIsOfferedInTheDownloader(unittest.TestCase):
         said = sources.get("webnovel").as_dict()
         self.assertIn("латны", said["hint"])
 
+    def test_it_goes_through_a_proxy(self):
+        """Сайт закрыт в части стран, и без посредника до него не
+        достучаться вовсе: в журнале это выглядело как «Could not
+        resolve host» — то есть как поломка сети, а не как запрет."""
+        self.assertTrue(sources.get("webnovel").needs_proxy)
+
+
+class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
+    """Книга искалась голым клиентом у любого источника.
+
+    Для китайских сайтов это сходило с рук: они из России открываются
+    через раз, но открываются. Webnovel не открывается вовсе — и на
+    экране это выглядело как «книга не найдена», хотя книга есть.
+    Качать при этом было нечего: скачивание начинается с найденной.
+    """
+
+    def setUp(self):
+        from mvl.client import NetworkError
+        from webapp import app as web
+
+        self.web = web
+        self.NetworkError = NetworkError
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+
+        #: Через что источник спрашивали — по этому и видно, дошло ли
+        #: дело до посредника.
+        self.tried: list[str | None] = []
+        self.was_get = sources.get
+        self.was_any = web._any_proxy
+
+    def tearDown(self):
+        sources.get = self.was_get
+        self.web.sources.get = self.was_get
+        self.web._any_proxy = self.was_any
+
+    def fake(self, needs_proxy=True, direct_works=False):
+        found = Novel(code=1, name="Книга", slug="k", total_chapters=3)
+        tried = self.tried
+        bad = self.NetworkError("Could not resolve host: www.webnovel.com")
+
+        class Fake:
+            key = "webnovel"
+            name = "Webnovel"
+
+            def __init__(self):
+                self.needs_proxy = needs_proxy
+
+            def find(self, client, query):
+                tried.append(getattr(client, "proxy_url", None))
+                if len(tried) == 1 and not direct_works:
+                    raise bad
+                return found
+
+        source = Fake()
+        self.web.sources.get = lambda key: source
+
+    def test_the_direct_attempt_still_comes_first(self):
+        """Работающее должно остаться работающим: у остальных
+        источников прямой запрос проходит, и менять его на непроверенный
+        прокси значило бы разменять рабочее на неизвестное."""
+        self.fake(direct_works=True)
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(len(self.tried), 1)
+        self.assertIsNone(self.tried[0])
+
+    def test_a_source_that_needs_a_proxy_gets_a_second_try(self):
+        self.fake()
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(len(self.tried), 2)
+        self.assertTrue(self.tried[1])
+
+    def test_a_source_that_works_directly_is_not_sent_through_a_proxy(self):
+        """Сайты-сливы отвечают напрямую, и лишний заход им только во
+        вред: посредник и медленнее, и падает чаще."""
+        self.fake(needs_proxy=False)
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 502)
+        self.assertEqual(len(self.tried), 1)
+
+    def test_without_proxies_the_first_error_is_what_reaches_the_screen(self):
+        """Вторая ошибка про посредника не объясняет ничего, а первая
+        говорит, что случилось на самом деле."""
+        self.fake()
+        self.web._any_proxy = lambda pool: None
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 502)
+        self.assertIn("webnovel.com", got.get_json()["error"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

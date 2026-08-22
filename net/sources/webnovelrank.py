@@ -166,10 +166,23 @@ def _row(item, place: int, metric: str) -> RankRow | None:
     )
 
 
+#: Заголовки перехода по сайту.
+#:
+#: Подделку под браузер клиент делает и сам, но переход с главной он не
+#: изображает: запрос выглядит как приход ниоткуда. Cloudflare у этого
+#: сайта на такие смотрит косо. Панацеей это не является — если под
+#: подозрением сам адрес прокси, никакие заголовки не помогут, — но
+#: стоит одну строку.
+VISIT = {
+    "Referer": SITE + "/",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
 def fetch(client, board: str = "hot") -> dict:
     """Срез одной доски."""
     address = url_of(board)
-    page = client.get_text(address)
+    page = client.get_text(address, headers=VISIT)
     soup = BeautifulSoup(page, "lxml")
     metric = METRICS.get(board, "")
 

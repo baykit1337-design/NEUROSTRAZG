@@ -13,8 +13,26 @@ const FX_MAGNET = 4;
  *  строки, и на четырёх пикселях им уже не хватало места. */
 const FX_MAGNET_Y = 3;
 
-/** Магнитятся только крупные кнопки действий. */
-const FX_MAGNET_MIN = 90;
+/** Совсем мелкое не магнитим: у значка со стрелкой сдвиг заметнее
+ *  самого значка. */
+const FX_MAGNET_MIN = 26;
+
+/** Сила притяжения растёт с размером кнопки.
+ *
+ * Раньше стоял порог: кнопки уже девяноста пикселей не магнитились
+ * вовсе. Порог этот отсекал половину кнопок программы — «Найти»,
+ * «Пауза», «скачать» в строке рейтинга, все кнопки форматов, — и со
+ * стороны это выглядело не решением, а недоделкой: одни кнопки живые,
+ * другие мёртвые, и понять закономерность нельзя.
+ *
+ * Но и одинаковая сила для всех не годится: четыре пикселя у крупной
+ * кнопки — лёгкое движение, а у кнопки в сорок пикселей это десятая
+ * часть ширины, и она уезжает с места. Поэтому сила считается от
+ * размера: чем кнопка меньше, тем меньше она тянется.
+ */
+function fxPull(width){
+  return Math.min(FX_MAGNET, Math.max(1.5, width / 26));
+}
 
 function fxHas(key){
   return document.documentElement.classList.contains('fx-' + key);
@@ -38,15 +56,16 @@ function fxHas(key){
     if(!button || button.disabled) return;
 
     const box = button.getBoundingClientRect();
-    // Строки списков не магнитим: там кнопки мелкие и стоят вплотную.
     if(box.width < FX_MAGNET_MIN) return;
 
+    const pull = fxPull(box.width);
     const dx = (event.clientX - (box.left + box.width / 2)) / (box.width / 2);
     const dy = (event.clientY - (box.top + box.height / 2)) / (box.height / 2);
     held = button;
     button.style.transition = 'transform .12s ease-out';
     button.style.transform =
-      `translate(${(dx * FX_MAGNET).toFixed(2)}px, ${(dy * FX_MAGNET_Y).toFixed(2)}px)`;
+      `translate(${(dx * pull).toFixed(2)}px, `
+      + `${(dy * Math.min(pull, FX_MAGNET_Y)).toFixed(2)}px)`;
   });
 
   // Возврат с пружиной — на уход курсора и на любое снятие эффекта.

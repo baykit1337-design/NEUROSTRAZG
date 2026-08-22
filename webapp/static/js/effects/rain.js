@@ -126,9 +126,12 @@ function rainGlyph(){
   let lastFrame = 0;
   let frames = 0;
 
-  //: Под какой размер карточки холст посчитан в последний раз.
+  //: Размер самого холста в последний пересчёт.
   let drawnW = 0;
   let drawnH = 0;
+  //: И размер карточки под ним — по нему видно, что она подросла.
+  let cardW = 0;
+  let cardH = 0;
 
   //: Что сейчас происходит в прогоне. Пишет сюда качалка через
   //: `rainTune`, дождь только читает.
@@ -309,7 +312,7 @@ function rainGlyph(){
     // Карточка растёт по ходу прогона: появляются подробности пробы,
     // строка про прокси, сводка. Окно при этом не меняется, и события
     // `resize` не будет — сверяемся сами.
-    if(card && (card.clientWidth !== drawnW || card.clientHeight !== drawnH)){
+    if(card && (card.clientWidth !== cardW || card.clientHeight !== cardH)){
       resize();
     }
     balance();
@@ -320,18 +323,24 @@ function rainGlyph(){
 
   function resize(){
     if(!canvas || !card) return;
-    const width = card.clientWidth;
-    const height = card.clientHeight;
+    // Размер берём у самого холста, а не у карточки: он лежит с отступом
+    // на толщину рамки, и «как у карточки» было бы на два пикселя
+    // больше — дождь вылезал бы на фиолетовую линию.
+    const box = canvas.getBoundingClientRect();
+    const width = Math.round(box.width);
+    const height = Math.round(box.height);
     if(!width || !height) return;
     const ratio = window.devicePixelRatio || 1;
     canvas.width = Math.round(width * ratio);
     canvas.height = Math.round(height * ratio);
-    canvas.style.width = width + 'px';
-    canvas.style.height = height + 'px';
     ctx = canvas.getContext('2d');
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     drawnW = width;
     drawnH = height;
+    // Под какую карточку посчитано — по ней и сверяемся, когда она
+    // растёт по ходу прогона.
+    cardW = card.clientWidth;
+    cardH = card.clientHeight;
     cols = Math.max(1, Math.ceil(width / RAIN_CELL));
     rows = Math.max(1, Math.ceil(height / RAIN_CELL));
 
@@ -368,7 +377,7 @@ function rainGlyph(){
     if(!build()) return;
     // Карточка прогресса до начала работы спрятана и размера не имеет:
     // мерить её можно только сейчас.
-    if(!cols || !rows || card.clientHeight !== drawnH) resize();
+    if(!cols || !rows || card.clientHeight !== cardH) resize();
     // Прошлый прогон оставил на холсте свои глифы. Гасятся они за
     // десяток кадров, но эти кадры видны: новый прогон начинается с
     // чужого дождя. Заливаем начисто.

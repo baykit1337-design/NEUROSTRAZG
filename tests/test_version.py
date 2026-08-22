@@ -75,10 +75,27 @@ class TestItReachesEveryoneWhoShowsIt(unittest.TestCase):
         self.assertIn("/api/about", tabs)
         self.assertIn("showVersion()", tabs)
 
-    def test_the_header_has_somewhere_to_put_it(self):
+    def test_the_page_has_somewhere_to_put_it(self):
         page = (ROOT / "webapp" / "static" / "index.html").read_text(
             encoding="utf-8")
         self.assertIn('id="appVersion"', page)
+
+    def test_it_is_not_in_the_subtitle(self):
+        """Подзаголовок — это про то, что программа делает. Номер сборки
+        там ни о чём не говорит и только сбивает первую строку, которую
+        человек читает, открыв программу."""
+        page = (ROOT / "webapp" / "static" / "index.html").read_text(
+            encoding="utf-8")
+        subtitle = re.search(r'class="sub"[^>]*>(.*?)</p>', page, re.S)
+        self.assertIsNotNone(subtitle)
+        self.assertNotIn("appVersion", subtitle.group(1))
+
+    def test_it_sits_at_the_foot_of_the_page(self):
+        page = (ROOT / "webapp" / "static" / "index.html").read_text(
+            encoding="utf-8")
+        spot = page.index('id="appVersion"')
+        head = page.index('class="sub"')
+        self.assertGreater(spot, head)
 
     def test_an_empty_label_does_not_hang_in_the_header(self):
         """Сервер не ответил — лучше пусто, чем «версия неизвестна»."""

@@ -152,6 +152,33 @@ class TestItDoesNotFightTheRestOfTheScreen(Base):
     def test_the_rain_never_catches_clicks(self):
         self.assertIn("pointer-events:none", self.css.replace(" ", ""))
 
+    def test_the_corners_of_the_card_survive(self):
+        """Холст непрозрачен и лежал вплотную к краю: чёрный квадрат
+        закрашивал фиолетовую линию изнутри, и нижние углы карточки
+        выглядели обкусанными. Обрезки родителем тут мало — карточка
+        размывает фон, а это отдельный слой, где `overflow` на
+        скруглённых углах работает не везде."""
+        flat = self.css.replace(" ", "")
+        self.assertIn("border-radius:", flat[flat.index(".glyphrain{"):])
+        self.assertRegex(flat, r"inset:[1-9]")
+
+    def test_the_canvas_is_told_its_size_and_not_left_to_guess(self):
+        """Холст — замещаемый элемент: у него есть собственный размер
+        (300×150 по умолчанию), и четырьмя нулями по краям он не
+        растягивается, в отличие от обычного блока. Без явного размера
+        дождь идёт прямоугольником в левом верхнем углу карточки."""
+        flat = self.css.replace(" ", "")
+        block = flat[flat.index(".glyphrain{"):]
+        block = block[:block.index("}")]
+        self.assertIn("width:", block)
+        self.assertIn("height:", block)
+
+    def test_the_canvas_measures_itself_not_the_card(self):
+        """Карточка на две рамки шире холста: посчитав по ней, дождь
+        рисует на два пикселя больше, чем есть места."""
+        block = self.body("resize")
+        self.assertIn("canvas.getBoundingClientRect()", block)
+
 
 class TestItCostsNothingWhenOff(Base):
     """Выключенный эффект не должен ни считать, ни рисовать."""
@@ -214,6 +241,45 @@ class TestItIsWiredToTheDownloader(Base):
     def test_the_files_are_loaded_by_the_page(self):
         self.assertIn("/static/js/effects/rain.js", self.html)
         self.assertIn("/static/css/effects/rain.css", self.html)
+
+
+class TestTheRainEndsWhenTheWorkDoes(Base):
+    """Дождь идёт, пока идёт работа. Всё остальное — враньё экрана.
+
+    Жалоба была ровно такая: нажали «Остановить», а дождь льёт как лил,
+    и понять, качает оно ещё или уже нет, невозможно.
+    """
+
+    def tick(self) -> str:
+        block = self.html[self.html.index("async function tick(){"):]
+        return block[:block.index("\nasync function stop(){")]
+
+    def test_asking_to_stop_thins_the_rain_at_once(self):
+        """Сервер до конца остановки честно отвечает «качаем»: главы
+        дописываются. Но новых потоков уже нет, и стена струй в этот
+        момент показывает работу, которой не будет."""
+        tune = self.tick()[self.tick().index("rainTune({"):]
+        tune = tune[:tune.index("});")]
+        self.assertIn("stopping", tune)
+
+    def test_the_stop_button_raises_that_flag(self):
+        block = self.html[self.html.index("async function stop(){"):]
+        block = block[:block.index("\n}")]
+        self.assertRegex(block, r"stopping\s*=\s*true")
+
+    def test_a_new_run_lowers_it_again(self):
+        """Иначе следующее скачивание пойдёт с дождём в две струи."""
+        self.assertRegex(self.html, r"stopping\s*=\s*false")
+        block = self.html[self.html.index("function reset(){"):]
+        self.assertRegex(block[:block.index("\n}")], r"stopping\s*=\s*false")
+
+    def test_a_broken_poll_does_not_leave_the_rain_running(self):
+        """Опрос оборвался — рассказывать дождю о конце работы больше
+        некому, и он идёт до перезагрузки страницы."""
+        block = self.tick()
+        tail = block[block.rindex("}catch(err){"):]
+        self.assertIn("rainTune", tail)
+        self.assertIn("busy: false", tail)
 
 
 class TestItCanBeCheckedFromOutside(Base):
