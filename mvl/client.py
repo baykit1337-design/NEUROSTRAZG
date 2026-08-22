@@ -221,6 +221,16 @@ class Client:
     рассчитаны на параллельное использование из нескольких потоков.
     """
 
+    #: «Слишком часто» — ждём и повторяем, а не сдаёмся.
+    #:
+    #: 429 стандартный, 445 — свой у Webnovel: расширение WebToEpub, которое
+    #: разбирает этот сайт много лет, держит из-за него паузу между главами
+    #: и прямо называет код в примечании. Без этой строки качалка на 445
+    #: сдавалась с первого раза: код не пятисотый и не 429, а значит,
+    #: попадал в ветку «повторять бессмысленно» — и глава, до которой сайт
+    #: всего лишь просил не спешить, уходила в ошибки.
+    TOO_OFTEN: frozenset[int] = frozenset({429, 445})
+
     #: Статусы, по которым сразу отдаём Blocked — без ретраев.
     block_statuses: frozenset[int] = frozenset()
     #: Отдавать ли RateLimited на 429 вместо ретрая с backoff.
@@ -331,12 +341,13 @@ class Client:
                 if status in (407, 502, 503) and self.proxy_url:
                     # Прокси не пропустил запрос — дело в нём, а не в сайте.
                     raise NetworkError(f"прокси ответил HTTP {status}", status=status)
-                if status == 429 and self.raise_on_rate_limit:
-                    raise RateLimited(f"HTTP 429 — слишком часто: {url}", status=429)
+                if status in self.TOO_OFTEN and self.raise_on_rate_limit:
+                    raise RateLimited(
+                        f"HTTP {status} — слишком часто: {url}", status=status)
                 if status == 404:
                     # Ретраить бессмысленно — главы просто нет.
                     raise HttpError(f"HTTP 404 {url}", status=404)
-                if status == 429 or status >= 500:
+                if status in self.TOO_OFTEN or status >= 500:
                     last_status = status
                     last_error = f"HTTP {status}"
                 else:

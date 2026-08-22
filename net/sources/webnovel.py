@@ -11,18 +11,27 @@
 escape-последовательностей в JSON нет, и любой разборщик на этом
 останавливается. Поэтому перед разбором лишние косые убираются.
 
+Оглавление приходит готовой вёрсткой по адресу `/book/{код}/catalog`, и
+закрытые главы помечены в нём значком замка. Это важнее, чем кажется: у
+книги на тысячу двести глав открыто бывает десять, и без метки качалка
+сходила бы за каждой из тысячи двухсот, чтобы тысячу сто девяносто раз
+получить отказ. Селекторы и признак замка взяты из расширения WebToEpub,
+которое разбирает этот сайт много лет.
+
 Чего этот источник не умеет и не будет:
   • платные главы. У книги часть глав закрыта, и открываются они деньгами
     на счёте читателя. Обходить это программа не станет — закрытая глава
-    честно отмечается пропуском;
+    честно отмечается пропуском, и, если замок виден в оглавлении, без
+    единого запроса;
   • главы, зашифрованные шрифтом. Сайт иногда отдаёт текст вперемешку с
     собственным начертанием, и без него это не буквы, а мусор. Такую
     главу лучше пропустить с внятной причиной, чем записать нечитаемой.
 
 Живой проверки в песочнице не было: `www.webnovel.com` из неё недоступен
 — шлюз отвечает 403 на любой хост вне разрешённого списка. Разбор написан
-по исходникам страницы книги и страницы главы и покрыт тестами на них же;
-первый живой запуск — на машине человека.
+по исходникам страницы книги и страницы главы, сверен с разбором того же
+сайта в WebToEpub и покрыт тестами на разметке той же формы; первый живой
+запуск — на машине человека.
 """
 
 from __future__ import annotations
@@ -238,7 +247,7 @@ class WebnovelSource(Source):
 
         edge = last or len(rows)
         chapters = []
-        for number, (chapter_id, name) in enumerate(rows, 1):
+        for number, (chapter_id, name, locked) in enumerate(rows, 1):
             if number < first or number > edge:
                 continue
             chapters.append(Chapter(
@@ -246,28 +255,40 @@ class WebnovelSource(Source):
                 post_id=chapter_id,
                 ch_name=name,
                 link=f"{SITE}/book/{code}/{chapter_id}",
+                locked=locked,
             ))
             if on_progress:
                 on_progress(len(chapters), min(edge, len(rows)) - first + 1)
 
+        shut = sum(1 for chapter in chapters if chapter.locked)
+        if shut:
+            log.info("Webnovel: закрыто %s глав из %s — за ними не пойдём",
+                     shut, len(chapters))
         return Toc(chapters=chapters, missing=[])
 
     @staticmethod
     def _catalog(page: str, code: str) -> list:
-        """Пары «код главы, название» в порядке чтения.
+        """Тройки «код главы, название, закрыта ли» в порядке чтения.
 
-        Собираем по ссылкам страницы оглавления. Разбирать вместо этого
-        какой-нибудь объект с данными было бы надёжнее — так сделаны и
-        книга, и глава, — но объекта оглавления мне видеть не приходилось,
-        а сочинять его форму по догадке значит написать разбор, который
-        никогда не проверялся и тихо ничего не найдёт. Ссылки на главы
-        сайт проставляет ради поисковиков, и они переживают переделку
-        вида.
+        Страница оглавления приходит готовой вёрсткой — это видно по
+        расширению WebToEpub, которое разбирает этот сайт много лет и
+        берёт главы ровно отсюда. Его же селекторы стоят первыми: они
+        проверены на живом сайте, а мой обход по всем ссылкам подряд —
+        нет. Обход остался последним рубежом на случай, если сайт
+        переименует свои списки.
         """
+        soup = BeautifulSoup(page, "lxml")
+        links = soup.select("ul.content-list a[href]")
+        if not links:
+            links = soup.select("div.volume-item ol a[href]")
+        # Ни одного знакомого списка — идём по всем ссылкам подряд и
+        # отбираем те, что похожи на главу.
+        if not links:
+            links = soup.find_all("a", href=True)
+
         rows = []
         seen = set()
-        soup = BeautifulSoup(page, "lxml")
-        for link in soup.find_all("a", href=True):
+        for link in links:
             found = CHAPTER_LINK.search(f'href="{link["href"]}"')
             if not found:
                 continue
@@ -277,12 +298,58 @@ class WebnovelSource(Source):
             if chapter_id == code or chapter_id in seen:
                 continue
             seen.add(chapter_id)
-            rows.append((chapter_id, link.get_text(" ", strip=True)))
+            rows.append((chapter_id,
+                         WebnovelSource._chapter_name(link),
+                         WebnovelSource._is_locked(link)))
         return rows
+
+    @staticmethod
+    def _chapter_name(link) -> str:
+        """Название главы из ссылки оглавления.
+
+        В ссылке два куска: номер отдельным элементом и название внутри
+        выделения. Брать весь текст ссылки целиком нельзя — номер
+        приклеивается к названию без разделителя, и потом «Глава 12» и
+        «12Глава 12» не различить.
+        """
+        strong = link.find("strong")
+        if strong is None:
+            return link.get_text(" ", strip=True)
+        name = strong.get_text(" ", strip=True)
+        number = link.find("i")
+        shown = number.get_text(" ", strip=True) if number else ""
+        # Номер добавляем, только если это действительно номер: тот же
+        # элемент используется и под значок замка.
+        if shown and not shown.startswith("#"):
+            return f"{shown}: {name}" if name else shown
+        return name
+
+    @staticmethod
+    def _is_locked(link) -> bool:
+        """Закрытая глава помечена значком замка прямо в оглавлении.
+
+        Это и есть главная находка: раньше про замок узнавали, только
+        сходив за самой главой. У книги на тысячу двести глав открыто
+        бывает десять — тысяча сто девяносто лишних запросов, каждый со
+        своей паузой, ради тысячи ста девяноста отказов.
+        """
+        for use in link.select("svg use"):
+            for name in ("xlink:href", "href"):
+                if str(use.get(name) or "") == "#i-lock":
+                    return True
+        return False
 
     # ------------------------------------------------------------ глава
 
     def chapter(self, client, chapter: Chapter) -> tuple[str, str]:
+        # Замок был виден ещё в оглавлении — ходить за такой главой
+        # незачем: ответ известен заранее, а запрос стоит и времени, и
+        # места в очереди к сайту.
+        if chapter.locked:
+            raise ChapterLocked(
+                f"Глава {chapter.number} платная — это видно по оглавлению. "
+                "Программа этого не обходит.")
+
         page = client.get_text(chapter.link)
         info = (_object_after(page, CHAPTER_MARK) or {}).get("chapterInfo") or {}
         if not info:

@@ -60,16 +60,28 @@ def book_page(code="36543528000922105", name="Marvel: I Steal Powers",
     )
 
 
-def catalog_page(code="36543528000922105", count=3):
-    """Оглавление ссылками — так его видят поисковики."""
-    links = "".join(
-        '<a href="/book/%s/glava-%d_%d">Chapter %d: Название %d</a>'
-        % (code, i, 98103796139352410 + i, i, i)
-        for i in range(1, count + 1))
+def catalog_link(code, i, locked=False, rich=True):
+    """Ссылка на главу в том же виде, в каком её печатает сайт.
+
+    Номер отдельным элементом, название внутри выделения, у закрытой
+    главы — значок замка.
+    """
+    lock = '<svg><use xlink:href="#i-lock"></use></svg>' if locked else ""
+    inside = ('<i>Chapter %d</i><strong>Название %d</strong>%s' % (i, i, lock)
+              if rich else "Chapter %d: Название %d" % (i, i))
+    return ('<a href="/book/%s/glava-%d_%d">%s</a>'
+            % (code, i, 98103796139352410 + i, inside))
+
+
+def catalog_page(code="36543528000922105", count=3, locked=(), rich=True,
+                 wrapper='<ul class="content-list">%s</ul>'):
+    """Оглавление: список глав готовой вёрсткой."""
+    links = "".join(catalog_link(code, i, i in locked, rich)
+                    for i in range(1, count + 1))
     return ("<html><body>"
             # Ссылка на саму книгу тоже кончается длинным числом.
             '<a href="/book/%s">К книге</a>' % code
-            + links + "</body></html>")
+            + (wrapper % links) + "</body></html>")
 
 
 def chapter_page(number=1, name="Название главы", paragraphs=None,
@@ -261,6 +273,29 @@ class TestTheCatalogue(unittest.TestCase):
         toc = self.toc(catalog_page(count=1))
         self.assertIn("Название 1", toc.chapters[0].ch_name)
 
+    def test_the_number_does_not_glue_itself_to_the_name(self):
+        """Иначе «Chapter 1» и «Название 1» слипаются в одно слово, и
+        разделить их потом нечем."""
+        name = self.toc(catalog_page(count=1)).chapters[0].ch_name
+        self.assertNotIn("1Название", name)
+        self.assertIn(": ", name)
+
+    def test_the_sites_own_list_is_read_first(self):
+        """Селекторы взяты из WebToEpub: они проверены на живом сайте,
+        а обход всех ссылок подряд — нет."""
+        page = catalog_page(count=2)
+        self.assertIn('class="content-list"', page)
+        self.assertEqual(len(self.toc(page).chapters), 2)
+
+    def test_the_other_shape_of_the_list_is_read_too(self):
+        page = catalog_page(count=2,
+                            wrapper='<div class="volume-item"><ol>%s</ol></div>')
+        self.assertEqual(len(self.toc(page).chapters), 2)
+
+    def test_a_renamed_list_still_falls_back_to_the_links(self):
+        page = catalog_page(count=2, wrapper='<div class="что-то новое">%s</div>')
+        self.assertEqual(len(self.toc(page).chapters), 2)
+
     def test_the_range_is_respected(self):
         toc = self.toc(catalog_page(count=5), first=2, last=4)
         self.assertEqual([c.number for c in toc.chapters], [2, 3, 4])
@@ -286,6 +321,54 @@ class TestTheCatalogue(unittest.TestCase):
                 '</body></html>')
         with self.assertRaises(SourceBroken):
             self.toc(page)
+
+
+class TestLockedChaptersAreSeenInTheCatalogue(unittest.TestCase):
+    """Замок виден в оглавлении — за такой главой можно не ходить.
+
+    У книги на тысячу двести глав открыто бывает десять. Без этой метки
+    качалка сходила бы за каждой из тысячи двухсот, чтобы тысячу сто
+    девяносто раз получить отказ.
+    """
+
+    def setUp(self):
+        self.source = webnovel.WebnovelSource()
+        self.novel = Novel(code=36543528000922105, name="Книга",
+                           slug="36543528000922105", total_chapters=3)
+
+    def toc(self, page):
+        return self.source.toc(FakeClient({"/catalog": page}), self.novel)
+
+    def test_a_locked_chapter_is_marked(self):
+        toc = self.toc(catalog_page(count=3, locked=(2,)))
+        self.assertEqual([c.locked for c in toc.chapters], [False, True, False])
+
+    def test_an_open_chapter_is_not_marked(self):
+        toc = self.toc(catalog_page(count=2))
+        self.assertFalse(any(c.locked for c in toc.chapters))
+
+    def test_the_lock_icon_does_not_leak_into_the_name(self):
+        toc = self.toc(catalog_page(count=1, locked=(1,)))
+        self.assertIn("Название 1", toc.chapters[0].ch_name)
+
+    def test_a_marked_chapter_is_refused_without_asking_the_site(self):
+        client = FakeClient({})
+        locked = Chapter(number=7, post_id="1", link="https://x/1", locked=True)
+        with self.assertRaises(webnovel.ChapterLocked):
+            self.source.chapter(client, locked)
+        self.assertEqual(client.asked, [])
+
+    def test_an_unmarked_chapter_is_still_fetched(self):
+        client = FakeClient({"/book/": chapter_page()})
+        open_one = Chapter(number=1, post_id="1",
+                           link="https://www.webnovel.com/book/1/2")
+        self.source.chapter(client, open_one)
+        self.assertEqual(len(client.asked), 1)
+
+    def test_chapters_are_locked_by_default_nowhere_else(self):
+        """Источникам, которые про замок узнают только на самой главе,
+        поле мешать не должно."""
+        self.assertFalse(Chapter(number=1).locked)
 
 
 class TestTheChapter(unittest.TestCase):
@@ -356,6 +439,70 @@ class TestTheDownloaderKnowsWhatToDoWithThem(unittest.TestCase):
     def test_a_real_breakage_still_stops_the_chapter(self):
         from mvl.downloader import _is_paid
         self.assertFalse(_is_paid(SourceBroken("разметка сменилась")))
+
+
+class TestTheSitesOwnRefusalCode(unittest.TestCase):
+    """445 у Webnovel значит «не спеши», а не «не приходи».
+
+    Код нестандартный: он не пятисотый и не 429, поэтому попадал в ветку
+    «повторять бессмысленно» — и глава, до которой сайт всего лишь просил
+    подождать, уходила в ошибки с первого раза. Про сам код известно из
+    расширения WebToEpub: оно держит из-за него паузу между главами и
+    прямо называет его в примечании.
+    """
+
+    class Reply:
+        def __init__(self, status):
+            self.status_code = status
+            self.content = b"body"
+            self.headers = {}
+
+    class Session:
+        def __init__(self, answers):
+            self.answers = list(answers)
+            self.asked = 0
+
+        def get(self, url, timeout=None, headers=None):
+            self.asked += 1
+            status = self.answers[min(self.asked - 1, len(self.answers) - 1)]
+            return TestTheSitesOwnRefusalCode.Reply(status)
+
+    def client(self, answers):
+        from mvl.client import Client
+
+        made = Client(max_attempts=3)
+        session = self.Session(answers)
+        made._session = lambda: session
+        # Ждать по-настоящему незачем: проверяется, повторили или нет.
+        made._wait = lambda seconds: False
+        return made, session
+
+    def test_a_445_is_retried(self):
+        made, session = self.client([445, 445, 200])
+        made.get("https://www.webnovel.com/book/1/2")
+        self.assertEqual(session.asked, 3)
+
+    def test_a_429_is_still_retried(self):
+        made, session = self.client([429, 200])
+        made.get("https://www.webnovel.com/book/1/2")
+        self.assertEqual(session.asked, 2)
+
+    def test_a_plain_client_error_is_not_retried(self):
+        """400 повтором не лечится — на нём сдаёмся сразу, как и раньше."""
+        from mvl.client import HttpError
+
+        made, session = self.client([400])
+        with self.assertRaises(HttpError):
+            made.get("https://www.webnovel.com/book/1/2")
+        self.assertEqual(session.asked, 1)
+
+    def test_giving_up_on_445_names_the_code(self):
+        from mvl.client import HttpError
+
+        made, _ = self.client([445])
+        with self.assertRaises(HttpError) as caught:
+            made.get("https://www.webnovel.com/book/1/2")
+        self.assertIn("445", str(caught.exception))
 
 
 class TestItIsOfferedInTheDownloader(unittest.TestCase):
