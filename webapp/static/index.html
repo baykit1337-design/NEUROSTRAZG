@@ -73,6 +73,23 @@
     user-select:none;
     -webkit-user-select:none;
   }
+  /* Версия рядом с подзаголовком: мелко и в стороне. Спрашивают её
+     редко, но когда спрашивают — искать её по папкам не должны.
+     Выделять и копировать её как раз можно: её диктуют в переписке. */
+  #appVersion{
+    margin-left:10px;
+    padding:1px 7px;
+    border:1px solid var(--stroke);
+    border-radius:999px;
+    font-size:11px;
+    letter-spacing:.4px;
+    color:var(--muted);
+    user-select:text;
+    -webkit-user-select:text;
+    cursor:text;
+    vertical-align:1px;
+  }
+  #appVersion:empty{display:none}
 
   /* Раздел 5: неоновая обводка у всех карточек без исключения. */
   /* Раздел 1: базовое свечение есть у каждой карточки, не только при
@@ -931,7 +948,7 @@
 <div id="toasts"></div>
 <div class="wrap">
   <h1 class="app-title">NEUROSTRAZH 2.0</h1>
-  <p class="sub">качалка глав и работа с текстом</p>
+  <p class="sub">качалка глав и работа с текстом<span id="appVersion"></span></p>
 
   <nav class="tabs">
     <button class="on" data-tab="download">

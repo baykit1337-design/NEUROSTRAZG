@@ -31,6 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="NEUROSTRAZH — качалка глав",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    # Версия берётся из того же места, что и в шапке интерфейса: две
+    # записи однажды разойдутся, и «какая у меня версия» станет
+    # вопросом без ответа.
+    from mvl import __version__
+
+    parser.add_argument("--version", action="version",
+                        version=f"NEUROSTRAZH {__version__}")
     parser.add_argument("book", nargs="?", help="ссылка на книгу, слаг или числовой код")
     parser.add_argument("--out", "-o", default=".", help="куда класть папку с главами (по умолчанию: текущая)")
     parser.add_argument("--name", "-n", help="имя папки (по умолчанию — название книги)")
