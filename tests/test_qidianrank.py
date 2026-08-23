@@ -78,6 +78,108 @@ data-bid="1049366162">什么叫第五代火影非我莫属</a></h3></div>
 href="//www.qidian.com/book/1049386949/" data-bid="1049386949">我能看到副本攻略</a></td>
 </tr></table></div></body></html>"""
 
+#: Страница самого рейтинга — `/rank/yuepiao/`. Разметка там совсем не
+#: та, что в боковых блоках: у каждой книги описание, автор, поджанр,
+#: статус, последняя глава и время. А число месячных билетов написано не
+#: цифрами: сайт подменяет их знаками из неназначенной области Unicode и
+#: рисует своим шрифтом, объявляя его тут же, в каждой строке.
+#:
+#: Коды знаков и имя семейства — с живой страницы. Что за цифры за ними
+#: стоят, сказать нельзя: у нас есть страница, но нет файла шрифта. Для
+#: проверки таблица задаётся ниже, в `SECRET`, и такой же собирается
+#: подставной шрифт.
+RANK_STYLE = ("<style>@font-face { font-family: qXUqdlfe; "
+              "src: url('https://qdfepccdn.qidian.com/gtimg/qd_anti_spider/"
+              "qXUqdlfe.eot?') format('eot'); "
+              "src: url('https://qdfepccdn.qidian.com/gtimg/qd_anti_spider/"
+              "qXUqdlfe.woff') format('woff'), "
+              "url('https://qdfepccdn.qidian.com/gtimg/qd_anti_spider/"
+              "qXUqdlfe.ttf') format('truetype'); }</style>")
+
+RANK = f"""<html><body><div class="rank-body">
+<div class="rank-view-list" id="rank-view-list">
+<div class="book-img-text" id="book-img-text"><ul>
+<li data-rid="1"><div class="book-img-box"><span class="rank-tag no1 ">1<cite>
+</cite></span><a href="//www.qidian.com/book/1041637443/" target="_blank"
+data-bid="1041637443"><img
+src="//bookcover.yuewen.com/qdbimg/349573/1041637443/150.webp"
+alt="捞尸人在线阅读"></a></div>
+<div class="book-mid-info"><h2><a href="//www.qidian.com/book/1041637443/"
+data-bid="1041637443" title="捞尸人最新章节在线阅读">捞尸人</a></h2>
+<p class="author"><img src="//qdfepccdn.qidian.com/images/user.png"><a
+class="name" title="纯洁滴小龙" href="//my.qidian.com/author/3780268/"
+target="_blank">纯洁滴小龙</a><em>|</em><a href="//www.qidian.com/dushi"
+target="_blank">都市</a><i>&#183;</i><a class="go-sub-type" data-typeid="4"
+data-subtypeid="74" href="//www.qidian.com/all/chanId4-subCateId74/"
+>异术超能</a><em>|</em><span>连载</span></p>
+<p class="intro"> 人知鬼恐怖，鬼晓人心毒。这是一本传统灵异小说。 </p>
+<p class="update"><a href="//www.qidian.com/chapter/1041637443/923933248/"
+target="_blank" data-bid="1041637443">最新更新 第七百二十三章 阴家天才！</a>
+<em>&#183;</em><span>2026-08-22 23:56</span></p></div>
+<div class="book-right-info"><div class="total"><p><span>{RANK_STYLE}<span
+class="qXUqdlfe">&#100386;&#100386;&#100379;&#100382;&#100386;</span></span>
+月票</p></div><p class="btn"><a class="red-btn"
+href="//www.qidian.com/book/1041637443/" target="_blank">书籍详情</a>
+<a class="blue-btn add-book" href="javascript:" data-bookid="1041637443"
+>加入书架</a></p></div></li>
+<li data-rid="2"><div class="book-img-box"><span class="rank-tag no2 ">2<cite>
+</cite></span><a href="//www.qidian.com/book/1035420986/" target="_blank"
+data-bid="1035420986"><img
+src="//bookcover.yuewen.com/qdbimg/349573/1035420986/150.webp"
+alt="玄鉴仙族在线阅读"></a></div>
+<div class="book-mid-info"><h2><a href="//www.qidian.com/book/1035420986/"
+data-bid="1035420986" title="玄鉴仙族最新章节在线阅读">玄鉴仙族</a></h2>
+<p class="author"><img src="//qdfepccdn.qidian.com/images/user.png"><a
+class="name" title="季越人" href="//my.qidian.com/author/430784443/"
+target="_blank">季越人</a><em>|</em><a href="//www.qidian.com/xianxia"
+target="_blank">仙侠</a><i>&#183;</i><a class="go-sub-type"
+href="//www.qidian.com/all/chanId22-subCateId18/">修真文明</a><em>|</em>
+<span>连载</span></p>
+<p class="intro"> 陆江仙熬夜猝死，残魂却附在了一面满是裂痕的青灰色铜镜上。 </p>
+<p class="update"><a href="//www.qidian.com/chapter/1035420986/923898739/"
+target="_blank">最新更新 剧情＋后续安排</a><em>&#183;</em>
+<span>2026-08-22 19:39</span></p></div>
+<div class="book-right-info"><div class="total"><p><span>{RANK_STYLE}<span
+class="qXUqdlfe">&#100386;&#100381;&#100382;&#100381;&#100386;</span></span>
+月票</p></div></li>
+</ul></div></div>
+<div class="page-box cf"><div class="pagination fr" id="page-container"
+data-page="1" data-pagemax="25"><div class="lbf-pagination">
+<ul class="lbf-pagination-item-list">
+<li class="lbf-pagination-item"><a href="javascript:;"
+class="lbf-pagination-prev lbf-pagination-disabled">&lt;</a></li>
+<li class="lbf-pagination-item"><a data-page="2"
+href="//www.qidian.com/rank/yuepiao/year2026-month08-page2/"
+class="lbf-pagination-page">2</a></li>
+<li class="lbf-pagination-item"><a
+href="//www.qidian.com/rank/yuepiao/year2026-month08-page2/"
+class="lbf-pagination-next ">&gt;</a></li>
+</ul></div></div></div></div></body></html>"""
+
+#: Вторая страница той же доски: две другие книги и никакой ссылки
+#: «вперёд» — дальше листать некуда.
+RANK2 = """<html><body><div id="rank-view-list"><div class="book-img-text">
+<ul><li data-rid="21"><div class="book-img-box"><span class="rank-tag">21
+</span><a href="//www.qidian.com/book/1010868264/" data-bid="1010868264"><img
+src="//bookcover.yuewen.com/qdbimg/349573/1010868264/150.webp"></a></div>
+<div class="book-mid-info"><h2><a href="//www.qidian.com/book/1010868264/"
+data-bid="1010868264" title="诡秘之主最新章节在线阅读">诡秘之主</a></h2>
+<p class="author"><a class="name" href="//my.qidian.com/author/4362088/"
+>爱潜水的乌贼</a><em>|</em><a href="//www.qidian.com/xuanhuan">玄幻</a>
+<em>|</em><span>完本</span></p><p class="intro"> 蒸汽与机械的浪潮中。 </p>
+</div><div class="book-right-info"><div class="total"><p><span>1234</span>
+月票</p></div></div></li>
+<li data-rid="22"><div class="book-img-box"><a
+href="//www.qidian.com/book/1735921/" data-bid="1735921"><img
+src="//bookcover.yuewen.com/qdbimg/349573/1735921/150.webp"></a></div>
+<div class="book-mid-info"><h2><a href="//www.qidian.com/book/1735921/"
+data-bid="1735921" title="遮天最新章节在线阅读">遮天</a></h2>
+<p class="author"><a class="name" href="//my.qidian.com/author/1/">辰东</a>
+<em>|</em><a href="//www.qidian.com/xuanhuan">玄幻</a><em>|</em>
+<span>完本</span></p></div><div class="book-right-info"><div class="total">
+<p><span>567</span>月票</p></div></div></li>
+</ul></div></div></body></html>"""
+
 BOOK = """<html><head>
 <meta property="og:novel:status" content="连载"/>
 <meta property="og:novel:author" content="白刃斩春风"/>
@@ -98,14 +200,93 @@ href="//www.qidian.com/all/chanId21-subCateId8/">东方玄幻</a></p>
 <p id="book-intro-detail">Первый абзац.<br>Второй абзац.</p></body></html>"""
 
 
+#: Какая подмена какой цифрой оказывается. Сами коды — с живой страницы,
+#: а вот что за ними стоит, живьём не видел никто: файла шрифта у нас
+#: нет. Поэтому таблицу задаём здесь и такой же собираем шрифт: проверять
+#: надо разбор, а не угадывать чужие цифры.
+SECRET = {"\U00018822": "2", "\U0001881b": "0",
+          "\U0001881e": "7", "\U0001881d": "5"}
+
+#: Что должно получиться из строк заготовки при такой таблице.
+FIRST_NUMBER = 22072
+SECOND_NUMBER = 25752
+
+
+def anti_spider(secret: dict) -> bytes:
+    """Шрифт, как у Цидяня: цифры под чужими кодами и без имён.
+
+    Собирается из обычного системного шрифта: оставляем в нём десять
+    цифр, переносим их под коды со страницы и обезличиваем имена глифов —
+    ровно то, что делает сайт. Без такой подделки проверить расшифровку
+    нечем: настоящего файла у нас нет.
+    """
+    import io
+
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+
+    from net.sources import qidianfont
+
+    font = TTFont(str(qidianfont.reference_fonts()[0]))
+    cut = subset.Subsetter(options=subset.Options(
+        glyph_names=True, layout_features=[], name_IDs=[], hinting=False))
+    cut.populate(text="0123456789")
+    cut.subset(font)
+
+    by_digit = {digit: font.getBestCmap()[ord(digit)] for digit in "0123456789"}
+    pairs = {ord(sign): by_digit[digit] for sign, digit in secret.items()}
+    # Оставшиеся цифры тоже кладём в шрифт: сайт прячет все десять, и
+    # разбор не должен полагаться на то, что их ровно четыре.
+    spare = iter(range(0x18830, 0x18840))
+    for digit, name in by_digit.items():
+        if name not in pairs.values():
+            pairs[next(spare)] = name
+
+    for tag in ("GDEF", "GSUB", "GPOS", "kern"):
+        if tag in font:
+            del font[tag]
+    order = font.getGlyphOrder()
+    rename = {name: f"g{index:02d}" for index, name in enumerate(order)
+              if name in by_digit.values()}
+    font.setGlyphOrder([rename.get(name, name) for name in order])
+    glyf = font["glyf"]
+    glyf.glyphs = {rename.get(k, k): v for k, v in glyf.glyphs.items()}
+    glyf.glyphOrder = font.getGlyphOrder()
+    font["hmtx"].metrics = {rename.get(k, k): v
+                            for k, v in font["hmtx"].metrics.items()}
+    if "post" in font:
+        font["post"].glyphOrder = None
+    pairs = {code: rename.get(name, name) for code, name in pairs.items()}
+
+    wide = CmapSubtable.newSubtable(12)
+    wide.platformID, wide.platEncID, wide.format = 3, 10, 12
+    wide.reserved, wide.length, wide.language, wide.nGroups = 0, 0, 0, 0
+    wide.cmap = pairs
+    font["cmap"].tables = [wide]
+
+    out = io.BytesIO()
+    font.save(out)
+    return out.getvalue()
+
+
+class Answer:
+    """Ответ на запрос файла — байтами, как у настоящего клиента."""
+
+    def __init__(self, data: bytes):
+        self.content = data
+
+
 class Fake:
     """Отдаёт заготовку и помнит, о чём спрашивали."""
 
-    def __init__(self, page="", pages=None, fail=False):
+    def __init__(self, page="", pages=None, fail=False, font=b""):
         self.page = page
         self.pages = pages or {}
         self.fail = fail
+        self.font = font
         self.asked: list[str] = []
+        self.files: list[str] = []
 
     def get_text(self, url, **kwargs):
         self.asked.append(url)
@@ -115,6 +296,13 @@ class Fake:
             if mark in url:
                 return page
         return self.page
+
+    def get(self, url, *args, **kwargs):
+        """Файл шрифта. Нет заготовки — значит, сайт его не отдал."""
+        self.files.append(url)
+        if not self.font:
+            raise HttpError("шрифт не отдался")
+        return Answer(self.font)
 
     def close(self):
         """Ручка закрывает клиента сама — подставной должен это уметь."""
@@ -248,12 +436,12 @@ class TestOnlyTheRankingIsTaken(unittest.TestCase):
 
 class TestWhenItBreaks(unittest.TestCase):
     def test_a_page_without_ranking_blocks_is_a_named_failure(self):
-        """Разбор написан по блокам с главной и со страницы раздела. На
-        самой странице рейтинга вёрстка может быть другой — тогда чинить
-        надо разбор, и об этом надо сказать, а не показать пустоту."""
+        """Страница без единой книги — это поломка, а не пустой рейтинг.
+        В сообщении должен быть адрес: по нему видно, какую именно доску
+        с каким разделом сайт не отдал."""
         with self.assertRaises(SourceBroken) as caught:
             qd.fetch(Fake("<html><body><p>ничего</p></body></html>"))
-        self.assertIn("rank-list", str(caught.exception))
+        self.assertIn(qd.url_of("yuepiao"), str(caught.exception))
 
     def test_a_site_that_does_not_answer_is_a_named_failure(self):
         with self.assertRaises(SourceBroken):
@@ -404,3 +592,149 @@ class TestTheChannelIsKeptApartInHistory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheRankPage(unittest.TestCase):
+    """Страница самой доски: там у книги есть всё, кроме числа.
+
+    Боковые блоки на главной отдают три поля — место, название, число.
+    На `/rank/…` сайт печатает книгу целиком, и брать оттуда одно
+    название значило бы ходить за остальным второй раз, сто раз подряд.
+    """
+
+    def setUp(self):
+        self.client = Fake(RANK, font=anti_spider(SECRET))
+        self.rows = qd.fetch(self.client)["rows"]
+
+    def test_the_books_of_the_board_are_read(self):
+        self.assertEqual([r.name for r in self.rows], ["捞尸人", "玄鉴仙族"])
+
+    def test_the_place_is_the_one_the_site_shows(self):
+        self.assertEqual([r.place for r in self.rows], [1, 2])
+
+    def test_the_author_comes_from_the_row(self):
+        self.assertEqual(self.rows[0].author, "纯洁滴小龙")
+
+    def test_the_genre_keeps_its_subgenre(self):
+        """У Цидяня жанр двойной: 都市 · 异术超能. Второе — то, чем эта
+        книга отличается от остальных городских, и терять его жалко."""
+        self.assertEqual(self.rows[0].category, "都市 · 异术超能")
+
+    def test_the_status_comes_back(self):
+        self.assertEqual(self.rows[0].status, "连载")
+
+    def test_the_description_comes_with_the_row(self):
+        self.assertIn("人知鬼恐怖", self.rows[0].about)
+
+    def test_the_last_chapter_has_no_service_words(self):
+        """Сайт пишет «最新更新 第七百二十三章…» — «последнее обновление»
+        тут подпись графы, а не часть названия главы."""
+        self.assertEqual(self.rows[0].last_chapter, "第七百二十三章 阴家天才！")
+
+    def test_the_update_time_comes_back(self):
+        self.assertEqual(self.rows[0].updated, "2026-08-22 23:56")
+
+    def test_the_link_and_the_cover_are_built_from_the_code(self):
+        self.assertEqual(self.rows[0].book_id, "1041637443")
+        self.assertIn("1041637443", self.rows[0].link)
+        self.assertIn("1041637443", self.rows[0].cover)
+
+    def test_the_name_has_no_site_tail(self):
+        """В `title` сайт дописывает «最新章节在线阅读»."""
+        for row in self.rows:
+            self.assertNotIn("最新章节", row.name)
+
+
+class TestTheHiddenNumber(unittest.TestCase):
+    """Число доски спрятано шрифтом, и врать про него нельзя."""
+
+    def test_the_number_is_read_through_the_font(self):
+        rows = qd.fetch(Fake(RANK, font=anti_spider(SECRET)))["rows"]
+        self.assertEqual([r.score for r in rows],
+                         [FIRST_NUMBER, SECOND_NUMBER])
+
+    def test_the_number_is_signed_the_way_the_site_signs_it(self):
+        """Подпись 月票 стоит рядом с числом на странице — берём её
+        оттуда, а не из своего списка досок."""
+        rows = qd.fetch(Fake(RANK, font=anti_spider(SECRET)))["rows"]
+        self.assertEqual(rows[0].metric, qd.UNITS["月票"])
+
+    def test_the_font_is_fetched_once_for_the_whole_page(self):
+        """Объявление шрифта сайт повторяет в каждой строке. Качать его
+        сто раз на сотню книг незачем."""
+        client = Fake(RANK, font=anti_spider(SECRET))
+        qd.fetch(client)
+        self.assertEqual(len(client.files), 1)
+
+    def test_the_plain_font_is_asked_for_not_the_old_one(self):
+        """`.eot` сайт перечисляет первым, но это формат для старого IE,
+        и разобрать его нечем. Нужен `.ttf`."""
+        client = Fake(RANK, font=anti_spider(SECRET))
+        qd.fetch(client)
+        self.assertTrue(client.files[0].endswith(".ttf"), client.files)
+
+    def test_without_the_font_there_is_no_number_at_all(self):
+        """Ноль здесь соврал бы: «ноль билетов» и «мы не смогли прочитать»
+        — разные вещи, и в рейтинге их нельзя показывать одинаково."""
+        rows = qd.fetch(Fake(RANK, font=b""))["rows"]
+        self.assertEqual([r.score for r in rows], [None, None])
+        self.assertEqual([r.metric for r in rows], ["", ""])
+
+    def test_a_number_written_plainly_needs_no_font(self):
+        """На части страниц число обычное. Тогда шрифт не нужен вовсе."""
+        client = Fake(RANK2)
+        rows = qd.fetch(client)["rows"]
+        self.assertEqual([r.score for r in rows], [1234, 567])
+        self.assertEqual(client.files, [])
+
+    def test_a_plain_number_keeps_its_label_too(self):
+        """Подпись стоит рядом с числом и когда цифры не подменены.
+        Без неё строка показывала «★ 1234» — звёздочку вместо билетов."""
+        rows = qd.fetch(Fake(RANK2))["rows"]
+        self.assertEqual(rows[0].metric, qd.UNITS["月票"])
+
+    def test_the_snapshot_counts_the_numbers_it_managed_to_read(self):
+        good = qd.fetch(Fake(RANK, font=anti_spider(SECRET)))
+        blind = qd.fetch(Fake(RANK, font=b""))
+        self.assertEqual(good["decoded"], good["total"])
+        self.assertEqual(blind["decoded"], 0)
+
+
+class TestListingTheBoard(unittest.TestCase):
+    """Страница отдаёт двадцать книг, а доска длиннее."""
+
+    def test_the_next_page_is_taken_from_the_page_itself(self):
+        """В адресе следующей страницы сидят год и месяц. Складывать его
+        самим значило бы гадать, какой месяц сайт считает текущим."""
+        client = Fake(pages={"page2": RANK2, "/rank/": RANK})
+        rows = qd.fetch(client)["rows"]
+        self.assertEqual([r.name for r in rows],
+                         ["捞尸人", "玄鉴仙族", "诡秘之主", "遮天"])
+        self.assertTrue(client.asked[1].endswith("page2/"), client.asked)
+
+    def test_a_page_without_a_next_link_ends_the_listing(self):
+        client = Fake(RANK2)
+        qd.fetch(client)
+        self.assertEqual(len(client.asked), 1)
+
+    def test_the_place_stays_the_one_the_site_gave(self):
+        """На второй странице у книг места 21 и 22 — это их места на
+        доске, а не порядок в нашем списке. Перенумеровать их значило бы
+        сделать двадцать первую книгу третьей."""
+        client = Fake(pages={"page2": RANK2, "/rank/": RANK})
+        rows = qd.fetch(client)["rows"]
+        self.assertEqual([r.place for r in rows], [1, 2, 21, 22])
+
+    def test_a_broken_second_page_keeps_the_first(self):
+        """Половина рейтинга лучше, чем ничего: первая страница уже в
+        руках, и терять её из-за оборванного листания незачем."""
+
+        class Flaky(Fake):
+            def get_text(self, url, **kwargs):
+                self.asked.append(url)
+                if "page2" in url:
+                    raise HttpError("оборвалось")
+                return RANK
+
+        rows = qd.fetch(Flaky(font=anti_spider(SECRET)))["rows"]
+        self.assertEqual(len(rows), 2)

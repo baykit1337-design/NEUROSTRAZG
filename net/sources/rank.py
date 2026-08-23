@@ -49,12 +49,13 @@ class RankRow:
 
     __slots__ = ("place", "book_id", "name", "author", "readers", "category",
                  "diff", "words", "status", "last_chapter", "secret", "cover",
-                 "site", "link", "score", "chapters", "metric")
+                 "site", "link", "score", "chapters", "metric", "about",
+                 "updated")
 
     def __init__(self, place=0, book_id="", name="", author="", readers=0,
                  category="", diff=None, words=0, status="", last_chapter="",
                  secret=False, cover="", site="", link="", score=None,
-                 chapters=0, metric=""):
+                 chapters=0, metric="", about="", updated=""):
         self.place = place
         self.book_id = str(book_id)
         self.name = name
@@ -92,6 +93,12 @@ class RankRow:
         #: Подписать всё звёздочкой значило бы соврать про число, которое
         #: человек будет читать как оценку.
         self.metric = metric
+        #: Описание и время последнего обновления, если сайт отдал их
+        #: прямо в рейтинге. Так делает Цидянь: у него в строке доски
+        #: лежит вся карточка книги целиком. Раскрытая строка берёт их
+        #: отсюда и не ходит на сайт второй раз.
+        self.about = about
+        self.updated = updated
 
     def as_dict(self) -> dict:
         return {"place": self.place, "book_id": self.book_id, "name": self.name,
@@ -101,6 +108,7 @@ class RankRow:
                 "last_chapter": self.last_chapter, "secret": self.secret,
                 "cover": self.cover, "site": self.site, "score": self.score,
                 "chapters": self.chapters, "metric": self.metric,
+                "about": self.about, "updated": self.updated,
                 "link": self.link or f"{SITE}/page/{self.book_id}"}
 
     @classmethod
@@ -124,6 +132,8 @@ class RankRow:
             score=data.get("score"),
             chapters=int(data.get("chapters") or 0),
             metric=str(data.get("metric") or ""),
+            about=str(data.get("about") or ""),
+            updated=str(data.get("updated") or ""),
         )
 
     def __eq__(self, other):

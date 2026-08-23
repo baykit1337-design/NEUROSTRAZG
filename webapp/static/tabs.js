@@ -4709,6 +4709,42 @@ function rkBoxOf(bookId){
   return document.querySelector(`#rkTable .rkcard[data-book="${bookId}"]`);
 }
 
+/**
+ * Что о книге известно из самой строки рейтинга.
+ *
+ * У большинства сайтов это место, название и число — карточку из такого
+ * не соберёшь. Цидянь же печатает в строке всю книгу: автора, жанр,
+ * статус, описание, последнюю главу и время. Тогда страница книги нужна
+ * только ради объёма и числа глав, а если она не открылась — карточке
+ * всё равно есть что показать.
+ */
+function rkFromRow(row){
+  return {
+    name: row.name || '',
+    abstract: (row.about || '').trim(),
+    author: row.author || '',
+    category: row.category || '',
+    status: row.status || '',
+    last_chapter: row.last_chapter || '',
+    updated: row.updated || '',
+    cover: row.cover || '',
+    link: row.link || '',
+    tags: [],
+  };
+}
+
+/** Со страницы книги данные полнее, но пустое поле не должно затирать
+ *  непустое: страница может промолчать там, где рейтинг сказал. */
+function rkMerge(known, fresh){
+  const out = {...known};
+  for(const [key, value] of Object.entries(fresh || {})){
+    const empty = value === null || value === undefined || value === ''
+      || (Array.isArray(value) && !value.length);
+    if(!empty || !(key in out)) out[key] = value;
+  }
+  return out;
+}
+
 async function rkToggle(row, tr){
   const box = rkBoxOf(row.book_id);
   if(!box) return;
@@ -4734,16 +4770,29 @@ async function rkToggle(row, tr){
       // самой строки: то же название, те же числа, те же кнопки.
       // Раскрывают, чтобы узнать больше, а не чтобы прочесть то же
       // крупнее.
-      const data = await call(rkBookUrl(row));
+      const data = rkMerge(rkFromRow(row), await call(rkBookUrl(row)));
       box.innerHTML = '';
       box.append(rkCardBody(row, data));
       box.dataset.filled = '1';
     }catch(err){
       box.innerHTML = '';
+      // Часть сайтов кладёт описание прямо в строку рейтинга — так
+      // делает Цидянь. Тогда закрытая страница книги не повод показать
+      // одну ошибку: карточку есть из чего собрать, а про неудачу
+      // достаточно сказать строкой ниже.
+      const known = rkFromRow(row);
+      if(known.abstract){
+        box.append(rkCardBody(row, known));
+        box.dataset.filled = '1';
+      }
       const said = document.createElement('div');
-      said.className = 'err local';
+      said.className = known.abstract ? 'hint' : 'err local';
       said.hidden = false;
-      said.textContent = 'Подробности не пришли: ' + err.message;
+      said.style.padding = '0 12px 10px';
+      said.textContent = known.abstract
+        ? 'Страница книги не открылась, показано то, что было в рейтинге: '
+          + err.message
+        : 'Подробности не пришли: ' + err.message;
       box.append(said);
     }
     rkOpen(box);

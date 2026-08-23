@@ -6,23 +6,33 @@
 только рейтинг — чтобы увидеть, что читают, найти книгу по названию на
 сайте-сливе и качать уже оттуда.
 
-Досок у сайта много, и живут они в двух измерениях сразу: **доска** (по
-чему считают — месячные билеты, продажи, добавления в библиотеку) и
-**раздел** (жанр:玄幻, 都市, 仙侠 и так далее). Пятнадцать разделов на
-семь досок — это сотня страниц, и списком их выводить бессмысленно.
-Поэтому здесь два выпадающих списка, а адрес складывается по общему
-правилу `/rank/{доска}/chn{раздел}/`.
+Досок у сайта пятнадцать, и живут они в двух измерениях сразу: **доска**
+(по чему считают — месячные билеты, продажи, добавления в библиотеку) и
+**раздел** (жанр: 玄幻, 都市, 仙侠 и так далее). Пятнадцать разделов на
+пятнадцать досок — это две сотни страниц, списком их выводить незачем.
+Поэтому здесь два выпадающих списка, а адрес складывается по правилу
+самого сайта: `/rank/{доска}/chn{раздел}/`.
 
-Откуда взяты правила. Из исходников трёх страниц, снятых с живого сайта:
-главной, раздела `/xuanhuan/` и страницы книги. Числа разделов — из
-скрипта самого сайта, который переводит адрес вида `/xuanhuan/` в
-мобильный `m.qidian.com/category/catid21/`; гадать не пришлось.
+Строка рейтинга у Цидяня непривычно щедрая: кроме места и названия на
+странице сразу лежат автор, жанр и поджанр, статус, описание, последняя
+глава и время её выхода. Поэтому раскрытая карточка книги не требует
+второго запроса — всё уже пришло с рейтингом.
 
-Чего в исходниках **не было**: страницы `/rank/…` самой по себе. Блоки
-рейтинга на главной и в разделе устроены одинаково, разбор написан по
-ним, и на отдельной странице рейтинга он, скорее всего, тоже сработает —
-но это «скорее всего», а не проверено. Не сработает — источник скажет об
-этом прямо, а не покажет пустой список.
+Число, по которому доска считает, на странице **не написано**. Вместо
+цифр стоят знаки из неназначенной области Unicode, а рисует их свой
+шрифт, который сайт меняет от страницы к странице. Его расшифровка — в
+`qidianfont`. Не вышло расшифровать — число не показывается вовсе:
+неверное число в рейтинге выглядит достоверно и потому хуже пустоты.
+
+Откуда взяты правила. Из исходников живых страниц: рейтинга
+`/rank/yuepiao/`, главной, разделов `/xianxia/`, `/2cy/`, `/xianshi/`,
+`/kehuan/` и страницы книги. Числа разделов — из скрипта самого сайта,
+который переводит `/xuanhuan/` в мобильный `m.qidian.com/category/
+catid21/`; гадать не пришлось.
+
+Чего живьём никто не видел: файла шрифта с цифрами и страницы доски в
+разрезе раздела. Про раздел известно, что сам сайт ссылается на
+`/rank/yuepiao/chn22/` со страницы 仙侠, — этой формой и пользуемся.
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ from bs4 import BeautifulSoup
 
 from mvl.client import HttpError
 
+from . import qidianfont
 from .base import SourceBroken
 from .rank import RankRow
 
@@ -46,51 +57,62 @@ SITE_KEY = "qidian"
 SITE = "https://www.qidian.com"
 
 #: Обложки лежат на отдельном хосте и называются по коду книги. Число
-#: 349573 — постоянная сайта, оно одно во всех адресах на всех трёх
-#: снятых страницах.
+#: 349573 — постоянная сайта, оно одно во всех адресах на всех снятых
+#: страницах.
 COVER = "https://bookcover.yuewen.com/qdbimg/349573/{code}/600.webp"
 
 #: Ссылка на книгу внутри блока рейтинга.
 BOOK_LINK = re.compile(r"/book/(\d{4,20})/?$")
 
-#: Сколько строк оставлять в срезе.
+#: Сколько строк оставлять в срезе и сколько страниц ради этого листать.
+#: Страница отдаёт двадцать книг, всего их пятьсот. Сотня — то, что ещё
+#: имеет смысл просматривать; пять запросов ради неё — терпимо.
 TOP = 100
+PAGES = 5
 
-#: Доски: ключ → (кусок адреса, подпись доски, подпись числа).
-#:
-#: «Месячные билеты» у Цидяня — не голоса и не оценки: билет покупается
-#: подпиской и отдаётся книге, поэтому это ближе к деньгам, чем к мнению.
-#: Подписываем число честно, а не общим словом «баллы».
+#: Доски сайта: ключ адреса → подпись. Порядок — как в левом столбце
+#: самого рейтинга: сначала популярное, потом новинки.
 BOARDS = {
     "yuepiao": "Месячные билеты",
     "hotsales": "Продажи",
-    "newfans": "Прирост читателей",
+    "retention": "Удержание читателей",
     "readindex": "Индекс чтения",
+    "newfans": "Книжные друзья",
+    "recom": "Рекомендации",
+    "followReading": "Дочитывают",
     "collect": "В библиотеках",
+    "vipup": "Обновления",
+    "vipcollect": "В библиотеках у VIP",
     "signnewbook": "Новинки авторов по договору",
-    "newsign": "Новинки новичков",
+    "pubnewbook": "Новинки свободных авторов",
+    "newsign": "Новинки новичков по договору",
+    "newauthor": "Новинки авторов-новичков",
 }
 
-PATHS = {
-    "yuepiao": "yuepiao",
-    "hotsales": "hotsales",
-    "newfans": "newfans",
-    "readindex": "readindex",
-    "collect": "collect",
-    "signnewbook": "signnewbook",
-    "newsign": "newsign",
+#: Раньше здесь была отдельная таблица «ключ → кусок адреса». Она
+#: повторяла ключи слово в слово и оставалась только поводом разойтись,
+#: поэтому адрес берётся прямо из ключа.
+PATHS = {key: key for key in BOARDS}
+
+#: Как подписать число. Подпись сайт печатает рядом с числом сам —
+#: 月票, 收藏, 人气, — и берём мы её оттуда, а не отсюда: так подпись
+#: остаётся верной и на доске, которой в этом списке нет. Здесь только
+#: перевод того, что сайт написал.
+UNITS = {
+    "月票": "билетов за месяц",
+    "收藏": "в библиотеках",
+    "推荐": "рекомендаций",
+    "人气": "популярность",
+    "字": "знаков",
+    "在追": "дочитывают",
 }
 
-#: Как называется число на этой доске. Пусто — числа у доски нет вовсе:
-#: на некоторых сайт печатает только порядок.
+#: Чем доска считает, если на странице подписи не оказалось.
 METRICS = {
     "yuepiao": "билетов за месяц",
-    "hotsales": "",
-    "newfans": "",
-    "readindex": "",
     "collect": "в библиотеках",
-    "signnewbook": "",
-    "newsign": "",
+    "vipcollect": "в библиотеках",
+    "recom": "рекомендаций",
 }
 
 #: Разделы сайта: ключ → (номер раздела, название).
@@ -100,10 +122,10 @@ METRICS = {
 #: Пустой ключ — «все разделы», адрес тогда без хвоста.
 CHANNELS = {
     "": ("", "Все разделы"),
-    "xuanhuan": ("21", "Сянься·сюаньхуань"),
+    "xuanhuan": ("21", "Сюаньхуань"),
     "qihuan": ("1", "Фэнтези"),
     "wuxia": ("2", "Уся"),
-    "xianxia": ("22", "Сяньдо"),
+    "xianxia": ("22", "Сянься"),
     "dushi": ("4", "Городское"),
     "xianshi": ("15", "Реализм"),
     "junshi": ("6", "Военное"),
@@ -127,6 +149,21 @@ def url_of(board: str, channel: str = "") -> str:
     tail = CHANNELS.get(channel, ("", ""))[0]
     address = f"{SITE}/rank/{PATHS[board]}/"
     return f"{address}chn{tail}/" if tail else address
+
+
+def _full(link: str) -> str:
+    """Полный адрес из того, что написано в `href`.
+
+    Сайт пишет ссылки без протокола — `//www.qidian.com/…`. Отдать такую
+    наружу нельзя: в браузере она подставит протокол страницы, а у нас
+    страница своя.
+    """
+    said = str(link or "").strip()
+    if said.startswith("//"):
+        return "https:" + said
+    if said.startswith("/"):
+        return SITE + said
+    return said
 
 
 def _number(text) -> int:
@@ -173,13 +210,183 @@ def _code_of(link) -> str:
     return found.group(1) if found else ""
 
 
-def _row(item, place: int, metric: str) -> RankRow | None:
-    """Строка рейтинга из одного элемента списка.
+# ------------------------------------------------------------- цифры доски
 
-    Первая книга доски свёрстана иначе остальных: у неё обложка, автор,
-    жанр и число крупно (`li.unfold`). Со второй идут короткие строки:
-    место, название, число. Разбираем оба вида одним проходом — по тому,
-    что есть, а не по классам обёртки.
+def _hidden_number(item, table: dict | None):
+    """Число доски и его подпись из правой колонки строки.
+
+    Возвращает `(число или None, подпись)`. None — цифры на странице
+    спрятаны шрифтом, а расшифровать его не вышло. Ноль тут не годится:
+    ноль билетов и «мы не смогли прочитать» — разные вещи, и в рейтинге
+    их нельзя показывать одинаково.
+    """
+    where = item.select_one(".book-right-info .total p, .total p")
+    if where is None:
+        return 0, ""
+
+    # Подпись — весь текст, кроме самих цифр: «月票», «收藏».
+    digits = where.select_one("span[class]")
+    said = where.get_text(" ", strip=True)
+    shown = digits.get_text("", strip=True) if digits is not None else ""
+    # Число бывает написано и без подмены — тогда цифры лежат прямо в
+    # тексте, и подпись остаётся, если их вычеркнуть. Считать в этом
+    # случае, что подписи нет, значило бы показать «★ 1234» там, где на
+    # сайте написано «1234 месячных билета».
+    left = said.replace(shown, "") if shown else said
+    unit = re.sub(r"[\d,.\s]", "", left).strip()
+
+    if not shown:
+        return _number(said), UNITS.get(unit, unit)
+
+    if shown.isdigit():
+        return int(shown), UNITS.get(unit, unit)
+
+    value = qidianfont.number_of(shown, table)
+    return value, UNITS.get(unit, unit)
+
+
+def _font_of_page(client, soup, fonts: dict | None = None) -> dict | None:
+    """Таблица подстановки цифр для **этой** страницы.
+
+    Внутри страницы шрифт один: сайт повторяет одно и то же объявление
+    `@font-face` в каждой строке, и качать его на каждую из сотни книг
+    незачем. А вот между страницами он разный — и коды, и имя семейства
+    сайт перебирает заново. Поэтому таблица берётся на страницу, а не на
+    весь срез, и по имени семейства не ищется: имя сайт может повторить,
+    подменив сам файл, и тогда числа второй страницы молча оказались бы
+    прочитаны таблицей первой. Повторно разбирать один и тот же файл всё
+    равно не придётся: кэш внутри `qidianfont` считает по хешу.
+    """
+    css = ""
+    for tag in soup.find_all("style"):
+        text = tag.string or tag.get_text() or ""
+        if "@font-face" in text and "font-family" in text:
+            css = text
+            break
+    if not css:
+        return None
+
+    family, address = qidianfont.font_of(css)
+    if not address:
+        return None
+
+    # Один и тот же файл на две страницы сайт кладёт редко, но кладёт.
+    # Запоминаем по адресу: качать одно и то же дважды незачем, а взять
+    # чужую таблицу по такому ключу невозможно — адрес и есть файл.
+    fonts = fonts if fonts is not None else {}
+    if address in fonts:
+        return fonts[address]
+
+    try:
+        data = client.get(address).content
+    except Exception as exc:  # noqa: BLE001 — без чисел рейтинг всё равно жив
+        log.info("Шрифт цифр Цидяня не скачался (%s): %s", address, exc)
+        return None
+
+    try:
+        table = qidianfont.table_for(family, data, address)
+    except qidianfont.FontUnavailable as exc:
+        log.info("Цифры Цидяня не расшифровались: %s", exc)
+        return None
+    fonts[address] = table
+    return table
+
+
+# -------------------------------------------------------------- одна строка
+
+def _big_row(item, place: int, table: dict | None) -> RankRow | None:
+    """Строка со страницы рейтинга — той, где у книги есть описание.
+
+    На самой доске сайт печатает книгу целиком: обложка, название, автор,
+    жанр с поджанром, статус, аннотация, последняя глава и время. Берём
+    всё — иначе за тем же самым пришлось бы лезть на страницу книги,
+    сотню раз на сотню строк.
+    """
+    head = item.select_one(".book-mid-info h2 a[href]")
+    if head is None:
+        return None
+    code = _code_of(head)
+    if not code:
+        return None
+
+    name = _clean(head.get_text(" ", strip=True)) or _clean(head.get("title"))
+    if not name:
+        return None
+
+    shown = 0
+    said = str(item.get("data-rid") or "").strip()
+    if said.isdigit():
+        shown = int(said)
+
+    author = ""
+    writer = item.select_one(".book-mid-info p.author a.name")
+    if writer is not None:
+        author = writer.get_text(" ", strip=True)
+
+    # Жанр и поджанр — соседние ссылки в той же строке: 都市 · 异术超能.
+    kinds = []
+    for tag in item.select(".book-mid-info p.author a"):
+        if "name" in (tag.get("class") or []):
+            continue
+        word = tag.get_text(" ", strip=True)
+        if word and word not in kinds:
+            kinds.append(word)
+
+    status = ""
+    mark = item.select_one(".book-mid-info p.author span")
+    if mark is not None:
+        status = mark.get_text(" ", strip=True)
+
+    about = ""
+    intro = item.select_one(".book-mid-info p.intro")
+    if intro is not None:
+        about = intro.get_text(" ", strip=True)
+
+    # «最新更新 第七百二十三章 阴家天才！» — сайт приписывает к названию
+    # главы слова «последнее обновление». В строке они лишние.
+    last, updated = "", ""
+    fresh = item.select_one(".book-mid-info p.update")
+    if fresh is not None:
+        link = fresh.find("a")
+        if link is not None:
+            last = re.sub(r"^最新更新\s*", "",
+                          link.get_text(" ", strip=True)).strip()
+        when = fresh.find("span")
+        if when is not None:
+            updated = when.get_text(" ", strip=True)
+
+    value, unit = _hidden_number(item, table)
+
+    row = RankRow(
+        place=shown or place,
+        book_id=code,
+        name=name,
+        author=author,
+        category=" · ".join(kinds),
+        readers=0,
+        score=value if value else None,
+        metric=unit if value else "",
+        status=status,
+        last_chapter=last,
+        cover=COVER.format(code=code),
+        site=SITE_KEY,
+        link=f"{SITE}/book/{code}/",
+    )
+    # Описание и дата в строке рейтинга не предусмотрены — у остальных
+    # сайтов их там нет. Кладём рядом: раскрытая карточка возьмёт их
+    # отсюда и не пойдёт за ними второй раз на сайт.
+    row.about = about
+    row.updated = updated
+    return row
+
+
+def _short_row(item, place: int, table: dict | None) -> RankRow | None:
+    """Строка из бокового блока рейтинга на главной или в разделе.
+
+    Там доска ужата до десяти книг: у первой обложка, автор и число,
+    у остальных только место, название и число. Эти блоки — не главная
+    цель, но по ним разбор писался изначально, и на страницах разделов
+    они по-прежнему единственный рейтинг.
     """
     link = None
     for candidate in item.find_all("a", href=True):
@@ -197,9 +404,6 @@ def _row(item, place: int, metric: str) -> RankRow | None:
     if not name:
         return None
 
-    # Место сайт печатает по-разному: у первой книги «NO.1», у прочих —
-    # цифрой в своём блоке. Порядковый номер строки лежит в `data-rid` и
-    # верен в обоих случаях.
     shown = 0
     said = str(item.get("data-rid") or "").strip()
     if said.isdigit():
@@ -213,8 +417,12 @@ def _row(item, place: int, metric: str) -> RankRow | None:
         if where is not None:
             value = max(value, _number(where.get_text(" ", strip=True)))
 
-    # Автор и жанр есть только у первой книги доски — у остальных строк
-    # для них нет места. Пусто честнее, чем подставленное наугад.
+    unit = ""
+    digital = item.select_one("p.digital")
+    if digital is not None:
+        word = re.sub(r"[\d,.\s]", "", digital.get_text(" ", strip=True))
+        unit = UNITS.get(word, "")
+
     author = ""
     writer = item.find("a", class_="writer")
     if writer is not None:
@@ -233,56 +441,102 @@ def _row(item, place: int, metric: str) -> RankRow | None:
         category=category,
         readers=0,
         score=value or None,
-        metric=metric if value else "",
+        metric=unit if value else "",
         cover=COVER.format(code=code),
         site=SITE_KEY,
         link=f"{SITE}/book/{code}/",
     )
 
 
-def _blocks(soup):
-    """Блоки рейтинга на странице.
+def _rows_of(soup, table: dict | None, start: int) -> list[RankRow]:
+    """Строки одной страницы.
 
-    Скоплены нарочно: на главной книжных ссылок под сотню, и половина из
-    них — реклама, «редакция советует» и «недавно обновлённые». Взять их
-    все значило бы выдать за рейтинг то, что рейтингом не является.
+    Сначала — доска целиком (`#rank-view-list`), она есть только на самой
+    странице рейтинга. Нет её — боковые блоки главной и раздела.
     """
-    return soup.select("div.rank-list") or soup.select("div.book-list")
+    rows: list[RankRow] = []
+    board = soup.select_one("#rank-view-list") or soup.select_one(
+        "div.book-img-text")
+    if board is not None:
+        for item in board.select("li[data-rid]"):
+            row = _big_row(item, start + len(rows) + 1, table)
+            if row is not None:
+                rows.append(row)
+        if rows:
+            return rows
+
+    # Боковые блоки скоплены нарочно: на главной книжных ссылок под сотню,
+    # и половина из них — реклама, «редакция советует» и «недавно
+    # обновлённые». Взять их все значило бы выдать за рейтинг то, что
+    # рейтингом не является.
+    for block in (soup.select("div.rank-list") or soup.select("div.book-list")):
+        for item in block.find_all("li"):
+            row = _short_row(item, start + len(rows) + 1, table)
+            if row is not None:
+                rows.append(row)
+    return rows
+
+
+def _next_page(soup) -> str:
+    """Адрес следующей страницы доски. Пусто — она последняя.
+
+    Адрес берётся со страницы, а не складывается по правилу: у Цидяня в
+    нём сидят год и месяц (`year2026-month08-page2`), и собирать это
+    самим значило бы гадать, какой месяц сайт считает текущим.
+    """
+    link = soup.select_one("a.lbf-pagination-next[href]")
+    if link is None:
+        return ""
+    address = _full(link.get("href"))
+    return "" if address.rstrip("/").endswith("javascript:") else address
 
 
 def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
     """Срез одной доски одного раздела."""
     address = url_of(board, channel)
-    try:
-        page = client.get_text(address)
-    except HttpError as exc:
-        raise SourceBroken(
-            f"Цидянь не ответил на {address}: {exc}") from exc
-
-    soup = BeautifulSoup(page, "lxml")
-    metric = METRICS.get(board, "")
-
     rows: list[RankRow] = []
     seen: set[str] = set()
-    for block in _blocks(soup):
-        for item in block.find_all("li"):
-            row = _row(item, len(rows) + 1, metric)
-            if row is None or row.book_id in seen:
+    fonts: dict[str, dict] = {}
+    decoded = 0
+    page_address = address
+
+    for _ in range(PAGES):
+        try:
+            page = client.get_text(page_address)
+        except HttpError as exc:
+            if rows:
+                # Первая страница уже в руках: половина рейтинга лучше,
+                # чем ничего, а листать дальше явно не выйдет.
+                log.info("Цидянь оборвал листание на %s: %s", page_address, exc)
+                break
+            raise SourceBroken(
+                f"Цидянь не ответил на {page_address}: {exc}") from exc
+
+        soup = BeautifulSoup(page, "lxml")
+        table = _font_of_page(client, soup, fonts)
+
+        for row in _rows_of(soup, table, len(rows)):
+            if row.book_id in seen:
                 continue
             seen.add(row.book_id)
             rows.append(row)
+            if row.score:
+                decoded += 1
             if len(rows) >= TOP:
                 break
+
         if len(rows) >= TOP:
+            break
+        page_address = _next_page(soup)
+        if not page_address:
             break
 
     if not rows:
         raise SourceBroken(
             f"Рейтинг Цидяня не разобрался: на странице {address} не нашлось "
-            "ни одной книги. Разбор написан по блокам `div.rank-list` с "
-            "главной страницы и со страницы раздела; если на самой странице "
-            "рейтинга вёрстка другая, чинить надо разбор, а не повторять "
-            "запрос.")
+            "ни одной книги. Либо сайт закрылся капчей, либо у доски с таким "
+            "разделом своей страницы нет — на сайте это видно сразу, он "
+            "пишет «страница недоступна».")
 
     # Места на странице печатаются вперемешку: у первой книги «NO.1»,
     # дальше цифрами, и в разных блоках нумерация начинается заново.
@@ -296,7 +550,9 @@ def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
         "category": channel,
         "version": _version(rows),
         "stats_date": "",
-        "decoded": len(rows),
+        # «Расшифровано» здесь — про числа доски, а не про названия:
+        # названия у Цидяня открыты, шрифтом спрятаны только цифры.
+        "decoded": decoded,
         "total": len(rows),
     }
 
@@ -396,4 +652,4 @@ def book(client, code: str, slug: str = "") -> dict:
 
 
 __all__ = ["BOARDS", "CHANNELS", "METRICS", "PATHS", "SITE", "SITE_KEY",
-           "TOP", "book", "fetch", "url_of"]
+           "TOP", "UNITS", "book", "fetch", "url_of"]
