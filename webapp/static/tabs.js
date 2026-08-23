@@ -4216,7 +4216,7 @@ loadSources();
 
 let rkRows = [], rkTitles = {}, rkPicked = null;
 let rkAudMenu = null, rkKindMenu = null, rkCatMenu = null, rkCats = {};
-let rkSiteMenu = null, rkBoardMenu = null, rkSites = [];
+let rkSiteMenu = null, rkBoardMenu = null, rkChannelMenu = null, rkSites = [];
 
 /** Выбранный сайт целиком, а не только его ключ. */
 function rkSite(){
@@ -4231,6 +4231,10 @@ function rkWhere(){
     // Доска есть только у сайтов без деления на аудиторию и жанр. Слать
     // её всегда безвредно: у Фанкью сервер её просто не читает.
     board: rkBoardMenu ? rkBoardMenu.value : '',
+    // Раздел есть только там, где доска перемножается на жанр. У
+    // остальных сервер его не читает — слать безвредно.
+    channel: (rkChannelMenu && (rkSite().channels || []).length)
+      ? rkChannelMenu.value : '',
     audience: rkAudMenu ? rkAudMenu.value : '1',
     kind: rkKindMenu ? rkKindMenu.value : '2',
     category: rkCatMenu ? rkCatMenu.value : '',
@@ -4250,6 +4254,7 @@ function rkApplySite(){
   $('rkFanqieWhere').hidden = !fanqie;
   $('rkCategory').hidden = !fanqie;
   $('rkBoard').hidden = fanqie || !(site.boards || []).length;
+  $('rkChannel').hidden = !(site.channels || []).length;
 
   if(!fanqie && (site.boards || []).length){
     const box = $('rkBoard');
@@ -4258,6 +4263,18 @@ function rkApplySite(){
       box.dataset.options = want;
       box.innerHTML = '';
       rkBoardMenu = makeDropdown(box, () => rkState());
+    }
+  }
+
+  // Раздел — второй список, и он не замена доске, а дополнение: у
+  // Цидяня «билеты за месяц» и «городское» выбираются независимо.
+  if((site.channels || []).length){
+    const box = $('rkChannel');
+    const want = JSON.stringify(site.channels.map(c => [c.key, c.name]));
+    if(box.dataset.options !== want){
+      box.dataset.options = want;
+      box.innerHTML = '';
+      rkChannelMenu = makeDropdown(box, () => rkState());
     }
   }
 
@@ -4889,7 +4906,12 @@ function rkCardBody(row, data){
     words && ['знаков', ru(words)],
     ['статус', data.status || row.status || '—'],
     row.readers && ['читающих', ru(row.readers)],
-    score && ['балл', String(score)],
+    // Подпись числа — та же, что в строке. «Балл» подходит только там,
+    // где это действительно оценка: у Цидяня это купленные билеты, у
+    // Webnovel голоса или покупки, и называть их баллом — врать про
+    // число, которое человек прочитает как оценку.
+    score && [row.metric || 'балл',
+              row.metric ? ru(score) : String(score)],
   ].filter(Boolean);
   for(const [name, value] of rows){
     const span = document.createElement('span');
@@ -4969,6 +4991,20 @@ function rkWhen(value){
  * книге. Теперь всё идёт одним путём: рейтинг лишь заполняет качалку.
  */
 async function rkPick(row){
+  // С сайта может не быть качалки вовсе. У Цидяня за первыми главами
+  // начинается подписка, и делать вид, что книга сейчас скачается, —
+  // враньё: человек уйдёт на вкладку качалки, нажмёт «Найти» и получит
+  // невнятную ошибку. Честнее сказать сразу и дать в руки то, что
+  // действительно поможет, — название для поиска на сайте-сливе.
+  const from = rkSites.find(s => s.key === (row.site || ''));
+  if(row.site && from && !from.source){
+    const said = await copyText(row.name || String(row.book_id));
+    toast(`Скачивать с ${from.name} программа не умеет: там подписка. `
+      + (said ? 'Название скопировано — ищите книгу на сайте-сливе.'
+              : 'Ищите книгу на сайте-сливе по названию.'));
+    return;
+  }
+
   rkPicked = row;
   goTab('download');
 

@@ -32,6 +32,7 @@ from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import mvlrank as mvl_rank_net  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
+from net.sources import qidianrank as qd_rank_net  # noqa: E402
 from net.sources import webnovelrank as wn_rank_net  # noqa: E402
 from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
@@ -1888,6 +1889,24 @@ RANK_SITES = {
                  "Скачать удастся не всякую книгу: часть глав там платная, и "
                  "такие остаются пропусками.",
     },
+    qd_rank_net.SITE_KEY: {
+        "name": "Цидянь",
+        # Качать с Цидяня программа не умеет и не будет: там подписка с
+        # 2003 года, открыты первые главы. Рейтинг нужен, чтобы увидеть,
+        # что читают, и искать книгу по названию на сайтах-сливах.
+        "source": "",
+        "boards": qd_rank_net.BOARDS,
+        # Второй список: у Цидяня доска и раздел — разные измерения.
+        "channels": {key: name for key, (_, name)
+                     in qd_rank_net.CHANNELS.items()},
+        "book": qd_rank_net.book,
+        "about": "Старейшая платная площадка китайского интернета — подписку "
+                 "она ввела первой, в 2003 году. Досок много, и живут они в "
+                 "двух измерениях: по чему считают (билеты, продажи, "
+                 "библиотеки) и в каком разделе. Скачивать отсюда программа "
+                 "не умеет: за первыми главами начинается подписка. Рейтинг "
+                 "нужен, чтобы найти книгу, а качать её потом с сайта-слива.",
+    },
 }
 
 
@@ -1923,7 +1942,15 @@ def _rank_board(payload, site: str) -> tuple[str, str]:
     board = str(get("board") or "").strip()
     if board not in boards:
         board = next(iter(boards))
-    return board, ""
+
+    # Раздел — второе измерение, и есть оно не у всех. У Цидяня доска
+    # («по чему считают») и раздел («в каком жанре») перемножаются, и
+    # хранить их надо порознь: срез по «городскому» — не то же самое,
+    # что срез по всем разделам, и складывать их в одну историю значило
+    # бы считать движение по местам между разными списками.
+    channels = RANK_SITES[site].get("channels") or {}
+    channel = str(get("channel") or "").strip()
+    return board, (channel if channel in channels else "")
 
 
 @app.get("/api/rank/categories")
@@ -1966,7 +1993,12 @@ def api_rank_categories():
                 # раскрывать строку, и открывает пустую карточку.
                 "details": key == "" or site.get("book") is not None,
                 "boards": [{"key": k, "name": v}
-                           for k, v in site["boards"].items()]}
+                           for k, v in site["boards"].items()],
+                # Второе измерение, если оно у сайта есть: у Цидяня
+                # доска перемножается на раздел. Пустой список значит
+                # «делить не на что» — тогда выбор и не показывается.
+                "channels": [{"key": k, "name": v} for k, v
+                             in (site.get("channels") or {}).items()]}
                for key, site in RANK_SITES.items()],
     )
 
@@ -2008,6 +2040,11 @@ def api_rank_refresh():
             # Webnovel отдаёт рейтинг готовой страницей: ни токена, ни
             # входа, ни шрифта — разбирается вёрстка.
             found = wn_rank_net.fetch(client, board=board)
+            found.setdefault("font", {})
+        elif site == qd_rank_net.SITE_KEY:
+            # У Цидяня к доске прибавляется раздел: доска говорит, по
+            # чему считают, раздел — среди каких книг.
+            found = qd_rank_net.fetch(client, board=board, channel=category)
             found.setdefault("font", {})
         else:
             found = rank_net.fetch(client, audience=audience, kind=kind,
