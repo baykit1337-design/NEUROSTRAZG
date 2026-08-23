@@ -24,6 +24,13 @@
 `qidianfont`. Не вышло расшифровать — число не показывается вовсе:
 неверное число в рейтинге выглядит достоверно и потому хуже пустоты.
 
+Просто так сайт страницу не отдаёт. Защита Tencent встречает всякого без
+куки `w_tsfp` заглушкой на две сотни байт с кодом 202 «принято»: в
+браузере она запускает скрипт, тот считает пропуск и перезагружает
+страницу. Пропуск мы считаем сами — как именно, написано в `qidianpass`.
+Заглушка приходит **всем** без пропуска, поэтому ни смена прокси, ни
+заголовки от неё не спасали.
+
 Откуда взяты правила. Из исходников живых страниц: рейтинга
 `/rank/yuepiao/`, главной, разделов `/xianxia/`, `/2cy/`, `/xianshi/`,
 `/kehuan/` и страницы книги. Числа разделов — из скрипта самого сайта,
@@ -45,7 +52,7 @@ from bs4 import BeautifulSoup
 
 from mvl.client import HttpError
 
-from . import qidianfont
+from . import qidianfont, qidianpass
 from .base import SourceBroken
 from .rank import RankRow
 
@@ -162,7 +169,9 @@ CHANNELS = {
 #: заголовка такая защита считает роботом и отдаёт вместо рейтинга
 #: проверку. Referer и китайский язык — то, с чем на страницу рейтинга
 #: приходит живой читатель. Панацеей это не является: если под
-#: подозрением сам адрес прокси, заголовки не помогут.
+#: подозрением сам адрес прокси, заголовки не помогут. И главного они не
+#: решают: без пропуска (`qidianpass`) заглушку получает любой запрос,
+#: хоть с заголовками, хоть без.
 VISIT = {
     "Referer": f"{SITE}/rank/",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -184,6 +193,21 @@ MISSING = ("页面不存在", "页面找不到", "该页面不存在", "/error/4
 #: вокруг него. Если это есть, а книг нет — сайт цел и ответил нам
 #: рейтингом, просто разбирать его стало нечем.
 SHELL = ("rank-nav-list", "rank-box", "rank-body")
+
+
+def _guarded(page) -> bool:
+    """Похоже ли, что вместо страницы пришла проверка на робота.
+
+    Признак не в капче: её скрипт висит и на рабочей странице. Признак в
+    том, что кроме проверки на странице нет ничего — ни книг, ни рамки
+    рейтинга вокруг них, и весит она пару сотен байт вместо сотен тысяч.
+    """
+    said = str(page or "")
+    if any(mark in said for mark in MISSING):
+        return False
+    if any(mark in said for mark in SHELL):
+        return False
+    return any(mark in said for mark in GUARD) or len(said) < 20_000
 
 
 def _diagnose(page: str, address: str) -> str:
@@ -214,12 +238,14 @@ def _diagnose(page: str, address: str) -> str:
                 f"Значит, сайт переделал вёрстку списка, и чинить надо "
                 f"разбор. Страница {len(said)} байт{tail}.")
 
-    if any(mark in said for mark in GUARD) or len(said) < 20_000:
+    if _guarded(said):
         return (f"Цидянь ответил не рейтингом, а проверкой на робота "
                 f"({address}): на странице нет ни списка книг, ни даже рамки "
-                f"вокруг него. Так его защита встречает запросы с адресов, "
-                f"которые ей не нравятся, — помогает другой прокси, лучше "
-                f"китайский или хотя бы азиатский. "
+                f"вокруг него. Пропуск (куку `w_tsfp`) мы посчитали и "
+                f"отправили обеими известными формами подписи — защита не "
+                f"приняла ни одну. Значит, либо она сменила правило, либо "
+                f"под подозрением сам адрес выхода: стоит попробовать другой "
+                f"прокси, лучше китайский или хотя бы азиатский. "
                 f"Страница {len(said)} байт{tail}.")
 
     return (f"Рейтинг Цидяня не разобрался: на странице {address} не нашлось "
@@ -332,7 +358,8 @@ def _hidden_number(item, table: dict | None):
     return value, UNITS.get(unit, unit)
 
 
-def _font_of_page(client, soup, fonts: dict | None = None) -> dict | None:
+def _font_of_page(client, soup, fonts: dict | None = None,
+                  keeper=None) -> dict | None:
     """Таблица подстановки цифр для **этой** страницы.
 
     Внутри страницы шрифт один: сайт повторяет одно и то же объявление
@@ -365,7 +392,8 @@ def _font_of_page(client, soup, fonts: dict | None = None) -> dict | None:
         return fonts[address]
 
     try:
-        data = client.get(address).content
+        pass_by = keeper.cookies(address) if keeper is not None else None
+        data = client.get(address, cookies=pass_by).content
     except Exception as exc:  # noqa: BLE001 — без чисел рейтинг всё равно жив
         log.info("Шрифт цифр Цидяня не скачался (%s): %s", address, exc)
         return None
@@ -578,13 +606,18 @@ def _next_page(soup) -> str:
     return "" if address.rstrip("/").endswith("javascript:") else address
 
 
-def _walk(client, address: str) -> tuple[list[RankRow], int, str]:
+def _walk(client, address: str, keeper=None) -> tuple[list[RankRow], int, str]:
     """Пролистать доску с одного адреса. Возвращает строки, сколько из
     них с расшифрованным числом, и первую страницу целиком.
 
     Первую страницу держим ради разбора полётов: без неё «не
     разобралось» остаётся словами, по которым нечего чинить.
+
+    Пропуск — один на весь обход: он же и есть «гость», а гость, у
+    которого отпечаток меняется от страницы к странице, защите как раз
+    и подозрителен. Подпись при этом пересчитывается на каждый адрес.
     """
+    keeper = keeper if keeper is not None else qidianpass.Pass()
     rows: list[RankRow] = []
     seen: set[str] = set()
     fonts: dict[str, dict] = {}
@@ -594,7 +627,8 @@ def _walk(client, address: str) -> tuple[list[RankRow], int, str]:
 
     for _ in range(PAGES):
         try:
-            page = client.get_text(page_address, headers=VISIT)
+            page = client.get_text(page_address, headers=VISIT,
+                                   cookies=keeper.cookies(page_address))
         except HttpError as exc:
             if not rows:
                 raise
@@ -608,7 +642,7 @@ def _walk(client, address: str) -> tuple[list[RankRow], int, str]:
         log.info("Цидянь: %s — страница %s байт", page_address, len(page or ""))
 
         soup = BeautifulSoup(page, "lxml")
-        table = _font_of_page(client, soup, fonts)
+        table = _font_of_page(client, soup, fonts, keeper)
 
         found = _rows_of(soup, table, len(rows))
         for row in found:
@@ -640,6 +674,26 @@ def _walk(client, address: str) -> tuple[list[RankRow], int, str]:
     return rows, decoded, first
 
 
+def _reach(client, address: str) -> tuple[list[RankRow], int, str]:
+    """Пройти доску, перебрав формы пропуска.
+
+    Что защита кладёт в подпись — адрес целиком или один путь — мы знаем
+    не наверняка (см. `qidianpass`). Проверить это отсюда нечем: сайт из
+    песочницы недоступен. Поэтому не пустила первая форма — идём второй,
+    прежде чем объявлять сайт закрытым. Второй заход делается только на
+    заглушку защиты: если пришла настоящая страница, пропуск приняли, и
+    беда в чём-то другом — менять форму подписи бессмысленно.
+    """
+    keeper = qidianpass.Pass()
+    rows, decoded, first = _walk(client, address, keeper)
+    if rows or not _guarded(first):
+        return rows, decoded, first
+
+    log.info("Цидянь: %s — пропуск не приняли, пробуем вторую форму подписи",
+             address)
+    return _walk(client, address, keeper.other())
+
+
 def _mirrors(board: str, channel: str) -> list[str]:
     """Адреса, по которым стоит попробовать эту доску.
 
@@ -668,7 +722,7 @@ def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
 
     for address in _mirrors(board, channel):
         try:
-            rows, decoded, first = _walk(client, address)
+            rows, decoded, first = _reach(client, address)
         except HttpError as exc:
             # Без «сайт не ответил»: при HTTP 202 он как раз ответил, и
             # эта приписка сбивала с толку сильнее, чем помогала. Текст
@@ -739,8 +793,10 @@ def book(client, code: str, slug: str = "") -> dict:
     """Подробности книги для раскрытой строки рейтинга."""
     code = str(code or "").strip()
     address = f"{SITE}/book/{code}/"
+    keeper = qidianpass.Pass()
     try:
-        page = client.get_text(address)
+        page = client.get_text(address, headers=VISIT,
+                               cookies=keeper.cookies(address))
     except HttpError as exc:
         raise SourceBroken(
             f"Страница книги {code} на Цидяне не открылась: {exc}") from exc

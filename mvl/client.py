@@ -127,7 +127,8 @@ class _UrllibResponse:
 class _UrllibSession:
     """Последний рубеж: стандартная библиотека, без внешних зависимостей."""
 
-    def get(self, url: str, params=None, timeout=TIMEOUT, **_):
+    def get(self, url: str, params=None, timeout=TIMEOUT, headers=None,
+            cookies=None, **_):
         import urllib.error
         import urllib.request
 
@@ -137,7 +138,16 @@ class _UrllibSession:
 
         if params:
             url = f"{url}?{encode_params(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": _FALLBACK_UA})
+
+        # Заголовки, о которых просил вызывающий, раньше молча терялись:
+        # сюда приходили и Referer, и язык, и пропуск на сайт, а уходил
+        # один User-Agent. Банки для кук у этого хода нет, поэтому кука
+        # собирается прямо в заголовок — двоиться ей не с чем.
+        sending = {"User-Agent": _FALLBACK_UA, **(headers or {})}
+        if cookies:
+            sending["Cookie"] = "; ".join(
+                f"{name}={value}" for name, value in cookies.items())
+        req = urllib.request.Request(url, headers=sending)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return _UrllibResponse(resp.status, resp.read(), dict(resp.headers))
@@ -298,8 +308,18 @@ class Client:
             return False
         return self.cancel.wait(seconds)
 
-    def get(self, url: str, params=None, headers: dict[str, str] | None = None) -> Any:
-        """GET с ретраями. Возвращает объект ответа; кидает HttpError."""
+    def get(self, url: str, params=None, headers: dict[str, str] | None = None,
+            cookies: dict[str, str] | None = None) -> Any:
+        """GET с ретраями. Возвращает объект ответа; кидает HttpError.
+
+        Куки передаются отдельно от заголовков не для красоты. Заголовок
+        `Cookie`, поставленный руками, не заменяет тот, что складывает
+        сам curl из своей банки, — он к нему **добавляется**, и сайт
+        получает две строки `Cookie` подряд. Для Цидяня это как раз
+        разница между «пропуск принят» и «пропуск не принят»: в банке
+        лежит его собственная кука с заглушки, и первой уходит она.
+        Через `cookies` строка получается одна, и в ней наше значение.
+        """
         last_error = "unknown"
         last_status: int | None = None
         network_failure = False
@@ -323,6 +343,9 @@ class Client:
                     # адрес это разные беды с разными сроками ожидания.
                     timeout=(self.connect_timeout, self.timeout),
                     headers=request_headers or None,
+                    # Пустых кук не передаём вовсе: сессия может быть
+                    # какая угодно, и лишний довод ей ни к чему.
+                    **({"cookies": cookies} if cookies else {}),
                 )
                 status = resp.status_code
                 network_failure = False
@@ -397,8 +420,9 @@ class Client:
         except Exception as exc:
             raise HttpError(f"Невалидный JSON от {url}: {exc}") from exc
 
-    def get_text(self, url: str, params=None, headers: dict[str, str] | None = None) -> str:
-        return self.get(url, params, headers=headers).text
+    def get_text(self, url: str, params=None, headers: dict[str, str] | None = None,
+                 cookies: dict[str, str] | None = None) -> str:
+        return self.get(url, params, headers=headers, cookies=cookies).text
 
     def close(self):
         with self._lock:
