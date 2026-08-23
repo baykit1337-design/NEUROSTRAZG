@@ -670,7 +670,10 @@ def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
         try:
             rows, decoded, first = _walk(client, address)
         except HttpError as exc:
-            said = f"{address} — сайт не ответил: {exc}"
+            # Без «сайт не ответил»: при HTTP 202 он как раз ответил, и
+            # эта приписка сбивала с толку сильнее, чем помогала. Текст
+            # беды и так говорит, что случилось.
+            said = f"{address} — {exc}"
             log.warning("Цидянь: %s", said)
             tries.append(said)
             continue
