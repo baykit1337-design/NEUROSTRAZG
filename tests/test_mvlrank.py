@@ -434,47 +434,166 @@ class TestTheRouteEndToEnd(unittest.TestCase):
                                                site=mvlrank.SITE_KEY)), 1)
 
 
-class TestRowsOfOtherSitesDoNotGoToFanqie(unittest.TestCase):
-    """Раскрытие строки — только для Фанкью.
+class TestTheOpenedRowTellsSomethingNew(unittest.TestCase):
+    """Раскрытая строка обязана показывать больше самой строки.
 
-    Подробности книги умеет читать один сайт: у него есть отдельный
-    запрос с описанием, автором и главами. У MVL и Webnovel такого нет,
-    а строку раскрыть можно у любой. Раньше в этом случае уходил запрос
-    на фанкьюшный адрес с чужим кодом, и человек читал под строкой MVL
-    ошибку про Фанкью — то есть чистое враньё о том, что произошло.
+    Сначала запрос за подробностями уходил всегда фанкьюшный, и на
+    строке MVLEMPYR человек получал «HTTP 404 fanqienovel.com/page/…».
+    Потом такой запрос перестали слать вовсе — и карточка стала копией
+    строки: то же название, те же числа, те же кнопки. Раскрывают,
+    чтобы узнать больше, а не чтобы прочесть то же крупнее.
     """
 
     def setUp(self):
+        self.item = novel(6615, "Insect Tamers Ascension", weekly=1)
+        self.item["content"] = {
+            "rendered": "<p>Первый абзац.</p><p>Второй абзац.</p>"}
+        self.item["tags"] = ["Система", "Реинкарнация"]
+
+    def ask(self, **kwargs):
+        return mvlrank.book(FakeClient([[self.item]]), "6615", **kwargs)
+
+    def test_the_description_comes_back(self):
+        """Ради него строку и раскрывают."""
+        self.assertIn("Первый абзац", self.ask()["abstract"])
+
+    def test_the_description_is_text_and_not_markup(self):
+        said = self.ask()["abstract"]
+        self.assertNotIn("<p>", said)
+        self.assertNotIn("</p>", said)
+
+    def test_paragraphs_survive_as_paragraphs(self):
+        """Слепленное в простыню описание читать невозможно."""
+        self.assertIn("\n", self.ask()["abstract"])
+
+    def test_the_description_key_is_the_one_the_card_reads(self):
+        """Карточку рисует общий код: назовись поле иначе — и описание
+        не покажется, хотя пришло."""
+        self.assertIn("abstract", self.ask())
+
+    def test_every_genre_gets_into_the_card_not_just_the_first(self):
+        """В строке помещается один жанр, в карточке места хватает."""
+        tags = self.ask()["tags"]
+        self.assertIn("Fantasy", tags)
+        self.assertIn("Action", tags)
+
+    def test_the_sites_own_tags_come_too(self):
+        tags = self.ask()["tags"]
+        self.assertIn("Система", tags)
+
+    def test_a_missing_description_field_falls_back_to_the_post_body(self):
+        """Своё поле могут переименовать, а тело записи есть всегда."""
+        self.assertIn("Первый абзац", self.ask()["abstract"])
+
+    def test_a_named_field_wins_over_the_post_body(self):
+        self.item["description"] = "Короткое описание."
+        self.assertEqual(self.ask()["abstract"], "Короткое описание.")
+
+    def test_a_book_with_no_description_does_not_break_the_card(self):
+        self.item.pop("content")
+        self.assertEqual(self.ask()["abstract"], "")
+
+    def test_the_slug_is_an_exact_search(self):
+        """По коду WordPress ищет нестрого и вернуть может кого угодно."""
+        client = FakeClient([[self.item]])
+        mvlrank.book(client, "6615", slug="insect-tamers-ascension")
+        self.assertEqual(len(client.asked), 1)
+
+    def test_a_book_that_is_gone_is_a_named_failure(self):
+        """Книгу убрали с сайта, а срез снят раньше — это объяснимо, и
+        объяснение полезнее пустой карточки."""
+        with self.assertRaises(SourceBroken):
+            mvlrank.book(FakeClient([[]]), "6615")
+
+    def test_someone_elses_book_is_not_passed_off_as_this_one(self):
+        other = novel(9999, "Чужая книга", weekly=1)
+        with self.assertRaises(SourceBroken):
+            mvlrank.book(FakeClient([[other]]), "6615")
+
+
+class TestTheRouteForTheOpenedRow(unittest.TestCase):
+    def setUp(self):
         from webapp import app as web
 
+        self.web = web
         web.app.config["TESTING"] = True
         self.client = web.app.test_client()
-        self.tabs = (Path(__file__).resolve().parent.parent / "webapp"
-                     / "static" / "tabs.js").read_text(encoding="utf-8")
+        self.was = web._rank_client
+        item = novel(6615, "Insect Tamers Ascension", weekly=1)
+        item["content"] = {"rendered": "<p>Описание книги.</p>"}
+        web._rank_client = lambda: FakeClient([[item]])
 
-    def test_the_page_does_not_even_ask_for_a_foreign_row(self):
-        block = self.tabs[self.tabs.index("rkCardBody") - 3000:]
-        block = block[:block.index("rkCardBody")]
-        self.assertIn("row.site", block)
+    def tearDown(self):
+        self.web._rank_client = self.was
 
-    def test_the_server_refuses_instead_of_answering_about_another_book(self):
-        """Даже если запрос всё-таки уйдёт — в ответ должно прийти
-        объяснение, а не подробности случайной фанкьюшной книги."""
-        got = self.client.get("/api/rank/book/12345?site=" + mvlrank.SITE_KEY)
+    def test_an_mvl_row_gets_mvl_details(self):
+        got = self.client.get("/api/rank/book/6615?site=" + mvlrank.SITE_KEY)
+        self.assertEqual(got.status_code, 200)
+        self.assertIn("Описание книги", got.get_json()["abstract"])
+
+    def test_a_site_without_a_reader_says_so_instead_of_guessing(self):
+        """У Webnovel рейтинг — готовая страница, лишнего про книгу там
+        нет. Честный отказ лучше карточки-копии."""
+        got = self.client.get("/api/rank/book/12345?site=webnovel")
         self.assertEqual(got.status_code, 400)
-        self.assertIn("error", got.get_json())
+        self.assertIn("Webnovel", got.get_json()["error"])
 
-    def test_the_refusal_names_the_site_the_row_came_from(self):
-        got = self.client.get("/api/rank/book/12345?site=" + mvlrank.SITE_KEY)
-        said = got.get_json()["error"]
-        self.assertIn("MVL", said.upper())
+    def test_the_page_is_told_which_sites_can_answer(self):
+        """Иначе страница раскрывает строку и показывает пустоту."""
+        sites = self.client.get("/api/rank/categories").get_json()["sites"]
+        by_key = {s["key"]: s for s in sites}
+        self.assertTrue(by_key[""]["details"])
+        self.assertTrue(by_key[mvlrank.SITE_KEY]["details"])
+        self.assertFalse(by_key["webnovel"]["details"])
 
     def test_a_bad_code_is_still_the_first_thing_checked(self):
-        """Отказ по чужому сайту не должен подменять собой проверку
-        кода: «12345abc?» — это плохой код, кто бы его ни прислал."""
         got = self.client.get("/api/rank/book/..%2Fetc?site="
                               + mvlrank.SITE_KEY)
         self.assertIn(got.status_code, (400, 404))
+
+
+class TestTheCardDoesNotRepeatTheRow(unittest.TestCase):
+    """«В строке есть скачать и скопировать, в выпадающем тоже. Нахуя?»
+
+    Вопрос по делу. Два одинаковых действия в сантиметре друг от друга
+    не помогают, а заставляют выбирать: человек читает обе кнопки и
+    гадает, чем они отличаются. Не отличаются ничем.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tabs = (Path(__file__).resolve().parent.parent / "webapp"
+                    / "static" / "tabs.js").read_text(encoding="utf-8")
+
+    def card(self) -> str:
+        block = self.tabs[self.tabs.index("function rkCardBody("):]
+        return block[:block.index("\n}\n")]
+
+    def row(self) -> str:
+        """Тело отрисовки строки рейтинга — до раскрытой карточки."""
+        block = self.tabs[self.tabs.index("get.textContent = 'скачать';"):]
+        return block[:block.index("rkToggle(row, tr)")]
+
+    def test_the_row_still_has_its_own_buttons(self):
+        """Убирали задвоение, а не действия."""
+        self.assertIn("rkPick(row)", self.row())
+        self.assertIn("rkCopyMenu(row)", self.row())
+
+    def test_the_card_does_not_download_a_second_time(self):
+        self.assertNotIn("rkPick(row)", self.card())
+
+    def test_the_card_does_not_copy_a_second_time(self):
+        self.assertNotIn("copyText(", self.card())
+
+    def test_what_the_row_has_no_room_for_stays_in_the_card(self):
+        """«Открыть на сайте» в строке нет — значит, это не задвоение."""
+        self.assertIn("window.open(", self.card())
+
+    def test_the_card_asks_the_site_the_row_came_from(self):
+        block = self.tabs[self.tabs.index("function rkBookUrl("):]
+        block = block[:block.index("\n}")]
+        self.assertIn("row.site", block)
+        self.assertIn("slug", block)
 
 
 class TestOldRowsStillLoad(unittest.TestCase):

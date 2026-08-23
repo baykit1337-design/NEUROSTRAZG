@@ -1868,6 +1868,10 @@ RANK_SITES = {
         # С какого источника качать книгу, если нажать «скачать» в строке.
         "source": "mvlempyr",
         "boards": mvl_rank_net.BOARDS,
+        # Кто расскажет про книгу, когда строку раскроют. У Webnovel
+        # такого нет: его рейтинг — готовая страница, и лишнего про
+        # книгу там не лежит.
+        "book": mvl_rank_net.book,
         "about": "Своей страницы рейтинга у сайта нет: витрина забирает весь "
                  "каталог и сортирует его в браузере. Здесь то же самое — "
                  "берём каталог и сортируем по выбранной доске. Числа "
@@ -1957,6 +1961,10 @@ def api_rank_categories():
         # сайт иначе значило бы править ещё и разметку.
         sites=[{"key": key, "name": site["name"], "source": site["source"],
                 "about": site["about"],
+                # Есть ли у сайта что рассказать о книге сверх строки.
+                # Без этого признака страница не знает, стоит ли вообще
+                # раскрывать строку, и открывает пустую карточку.
+                "details": key == "" or site.get("book") is not None,
                 "boards": [{"key": k, "name": v}
                            for k, v in site["boards"].items()]}
                for key, site in RANK_SITES.items()],
@@ -2066,6 +2074,32 @@ def api_rank_cover(book_id: str):
                      max_age=31536000)
 
 
+def _rank_book_elsewhere(site: str, book_id: str):
+    """Подробности книги с рейтинга, который не Фанкью.
+
+    Читателя подробностей у каждого сайта свой, и есть он не у всех:
+    Webnovel отдаёт рейтинг готовой страницей, и лишнего про книгу там
+    нет. Такой сайт честно отказывается — это лучше, чем показать
+    карточку, повторяющую строку слово в слово.
+    """
+    reader = RANK_SITES[site].get("book")
+    if reader is None:
+        return jsonify(
+            error=f"{RANK_SITES[site]['name']} не отдаёт подробностей книги "
+                  "отдельно от рейтинга — показывать в карточке нечего."), 400
+
+    client = _rank_client()
+    try:
+        return jsonify(reader(client, book_id,
+                              slug=request.args.get("slug", "")))
+    except sources.SourceBroken as exc:
+        return jsonify(error=str(exc)), 502
+    except HttpError as exc:
+        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+    finally:
+        client.close()
+
+
 @app.get("/api/rank/book/<book_id>")
 def api_rank_book(book_id: str):
     """Подробности книги для раскрытой строки (2.4 ТЗ).
@@ -2077,15 +2111,15 @@ def api_rank_book(book_id: str):
     if not covers.safe_id(book_id):
         return jsonify(error="Плохой код книги"), 400
 
-    # Страницу книги умеем читать только у Фанкью. Раньше сюда попадал
-    # запрос с любого рейтинга, и код с MVLEMPYR уходил на китайский
-    # сайт: человек видел «HTTP 404 fanqienovel.com/page/13571» и не мог
-    # понять из этого ничего. Отказ по делу лучше чужой ошибки.
+    # Каждый рейтинг рассказывает о книге сам. Раньше сюда шёл запрос
+    # только фанкьюшный, и код с MVLEMPYR уходил на китайский сайт:
+    # человек видел «HTTP 404 fanqienovel.com/page/13571». Потом такой
+    # запрос стали отклонять — и раскрытая строка превратилась в копию
+    # самой строки, без описания и меток. Теперь спрашиваем тот сайт, с
+    # которого строка.
     site = _rank_site(request.args)
     if site:
-        return jsonify(
-            error=f"Подробности книги умеем читать только у Фанкью, "
-                  f"а эта строка с {RANK_SITES[site]['name']}."), 400
+        return _rank_book_elsewhere(site, book_id)
 
     # Перевод описания приезжает вместе с карточкой (3.1 ТЗ): переключатель
     # «原/RU» должен знать сразу, есть ли что показывать по второй кнопке.

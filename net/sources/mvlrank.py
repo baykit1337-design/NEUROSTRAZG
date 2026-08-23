@@ -264,6 +264,130 @@ def fetch(client, board: str = "weekly", on_progress=None) -> dict:
     }
 
 
+#: Где у записи каталога лежит описание книги.
+#:
+#: Порядок не случайный. Сначала ищем именованное поле — так его кладут
+#: плагины произвольных полей, и там описание чистое. Последним стоит
+#: `content`, который у WordPress есть **всегда**: это тело записи, и
+#: если своё поле переименуют, описание всё равно найдётся. Точное имя
+#: своего поля живьём не проверялось: каталог из песочницы недоступен, —
+#: поэтому перебор, а не одно имя наугад.
+ABOUT_FIELDS = ("description", "synopsis", "summary", "novel-description",
+                "excerpt", "content")
+
+#: Всё, чем сайт описывает книгу словами, кроме жанров.
+TAG_FIELDS = ("tags", "novel-tags", "tag")
+
+
+def _plain(value) -> str:
+    """Описание без разметки.
+
+    WordPress отдаёт тело записи готовым HTML: абзацы, переносы, иногда
+    ссылки. В карточке оно показывается текстом, и теги там были бы
+    видны как есть.
+    """
+    text = _text(value)
+    if "<" not in text:
+        return text
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(text, "lxml")
+    # Абзацы разделяем пустой строкой, иначе описание слипается в
+    # одну простыню без единого разрыва.
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    parts = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+    if parts:
+        return "\n\n".join(part for part in parts if part)
+    return soup.get_text("\n", strip=True)
+
+
+def _list(value) -> list:
+    """Список названий из того, что положил WordPress."""
+    if value in (None, "", []):
+        return []
+    if isinstance(value, (list, tuple)):
+        return [_text(v) for v in value if _text(v)]
+    return [part.strip() for part in _text(value).split(",") if part.strip()]
+
+
+def book(client, code: str, slug: str = "") -> dict:
+    """Подробности одной книги — для раскрытой строки рейтинга.
+
+    Берутся из того же каталога WordPress, что и сам рейтинг, но по
+    одной записи, а не по тысяче: у книги спрашивают подробности редко,
+    и тянуть ради этого весь каталог было бы расточительством.
+
+    Зачем это вообще. Раскрытая строка показывала ровно то, что и так
+    стоит в строке, — то же название, те же числа, те же кнопки. Смысла
+    в таком раскрытии нет: человек нажимает, чтобы **узнать больше**, а
+    получал ту же строку крупным шрифтом.
+
+    Ищем по слагу, если он известен: у WordPress это точный поиск.
+    Слага нет — ищем по коду и отбираем сами: `search` у WordPress
+    нестрогий и вернуть может кого угодно.
+    """
+    code = str(code or "").strip()
+    slug = str(slug or "").strip()
+    params = {"slug": slug} if slug else {"search": code, "per_page": 20}
+
+    try:
+        found = client.get(CATALOGUE, params=params).json()
+    except HttpError as exc:
+        raise SourceBroken(
+            f"Каталог MVLEMPYR не ответил на запрос книги {code}: {exc}") from exc
+    except (ValueError, TypeError) as exc:
+        raise SourceBroken(
+            f"Каталог MVLEMPYR ответил не JSON на запрос книги {code}") from exc
+
+    items = found if isinstance(found, list) else [found]
+    item = None
+    for candidate in items:
+        if not isinstance(candidate, dict):
+            continue
+        # По слагу сайт и так вернул одну запись; по коду отбираем сами.
+        if slug or _text(_field(candidate, "novel-code")) == code:
+            item = candidate
+            break
+    if item is None:
+        raise SourceBroken(
+            f"В каталоге MVLEMPYR нет книги с кодом {code}. Возможно, её "
+            "убрали с сайта — срез рейтинга снят раньше.")
+
+    abstract = ""
+    for name in ABOUT_FIELDS:
+        abstract = _plain(_field(item, name))
+        if abstract:
+            break
+
+    tags: list = []
+    for name in TAG_FIELDS:
+        tags.extend(_list(_field(item, name)))
+
+    got_slug = _text(_field(item, "slug")) or _text(item.get("slug")) or slug
+    got_code = _text(_field(item, "novel-code")) or code
+
+    return {
+        "name": _text(_field(item, "name")) or _text(item.get("title")),
+        # Ключ называется как у Фанкью нарочно: карточку рисует один
+        # и тот же код, и переключатель «原/RU» с кнопкой перевода
+        # достаётся MVLEMPYR даром.
+        "abstract": abstract,
+        # Жанры — тоже метки, и в карточке им место рядом с остальными.
+        # В строке рейтинга помещается только первый.
+        "tags": _list(_field(item, "genre")) + tags,
+        "author": _text(_field(item, "author-name")),
+        "chapters": _number(_field(item, "total-chapters")),
+        "score": _score(_field(item, "average-review")),
+        "status": STATUS.get(_text(_field(item, "status")).lower(),
+                             _text(_field(item, "status"))),
+        "language": LANGUAGE.get(_text(_field(item, "language")).upper(), ""),
+        "updated": _text(item.get("modified") or item.get("date")),
+        "cover": COVER.format(size=COVER_SIZE, code=got_code) if got_code else "",
+        "link": f"{SITE}/novel/{got_slug or got_code}",
+    }
+
+
 def _version(rows, total: int) -> str:
     """Отпечаток среза: по нему видно, пересчитался ли рейтинг.
 
@@ -274,5 +398,5 @@ def _version(rows, total: int) -> str:
     return f"{total}:{len(rows)}:{head}" if head else ""
 
 
-__all__ = ["BOARDS", "CATALOGUE", "PLACE_FIELD", "SITE", "SITE_KEY", "TOP",
-           "catalogue", "fetch"]
+__all__ = ["ABOUT_FIELDS", "BOARDS", "CATALOGUE", "PLACE_FIELD", "SITE",
+           "SITE_KEY", "TOP", "book", "catalogue", "fetch"]

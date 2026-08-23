@@ -4407,6 +4407,22 @@ function rkLink(row){
   return row.link || (RK_LINK + row.book_id);
 }
 
+/** Куда идти за подробностями книги из строки рейтинга.
+ *
+ * Сайт передаётся тот же, что у строки: у каждого рейтинга свой
+ * читатель подробностей. Слаг — потому что у MVLEMPYR книга ищется в
+ * каталоге по нему точно, а по коду только приблизительным поиском;
+ * взять его больше неоткуда — он спрятан в готовой ссылке на книгу.
+ */
+function rkBookUrl(row){
+  const at = `/api/rank/book/${encodeURIComponent(row.book_id)}`;
+  if(!row.site) return at;
+  const parts = [`site=${encodeURIComponent(row.site)}`];
+  const slug = (row.link || '').split('/').filter(Boolean).pop();
+  if(slug && slug !== row.book_id) parts.push(`slug=${encodeURIComponent(slug)}`);
+  return `${at}?${parts.join('&')}`;
+}
+
 /** Миниатюра обложки в строке рейтинга (2.3 ТЗ).
  *
  * Картинка идёт через свой кэш, а не по ссылке с сайта: та подписана и
@@ -4694,15 +4710,14 @@ async function rkToggle(row, tr){
       + '<span class="spin"></span>Читаем страницу книги…</div>';
     rkOpen(box);
     try{
-      // Страницу книги умеем читать только у Фанкью. У остальных
-      // рейтингов строка и так знает про книгу всё, что мы про неё
-      // собрали, — карточка строится из неё. Раньше сюда уходил запрос
-      // независимо от сайта, и на строке MVLEMPYR человек получал
-      // «HTTP 404 fanqienovel.com/page/13571»: код чужой, сайт чужой,
-      // понять из этого нельзя ничего.
-      const data = row.site
-        ? {}
-        : await call(`/api/rank/book/${encodeURIComponent(row.book_id)}`);
+      // Подробности спрашиваем у того сайта, с которого строка. Сначала
+      // запрос уходил всегда фанкьюшный, и на строке MVLEMPYR человек
+      // получал «HTTP 404 fanqienovel.com/page/13571». Потом такой
+      // запрос перестали слать вовсе — и раскрытая строка стала копией
+      // самой строки: то же название, те же числа, те же кнопки.
+      // Раскрывают, чтобы узнать больше, а не чтобы прочесть то же
+      // крупнее.
+      const data = await call(rkBookUrl(row));
       box.innerHTML = '';
       box.append(rkCardBody(row, data));
       box.dataset.filled = '1';
@@ -4862,12 +4877,20 @@ function rkCardBody(row, data){
 
   const stats = document.createElement('div');
   stats.className = 'stats';
+  // Числа у сайтов разные, и показывать чужие прочерками — врать в
+  // обе стороны: у MVLEMPYR нет ни читающих, ни знаков, зато есть балл,
+  // а у Фанкью наоборот. Поэтому строка складывается из того, что у
+  // книги действительно есть.
+  const chapters = data.chapters || row.chapters;
+  const words = data.words || row.words;
+  const score = data.score === undefined ? row.score : data.score;
   const rows = [
-    ['глав', data.chapters ? ru(data.chapters) : '—'],
-    ['знаков', (data.words || row.words) ? ru(data.words || row.words) : '—'],
+    chapters && ['глав', ru(chapters)],
+    words && ['знаков', ru(words)],
     ['статус', data.status || row.status || '—'],
-    ['читающих', row.readers ? ru(row.readers) : '—'],
-  ];
+    row.readers && ['читающих', ru(row.readers)],
+    score && ['балл', String(score)],
+  ].filter(Boolean);
   for(const [name, value] of rows){
     const span = document.createElement('span');
     span.innerHTML = `${name} <b>${value}</b>`;
@@ -4875,12 +4898,16 @@ function rkCardBody(row, data){
   }
   side.append(stats);
 
+  // `last_chapter` из строки берём только у Фанкью. У MVLEMPYR это же
+  // поле занято языком оригинала — общая строка рейтинга одна на все
+  // сайты, — и подпись «последняя глава: английский» получалась чушью.
+  const tail = data.last_chapter || (!row.site && row.last_chapter);
   const when = [
     data.updated && `обновлено ${rkWhen(data.updated)}`,
     data.first_published && `первая публикация ${rkWhen(data.first_published)}`,
-    (data.last_chapter || row.last_chapter)
-      && `последняя глава: ${data.last_chapter || row.last_chapter}`,
-    data.author && `автор: ${data.author}`,
+    tail && `последняя глава: ${tail}`,
+    data.language && `язык оригинала: ${data.language}`,
+    (data.author || row.author) && `автор: ${data.author || row.author}`,
   ].filter(Boolean);
   if(when.length){
     const line = document.createElement('p');
@@ -4889,15 +4916,18 @@ function rkCardBody(row, data){
     side.append(line);
   }
 
+  // Кнопка здесь одна, и это не экономия места.
+  //
+  // Раньше карточка повторяла «Скачать» и «Скопировать», которые уже
+  // стоят в самой строке — в строке, до которой отсюда один сантиметр
+  // вверх. Два одинаковых действия рядом не помогают, а заставляют
+  // выбирать между ними: человек читает обе кнопки и гадает, чем они
+  // отличаются. Не отличаются ничем.
+  //
+  // «Открыть на сайте» осталась потому, что в строке её нет.
   const buttons = document.createElement('div');
   buttons.className = 'row';
   buttons.style.marginTop = '12px';
-
-  const get = document.createElement('button');
-  get.className = 'primary';
-  get.style.flex = '1';
-  get.textContent = 'Скачать';
-  get.onclick = e => { e.stopPropagation(); rkPick(row); };
 
   const open = document.createElement('button');
   open.className = 'ghost';
@@ -4907,22 +4937,7 @@ function rkCardBody(row, data){
     window.open(data.link || rkLink(row), '_blank', 'noopener');
   };
 
-  const copy = document.createElement('button');
-  copy.className = 'ghost';
-  copy.textContent = 'Скопировать';
-  copy.onclick = e => {
-    e.stopPropagation();
-    openMenu(copy, [
-      ['ссылку', async () => toast(
-        await copyText(rkLink(row)) ? 'Ссылка скопирована'
-                                    : 'Скопировать не вышло')],
-      ['id', async () => toast(
-        await copyText(String(row.book_id)) ? 'Код книги скопирован'
-                                            : 'Скопировать не вышло')],
-    ]);
-  };
-
-  buttons.append(get, open, copy);
+  buttons.append(open);
   side.append(buttons);
 
   wrap.append(cover, side);
@@ -4935,6 +4950,12 @@ function rkWhen(value){
   if(number > 0){
     // Секунды и миллисекунды сайт смешивает — различаем по порядку.
     const when = new Date(number > 1e12 ? number : number * 1000);
+    if(!isNaN(when)) return when.toLocaleDateString('ru');
+  }
+  // WordPress отдаёт дату строкой вида 2026-08-20T11:04:00. Числом она
+  // не становится, и в карточке так и висела целиком, с секундами.
+  if(typeof value === 'string' && /^\d{4}-\d\d-\d\d/.test(value)){
+    const when = new Date(value);
     if(!isNaN(when)) return when.toLocaleDateString('ru');
   }
   return String(value);

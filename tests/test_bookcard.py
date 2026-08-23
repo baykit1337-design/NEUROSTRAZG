@@ -210,16 +210,31 @@ class TestExpandUi(unittest.TestCase):
     def test_the_data_is_pulled_lazily(self):
         toggle = self.tabs.split("async function rkToggle", 1)[1]
         self.assertIn("if(!box.dataset.filled)", toggle)
-        self.assertIn("/api/rank/book/", toggle)
+        # Адрес собирается отдельно: у каждого рейтинга свой сайт, и в
+        # запрос уходит ещё и слаг. Проверяем, что раскрытие идёт за
+        # подробностями, а не то, где именно склеена строка.
+        self.assertIn("await call(rkBookUrl(row))", toggle)
+
+    def test_the_details_are_asked_of_the_right_site(self):
+        block = self.tabs.split("function rkBookUrl(row)", 1)[1]
+        block = block[:block.index("\n}")]
+        self.assertIn("/api/rank/book/", block)
+        self.assertIn("row.site", block)
 
     def test_opening_is_smooth(self):
         self.assertIn("transition:max-height .28s ease", self.page)
 
-    def test_the_buttons_from_the_spec_are_there(self):
+    def test_the_card_offers_what_the_row_cannot(self):
+        """В ТЗ у карточки было три кнопки: «Скачать», «Открыть на
+        сайте», «Скопировать». Две из трёх дословно повторяли те, что
+        стоят в самой строке, в сантиметре выше. Два одинаковых действия
+        рядом не помогают, а заставляют выбирать: человек читает обе и
+        гадает, чем они отличаются. Осталась та, которой в строке нет."""
         body = self.tabs.split("function rkCardBody(row, data)", 1)[1]
-        for name in ("'Скачать'", "'Открыть на сайте'", "'Скопировать'"):
-            with self.subTest(name=name):
-                self.assertIn(name, body)
+        body = body[:body.index("\n}\n")]
+        self.assertIn("'Открыть на сайте'", body)
+        self.assertNotIn("rkPick(row)", body)
+        self.assertNotIn("copyText(", body)
 
     def test_buttons_inside_the_row_do_not_open_it(self):
         """Иначе «скачать» ещё и раскрывала бы карточку."""
