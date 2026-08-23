@@ -738,3 +738,88 @@ class TestListingTheBoard(unittest.TestCase):
 
         rows = qd.fetch(Flaky(font=anti_spider(SECRET)))["rows"]
         self.assertEqual(len(rows), 2)
+
+
+class TestWhyItCameBackEmpty(unittest.TestCase):
+    """Пустой ответ бывает по трём разным причинам, и лечатся они
+    по-разному. Сообщение обязано их различать: «не разобралось» —
+    это не ответ, по нему нечего чинить.
+
+    Скрипт капчи в признаки не годится: `turing.captcha.qcloud.com` и
+    зонд `probev3.js` висят в шапке **любой** страницы Цидяня, в том
+    числе совершенно рабочей. На этом и стоит первая проверка.
+    """
+
+    HEAD = ('<script src="/C2WF946J0/probev3.js"></script><head>'
+            '<script async src="https://turing.captcha.qcloud.com/TCaptcha.js">'
+            '</script><title>{title}</title></head>')
+
+    def guard_page(self):
+        """Проверка на робота: капча есть, рейтинга нет."""
+        return ("<html>" + self.HEAD.format(title="安全验证")
+                + "<body><div>请输入验证码</div></body></html>")
+
+    def changed_page(self):
+        """Страница рейтинга целиком — но списка книг в ней нет."""
+        return ("<html>" + self.HEAD.format(title="月票榜")
+                + '<body><div class="rank-box"><div class="rank-nav-list">'
+                + '<a href="/rank/yuepiao/">月票榜</a></div>'
+                + '<div class="rank-body"><div class="какая-то-новая-вёрстка">'
+                + "книги теперь тут</div></div></div>"
+                + "<i>" + "х" * 30_000 + "</i></body></html>")
+
+    def test_a_challenge_is_named_a_challenge(self):
+        with self.assertRaises(SourceBroken) as caught:
+            qd.fetch(Fake(self.guard_page()))
+        said = str(caught.exception)
+        self.assertIn("проверк", said.lower())
+        self.assertIn("прокси", said.lower())
+
+    def test_a_changed_layout_is_not_blamed_on_the_captcha(self):
+        """Тут и капча в шапке, и размер большой — но рамка рейтинга
+        на месте, значит сайт ответил нам, а разбирать стало нечем."""
+        with self.assertRaises(SourceBroken) as caught:
+            qd.fetch(Fake(self.changed_page()))
+        said = str(caught.exception)
+        self.assertIn("вёрстк", said.lower())
+        self.assertNotIn("прокси", said.lower())
+
+    def test_a_missing_page_says_to_try_another_board(self):
+        """`/rank/yuepiao/chn4/` сайт отдаёт как «страницы нет». Совет
+        тут другой: не менять прокси, а взять другую доску."""
+        page = ("<html>" + self.HEAD.format(title="错误页")
+                + "<body>页面不存在</body></html>")
+        with self.assertRaises(SourceBroken) as caught:
+            qd.fetch(Fake(page), board="yuepiao", channel="dushi")
+        said = str(caught.exception)
+        self.assertIn("раздел", said.lower())
+        self.assertNotIn("прокси", said.lower())
+
+    def test_the_message_names_the_address_and_the_size(self):
+        """С адресом и размером можно идти дальше; без них — некуда."""
+        with self.assertRaises(SourceBroken) as caught:
+            qd.fetch(Fake(self.guard_page()), board="readindex")
+        said = str(caught.exception)
+        self.assertIn(qd.url_of("readindex"), said)
+        self.assertIn(str(len(self.guard_page())), said)
+
+
+class TestHowItKnocks(unittest.TestCase):
+    """Цидянь сидит за защитой Tencent, и запрос без единого заголовка
+    она встречает проверкой. Приходим как живой читатель."""
+
+    def test_the_page_is_asked_for_with_browser_headers(self):
+        class Watching(Fake):
+            def __init__(self, page):
+                super().__init__(page)
+                self.headers = []
+
+            def get_text(self, url, **kwargs):
+                self.headers.append(kwargs.get("headers") or {})
+                return super().get_text(url, **kwargs)
+
+        client = Watching(RANK2)
+        qd.fetch(client)
+        sent = client.headers[0]
+        self.assertIn("qidian.com", sent.get("Referer", ""))
+        self.assertIn("zh", sent.get("Accept-Language", ""))
