@@ -1832,6 +1832,119 @@ def _rank_client():
     return Client(proxy_url=_any_proxy(pool))
 
 
+#: Сколько посредников перебрать, прежде чем стучаться напрямую.
+#:
+#: Не все подряд: у каждой попытки внутри ещё своя лесенка повторов, и
+#: перебор десятка мёртвых адресов превратил бы кнопку «Обновить срез» в
+#: минуту ожидания. Трёх хватает, чтобы отличить «этот посредник сайту
+#: не нравится» от «сайт не пускает никого».
+RANK_TRIES = 3
+
+
+class RankUnreachable(Exception):
+    """Ни один способ дойти до сайта не сработал.
+
+    Несёт с собой отчёт по каждой попытке. «Сайт недоступен» без него не
+    отличает мёртвого посредника от запрета по адресу и от съехавшей
+    разметки, а лечатся они по-разному.
+    """
+
+    def __init__(self, tried: list[str], first: Exception | None = None):
+        self.tried = list(tried)
+        #: Первая по счёту беда — у неё бывают подробности (`details`),
+        #: которые интерфейс показывает отдельно.
+        self.first = first
+        super().__init__(self.report())
+
+    def report(self) -> str:
+        if not self.tried:
+            return "Рейтинг не удалось снять: пробовать было нечем."
+        if len(self.tried) == 1:
+            return self.tried[0]
+        rows = "; ".join(f"{number}) {said}"
+                         for number, said in enumerate(self.tried, 1))
+        return (f"Рейтинг не пришёл ни одним из {len(self.tried)} способов. "
+                f"{rows}")
+
+
+def _rank_ways() -> list:
+    """Способы дойти до сайта: посредники по очереди, потом напрямую.
+
+    Способ был один — первый пригодный посредник. Не понравился он
+    сайту, и рейтинг не приходил вовсе, хотя рядом лежали ещё адреса и
+    открытый прямой ход. Снаружи это выглядело как «нажал — не
+    произошло ничего», и разобраться было нечем.
+
+    Первым идёт тот же клиент, что и раньше: его подменяют проверки, и
+    ломать подмену незачем. Прямой ход добавляется последним и только
+    если посредники вообще есть, — иначе он и так первый.
+    """
+    with POOL_LOCK:
+        pool = POOL
+    found = _working_proxies(pool)[:RANK_TRIES]
+
+    ways: list = [(f"посредник {found[0].safe_url}" if found
+                   else "напрямую, без посредника", _rank_client)]
+
+    # У запасных способов повтор отключён нарочно. Внутри клиента своя
+    # лесенка попыток с паузами, и на мёртвом адресе она съедает
+    # полминуты. Перемноженная на три запасных способа и два адреса
+    # сайта, она превратила бы кнопку в четыре минуты ожидания — а
+    # повтором здесь работает сам перебор: следующий способ и есть
+    # следующая попытка.
+    for spare in found[1:]:
+        ways.append((f"посредник {spare.safe_url}",
+                     lambda url=spare.url: Client(proxy_url=url,
+                                                  max_attempts=1)))
+    if found:
+        ways.append(("напрямую, без посредника",
+                     lambda: Client(max_attempts=1)))
+    return ways
+
+
+def _rank_run(run):
+    """Выполнить `run(client)`, перебирая способы, пока не выйдет.
+
+    Возвращает (что вышло, чем пробовали). Ни один не сработал —
+    `RankUnreachable` с отчётом по каждому.
+    """
+    tried: list[str] = []
+    first: Exception | None = None
+
+    ways = _rank_ways()
+    for number, (label, make) in enumerate(ways, 1):
+        log.info("Рейтинг: попытка %s из %s — %s", number, len(ways), label)
+        client = make()
+        try:
+            found = run(client)
+        except (sources.SourceBroken, HttpError) as exc:
+            # Три слоя в одной строке, и все три нужны: чем шли, как
+            # называется беда (по имени класса видно, отказал ли
+            # посредник, закрылся ли сайт или оборвалась сеть) и что
+            # именно сказал сайт. Плюс короткий перевод с языка curl:
+            # «CONNECT tunnel failed, response 402» человеку ничего не
+            # говорит, «посредник отказал: тариф или трафик исчерпан» —
+            # говорит всё.
+            why = proxies_mod.short_reason(exc)
+            log.warning("Рейтинг: попытка %s (%s) не вышла. %s: %s [%s]",
+                        number, label, type(exc).__name__, exc, why)
+            said = f"{label} — {exc}"
+            if why and why not in said:
+                said = f"{said} ({why})"
+            tried.append(said)
+            first = first or exc
+            continue
+        finally:
+            client.close()
+
+        if tried:
+            log.info("Рейтинг: получилось через «%s» с %s-й попытки",
+                     label, len(tried) + 1)
+        return found, tried
+
+    raise RankUnreachable(tried, first)
+
+
 def _working_proxies(pool) -> list:
     """Тот же отбор, что и в качалке: правило одно на всю программу.
 
@@ -2028,8 +2141,7 @@ def api_rank_refresh():
     audience, kind, _ = _rank_where(payload)
     board, category = _rank_board(payload, site)
 
-    client = _rank_client()
-    try:
+    def snap(client):
         if site == mvl_rank_net.SITE_KEY:
             # У MVLEMPYR нет ни шрифта, ни аудитории, ни жанровых досок:
             # весь рейтинг — это каталог, отсортированный по одному из
@@ -2049,19 +2161,21 @@ def api_rank_refresh():
         else:
             found = rank_net.fetch(client, audience=audience, kind=kind,
                                    category=category)
-    except rank_net.Diagnosis as exc:
+        return found
+
+    try:
+        # Способов дойти до сайта несколько, и пробуются они по очереди:
+        # один посредник сайту не понравился — берётся следующий, а за
+        # ними прямой ход.
+        found, tried = _rank_run(snap)
+    except RankUnreachable as exc:
         # Подробности вместо общих слов: по ним видно, сел ли сайт,
-        # сменилась ли разметка или дело только в шрифте.
-        return jsonify(error=str(exc), details=exc.details), 502
-    except sources.SourceBroken as exc:
-        return jsonify(error=str(exc)), 502
+        # запретил ли он адрес посредника или сменилась разметка.
+        details = dict(getattr(exc.first, "details", None) or {})
+        details["tried"] = exc.tried
+        return jsonify(error=exc.report(), details=details), 502
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
-    except HttpError as exc:
-        return jsonify(error=f"Сайт недоступен: {exc}",
-                       details={"http": str(exc)}), 502
-    finally:
-        client.close()
 
     have = rank_op.days(board, category, site)
     previous = rank_op.load(have[0], board, category, site) if have else None
@@ -2073,6 +2187,10 @@ def api_rank_refresh():
                  site=site)
     return jsonify(saved=len(found["rows"]), decoded=found["decoded"],
                    same_version=same, audience=audience, kind=kind,
+                   # Чем пришлось пробовать до того, как получилось.
+                   # Пусто — вышло сразу; непусто — стоит знать, что
+                   # первый посредник сайту не подошёл.
+                   tried=tried,
                    # 2.5: подробности разбора шрифта. Без них «названия
                    # расшифровать не удалось» не говорит, что чинить.
                    font=found.get("font") or {},

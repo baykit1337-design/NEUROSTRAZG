@@ -56,6 +56,21 @@ SITE_KEY = "qidian"
 
 SITE = "https://www.qidian.com"
 
+#: Мобильный вид того же сайта. Стоит за той же защитой, но встречает
+#: гостей иначе, и когда полный сайт отвечает проверкой, этот бывает
+#: сговорчивее.
+MOBILE = "https://m.qidian.com"
+
+#: Какие доски у мобильного вида вообще есть.
+#:
+#: Не догадка: скрипт `getMUrl()` на каждой странице Цидяня переводит
+#: адрес полного сайта в мобильный, и для рейтинга он знает ровно этот
+#: список — `/rank/(yuepiao|readindex|hotsales|newfans|recom|newauthor)`.
+#: Остальные доски он в мобильный вид не переводит, значит, их там нет,
+#: и стучаться туда незачем.
+MOBILE_BOARDS = ("yuepiao", "readindex", "hotsales", "newfans", "recom",
+                 "newauthor")
+
 #: Обложки лежат на отдельном хосте и называются по коду книги. Число
 #: 349573 — постоянная сайта, оно одно во всех адресах на всех снятых
 #: страницах.
@@ -563,37 +578,40 @@ def _next_page(soup) -> str:
     return "" if address.rstrip("/").endswith("javascript:") else address
 
 
-def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
-    """Срез одной доски одного раздела."""
-    address = url_of(board, channel)
+def _walk(client, address: str) -> tuple[list[RankRow], int, str]:
+    """Пролистать доску с одного адреса. Возвращает строки, сколько из
+    них с расшифрованным числом, и первую страницу целиком.
+
+    Первую страницу держим ради разбора полётов: без неё «не
+    разобралось» остаётся словами, по которым нечего чинить.
+    """
     rows: list[RankRow] = []
     seen: set[str] = set()
     fonts: dict[str, dict] = {}
     decoded = 0
     page_address = address
-    #: Первая страница целиком — по ней ставится диагноз, если книг не
-    #: нашлось. Держать её ради этого стоит: без неё «не разобралось»
-    #: остаётся словами, по которым нечего чинить.
     first = ""
 
     for _ in range(PAGES):
         try:
             page = client.get_text(page_address, headers=VISIT)
         except HttpError as exc:
-            if rows:
-                # Первая страница уже в руках: половина рейтинга лучше,
-                # чем ничего, а листать дальше явно не выйдет.
-                log.info("Цидянь оборвал листание на %s: %s", page_address, exc)
-                break
-            raise SourceBroken(
-                f"Цидянь не ответил на {page_address}: {exc}") from exc
+            if not rows:
+                raise
+            # Первая страница уже в руках: половина рейтинга лучше, чем
+            # ничего, а листать дальше явно не выйдет.
+            log.warning("Цидянь оборвал листание на %s: %s", page_address, exc)
+            break
 
         if not first:
             first = page
+        log.info("Цидянь: %s — страница %s байт", page_address, len(page or ""))
+
         soup = BeautifulSoup(page, "lxml")
         table = _font_of_page(client, soup, fonts)
 
-        for row in _rows_of(soup, table, len(rows)):
+        found = _rows_of(soup, table, len(rows))
+        for row in found:
             if row.book_id in seen:
                 continue
             seen.add(row.book_id)
@@ -602,6 +620,8 @@ def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
                 decoded += 1
             if len(rows) >= TOP:
                 break
+        log.info("Цидянь: %s — книг на странице %s, всего набрано %s",
+                 page_address, len(found), len(rows))
 
         if len(rows) >= TOP:
             break
@@ -609,32 +629,76 @@ def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
         if not page_address:
             break
 
-    if not rows:
-        # В лог — начало самой страницы. Сообщение на экране говорит,
-        # на что похож ответ; строка ниже показывает, чем он был на
-        # самом деле, и по ней разбор чинится за один заход, а не за
-        # переписку «а что там было».
-        log.warning("Цидянь, %s: книг не нашлось. Начало ответа: %s",
-                    address, re.sub(r"\s+", " ", str(first or ""))[:300])
-        raise SourceBroken(_diagnose(first, address))
-
-    # Места на странице печатаются вперемешку: у первой книги «NO.1»,
-    # дальше цифрами, и в разных блоках нумерация начинается заново.
+    # Места на странице печатаются вперемешку: в боковых блоках у первой
+    # книги «NO.1», дальше цифрами, и в каждом блоке нумерация начинается
+    # заново. На самой доске такого нет, но и сюда мы приходим не только
+    # с неё.
     if len({row.place for row in rows}) != len(rows):
         for number, row in enumerate(rows, 1):
             row.place = number
 
-    return {
-        "rows": rows,
-        "board": board,
-        "category": channel,
-        "version": _version(rows),
-        "stats_date": "",
-        # «Расшифровано» здесь — про числа доски, а не про названия:
-        # названия у Цидяня открыты, шрифтом спрятаны только цифры.
-        "decoded": decoded,
-        "total": len(rows),
-    }
+    return rows, decoded, first
+
+
+def _mirrors(board: str, channel: str) -> list[str]:
+    """Адреса, по которым стоит попробовать эту доску.
+
+    Первый — полный сайт. Второй, мобильный, добавляется не всегда:
+    скрипт самого Цидяня переводит в мобильный вид только шесть досок и
+    ничего не знает про разделы. Просить у мобильного сайта раздел,
+    которого у него нет, значило бы получить список «по всем разделам» и
+    подписать его выбранным жанром — то есть соврать. Поэтому мобильный
+    адрес идёт в дело только там, где он равнозначен.
+    """
+    found = [url_of(board, channel)]
+    if not channel and board in MOBILE_BOARDS:
+        found.append(f"{MOBILE}/rank/{PATHS[board]}/")
+    return found
+
+
+def fetch(client, board: str = "yuepiao", channel: str = "") -> dict:
+    """Срез одной доски одного раздела.
+
+    Адресов пробуем несколько: если полный сайт встретил проверкой на
+    робота, у мобильного она своя и бывает мягче. Каждая попытка
+    записывается в лог и, если не вышло ни одна, попадает в сообщение —
+    гадать, что именно не открылось, не приходится.
+    """
+    tries: list[str] = []
+
+    for address in _mirrors(board, channel):
+        try:
+            rows, decoded, first = _walk(client, address)
+        except HttpError as exc:
+            said = f"{address} — сайт не ответил: {exc}"
+            log.warning("Цидянь: %s", said)
+            tries.append(said)
+            continue
+
+        if rows:
+            log.info("Цидянь: %s — снято книг %s, с числом %s",
+                     address, len(rows), decoded)
+            return {
+                "rows": rows,
+                "board": board,
+                "category": channel,
+                "version": _version(rows),
+                "stats_date": "",
+                # «Расшифровано» здесь — про числа доски, а не про
+                # названия: названия у Цидяня открыты, шрифтом спрятаны
+                # только цифры.
+                "decoded": decoded,
+                "total": len(rows),
+                "address": address,
+            }
+
+        said = _diagnose(first, address)
+        log.warning("Цидянь: %s. Начало ответа: %s", said,
+                    re.sub(r"\s+", " ", str(first or ""))[:400])
+        tries.append(said)
+
+    raise SourceBroken(" | ".join(tries) if tries else
+                       f"Рейтинг Цидяня: пробовать было нечего, доска {board}")
 
 
 def _version(rows) -> str:
