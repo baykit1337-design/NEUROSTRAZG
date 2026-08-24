@@ -38,10 +38,15 @@ class Session:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.asked: list[str] = []
+        self.posted: list[tuple] = []
 
     def get(self, url, **kwargs):
         self.asked.append(url)
         return self.replies[min(len(self.asked), len(self.replies)) - 1]
+
+    def post(self, url, **kwargs):
+        self.posted.append((url, kwargs.get("data")))
+        return self.get(url, **kwargs)
 
     def close(self):
         pass
@@ -134,6 +139,32 @@ class TestATruncatedAnswerIsStillTruncated(unittest.TestCase):
             Reply(202, "мало", {"Content-Length": "100000"}))
         with self.assertRaises(HttpError):
             client.get_text("https://x/rank/")
+
+
+class TestAskingWithAForm(unittest.TestCase):
+    """POST появился ради одного: у ixdzs8 полный список глав отдаётся
+    только так. Живёт он здесь, потому что это тот же запрос с теми же
+    повторами и той же диагностикой — и ломаться должен так же."""
+
+    def test_a_form_goes_as_a_post(self):
+        client, session = client_with(Reply(200, PAGE))
+        client.post("https://x/novel/clist/", data={"bid": "1"})
+        self.assertEqual(session.posted[0][1], {"bid": "1"})
+
+    def test_a_plain_get_stays_a_get(self):
+        """Послабление одностороннее: всё, что ходило GET-ом, им и ходит."""
+        client, session = client_with(Reply(200, PAGE))
+        client.get_text("https://x/rank/")
+        self.assertEqual(session.posted, [])
+
+    def test_the_answer_comes_back_whole(self):
+        client, _ = client_with(Reply(200, PAGE))
+        self.assertEqual(client.post("https://x/novel/clist/").text, PAGE)
+
+    def test_a_refusal_is_still_a_refusal(self):
+        client, _ = client_with(Reply(500, "ой"))
+        with self.assertRaises(HttpError):
+            client.post("https://x/novel/clist/", data={"bid": "1"})
 
 
 if __name__ == "__main__":

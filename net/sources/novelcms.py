@@ -41,6 +41,36 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class TocApi:
+    """Оглавление, которое приходит отдельным запросом, а не в вёрстке.
+
+    Так устроен ixdzs8: на странице книги висят только последние восемь
+    глав, а весь список отдаётся по `POST /novel/clist/` в виде JSON.
+    Разобрать такую страницу вёрсткой можно — и получить восьмиглавую
+    книгу молча, с бодрым отчётом об успехе. Поэтому список берётся
+    оттуда, откуда его берёт сам сайт.
+
+    Имена полей вынесены сюда, а не зашиты в разбор: движок этот стоит не
+    на одном сайте, а поля у соседей называются по-своему.
+    """
+
+    #: Куда стучаться — относительно адреса книги.
+    path: str
+    #: Как в запросе называется код книги.
+    code_field: str
+    #: Шаблон адреса главы: `{code}` — книга, `{order}` — номер по списку.
+    #: Номер по списку это НЕ номер главы: у 异度旅社 402 главы, а последняя
+    #: лежит по `p399.html` — тома в нумерации не участвуют.
+    chapter: str
+    #: Где в ответе лежит список и как называются его поля.
+    rows: str = "data"
+    title: str = "title"
+    order: str = "ordernum"
+    #: Поле, которым помечен заголовок тома: у него нет своей страницы.
+    volume: str = "ctype"
+
+
+@dataclass(frozen=True)
 class SiteRule:
     """Где у сайта что лежит.
 
@@ -82,6 +112,9 @@ class SiteRule:
     encoding: str = ""
     #: Ссылка на продолжение той же главы. Пусто — берём общую.
     next_page: tuple[str, ...] = ()
+    #: Оглавление приходит отдельным запросом. Заполнено — вёрстку
+    #: страницы книги под список глав не смотрим вовсе.
+    toc_api: TocApi | None = None
 
 
 #: Общие запасные селекторы: если сайт перерисуют, разбор не встанет
@@ -188,6 +221,23 @@ SITES: tuple[SiteRule, ...] = (
         cover=(".cover img", "#fmimg img"),
     ),
     SiteRule(
+        name="ixdzs",
+        # Три адреса одного сайта: упрощённый, гонконгский и тайваньский.
+        # Перечисляет их сам сайт — `<link rel="alternate">` на каждой
+        # странице, — так что гадать не пришлось.
+        hosts=("ixdzs8.com", "ixdzs.hk", "ixdzs.tw"),
+        toc_api=TocApi(path="/novel/clist/", code_field="bid",
+                       chapter="/read/{code}/p{order}.html"),
+        # В вёрстке книги лежат только последние восемь глав. Оставлять
+        # их запасным путём нельзя: восьмиглавая книга — худший исход,
+        # потому что выглядит она как удача.
+        toc_lists=(),
+        content=("article.page-content section",),
+        title=("h1.page-d-name", "article.page-content h3"),
+        author=("a.bauthor",),
+        cover=(".n-img img",),
+    ),
+    SiteRule(
         name="sjks88",
         hosts=("sjks88.com",),
         toc_lists=("div.list",),
@@ -212,6 +262,11 @@ FOOT_NAV = ".foot-nav a"
 
 #: Куски внутри текста главы, которые к книге отношения не имеют.
 JUNK_CLASSES = ("gadblock", "adblock", "banner", "foot-nav", "header")
+
+#: Чем сайт подписывает конец главы. Это пометка вёрстки, а не текст
+#: книги, и в файле она смотрится строкой из ниоткуда.
+TAIL_MARKS = ("(本章完)", "（本章完）", "（本章結束）", "(本章结束)",
+              "(全书完)", "（全書完）")
 
 #: Сколько страниц одной главы готовы пройти. Разложенная на части глава
 #: — обычное дело, бесконечная — признак хождения по кругу.
@@ -329,6 +384,11 @@ def _pick(page, selectors, extra=()):
         if found is not None:
             return found
     return None
+
+
+def _squeezed(text: str) -> str:
+    """Строка без пробелов — для сравнения заголовка с первой строкой."""
+    return re.sub(r"\s+", "", text or "")
 
 
 def _junk(tag) -> bool:
@@ -535,8 +595,70 @@ class NovelCmsSource(Source):
             return [f"{base}_{number}" for number in range(2, last + 1)]
         return []
 
+    @staticmethod
+    def _numbered(rows: list) -> list:
+        """Проставить номера главам и упорядочить их.
+
+        Номер берём из названия главы. Есть у всех — считаем его
+        настоящим и сортируем по нему. Нет хотя бы у одной — нумеруем по
+        порядку списка и порядок не трогаем: сайт и так отдаёт главы
+        подряд, а сортировка по половинчатым номерам их перемешала бы.
+        """
+        numbers = [CHAPTER_NUMBER.search(row[1]) for row in rows]
+        if rows and all(numbers):
+            for row, found in zip(rows, numbers):
+                row[0] = int(found.group(1))
+            rows.sort(key=lambda row: row[0])
+        else:
+            for order, row in enumerate(rows, 1):
+                row[0] = order
+        return [tuple(row) for row in rows]
+
+    def _from_api(self, client, rule: SiteRule, book: str):
+        """Оглавление отдельным запросом — там, где сайт делает так же.
+
+        Запасного пути тут нет намеренно. На странице книги висят
+        последние восемь глав, и разобрать её вёрсткой значило бы отдать
+        восьмиглавую книгу — молча и с отчётом об успехе.
+        """
+        api = rule.toc_api
+        code = self.code_of(book)
+        where = urljoin(book, api.path)
+        try:
+            answer = client.post(where, data={api.code_field: code}).json()
+        except Exception as exc:  # noqa: BLE001 — беда одна, причин много
+            raise SourceBroken(
+                f"Список глав не пришёл ({where}): {exc}. У этого сайта "
+                "он приходит отдельным запросом, и без него скачивать "
+                "нечего.") from exc
+
+        found = answer.get(api.rows) if isinstance(answer, dict) else None
+        if not isinstance(found, list) or not found:
+            raise SourceBroken(
+                f"Источник изменился: в ответе со списком глав ({where}) "
+                "самого списка нет. Скачивание невозможно, пока модуль не "
+                "поправят.")
+
+        rows = []
+        for item in found:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get(api.volume) or "").strip() == "1":
+                # Заголовок тома, а не глава: своей страницы у него нет.
+                continue
+            title = str(item.get(api.title) or "").strip()
+            order = str(item.get(api.order) or "").strip()
+            if not title or not order:
+                continue
+            rows.append([None, title, urljoin(
+                book, api.chapter.format(code=code, order=order))])
+        return self._numbered(rows)
+
     def _links(self, client, rule: SiteRule, book: str):
         """Все главы: (номер, название, полный адрес)."""
+        if rule.toc_api is not None:
+            return self._from_api(client, rule, book)
+
         listing, page = self._listing(client, rule, book)
 
         rows = []
@@ -561,20 +683,7 @@ class NovelCmsSource(Source):
         for address in self._more_pages(page, listing, rule):
             collect(_soup(_fetch(client, address, rule)), address)
 
-        # Номер берём из названия главы. Есть у всех — считаем его
-        # настоящим и сортируем по нему. Нет хотя бы у одной — нумеруем
-        # по порядку списка и порядок не трогаем: на странице `/dir`
-        # главы и так идут подряд.
-        numbers = [CHAPTER_NUMBER.search(row[1]) for row in rows]
-        if rows and all(numbers):
-            for row, found in zip(rows, numbers):
-                row[0] = int(found.group(1))
-            rows.sort(key=lambda row: row[0])
-        else:
-            for order, row in enumerate(rows, 1):
-                row[0] = order
-
-        return [tuple(row) for row in rows]
+        return self._numbered(rows)
 
     # ------------------------------------------------------------ глава
 
@@ -645,9 +754,18 @@ class NovelCmsSource(Source):
                     in body.get_text("\n", strip=True).splitlines()
                     if line.strip()]
 
+        # Пометка конца главы — вёрстка, а не текст: в файле она выглядит
+        # строкой из ниоткуда.
+        while rows and rows[-1].strip() in TAIL_MARKS:
+            rows.pop()
+
         # Заголовок нередко повторён первой строкой текста — в книге он
         # окажется дважды, и «убрать название» этого уже не поправит.
-        if rows and title and rows[0].strip() == title:
+        #
+        # Сравниваем без пробелов: ixdzs8 печатает его в шапке как
+        # «第397章 意外的敌人», а первой строкой — как «第397章意外的敌人».
+        # Различие в одном пробеле, и из-за него заголовок оставался.
+        if rows and title and _squeezed(rows[0]) == _squeezed(title):
             rows = rows[1:]
 
         return title, rows

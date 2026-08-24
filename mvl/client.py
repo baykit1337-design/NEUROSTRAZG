@@ -129,15 +129,22 @@ class _UrllibSession:
 
     def get(self, url: str, params=None, timeout=TIMEOUT, headers=None,
             cookies=None, **_):
+        if params:
+            url = f"{url}?{encode_params(params)}"
+        return self._send(url, None, timeout, headers, cookies)
+
+    def post(self, url: str, data=None, timeout=TIMEOUT, headers=None,
+             cookies=None, **_):
+        return self._send(url, data or {}, timeout, headers, cookies)
+
+    @staticmethod
+    def _send(url: str, data, timeout, headers, cookies):
         import urllib.error
         import urllib.request
 
         # urllib умеет только один таймаут — берём тот, что на чтение.
         if isinstance(timeout, (tuple, list)):
             timeout = timeout[-1]
-
-        if params:
-            url = f"{url}?{encode_params(params)}"
 
         # Заголовки, о которых просил вызывающий, раньше молча терялись:
         # сюда приходили и Referer, и язык, и пропуск на сайт, а уходил
@@ -147,7 +154,14 @@ class _UrllibSession:
         if cookies:
             sending["Cookie"] = "; ".join(
                 f"{name}={value}" for name, value in cookies.items())
-        req = urllib.request.Request(url, headers=sending)
+
+        body = None
+        if data is not None:
+            body = encode_params(data).encode("utf-8")
+            sending.setdefault("Content-Type",
+                               "application/x-www-form-urlencoded")
+
+        req = urllib.request.Request(url, data=body, headers=sending)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return _UrllibResponse(resp.status, resp.read(), dict(resp.headers))
@@ -320,6 +334,25 @@ class Client:
         лежит его собственная кука с заглушки, и первой уходит она.
         Через `cookies` строка получается одна, и в ней наше значение.
         """
+        return self._ask(url, params=params, headers=headers, cookies=cookies)
+
+    def post(self, url: str, data: dict | None = None,
+             headers: dict[str, str] | None = None,
+             cookies: dict[str, str] | None = None) -> Any:
+        """POST с теми же ретраями и той же диагностикой, что и GET.
+
+        Нужен там, где страница не отдаёт нужного вовсе. У ixdzs8 на
+        странице книги висят только последние восемь глав, а полный
+        список приходит отдельным запросом — и только этим способом.
+        Обходиться одним GET значило бы отдавать восьмиглавую книгу.
+        """
+        return self._ask(url, headers=headers, cookies=cookies,
+                         data=data if data is not None else {})
+
+    def _ask(self, url: str, params=None, headers: dict[str, str] | None = None,
+             cookies: dict[str, str] | None = None,
+             data: dict | None = None) -> Any:
+        """Один запрос со всеми повторами. `data` не пусто — это POST."""
         last_error = "unknown"
         last_status: int | None = None
         network_failure = False
@@ -337,15 +370,24 @@ class Client:
                     full_url = f"{url}?{encode_params(params)}"
                 else:
                     full_url = url
-                resp = self._session().get(
+                session = self._session()
+                # Лишних доводов сессии не передаём вовсе: она может быть
+                # какая угодно, в том числе заготовка из проверок.
+                extra = {}
+                if cookies:
+                    extra["cookies"] = cookies
+                if data is None:
+                    send = session.get
+                else:
+                    send = session.post
+                    extra["data"] = data
+                resp = send(
                     full_url,
                     # (на соединение, на чтение) — обрыв тела и недоступный
                     # адрес это разные беды с разными сроками ожидания.
                     timeout=(self.connect_timeout, self.timeout),
                     headers=request_headers or None,
-                    # Пустых кук не передаём вовсе: сессия может быть
-                    # какая угодно, и лишний довод ей ни к чему.
-                    **({"cookies": cookies} if cookies else {}),
+                    **extra,
                 )
                 status = resp.status_code
                 network_failure = False
