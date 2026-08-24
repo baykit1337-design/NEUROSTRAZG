@@ -51,24 +51,31 @@ def book_page() -> str:
       </ul></div></main></body></html>"""
 
 
-def chapter_list(count=20, volumes=True) -> str:
+def chapter_list(count=20, volumes=True, as_text=True) -> str:
     """Ответ `/novel/clist/`: тома идут в том же списке, но без адреса.
 
     Из-за них номер главы и номер в адресе расходятся, и расходятся
     именно так, как на живом сайте: у 异度旅社 «共402章», а последняя
     глава — 第402章 — лежит по `p399.html`. Считать номер главы номером в
     адресе значит скачать не те главы и заметить это только по тексту.
+
+    Живой ответ, снятый со вкладки Network, кладёт в `ctype` и `ordernum`
+    **строки**: `{"ctype": "0", "ordernum": "398"}`. Заготовка умеет обе
+    записи — числами сайт мог бы отдать их завтра.
     """
+    def cell(value):
+        return str(value) if as_text else value
+
     rows = []
     number = 0            # сквозной счёт строк — он и попадает в название
     order = 0             # счёт одних глав — он и попадает в адрес
     while len(rows) < count:
         number += 1
         if volumes and number in (1, 11):
-            rows.append({"ctype": 1, "title": f"Том {number // 10 + 1}"})
+            rows.append({"ctype": cell(1), "title": f"Том {number // 10 + 1}"})
             continue
         order += 1
-        rows.append({"ctype": 0, "ordernum": order,
+        rows.append({"ctype": cell(0), "ordernum": cell(order),
                      "title": f"第{number}章 Глава про дверь"})
     return json.dumps({"rs": 200, "data": rows}, ensure_ascii=False)
 
@@ -191,6 +198,37 @@ class TestTheListComesFromTheRequest(Base):
         where, data = site.posted[0]
         self.assertIn("/novel/clist/", where)
         self.assertEqual(data, {"bid": "566155"})
+
+
+class TestTheLiveShapeOfTheAnswer(Base):
+    """Живой ответ, снятый со вкладки Network, кладёт в `ctype` и
+    `ordernum` строки, а не числа: `{"ctype": "0", "ordernum": "398"}`.
+
+    Сравнивать такое с единицей и подставлять в адрес надо, ничего не
+    предполагая о записи: примешь строку `"1"` за число — и заголовок
+    тома уедет в главы, а адрес соберётся из `None`.
+    """
+
+    def toc(self, **how):
+        site = Site(listing=chapter_list(**how))
+        return self.source.toc(site, self.source.find(site, BOOK))
+
+    def test_numbers_written_as_strings_are_read(self):
+        found = self.toc(as_text=True)
+        self.assertEqual(len(found.chapters), 18)
+
+    def test_numbers_written_as_numbers_are_read_too(self):
+        found = self.toc(as_text=False)
+        self.assertEqual(len(found.chapters), 18)
+
+    def test_a_volume_written_as_a_string_is_still_a_volume(self):
+        found = self.toc(as_text=True)
+        self.assertNotIn("Том 1", [c.ch_name for c in found.chapters])
+
+    def test_the_address_is_built_from_the_string_as_is(self):
+        found = self.toc(as_text=True)
+        self.assertTrue(found.chapters[0].link.endswith("p1.html"),
+                        found.chapters[0].link)
 
 
 class TestTheAddressIsNotTheChapterNumber(Base):
