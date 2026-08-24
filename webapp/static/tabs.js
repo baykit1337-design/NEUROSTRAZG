@@ -80,7 +80,18 @@ function makeDropdown(node, onChange){
 
   function label(){
     const found = options.find(o => o[0] === value);
-    toggle.innerHTML = `<span>${found ? found[1] : ''}</span><span>▾</span>`;
+    const text = found ? found[1] : '';
+    const name = document.createElement('span');
+    name.className = 'dd-label';
+    name.textContent = text;
+    // Длинное название («Новинки авторов-новичков») в кнопку не влезало:
+    // текст переносился на вторую строку и вылезал за её рамку. Обрезаем
+    // многоточием, а целиком показываем подсказкой.
+    name.title = text;
+    const caret = document.createElement('span');
+    caret.className = 'dd-caret';
+    caret.textContent = '▾';
+    toggle.replaceChildren(name, caret);
   }
 
   for(const [key, text] of options){
@@ -4677,9 +4688,18 @@ async function rkTranslate(){
     const data = await call('/api/rank/translate',
       {...rkWhere(), model: llmMenu ? llmMenu.value : ''});
     rkTitles = data.titles || {};
+    // «Не разобрано ответов» человеку ничего не говорило: ответы — наше
+    // внутреннее дело, а видит он китайские названия. Считаем и называем
+    // именно их.
+    const left = (data.missing || []).join(', ');
     $('rkNote').textContent =
       `Переведено ${data.translated}, из кэша ${data.cached}.`
-      + (data.broken ? ` Не разобрано ответов: ${data.broken}.` : '');
+      + (data.broken
+        ? ` Осталось китайскими: ${data.broken}`
+          + (left ? ` — ${left}${data.broken > (data.missing || []).length
+            ? ' и другие' : ''}.` : '.')
+          + ' Нажмите «Перевести названия» ещё раз.'
+        : '');
     rkRender();
   }catch(err){ showError(err.message); }
   finally{ $('rkTranslate').disabled = false; }

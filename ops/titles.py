@@ -28,6 +28,23 @@ ABSTRACTS_FILE = DATA_DIR / "abstracts.json"
 #: один дешёвый запрос вместо полусотни дорогих.
 BATCH = 25
 
+#: Сколько раз спрашивать одну и ту же пачку, если ответ не разобрался.
+#:
+#: Модель отвечает по-разному на один и тот же запрос: там, где она один
+#: раз обернула JSON в пояснения или оборвалась на середине, со второго
+#: захода обычно отвечает как просили. Раньше пачка просто пропадала — и
+#: пропадала целиком, двадцать пять названий разом.
+TRIES = 2
+
+#: Мельче этого пачку не дробим.
+#:
+#: Не разобралась пачка и со второго раза — делим пополам: у половины
+#: шансов больше, а терять из-за одного упрямого названия остальные
+#: двадцать четыре незачем. Дробить до одной строки, однако, нельзя:
+#: двадцать пять названий превратились бы в полсотни запросов, а перевод
+#: рейтинга — удобство, а не работа программы.
+SMALLEST = 5
+
 PROMPT = """Ниже список названий книг на китайском, по одному в строке, с
 номерами.
 
@@ -138,38 +155,122 @@ def translate_abstract(book_id, text: str, client, model: str = "",
     return remember_abstract(book_id, answer)
 
 
-def translate(rows, client, model: str = "", force: bool = False) -> dict:
-    """Переводит названия строк рейтинга. Переведённые не перезапрашивает."""
+def _said(found, index: int, name: str) -> str:
+    """Перевод одной строки из ответа модели.
+
+    Просили ключ — номер строки, но модель обходится с этим вольно:
+    пишет `"1."`, кладёт число вместо строки, а то и вовсе берёт ключом
+    само китайское название. Всё это — тот же ответ, и отказываться от
+    него из-за формы ключа значит выбрасывать готовый перевод.
+    """
+    for key in (str(index), index, f"{index}.", name):
+        try:
+            value = found.get(key)
+        except TypeError:      # ключ не годится в словарь — не беда
+            continue
+        if isinstance(value, dict):
+            # {"1": {"ru": "…"}} — тоже встречается.
+            value = next((v for v in value.values() if isinstance(v, str)), "")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _read(answer: str, batch: list) -> dict:
+    """Разбор ответа на пачку: номер строки → перевод.
+
+    Пусто — ответ не разобрался вовсе. Список модель возвращает не реже
+    объекта, хотя её просили об объекте: тогда читаем по порядку строк.
+    """
     from llm.cache import parse_json
 
+    try:
+        found = parse_json(answer)
+    except ValueError:
+        found = None
+
+    if found is None:
+        try:
+            found = json.loads((answer or "").strip())
+        except ValueError:
+            return {}
+        if isinstance(found, list):
+            # Порядок — единственное, что связывает такой ответ со
+            # строками. Он годится, только если длина сошлась: короче
+            # список — и переводы съедут на чужие книги.
+            if len(found) != len(batch):
+                return {}
+            found = {str(i): v for i, v in enumerate(found, 1)}
+        if not isinstance(found, dict):
+            return {}
+
+    out = {}
+    for index, row in enumerate(batch, 1):
+        text = _said(found, index, row.name)
+        if text:
+            out[index] = text
+    return out
+
+
+def _ask(client, batch: list, model: str) -> dict:
+    """Перевод одной пачки: book_id → перевод. Чего нет — то не далось.
+
+    Порядок такой: спросить, при неразборчивом ответе спросить ещё раз,
+    и только потом делить пачку пополам. Половина отвечает лучше целого,
+    а полученное по дороге не теряется.
+    """
+    if not batch:
+        return {}
+
+    lines = "\n".join(f"{i}. {row.name}" for i, row in enumerate(batch, 1))
+    for attempt in range(1, TRIES + 1):
+        answer = client.generate(PROMPT.format(lines=lines), model=model)
+        found = _read(answer, batch)
+        if found:
+            got = {batch[index - 1].book_id: text
+                   for index, text in found.items()}
+            left = [row for row in batch if row.book_id not in got]
+            if left:
+                # Ответ разобрался, но не на все строки. Остаток — своей
+                # пачкой: он меньше, и шансов у него больше.
+                log.info("Названия: в ответе не нашлось %s из %s — "
+                         "спрашиваем остаток отдельно", len(left), len(batch))
+                # Остаток строго меньше пачки: сюда мы попадаем, только
+                # если хоть одна строка перевелась.
+                got.update(_ask(client, left, model))
+            return got
+        log.warning("Названия: ответ модели не разобрался "
+                    "(попытка %s из %s, в пачке %s)", attempt, TRIES,
+                    len(batch))
+
+    if len(batch) <= SMALLEST:
+        return {}
+
+    half = len(batch) // 2
+    out = _ask(client, batch[:half], model)
+    out.update(_ask(client, batch[half:], model))
+    return out
+
+
+def translate(rows, client, model: str = "", force: bool = False) -> dict:
+    """Переводит названия строк рейтинга. Переведённые не перезапрашивает."""
     have = known()
     todo = [row for row in rows
             if row.book_id and (force or row.book_id not in have)]
 
     added = {}
-    broken = 0
     for start in range(0, len(todo), BATCH):
-        batch = todo[start:start + BATCH]
-        lines = "\n".join(f"{i}. {row.name}" for i, row in enumerate(batch, 1))
-        answer = client.generate(PROMPT.format(lines=lines), model=model)
-
-        try:
-            found = parse_json(answer)
-        except ValueError:
-            # Перевод — удобство, а не работа программы. Испорченный ответ
-            # на одну пачку не должен ронять весь запрос и терять уже
-            # переведённое: пропускаем пачку и говорим сколько.
-            log.warning("Модель вернула не JSON — пачка названий пропущена")
-            broken += len(batch)
-            continue
-
-        for index, row in enumerate(batch, 1):
-            text = str(found.get(str(index)) or found.get(index) or "").strip()
-            if text:
-                added[row.book_id] = text
+        added.update(_ask(client, todo[start:start + BATCH], model))
 
     if added:
         have = remember(added)
-    return {"titles": {row.book_id: have.get(row.book_id, "") for row in rows},
-            "translated": len(added), "broken": broken,
-            "cached": len(rows) - len(added) - broken}
+
+    titles = {row.book_id: have.get(row.book_id, "") for row in rows}
+    # «Не перевелось» считаем по строкам, а не по пачкам: человеку важно,
+    # сколько названий осталось китайскими, а на сколько запросов они были
+    # разложены — наше внутреннее дело.
+    missing = [row.name for row in todo if not titles.get(row.book_id)]
+    return {"titles": titles,
+            "translated": len(added), "broken": len(missing),
+            "missing": missing[:10],
+            "cached": len(rows) - len(added) - len(missing)}

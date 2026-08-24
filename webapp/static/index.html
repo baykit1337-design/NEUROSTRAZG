@@ -309,6 +309,14 @@
     border-color:var(--stroke-soft);background:rgba(255,255,255,.05);
     display:flex;align-items:center;justify-content:space-between;gap:8px;
   }
+  /* Название доски бывает длиннее кнопки («Новинки авторов-новичков»).
+     Перенос строки распирал кнопку, и вторая строка вылезала за рамку.
+     Обрезаем многоточием: полное название висит подсказкой и стоит в
+     раскрытом списке, где места хватает. */
+  .dropdown-toggle .dd-label{
+    min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .dropdown-toggle .dd-caret{flex:0 0 auto}
   .dropdown-menu{
     position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:200;
     background:#15151d;
