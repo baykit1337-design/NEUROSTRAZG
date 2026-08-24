@@ -281,6 +281,47 @@ class TestWhenThePassIsNotAccepted(unittest.TestCase):
         self.assertIn("w_tsfp", str(caught.exception))
 
 
+class TestTheRealStub(unittest.TestCase):
+    """Заглушка, снятая с живого ответа Цидяня, — все 209 байт.
+
+    Раньше её узнавали по размеру: «меньше двадцати тысяч байт — значит,
+    проверка». Догадка верная, но по ней нельзя сказать, **что** пришло.
+    Теперь заглушка узнаётся дословно, и сообщение говорит прямо.
+    """
+
+    STUB = ('<!DOCTYPE html><html> <head> <meta charset="UTF-8"> <script> '
+            'var buid = "fffffffffffffffffff" </script> <script '
+            'src="/C2WF946J0/probe.js?v=vc1jasc"></script> </head> '
+            "<body></body> </body> </html>")
+
+    def complaint(self):
+        from net.sources.base import SourceBroken
+
+        with self.assertRaises(SourceBroken) as caught:
+            qd.fetch(Watching(self.STUB), board="vipup")
+        return str(caught.exception)
+
+    def test_the_stub_is_named_for_what_it_is(self):
+        self.assertIn("probe.js", self.complaint())
+
+    def test_it_says_the_pass_was_offered_and_refused(self):
+        self.assertIn("w_tsfp", self.complaint())
+
+    def test_it_does_not_send_the_reader_hunting_for_another_proxy(self):
+        """Заглушка приходит одинаково и через прокси, и напрямую —
+        советовать сменить прокси значило бы гонять человека зря."""
+        said = self.complaint().lower()
+        self.assertIn("не в адресе выхода", said)
+
+    def test_a_page_with_the_rating_frame_is_not_called_a_stub(self):
+        """Зонд висит в шапке и совершенно рабочей страницы, поэтому по
+        одному его адресу судить нельзя."""
+        alive = ('<html><head><script src="/C2WF946J0/probe.js"></script>'
+                 '</head><body><div class="rank-body">книги</div></body>'
+                 "</html>")
+        self.assertFalse(qd._guarded(alive))
+
+
 class Noted:
     """Сессия, которая ничего не делает, но помнит, о чём её просили."""
 
