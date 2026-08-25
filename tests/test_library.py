@@ -1,0 +1,250 @@
+"""Библиотека: одна запись на книгу, а не четыре списка одних и тех же.
+
+Паспорт скачанной книги, история качалки, теги от модели и метки вроде
+«потенциальная» — четыре разных списка одних и тех же книг. Порознь они
+расходятся на второй неделе: там книгу докачали, тут переименовали, а в
+третьем месте она осталась прежней.
+
+Главная тонкость, ради которой всё это и написано: книгу находят на
+одном сайте, а качают с другого. На Цидяне рейтинг работает, а
+скачивания нет вовсе — книгу ищут на сайте-сливе и вставляют оттуда
+адрес. Это одна книга. Разъедься она на две, метка осталась бы на той
+половине, которую больше не открывают.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from ops import library  # noqa: E402
+
+
+class Base(unittest.TestCase):
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        was = library.LIBRARY_FILE
+        library.LIBRARY_FILE = Path(self.dir.name) / "library.json"
+        self.addCleanup(setattr, library, "LIBRARY_FILE", was)
+
+    def qidian(self, **more):
+        """Книга, найденная в рейтинге Цидяня."""
+        fields = dict(found_site="qidian", found_id="1041604040",
+                      name="异度旅社", cover="https://x/обложка.jpg")
+        fields.update(more)
+        return library.remember(**fields)
+
+
+class TestOneBookStaysOneBook(Base):
+
+    def test_a_rating_row_becomes_a_record(self):
+        book = self.qidian()
+        self.assertEqual(len(library.all_books()), 1)
+        self.assertEqual(book.name, "异度旅社")
+
+    def test_downloading_from_a_leak_site_does_not_make_a_second(self):
+        """Тот самый случай: нашли на Цидяне, качали с ixdzs8."""
+        book = self.qidian()
+        library.remember(book.key, source="novelcms",
+                         address="https://ixdzs8.com/read/566155/",
+                         folder="/книги/异度旅社", chapters=402, last=402)
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_where_it_was_found_survives_the_move(self):
+        """Иначе непонятно, откуда книга вообще взялась."""
+        book = self.qidian()
+        library.remember(book.key, source="novelcms", address="https://x/1/")
+        again = library.get(book.key)
+        self.assertEqual(again.found_site, "qidian")
+        self.assertEqual(again.source, "novelcms")
+
+    def test_a_pasted_address_gets_its_own_key(self):
+        """Книга, которую нигде не находили, тоже должна лечь в запись."""
+        book = library.remember(source="novelcms", address="https://x/1/",
+                                name="Книга")
+        self.assertTrue(book.key)
+        self.assertEqual(library.get(book.key).name, "Книга")
+
+    def test_two_sites_with_the_same_code_do_not_collide(self):
+        """Коды у сайтов свои и независимые: у одного четыре цифры, у
+        другого девятнадцать, но совпасть однажды могут."""
+        one = library.remember(found_site="qidian", found_id="7", name="Одна")
+        two = library.remember(found_site="fanqie", found_id="7", name="Другая")
+        self.assertNotEqual(one.key, two.key)
+        self.assertEqual(len(library.all_books()), 2)
+
+    def test_a_book_without_anything_to_name_it_is_refused(self):
+        with self.assertRaises(ValueError):
+            library.remember(name="Безымянная")
+
+
+class TestNobodyKnowsEverything(Base):
+    """Дописываем, а не заменяем.
+
+    Прогон знает про главы и папку, рейтинг — про обложку и перевод
+    названия, метки не знает никто, кроме человека. Записывай мы
+    целиком — каждый следующий прогон стирал бы то, что положил
+    предыдущий.
+    """
+
+    def test_a_run_does_not_wipe_the_cover(self):
+        book = self.qidian()
+        library.remember(book.key, folder="/книги/тут", last=10, chapters=402)
+        self.assertIn("обложка", library.get(book.key).cover)
+
+    def test_a_rating_refresh_does_not_wipe_the_folder(self):
+        book = self.qidian()
+        library.remember(book.key, folder="/книги/тут", last=10)
+        library.remember(book.key, cover="https://x/новая.jpg")
+        self.assertEqual(library.get(book.key).folder, "/книги/тут")
+
+    def test_marks_survive_everything(self):
+        book = self.qidian()
+        library.mark(book.key, "want")
+        library.remember(book.key, folder="/книги/тут", last=10, chapters=402)
+        self.assertIn("want", library.get(book.key).marks)
+
+    def test_the_translated_name_survives_a_run(self):
+        book = self.qidian(name_ru="Гостиница иного мира")
+        library.remember(book.key, folder="/книги/тут", last=5)
+        self.assertEqual(library.get(book.key).name_ru, "Гостиница иного мира")
+
+    def test_what_is_told_anew_does_replace(self):
+        book = self.qidian()
+        library.remember(book.key, name_ru="Первый перевод")
+        library.remember(book.key, name_ru="Второй перевод")
+        self.assertEqual(library.get(book.key).name_ru, "Второй перевод")
+
+
+class TestMarksThatProgramPutsItself(Base):
+    """Считаются из записи и руками не двигаются.
+
+    Хранимая метка «скачана» осталась бы на книге, у которой удалили
+    папку, и врала бы тем увереннее, чем дольше лежит.
+    """
+
+    def test_a_book_never_downloaded_is_not_marked(self):
+        book = self.qidian()
+        self.assertNotIn("downloaded", book.auto)
+
+    def test_a_downloaded_book_is_marked(self):
+        book = self.qidian(folder="/книги/тут", last=402, chapters=402)
+        self.assertIn("downloaded", book.auto)
+
+    def test_new_chapters_are_seen(self):
+        book = self.qidian(folder="/книги/тут", last=400, chapters=402)
+        self.assertEqual(book.fresh, 2)
+        self.assertIn("updatable", book.auto)
+
+    def test_nothing_new_is_not_reported_as_new(self):
+        book = self.qidian(folder="/книги/тут", last=402, chapters=402)
+        self.assertEqual(book.fresh, 0)
+
+    def test_a_book_not_downloaded_has_no_new_chapters(self):
+        """У неначатой книги «новых глав» быть не может — они все новые."""
+        book = self.qidian(chapters=402)
+        self.assertEqual(book.fresh, 0)
+
+    def test_the_count_is_not_kept_in_the_file(self):
+        """Сохранённое «есть новые главы» через день соврало бы."""
+        self.qidian(folder="/книги/тут", last=400, chapters=402)
+        written = json.loads(library.LIBRARY_FILE.read_text(encoding="utf-8"))
+        self.assertNotIn("fresh", written[0])
+        self.assertNotIn("auto", written[0])
+
+
+class TestMarksThatThePersonPuts(Base):
+
+    def test_a_mark_is_put_and_taken_off(self):
+        book = self.qidian()
+        library.mark(book.key, "want")
+        self.assertIn("want", library.get(book.key).marks)
+        library.mark(book.key, "want", on=False)
+        self.assertNotIn("want", library.get(book.key).marks)
+
+    def test_the_same_mark_twice_is_still_one(self):
+        book = self.qidian()
+        library.mark(book.key, "want")
+        library.mark(book.key, "want")
+        self.assertEqual(library.get(book.key).marks.count("want"), 1)
+
+    def test_an_invented_mark_is_refused(self):
+        """Свободные метки расходятся в написании, и одно и то же
+        оказывается в трёх разных кучах."""
+        book = self.qidian()
+        with self.assertRaises(ValueError):
+            library.mark(book.key, "потенц")
+
+    def test_the_programs_own_marks_are_not_put_by_hand(self):
+        book = self.qidian()
+        with self.assertRaises(ValueError):
+            library.mark(book.key, "downloaded")
+
+    def test_marking_an_unknown_book_says_so(self):
+        self.assertIsNone(library.mark("qidian:нет такой", "want"))
+
+
+class TestWhatTheTabWillShow(Base):
+
+    def test_the_summary_counts_what_matters(self):
+        self.qidian(folder="/тут", last=400, chapters=402)
+        library.remember(found_site="fanqie", found_id="9", name="Вторая")
+        library.mark("fanqie:9", "want")
+
+        said = library.state()
+        self.assertEqual(said["books"], 2)
+        self.assertEqual(said["downloaded"], 1)
+        self.assertEqual(said["updatable"], 1)
+        self.assertEqual(said["marks"]["want"], 1)
+
+    def test_the_name_shown_is_the_translation_when_there_is_one(self):
+        book = self.qidian(name_ru="Гостиница иного мира")
+        self.assertEqual(book.title, "Гостиница иного мира")
+
+    def test_without_a_translation_the_original_is_shown(self):
+        self.assertEqual(self.qidian().title, "异度旅社")
+
+    def test_the_freshest_comes_first(self):
+        library.remember(found_site="fanqie", found_id="1", name="Первая",
+                         last_run="2026-01-01 10:00")
+        library.remember(found_site="fanqie", found_id="2", name="Вторая",
+                         last_run="2026-08-25 10:00")
+        self.assertEqual(library.all_books()[0].name, "Вторая")
+
+
+class TestTheFileSurvivesTrouble(Base):
+
+    def test_a_broken_file_does_not_stop_the_program(self):
+        library.LIBRARY_FILE.write_text("не json вовсе", encoding="utf-8")
+        self.assertEqual(library.all_books(), [])
+
+    def test_a_broken_file_is_replaced_by_the_next_book(self):
+        library.LIBRARY_FILE.write_text("{сломано", encoding="utf-8")
+        self.qidian()
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_a_forgotten_book_is_gone(self):
+        book = self.qidian()
+        self.assertTrue(library.forget(book.key))
+        self.assertEqual(library.all_books(), [])
+
+    def test_forgetting_what_is_not_there_is_not_a_crash(self):
+        self.assertFalse(library.forget("qidian:нет такой"))
+
+    def test_reading_back_keeps_the_fields(self):
+        book = self.qidian(folder="/тут", last=7, chapters=9,
+                           tags=["культивация", "попаданец"])
+        again = library.get(book.key)
+        self.assertEqual(again.tags, ["культивация", "попаданец"])
+        self.assertEqual(again.last, 7)
+
+
+if __name__ == "__main__":
+    unittest.main()
