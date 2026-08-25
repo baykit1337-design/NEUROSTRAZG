@@ -622,5 +622,120 @@ class TestExistingLookSurvives(Base):
         self.assertIn("flex-wrap:nowrap", block[:600])
 
 
+class TestEveryScriptIsLinkedToo(Base):
+    """Правило про файлы стилей молчало про скрипты.
+
+    Эффект, у которого вся суть в скрипте, файлом стилей не проверяется:
+    забытый `<script>` даёт ровно то же, что снятая галочка, — тишину.
+    Отличить это от «эффект просто не нравится» нечем.
+    """
+
+    def test_scripts_are_linked(self):
+        for path in JS.glob("*.js"):
+            self.assertIn(f"/static/js/effects/{path.name}", self.html,
+                          path.name)
+
+
+class TestTheNewFiveDoNotTouchTheTabs(Base):
+    """Переезд строк, живые обложки, перелёт, подсветка и встряска.
+
+    Общее у всех пяти одно: вкладка «Рейтинг» о них не знает. Эффект,
+    ради которого пришлось бы править саму вкладку, снимался бы галочкой
+    только наполовину — а половина снятого эффекта хуже включённого.
+    """
+
+    NEW = ("rank-move", "cover-lift", "card-open", "find-hit", "error-shake")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tabs = (STATIC / "tabs.js").read_text(encoding="utf-8")
+        cls.code = {path.stem: path.read_text(encoding="utf-8")
+                    for path in JS.glob("*.js")}
+
+    def test_all_five_are_in_the_registry(self):
+        for key in self.NEW:
+            self.assertIn(f"key: '{key}'", self.settings, key)
+
+    def test_the_tabs_know_nothing_about_them(self):
+        for key in self.NEW:
+            self.assertNotIn("fx-" + key, self.tabs, key)
+
+    def test_the_row_is_found_by_a_mark_that_already_existed(self):
+        """Своя метка на строке — это правка вкладки. Карточка книги уже
+        несёт `data-book` и лежит сразу за строкой; по ней и опознаём."""
+        self.assertIn("data-book", self.code["rankmove"])
+        self.assertIn("nextElementSibling", self.code["rankmove"])
+
+    def test_every_new_script_checks_its_own_switch(self):
+        for name in ("rankmove", "covers", "findhit", "errorshake"):
+            self.assertIn("classList.contains('fx-", self.code[name], name)
+
+
+class TestTheHighlightIsBuiltFromNodes(Base):
+    """Название приходит с чужого сайта.
+
+    Склей мы из него разметку строкой — китайская книга с угловой скобкой
+    в заголовке превратилась бы в чужой тег прямо в списке.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.code = (JS / "findhit.js").read_text(encoding="utf-8")
+
+    def test_no_markup_is_glued_from_strings(self):
+        self.assertNotIn("innerHTML", self.code)
+
+    def test_the_highlight_can_be_taken_off(self):
+        """Снятая галочка список не перерисовывает — метки надо снять
+        самим, иначе эффект выглядит невыключаемым."""
+        self.assertIn("hitClear", self.code)
+
+
+class TestTheFlightIsADouble(Base):
+    """Летит двойник обложки, а не она сама.
+
+    Подвинь мы настоящую миниатюру — строка осталась бы дырявой, если
+    карточка почему-либо не откроется.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.code = (JS / "covers.js").read_text(encoding="utf-8")
+
+    def test_a_copy_is_made(self):
+        self.assertIn("createElement('img')", self.code)
+
+    def test_the_double_takes_itself_away(self):
+        self.assertIn("ghost.remove()", self.code)
+
+    def test_a_late_flight_is_skipped(self):
+        """Обложка, взлетевшая через пять секунд после нажатия, читается
+        не как продолжение нажатия, а как сбой."""
+        self.assertIn("COV_TOO_LATE_MS", self.code)
+
+
+class TestTheShakeRunsOnEveryRefusal(Base):
+    """Главный случай — второе нажатие той же кнопки.
+
+    Текст тот же, блок тот же. Не перезапусти мы анимацию, повторная
+    ошибка прошла бы беззвучно — ровно там, где заметность нужнее всего.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.code = (JS / "errorshake.js").read_text(encoding="utf-8")
+
+    def test_the_animation_is_restarted_by_hand(self):
+        self.assertIn("offsetHeight", self.code)
+
+    def test_it_hangs_on_the_call_not_on_the_box_appearing(self):
+        """Появление можно поймать и стилями, повтор — нет."""
+        self.assertIn("showError", self.code)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
