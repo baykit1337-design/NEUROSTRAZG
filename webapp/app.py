@@ -47,6 +47,7 @@ from ops import analyze as analyze_op  # noqa: E402
 from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
+from ops import library as library_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
 from ops import docs as docs_op  # noqa: E402
 from ops import retell as retell_op  # noqa: E402
@@ -584,6 +585,82 @@ def api_links():
         client.close()
 
 
+# ------------------------------------------------- библиотека книг
+
+
+def _book_out(book) -> dict:
+    """Книга наружу: своё плюс подписи меток.
+
+    Подписи считает сервер, а не страница: список меток закрытый и живёт
+    в `ops/library`, и держать его вторым экземпляром в разметке значило
+    бы однажды разойтись — метка есть, а называть её нечем.
+    """
+    data = book.as_dict()
+    data["mark_names"] = [library_op.MARKS[m] for m in book.marks
+                          if m in library_op.MARKS]
+    data["auto_names"] = [library_op.AUTO[m] for m in book.auto
+                          if m in library_op.AUTO]
+    return data
+
+
+@app.get("/api/library")
+def api_library():
+    """Вся библиотека и сводка по ней."""
+    return jsonify(
+        books=[_book_out(b) for b in library_op.all_books()],
+        state=library_op.state(),
+        marks=[{"key": k, "name": n} for k, n in library_op.MARKS.items()],
+        auto=[{"key": k, "name": n} for k, n in library_op.AUTO.items()],
+    )
+
+
+@app.post("/api/library/mark")
+def api_library_mark():
+    """Поставить или снять метку человека."""
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    name = (payload.get("mark") or "").strip()
+    try:
+        book = library_op.mark(key, name, bool(payload.get("on", True)))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    return jsonify(book=_book_out(book))
+
+
+@app.post("/api/library/note")
+def api_library_note():
+    """Своя заметка к книге."""
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    book = library_op.set_note(key, payload.get("note") or "")
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    return jsonify(book=_book_out(book))
+
+
+@app.post("/api/library/forget")
+def api_library_forget():
+    """Убрать книгу из библиотеки. Файлы на диске не трогаются."""
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    return jsonify(gone=library_op.forget(key))
+
+
+@app.post("/api/library/passport")
+def api_library_passport():
+    """Переписать паспорт в папке книги."""
+    payload = request.json or {}
+    book = library_op.get((payload.get("key") or "").strip())
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    path = library_op.save_passport(book)
+    if not path:
+        return jsonify(error=f"Папка книги недоступна: {book.folder or 'её нет'}"), 400
+    return jsonify(path=path)
+
+
 @app.get("/api/pick/available")
 def api_pick_available():
     """Есть ли системный проводник — если нет, интерфейс прячет кнопку."""
@@ -635,6 +712,59 @@ def api_browse():
         return jsonify(error=str(exc)), 400
 
 
+def _reached(output_dir) -> int:
+    """Докуда книга докачана — по её же `state.json`.
+
+    Не по отчёту прогона: он говорит, сколько глав скачано за этот раз, а
+    нужен самый большой номер, который лежит в папке. Книгу качают
+    кусками, догоняют, бросают и возвращаются — сложение отчётов дало бы
+    неверный хвост, и докачка пошла бы с середины уже готового.
+    """
+    try:
+        state = downloader_mod.State(
+            Path(output_dir) / downloader_mod.STATE_FILE)
+    except Exception:  # noqa: BLE001 — библиотека не повод ронять прогон
+        return 0
+    numbers = [int(n) for n in (state.data.get("downloaded") or {})
+               if str(n).isdigit()]
+    return max(numbers) if numbers else 0
+
+
+def _remember_book(novel, source_key: str, output_dir, origin: dict,
+                   report: dict) -> None:
+    """Положить прогон в библиотеку и паспорт — в папку книги.
+
+    Ошибки здесь наружу не выходят намеренно. Книга уже скачана; уронить
+    прогон из-за того, что не записалась заметка о нём, было бы обменом
+    сделанной работы на удобство.
+    """
+    try:
+        origin = origin or {}
+        site = str(origin.get("site") or "")
+        code = str(origin.get("book_id") or "")
+        key = library_op.key_of(site, code, source_key, novel.slug or str(novel.code))
+        book = library_op.remember(
+            key,
+            name=str(origin.get("name") or novel.name or ""),
+            name_ru=str(origin.get("name_ru") or ""),
+            author=novel.author or "",
+            cover=str(origin.get("cover") or novel.cover or ""),
+            found_site=site,
+            found_id=code,
+            found_link=str(origin.get("link") or ""),
+            source=source_key,
+            address=novel.slug or str(novel.code),
+            folder=str(output_dir),
+            chapters=int(novel.total_chapters or 0),
+            last=_reached(output_dir),
+            skipped=int(report.get("unavailable") or 0),
+            last_run=library_op.stamp(),
+        )
+        library_op.save_passport(book)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Книга не записалась в библиотеку: %s", exc)
+
+
 @app.post("/api/start")
 def api_start():
     payload = request.json or {}
@@ -650,6 +780,10 @@ def api_start():
         return jsonify(error="Введите имя папки"), 400
 
     novel = _novel_from_payload(novel_data)
+    # Откуда книга взялась. У строки рейтинга это сайт и код в нём: книгу
+    # находят на одном сайте, а качают с другого, и без этого одна книга
+    # легла бы в библиотеку дважды.
+    origin = payload.get("origin") or {}
 
     try:
         output_dir = _prepare(base, folder, "download")
@@ -733,6 +867,7 @@ def api_start():
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
+            _remember_book(novel, source.key, output_dir, origin, job.report)
         finally:
             client.close()
 

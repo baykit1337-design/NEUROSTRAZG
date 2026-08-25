@@ -60,6 +60,16 @@ _LOCK = threading.Lock()
 STAMP = "%Y-%m-%d %H:%M"
 
 
+def stamp() -> str:
+    """Сейчас — в том виде, в каком время лежит в записи.
+
+    Отдаётся наружу, чтобы формат остался в одном месте: тому, кто
+    записывает прогон, не нужно ни знать про `STAMP`, ни тащить к себе
+    `datetime` ради одной строки.
+    """
+    return datetime.now().strftime(STAMP)
+
+
 def key_of(found_site: str = "", found_id: str = "",
            source: str = "", address: str = "") -> str:
     """Чем считать книгу одной и той же.
@@ -305,6 +315,24 @@ def mark(key: str, name: str, on: bool = True) -> Book | None:
         return book
 
 
+def set_note(key: str, text: str) -> Book | None:
+    """Своя заметка к книге. Пустая — стирание, и оно должно доходить.
+
+    Отдельной функцией, а не через `remember`: там пустое намеренно не
+    затирает заполненное — иначе каждый прогон стирал бы то, что положил
+    предыдущий. Для заметки это правило работало бы против человека:
+    стереть написанное было бы нечем.
+    """
+    with _LOCK:
+        books = _load()
+        book = books.get(str(key or ""))
+        if book is None:
+            return None
+        book.note = str(text or "").strip()
+        _save(books)
+        return book
+
+
 def forget(key: str) -> bool:
     """Убрать книгу из библиотеки. Файлы на диске не трогаются."""
     with _LOCK:
@@ -321,6 +349,92 @@ def clear() -> None:
         _save({})
 
 
+#: Как называется паспорт в папке книги.
+PASSPORT = "паспорт.md"
+
+
+def passport(book: Book) -> str:
+    """Что положить в папку рядом со скачанным.
+
+    Через полгода папка `异度旅社` не говорит ни о чём: ни откуда книга,
+    ни докуда докачана, ни почему в ней дыра на седьмой главе. Всё это
+    программа знает — но знает у себя, а папку человек открывает мимо
+    неё, из проводника или на другой машине.
+
+    Поэтому паспорт — обычный текст рядом с главами, а не запись в базе.
+    Библиотеку можно потерять, папку с книгой — вряд ли.
+    """
+    rows = ["# " + (book.title or "Книга"), ""]
+    if book.name_ru and book.name and book.name_ru != book.name:
+        rows.append(f"Название на сайте: {book.name}")
+    if book.author:
+        rows.append(f"Автор: {book.author}")
+
+    rows.append("")
+    if book.found_site:
+        found = f"Найдена: рейтинг «{book.found_site}»"
+        if book.found_link:
+            found += f" — {book.found_link}"
+        rows.append(found)
+    if book.source:
+        taken = f"Скачана: источник «{book.source}»"
+        if book.address:
+            taken += f" — {book.address}"
+        rows.append(taken)
+    if book.last_run:
+        rows.append(f"Последний прогон: {book.last_run}")
+
+    rows.append("")
+    rows.append(f"Глав скачано: {book.last}"
+                + (f" из {book.chapters}" if book.chapters else ""))
+    if book.skipped:
+        # Пропуски — главное, ради чего паспорт и заводится: дыра в
+        # книге иначе обнаруживается при чтении, глав через двести.
+        rows.append(f"Пропущено: {book.skipped} — платные, зашифрованные "
+                    "или не отдавшиеся главы")
+    if book.fresh:
+        rows.append(f"На сайте появилось новых глав: {book.fresh}")
+
+    if book.tags:
+        rows.append("")
+        rows.append("Метки: " + ", ".join(book.tags))
+    if book.marks:
+        rows.append("Пометки: " + ", ".join(MARKS.get(m, m) for m in book.marks))
+    if book.note:
+        rows.append("")
+        rows.append(book.note)
+
+    rows.append("")
+    rows.append("---")
+    rows.append("Файл создан NEUROSTRAZH и перезаписывается при каждой "
+                "докачке. Свои заметки лучше держать в отдельном файле.")
+    return "\n".join(rows) + "\n"
+
+
+def save_passport(book: Book, folder=None) -> str:
+    """Записать паспорт в папку книги. Вернёт путь или пустую строку.
+
+    Отсутствие папки — не беда прогона: книга скачана, а паспорт всего
+    лишь удобство. Поэтому здесь ничего не выбрасывается наружу.
+    """
+    # Пустой путь проверять отдельно: `Path("")` — это не «никуда», а
+    # текущая папка, и она существует всегда. Паспорт книги, которую ещё
+    # не качали, лёг бы рядом с самой программой.
+    said = str(folder or book.folder or "").strip()
+    if not said:
+        return ""
+    where = Path(said)
+    if not where.is_dir():
+        return ""
+    path = where / PASSPORT
+    try:
+        path.write_text(passport(book), encoding="utf-8")
+    except OSError as exc:
+        log.warning("Паспорт книги не записался (%s): %s", path, exc)
+        return ""
+    return str(path)
+
+
 def state() -> dict:
     """Сводка для вкладки: сколько книг и сколько ждут докачки."""
     rows = all_books()
@@ -333,5 +447,6 @@ def state() -> dict:
     }
 
 
-__all__ = ["AUTO", "Book", "LIBRARY_FILE", "MARKS", "all_books", "clear",
-           "forget", "get", "key_of", "mark", "remember", "state", "touch"]
+__all__ = ["AUTO", "Book", "LIBRARY_FILE", "MARKS", "PASSPORT", "all_books",
+           "clear", "forget", "get", "key_of", "mark", "passport", "remember",
+           "save_passport", "set_note", "stamp", "state", "touch"]

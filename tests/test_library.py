@@ -246,5 +246,228 @@ class TestTheFileSurvivesTrouble(Base):
         self.assertEqual(again.last, 7)
 
 
+class TestThePassportInTheFolder(Base):
+    """Через полгода папка `异度旅社` не говорит ни о чём.
+
+    Ни откуда книга, ни докуда докачана, ни почему в ней дыра на седьмой
+    главе. Программа это знает — но знает у себя, а папку человек
+    открывает мимо неё: из проводника, на другой машине, через год.
+    """
+
+    def full(self, **more):
+        fields = dict(
+            name="异度旅社", name_ru="Гостиница иного мира", author="远瞳",
+            source="novelcms", address="https://ixdzs8.com/read/566155/",
+            folder=self.dir.name, chapters=402, last=400, skipped=3,
+            last_run="24.08.2026 02:07")
+        fields.update(more)
+        return self.qidian(**fields)
+
+    def test_the_passport_names_where_the_book_was_found(self):
+        said = library.passport(self.full())
+        self.assertIn("qidian", said)
+
+    def test_and_where_it_was_actually_taken_from(self):
+        """Главный вопрос через полгода: чем эту книгу докачивать."""
+        said = library.passport(self.full())
+        self.assertIn("ixdzs8.com/read/566155", said)
+
+    def test_the_holes_are_named(self):
+        """Дыра в книге иначе обнаруживается при чтении, глав через двести."""
+        said = library.passport(self.full())
+        self.assertIn("Пропущено: 3", said)
+
+    def test_the_new_chapters_are_named(self):
+        self.assertIn("новых глав: 2", library.passport(self.full()))
+
+    def test_the_title_is_the_translated_one(self):
+        self.assertIn("Гостиница иного мира", library.passport(self.full()))
+
+    def test_the_original_name_is_not_lost(self):
+        """По переводу книгу на сайте не найти."""
+        self.assertIn("异度旅社", library.passport(self.full()))
+
+    def test_it_warns_that_it_is_overwritten(self):
+        """Иначе однажды в него впишут своё и потеряют при докачке."""
+        self.assertIn("перезаписывается", library.passport(self.full()))
+
+    def test_it_lands_in_the_folder(self):
+        book = self.full()
+        path = library.save_passport(book)
+        self.assertTrue(Path(path).is_file())
+        self.assertIn("异度旅社", Path(path).read_text(encoding="utf-8"))
+
+    def test_a_missing_folder_is_not_a_failure(self):
+        """Книга скачана, а паспорт — удобство: ронять прогон незачем."""
+        book = self.full(folder="/нет/такой/папки")
+        self.assertEqual(library.save_passport(book), "")
+
+    def test_a_book_never_downloaded_writes_nothing_anywhere(self):
+        """`Path("")` — это не «никуда», а текущая папка, и она есть
+        всегда. Паспорт книги, которую ещё не качали, лёг бы рядом с
+        самой программой."""
+        here = set(Path.cwd().iterdir())
+        self.assertEqual(library.save_passport(self.qidian()), "")
+        self.assertEqual(set(Path.cwd().iterdir()), here)
+
+    def test_a_bare_record_still_makes_a_passport(self):
+        """Книга, которую только отметили и ещё не качали."""
+        said = library.passport(self.qidian())
+        self.assertIn("异度旅社", said)
+        self.assertIn("Глав скачано: 0", said)
+
+
+class TestTheRunLandsInTheLibrary(Base):
+    """Качалка кончила прогон — книга должна оказаться в библиотеке сама.
+
+    Заводить её руками человек не станет, а без записи не будет ни
+    докачки, ни истории, ни меток.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from mvl.api import Novel
+        from webapp import app as web
+
+        self.web = web
+        self.Novel = Novel
+
+    def novel(self, **more):
+        fields = dict(code=566155, name="异度旅社", slug="566155",
+                      total_chapters=402, author="远瞳")
+        fields.update(more)
+        return self.Novel(**fields)
+
+    def with_state(self, done):
+        """Папка книги с её `state.json` — как после настоящего прогона."""
+        folder = Path(self.dir.name) / "книга"
+        folder.mkdir(exist_ok=True)
+        (folder / "state.json").write_text(json.dumps({
+            "version": 1, "downloaded": {str(n): f"{n:04d}.txt" for n in done},
+        }), encoding="utf-8")
+        return folder
+
+    def test_the_book_appears_after_a_run(self):
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_how_far_it_got_comes_from_the_folder(self):
+        """Не из отчёта прогона: книгу качают кусками и возвращаются к
+        ней, и сложение отчётов дало бы неверный хвост."""
+        folder = self.with_state([1, 2, 3, 400, 401])
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+        self.assertEqual(library.all_books()[0].last, 401)
+
+    def test_a_folder_without_a_run_gives_nothing(self):
+        folder = Path(self.dir.name) / "пусто"
+        folder.mkdir()
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+        self.assertEqual(library.all_books()[0].last, 0)
+
+    def test_where_it_was_found_is_kept(self):
+        """Тот самый случай: нашли на Цидяне, качали с ixdzs8."""
+        folder = self.with_state(range(1, 403))
+        self.web._remember_book(
+            self.novel(), "novelcms", folder,
+            {"site": "qidian", "book_id": "1041604040",
+             "link": "https://www.qidian.com/book/1041604040/"}, {})
+        book = library.all_books()[0]
+        self.assertEqual(book.found_site, "qidian")
+        self.assertEqual(book.source, "novelcms")
+        self.assertEqual(book.key, "qidian:1041604040")
+
+    def test_the_same_book_twice_is_still_one(self):
+        folder = self.with_state(range(1, 11))
+        origin = {"site": "qidian", "book_id": "1041604040"}
+        self.web._remember_book(self.novel(), "novelcms", folder, origin, {})
+        self.web._remember_book(self.novel(), "novelcms", folder, origin, {})
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_the_passport_lands_next_to_the_chapters(self):
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+        self.assertTrue((folder / library.PASSPORT).is_file())
+
+    def test_a_broken_library_does_not_break_the_run(self):
+        """Книга уже скачана. Ронять прогон из-за незаписанной заметки о
+        нём — обмен сделанной работы на удобство."""
+        library.LIBRARY_FILE = Path("/нет/такой/папки/library.json")
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+
+
+class TestTheLibraryOverHttp(Base):
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+
+    def test_an_empty_library_is_not_an_error(self):
+        got = self.client.get("/api/library")
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.get_json()["books"], [])
+
+    def test_the_books_come_with_their_summary(self):
+        self.qidian(folder="/тут", last=400, chapters=402)
+        said = self.client.get("/api/library").get_json()
+        self.assertEqual(said["state"]["updatable"], 1)
+        self.assertEqual(len(said["books"]), 1)
+
+    def test_the_mark_names_come_from_the_server(self):
+        """Держать закрытый список меток вторым экземпляром в разметке
+        значило бы однажды разойтись: метка есть, а называть её нечем."""
+        said = self.client.get("/api/library").get_json()
+        self.assertTrue(any(m["key"] == "want" for m in said["marks"]))
+
+    def test_a_mark_is_put_over_http(self):
+        book = self.qidian()
+        got = self.client.post("/api/library/mark",
+                               json={"key": book.key, "mark": "want"})
+        self.assertEqual(got.status_code, 200)
+        self.assertIn("Потенциальная", got.get_json()["book"]["mark_names"])
+
+    def test_an_invented_mark_is_refused(self):
+        book = self.qidian()
+        got = self.client.post("/api/library/mark",
+                               json={"key": book.key, "mark": "потенц"})
+        self.assertEqual(got.status_code, 400)
+
+    def test_marking_an_unknown_book_says_so(self):
+        got = self.client.post("/api/library/mark",
+                               json={"key": "нет:такой", "mark": "want"})
+        self.assertEqual(got.status_code, 404)
+
+    def test_a_note_is_written_and_erased(self):
+        book = self.qidian()
+        self.client.post("/api/library/note",
+                         json={"key": book.key, "note": "дочитать до 200"})
+        self.assertEqual(library.get(book.key).note, "дочитать до 200")
+
+        self.client.post("/api/library/note", json={"key": book.key, "note": ""})
+        self.assertEqual(library.get(book.key).note, "")
+
+    def test_a_book_is_forgotten(self):
+        book = self.qidian()
+        got = self.client.post("/api/library/forget", json={"key": book.key})
+        self.assertTrue(got.get_json()["gone"])
+        self.assertEqual(library.all_books(), [])
+
+    def test_the_passport_can_be_rewritten_on_demand(self):
+        book = self.qidian(folder=self.dir.name, last=5, chapters=9)
+        got = self.client.post("/api/library/passport", json={"key": book.key})
+        self.assertEqual(got.status_code, 200)
+        self.assertTrue(Path(got.get_json()["path"]).is_file())
+
+    def test_a_passport_without_a_folder_says_why(self):
+        book = self.qidian()
+        got = self.client.post("/api/library/passport", json={"key": book.key})
+        self.assertEqual(got.status_code, 400)
+        self.assertIn("апк", got.get_json()["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
