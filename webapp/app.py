@@ -69,7 +69,7 @@ from mvl.cleanup import CleanError  # noqa: E402
 from mvl.source import SourceError  # noqa: E402
 from mvl.rename import RenameError  # noqa: E402
 from mvl import client as client_mod  # noqa: E402
-from mvl.client import Client, HttpError  # noqa: E402
+from mvl.client import Blocked, Client, HttpError, NetworkError  # noqa: E402
 from mvl import downloader as downloader_mod  # noqa: E402
 from mvl.downloader import Cancelled, Downloader, verify  # noqa: E402
 from mvl.paths import list_dirs, prepare_output_dir  # noqa: E402
@@ -363,7 +363,7 @@ def _toc_any_proxy(source, novel, client, live, count):
             try:
                 found = source.toc(spare, novel, first=1, last=count)
                 log.info("Оглавление собралось через запасной прокси %s",
-                         mask(proxy.url))
+                         proxy.safe_url)
                 return found
             except HttpError:
                 continue
@@ -387,6 +387,15 @@ def _found(novel) -> dict:
     return data
 
 
+#: Беды, от которых помогает другой выход в сеть.
+#:
+#: HTTP 404 сюда не входит намеренно: страницы нет ни отсюда, ни через
+#: посредника, и лишний заход стоил бы только ожидания. А вот таймаут,
+#: неразобранное имя хоста и запрет по адресу — ровно то, что чинится
+#: сменой выхода.
+ROUTE_TROUBLE = (NetworkError, Blocked)
+
+
 def _find_via_proxy(source, query: str, direct):
     """Вторая попытка найти книгу — через прокси.
 
@@ -397,29 +406,43 @@ def _find_via_proxy(source, query: str, direct):
     на экране как «книга не найдена». Качать при этом было нечего:
     скачивание начинается с найденной книги.
 
-    Почему второй попыткой, а не первой. Прямой запрос сейчас работает
-    у всех остальных источников, а прокси до нажатия «проверить» никем
-    не проверен: поставить его первым значит разменять работающее на
-    непроверенное. Лишний заход стоит одного таймаута и только там, где
-    без него всё равно ничего не выйдет.
+    Второй заход был поставлен только источникам с пометкой «нужен
+    прокси» — из соображения «у остальных прямой запрос работает».
+    Соображение оказалось неверным: сайты-сливы из России отвечают не
+    всегда, и ixdzs8 встретил пятнадцатисекундным таймаутом. Прокси при
+    этом лежал рядом, проверенный, и не использовался, потому что у
+    источника не стояло пометки. Теперь заход делается по самой беде, а
+    не по пометке: таймаут и запрет чинятся сменой выхода, «страницы
+    нет» — нет.
 
-    Возвращает найденную книгу либо None — тогда наверх уходит первая
-    ошибка, а не менее внятная вторая.
+    Почему по-прежнему второй попыткой, а не первой. Прямой запрос у
+    большинства источников работает, а прокси до нажатия «проверить»
+    никем не проверен: поставить его первым значит разменять работающее
+    на непроверенное. И повторов у запасного клиента нет: до него дело
+    доходит после трёх неудачных, ждать ещё три минуты незачем.
+
+    Возвращает пару: найденную книгу и приписку к сообщению об ошибке.
+    Книга пустая — приписка говорит, что ещё пробовали, чтобы человек не
+    гадал, дошло ли дело до посредника.
     """
-    if not getattr(source, "needs_proxy", False):
-        return None
+    if not isinstance(direct, ROUTE_TROUBLE):
+        return None, ""
     with POOL_LOCK:
         pool = POOL
     address = _any_proxy(pool)
     if not address:
-        return None
+        return None, (" Посредника не пробовали: живых адресов нет — "
+                      "проверьте список на вкладке «Качалка».")
     log.info("«%s» не ответил напрямую (%s) — пробуем через %s",
-             source.name, direct, mask(address))
-    spare = Client(proxy_url=address)
+             source.name, direct, proxies_mod.safe(address))
+    spare = Client(proxy_url=address, max_attempts=1)
     try:
-        return source.find(spare, query)
-    except HttpError:
-        return None
+        return source.find(spare, query), ""
+    except HttpError as exc:
+        log.warning("«%s» не открылся и через %s: %s",
+                    source.name, proxies_mod.safe(address), exc)
+        return None, (f" Через посредника {proxies_mod.safe(address)} — "
+                      f"тоже не вышло: {exc}")
     finally:
         spare.close()
 
@@ -437,14 +460,17 @@ def api_find():
         return jsonify(error=str(exc)), 400
 
     client = Client()
+    # Что ещё пробовали, кроме прямого хода. Без этой приписки человек по
+    # сообщению не отличит «посредник не помог» от «до посредника дело не
+    # дошло», а это разные починки.
+    tried = ""
     try:
         try:
             novel = source.find(client, query)
         except HttpError as direct:
-            spare = _find_via_proxy(source, query, direct)
-            if spare is None:
+            novel, tried = _find_via_proxy(source, query, direct)
+            if novel is None:
                 raise
-            novel = spare
         return jsonify(novel=_found(novel), source=source.key)
     except sources.SourceBroken as exc:
         # «Источник изменился» — не «не нашли»: жать «повторить» бесполезно.
@@ -455,7 +481,7 @@ def api_find():
     except (LookupError, ValueError) as exc:
         return jsonify(error=str(exc)), 404
     except HttpError as exc:
-        return jsonify(error=f"Сайт недоступен: {exc}"), 502
+        return jsonify(error=f"Сайт недоступен: {exc}{tried}"), 502
     finally:
         client.close()
 

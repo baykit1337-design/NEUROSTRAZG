@@ -557,10 +557,12 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         self.web.sources.get = self.was_get
         self.web._any_proxy = self.was_any
 
-    def fake(self, needs_proxy=True, direct_works=False):
+    def fake(self, needs_proxy=True, direct_works=False, trouble=None,
+             proxy_works=True):
         found = Novel(code=1, name="Книга", slug="k", total_chapters=3)
         tried = self.tried
-        bad = self.NetworkError("Could not resolve host: www.webnovel.com")
+        bad = trouble or self.NetworkError(
+            "Could not resolve host: www.webnovel.com")
 
         class Fake:
             key = "webnovel"
@@ -573,8 +575,11 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
                 tried.append(getattr(client, "proxy_url", None))
                 if len(tried) == 1 and not direct_works:
                     raise bad
+                if not proxy_works:
+                    raise self_bad
                 return found
 
+        self_bad = self.NetworkError("посредник тоже молчит")
         source = Fake()
         self.web.sources.get = lambda key: source
 
@@ -597,14 +602,38 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         self.assertEqual(len(self.tried), 2)
         self.assertTrue(self.tried[1])
 
-    def test_a_source_that_works_directly_is_not_sent_through_a_proxy(self):
-        """Сайты-сливы отвечают напрямую, и лишний заход им только во
-        вред: посредник и медленнее, и падает чаще."""
+    def test_a_source_without_the_mark_gets_one_too(self):
+        """Второй заход стоял только на источниках с пометкой «нужен
+        прокси» — из соображения «у остальных прямой запрос работает».
+        Соображение оказалось неверным: ixdzs8 встретил
+        пятнадцатисекундным таймаутом, а проверенный прокси лежал рядом и
+        не использовался, потому что пометки у источника не стояло."""
         self.fake(needs_proxy=False)
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(len(self.tried), 2)
+
+    def test_a_missing_page_is_not_asked_for_through_a_proxy(self):
+        """«Страницы нет» — не та беда, что чинится сменой выхода: её
+        нет ни отсюда, ни оттуда, а ждать пришлось бы дважды."""
+        from mvl.client import HttpError
+
+        self.fake(trouble=HttpError("HTTP 404 https://site/книга", status=404))
         self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 502)
         self.assertEqual(len(self.tried), 1)
+
+    def test_a_ban_is_asked_for_through_a_proxy(self):
+        """Запрет по адресу — ровно то, что чинится сменой выхода."""
+        from mvl.client import Blocked
+
+        self.fake(trouble=Blocked("HTTP 403 — доступ закрыт", status=403))
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        got = self.client.post("/api/find", json={"query": "k"})
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(len(self.tried), 2)
 
     def test_without_proxies_the_first_error_is_what_reaches_the_screen(self):
         """Вторая ошибка про посредника не объясняет ничего, а первая
@@ -614,6 +643,27 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 502)
         self.assertIn("webnovel.com", got.get_json()["error"])
+
+    def test_the_message_says_the_proxy_was_never_reached(self):
+        """Иначе «сайт недоступен» не отличить от «посредник не помог», а
+        чинится это по-разному."""
+        self.fake()
+        self.web._any_proxy = lambda pool: None
+        said = self.client.post("/api/find", json={"query": "k"}).get_json()
+        self.assertIn("живых адресов нет", said["error"])
+
+    def test_the_message_says_the_proxy_did_not_help_either(self):
+        self.fake(proxy_works=False)
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        said = self.client.post("/api/find", json={"query": "k"}).get_json()
+        self.assertIn("посредника", said["error"].lower())
+        self.assertIn("webnovel.com", said["error"])
+
+    def test_the_password_of_the_proxy_never_shows_up(self):
+        self.fake(proxy_works=False)
+        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        said = self.client.post("/api/find", json={"query": "k"}).get_json()
+        self.assertNotIn("pass", said["error"])
 
 
 if __name__ == "__main__":

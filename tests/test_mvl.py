@@ -1139,6 +1139,38 @@ class TestPasswordMasking(unittest.TestCase):
     def test_to_dict_carries_no_password(self):
         self.assertNotIn("s3cr3t-pass", json.dumps(self.proxy.to_dict()))
 
+    def test_a_bare_address_is_masked_too(self):
+        """`safe_url` работает там, где на руках сам прокси. А в поиске
+        книги на руках голая строка — её отдаёт `_any_proxy`, — и она
+        ложилась в лог целиком, с логином и паролем."""
+        said = proxies.safe("http://alice:s3cr3t-pass@198.51.100.9:8080")
+        self.assertEqual(said, "http://alice:***@198.51.100.9:8080")
+
+    def test_masking_a_bare_address_keeps_the_host(self):
+        """Замазать адрес целиком значило бы отнять у сообщения смысл:
+        по нему и решают, какую строку в списке менять."""
+        said = proxies.safe("http://alice:s3cr3t-pass@198.51.100.9:8080")
+        self.assertIn("198.51.100.9:8080", said)
+        self.assertIn("alice", said)
+
+    def test_an_open_proxy_is_left_alone(self):
+        self.assertEqual(proxies.safe("http://198.51.100.9:8080"),
+                         "http://198.51.100.9:8080")
+
+    def test_nothing_is_not_a_crash(self):
+        self.assertEqual(proxies.safe(None), "")
+
+    def test_the_key_masker_never_hid_a_proxy_password(self):
+        """Пароль прятали через `mask` из `llm.client`, а она чистит ключи
+        языковой модели и к прокси отношения не имеет. Проверка держит
+        границу: перепутать их снова — значит снова вынести пароль в лог,
+        который человек присылает целиком."""
+        from llm.client import mask
+
+        address = "http://alice:s3cr3t-pass@198.51.100.9:8080"
+        self.assertIn("s3cr3t-pass", mask(address))
+        self.assertNotIn("s3cr3t-pass", proxies.safe(address))
+
     def test_scrub_removes_known_password_anywhere(self):
         text = "ConnectionError через http://alice:s3cr3t-pass@198.51.100.9:8080"
         cleaned = proxies.scrub(text)
