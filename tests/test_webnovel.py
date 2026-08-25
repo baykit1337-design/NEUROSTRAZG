@@ -528,6 +528,115 @@ class TestItIsOfferedInTheDownloader(unittest.TestCase):
         self.assertTrue(sources.get("webnovel").needs_proxy)
 
 
+def wall_page() -> str:
+    """Стена Cloudflare: страницы нет, есть проверка гостя."""
+    return ("<html><head><title>Just a moment...</title></head><body>"
+            '<div class="cf-browser-verification">Checking your browser'
+            "</div></body></html>")
+
+
+def guarded_book() -> str:
+    """Обычная страница книги — но за Cloudflare, со скриптом проверки.
+
+    Такой скрипт висит на **любой** странице за этой защитой, и принять
+    его за признак стены значило бы объявить стеной рабочий сайт.
+    """
+    page = book_page()
+    return page.replace(
+        "<html>",
+        '<html><script src="/cdn-cgi/challenge-platform/h/b/scripts/jsd">'
+        "</script>", 1)
+
+
+class TestAWallIsNotAChangedLayout(unittest.TestCase):
+    """Cloudflare отдаёт вместо страницы проверку гостя.
+
+    Разбор не находил на ней ни книги, ни оглавления, ни текста — и
+    говорил «сайт сменил разметку». Разметку сайт при этом не трогал: до
+    неё дело не дошло. Хуже всего тут не сама ошибка, а её уверенность:
+    человек по такому сообщению идёт чинить разбор, а чинить надо выход
+    в сеть.
+    """
+
+    def setUp(self):
+        self.source = sources.get("webnovel")
+        self.code = "36543528000922105"
+
+    def complaint(self, pages, run):
+        with self.assertRaises(SourceBroken) as caught:
+            run(FakeClient(pages))
+        return str(caught.exception)
+
+    def test_the_book_page_names_the_wall(self):
+        said = self.complaint(
+            {"/book/": wall_page()},
+            lambda client: self.source.find(client, self.code))
+        self.assertIn("Cloudflare", said)
+
+    def test_the_book_page_does_not_blame_the_layout(self):
+        """Именно этой фразой стена и объяснялась раньше."""
+        said = self.complaint(
+            {"/book/": wall_page()},
+            lambda client: self.source.find(client, self.code))
+        self.assertNotIn("сменил разметку", said)
+
+    def test_the_catalogue_names_the_wall(self):
+        novel = Novel(code=1, name="Книга", slug=self.code, total_chapters=3)
+        said = self.complaint(
+            {"/catalog": wall_page()},
+            lambda client: self.source.toc(client, novel))
+        self.assertIn("Cloudflare", said)
+
+    def test_the_chapter_names_the_wall(self):
+        chapter = Chapter(number=1, post_id="7", ch_name="Глава",
+                          link=f"https://www.webnovel.com/book/{self.code}/7")
+        said = self.complaint(
+            {"/book/": wall_page()},
+            lambda client: self.source.chapter(client, chapter))
+        self.assertIn("Cloudflare", said)
+
+    def test_the_rating_names_the_wall(self):
+        from net.sources import webnovelrank
+
+        said = self.complaint({"/ranking/": wall_page()},
+                              lambda client: webnovelrank.fetch(client))
+        self.assertIn("Cloudflare", said)
+
+    def test_the_message_sends_to_the_proxy_not_to_the_parser(self):
+        said = self.complaint(
+            {"/book/": wall_page()},
+            lambda client: self.source.find(client, self.code))
+        self.assertIn("прокси", said.lower())
+
+
+class TestALivePageBehindCloudflareIsNotAWall(unittest.TestCase):
+    """Скрипт проверки висит и на совершенно рабочей странице.
+
+    Тот же урок, что с зондом Цидяня: приняв его за признак, разбор
+    объявлял бы стеной живой сайт — и книга не скачалась бы ни разу, при
+    полностью исправном сайте.
+    """
+
+    def test_a_book_behind_cloudflare_is_still_read(self):
+        source = sources.get("webnovel")
+        novel = source.find(FakeClient({"/book/": guarded_book()}),
+                            "36543528000922105")
+        self.assertEqual(novel.name, "Marvel: I Steal Powers")
+
+    def test_the_challenge_script_alone_is_not_a_wall(self):
+        from net.sources.webnovel import wall_of
+
+        self.assertEqual(wall_of(guarded_book(), "https://x/book/1"), "")
+
+    def test_an_empty_page_is_still_a_changed_layout(self):
+        """Пусто — это не стена: стена о себе говорит."""
+        source = sources.get("webnovel")
+        with self.assertRaises(SourceBroken) as caught:
+            source.find(FakeClient({"/book/": "<html></html>"}),
+                        "36543528000922105")
+        self.assertIn("разметк", str(caught.exception).lower())
+
+
 class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
     """Книга искалась голым клиентом у любого источника.
 

@@ -30,7 +30,7 @@ from bs4 import BeautifulSoup
 
 from .base import SourceBroken
 from .rank import RankRow
-from .webnovel import SITE
+from .webnovel import SITE, page_of
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ VISIT = {
 def fetch(client, board: str = "hot") -> dict:
     """Срез одной доски."""
     address = url_of(board)
-    page = client.get_text(address, headers=VISIT)
+    page = page_of(client, address, headers=VISIT)
     soup = BeautifulSoup(page, "lxml")
     metric = METRICS.get(board, "")
 
@@ -198,11 +198,14 @@ def fetch(client, board: str = "hot") -> dict:
             break
 
     if not rows:
+        # Сначала стена, потом вёрстка. Перепутав их, сообщение уверенно
+        # уводит чинить разбор, которого никто не ломал: до разметки дело
+        # не дошло, страница вообще не с сайта.
         raise SourceBroken(
-            f"Рейтинг Webnovel не разобрался: на странице {address} не нашлось "
-            "ни одной книги. Раньше он приходил обычной вёрсткой; если сайт "
-            "переделал его на подгрузку скриптом, чинить надо разбор, а не "
-            "повторять запрос.")
+            f"Рейтинг Webnovel не разобрался: на странице {address} не "
+            "нашлось ни одной книги. Раньше он приходил обычной вёрсткой; "
+            "если сайт переделал его на подгрузку скриптом, чинить надо "
+            "разбор, а не повторять запрос.")
 
     # Места печатаются с ведущим нулём и иногда только у первой десятки.
     # Приводим к порядку: у соседних строк не должно быть одного места.

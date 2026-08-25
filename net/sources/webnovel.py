@@ -49,6 +49,54 @@ log = logging.getLogger(__name__)
 
 SITE = "https://www.webnovel.com"
 
+#: Слова, которыми Cloudflare встречает подозрительного гостя.
+#:
+#: Скрипт `/cdn-cgi/challenge-platform/` в признаки не годится: он висит
+#: на **любой** странице за Cloudflare, включая совершенно рабочую. Тот
+#: же урок, что с зондом Цидяня: приняв его за признак, мы объявляли бы
+#: стеной живую страницу. Здесь только то, что говорит сама стена.
+WALL = ("Just a moment", "Checking your browser",
+        "cf-browser-verification", "cf_chl_opt",
+        "Attention Required! | Cloudflare",
+        "Enable JavaScript and cookies to continue",
+        "Sorry, you have been blocked")
+
+
+def wall_of(page, address: str) -> str:
+    """Объяснение, если вместо страницы пришла стена. Пусто — не стена.
+
+    Нужно это вот зачем. Разбор не находил на такой странице ни книги, ни
+    оглавления, ни текста — и говорил «сайт сменил разметку». Разметку
+    сайт при этом не трогал: до неё дело не дошло. Человек по такому
+    сообщению идёт чинить разбор, хотя чинить надо выход в сеть, и это
+    худший сорт ошибки — тот, что уводит в сторону уверенно.
+    """
+    said = str(page or "")
+    if not any(mark in said for mark in WALL):
+        return ""
+    return (f"Webnovel ответил не страницей, а проверкой Cloudflare "
+            f"({address}). Разметка тут ни при чём — до неё дело не дошло. "
+            f"Так эта защита встречает адреса, которые ей не нравятся: "
+            f"помогает другой прокси, а не правка разбора. "
+            f"Страница {len(said)} байт.")
+
+
+def page_of(client, address: str, headers: dict | None = None) -> str:
+    """Страница сайта. Стена вместо неё — сразу внятный отказ.
+
+    Проверять стену надо **до** разбора, а не после неудачи: разбор
+    спотыкается на ней первым же шагом («на странице нет объекта
+    g_data.book») и объясняет это сменой разметки. До разметки дело при
+    этом не дошло — страница вообще не с сайта.
+    """
+    page = client.get_text(address, headers=headers) if headers \
+        else client.get_text(address)
+    wall = wall_of(page, address)
+    if wall:
+        raise SourceBroken(wall)
+    return page
+
+
 #: Код книги — длинное число. Оно же встречается в адресе главы, поэтому
 #: сначала пробуем разобрать адрес, и только потом принимаем голое число.
 BOOK_ID = re.compile(r"\b(\d{8,25})\b")
@@ -193,7 +241,7 @@ class WebnovelSource(Source):
                 "https://www.webnovel.com/book/36543528000922105 "
                 "или сам числовой код.")
 
-        page = client.get_text(f"{SITE}/book/{code}")
+        page = page_of(client, f"{SITE}/book/{code}")
         info = (_object_after(page, BOOK_MARK) or {}).get("bookInfo") or {}
         if not info:
             raise SourceBroken(
@@ -241,7 +289,7 @@ class WebnovelSource(Source):
     def toc(self, client, novel: Novel, first: int = 1, last: int | None = None,
             on_progress=None) -> Toc:
         code = str(novel.slug or novel.code)
-        page = client.get_text(f"{SITE}/book/{code}/catalog")
+        page = page_of(client, f"{SITE}/book/{code}/catalog")
         rows = self._catalog(page, code)
         if not rows:
             raise SourceBroken(
@@ -355,7 +403,7 @@ class WebnovelSource(Source):
                 f"Глава {chapter.number} платная — это видно по оглавлению. "
                 "Программа этого не обходит.")
 
-        page = client.get_text(chapter.link)
+        page = page_of(client, chapter.link)
         info = (_object_after(page, CHAPTER_MARK) or {}).get("chapterInfo") or {}
         if not info:
             raise SourceBroken(
