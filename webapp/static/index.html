@@ -829,6 +829,26 @@
 
   /* Рейтинг: движение вверх и вниз разными цветами. */
   #rkTable .tr{flex-wrap:wrap;row-gap:6px}
+  /* История скачиваний. Строка книги: обложка, название, чем качали. */
+  #histList .hist{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:10px;border-radius:10px;
+    border:1px solid var(--stroke-soft);margin-bottom:8px;
+    background:rgba(255,255,255,.02);
+  }
+  #histList .hist-cover{
+    flex:0 0 44px;width:44px;height:62px;border-radius:6px;
+    object-fit:cover;background:#15121e;border:1px solid var(--stroke-soft);
+  }
+  #histList .hist-side{flex:1;min-width:180px}
+  #histList .hist-name{font-weight:600}
+  #histList .hist-where{color:var(--muted);font-size:12px;margin-top:3px}
+  #histList .hist-path{
+    color:var(--muted);font-size:11px;margin-top:3px;
+    word-break:break-all;
+  }
+  #histList .hist-new{color:#9be8c0}
+  #histList .hist-lost{color:#ff9d9d}
   #rkTable .place{width:34px;color:var(--muted);font-variant-numeric:tabular-nums}
   /* 2.3: миниатюра обложки. Пока картинка не пришла — заготовка в стиле
      интерфейса: пустое место на её месте выглядит как поломка. */
@@ -1287,6 +1307,20 @@
       <button id="again" class="ghost" hidden>Новая книга</button>
     </div>
     <p class="hint" id="summary"></p>
+  </div>
+  <!-- История скачиваний: библиотека книг, но глазами качалки.
+       Раскрывается кнопкой — свёрнутая она не мешает тем, кто пришёл
+       скачать одну книгу и уйти. -->
+  <div class="card" id="histCard">
+    <div class="row" style="align-items:center;gap:10px">
+      <button id="histToggle" class="ghost" style="flex:1;text-align:left">
+        История скачиваний <span id="histCount" class="tag"></span>
+      </button>
+      <button id="histCheck" class="ghost" hidden
+              title="Спросить у сайтов, не вышли ли новые главы">Проверить обновления</button>
+    </div>
+    <p class="hint" id="histNote" style="margin-top:8px"></p>
+    <div id="histList" hidden style="margin-top:10px"></div>
   </div>
 </section>
 
@@ -3227,6 +3261,29 @@ function rangeAsked(){
   };
 }
 
+/** Откуда взялась книга, которую сейчас качаем.
+ *
+ * Два пути. Из рейтинга — тогда в поле поиска стоит код той самой
+ * строки, и всё про неё известно. Из истории — тогда происхождение уже
+ * записано в библиотеке, и его подставила `histFill`.
+ */
+function dlOrigin(){
+  const asked = $('q').value.trim();
+  if(typeof rkPicked !== 'undefined' && rkPicked
+     && String(rkPicked.book_id) === asked){
+    return {
+      site: rkPicked.site || '',
+      book_id: String(rkPicked.book_id),
+      link: rkPicked.link || '',
+      cover: rkPicked.cover || '',
+      name: rkPicked.name || '',
+      name_ru: typeof rkTitleOf === 'function'
+        ? rkTitleOf(rkPicked.book_id) : '',
+    };
+  }
+  return histOrigin || {};
+}
+
 async function start(){
   showError('');
   rangeNote('');
@@ -3248,6 +3305,9 @@ async function start(){
       source: srcMenu ? srcMenu.value : '',
       base: basePath,
       folder: $('folder').value.trim(),
+      // Откуда книга взялась. Без этого книга, найденная на Цидяне и
+      // скачанная с сайта-слива, легла бы в библиотеку дважды.
+      origin: dlOrigin(),
       first,
       last,
       // Без этих полей сервер брал умолчания: один поток и авторежим.
@@ -3682,6 +3742,193 @@ document.querySelectorAll('.tabs button').forEach(btn => {
 });
 
 $('stop').onclick = stop;
+/* История скачиваний (пункт 7 списка).
+ *
+ * Это библиотека книг, показанная глазами качалки: та же запись, что
+ * лежит в `ops/library`, только с кнопками «докачать» и «проверить».
+ * Отдельного своего списка здесь нет намеренно — их было бы уже два, и
+ * разошлись бы они на второй неделе.
+ *
+ * Свёрнута по умолчанию: пришедшему скачать одну книгу она не нужна.
+ */
+let histBooks = [], histOrigin = null;
+
+/** Папку книги делим на «где» и «что»: форма просит их по отдельности. */
+function histSplit(folder){
+  const path = String(folder || '').replace(/[\\/]+$/, '');
+  const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return at > 0 ? {base: path.slice(0, at), name: path.slice(at + 1)}
+                : {base: '', name: path};
+}
+
+async function histLoad(){
+  try{
+    const data = await call('/api/library');
+    histBooks = data.books || [];
+    histShow(data.state || {});
+  }catch(err){
+    // История — удобство. Не открылась — качать это не мешает.
+    $('histNote').textContent = 'История не прочиталась: ' + err.message;
+  }
+}
+
+function histShow(state){
+  const count = $('histCount');
+  count.textContent = histBooks.length ? String(histBooks.length) : '';
+  count.hidden = !histBooks.length;
+  $('histCheck').hidden = !histBooks.length;
+
+  const fresh = (state && state.updatable) || 0;
+  $('histNote').textContent = !histBooks.length
+    ? 'Пока пусто. Скачанные книги будут появляться здесь сами.'
+    : (fresh ? `Книг: ${histBooks.length}. С новыми главами: ${fresh}.`
+             : `Книг: ${histBooks.length}. Новых глав ни у одной — по тем `
+               + 'сведениям, что есть. Нажмите «Проверить обновления».');
+  if(!$('histList').hidden) histRender();
+}
+
+function histRender(){
+  const box = $('histList');
+  box.innerHTML = '';
+  for(const book of histBooks) box.append(histRow(book));
+}
+
+function histRow(book){
+  const row = document.createElement('div');
+  row.className = 'hist';
+
+  if(book.cover){
+    const cover = document.createElement('img');
+    cover.className = 'hist-cover';
+    cover.alt = '';
+    cover.loading = 'lazy';
+    cover.src = book.cover;
+    cover.onerror = () => cover.remove();
+    row.append(cover);
+  }
+
+  const side = document.createElement('div');
+  side.className = 'hist-side';
+
+  const name = document.createElement('div');
+  name.className = 'hist-name';
+  name.textContent = book.title || book.name || book.key;
+  side.append(name);
+
+  // Откуда книга и чем её качали — два разных вопроса, и второй важнее:
+  // именно им её докачивать. У книги с Цидяня это будет вовсе не Цидянь.
+  const where = document.createElement('div');
+  where.className = 'hist-where';
+  const parts = [];
+  if(book.found_site) parts.push('нашли: ' + book.found_site);
+  if(book.source) parts.push('качали: ' + book.source);
+  if(book.chapters) parts.push(`глав ${book.last} из ${book.chapters}`);
+  else if(book.last) parts.push(`глав ${book.last}`);
+  if(book.skipped) parts.push(`пропущено ${book.skipped}`);
+  if(book.last_run) parts.push(book.last_run);
+  where.textContent = parts.join(' · ');
+  side.append(where);
+
+  if(book.folder){
+    const path = document.createElement('div');
+    path.className = 'hist-path';
+    path.textContent = book.folder;
+    side.append(path);
+  }
+
+  if(book.fresh){
+    const news = document.createElement('div');
+    news.className = 'hist-where hist-new';
+    news.textContent = `Вышло новых глав: ${book.fresh}`;
+    side.append(news);
+  }
+  row.append(side);
+
+  if(book.source && book.address){
+    const more = document.createElement('button');
+    more.className = book.fresh ? 'primary' : 'ghost';
+    more.style.padding = '5px 12px';
+    more.textContent = book.fresh ? `Докачать ${book.fresh}` : 'Докачать';
+    more.onclick = () => histFill(book);
+    row.append(more);
+  }
+
+  const drop = document.createElement('button');
+  drop.className = 'ghost';
+  drop.style.padding = '5px 12px';
+  drop.textContent = 'Забыть';
+  drop.title = 'Убрать из истории. Скачанные файлы остаются на месте.';
+  drop.onclick = async () => {
+    await call('/api/library/forget', {key: book.key});
+    await histLoad();
+  };
+  row.append(drop);
+  return row;
+}
+
+/** Заполнить форму скачивания по записи и начать с первой недостающей. */
+async function histFill(book){
+  showError('');
+  histOrigin = {
+    site: book.found_site || '', book_id: book.found_id || '',
+    link: book.found_link || '', cover: book.cover || '',
+    name: book.name || '', name_ru: book.name_ru || '',
+  };
+
+  if(typeof srcMenu !== 'undefined' && srcMenu && book.source){
+    srcMenu.set(book.source, {notify: true});
+  }
+  $('q').value = book.address || '';
+
+  const where = histSplit(book.folder);
+  if(where.base) await browse(where.base);
+  $('folder').value = where.name;
+
+  // Продолжаем с первой недостающей, а не с начала: уже скачанное
+  // качалось бы заново, и нумерация поехала бы поверх готового.
+  $('first').value = book.last ? String(book.last + 1) : '';
+  $('last').value = book.chapters ? String(book.chapters) : '';
+  rangeNote('');
+
+  try{ await find(false); }
+  catch(err){ /* карточку покажем, даже если книга не нашлась с первого раза */ }
+  $('place').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function histCheck(){
+  const keys = histBooks.filter(b => b.source && b.address).map(b => b.key);
+  if(!keys.length) return;
+
+  $('histCheck').disabled = true;
+  $('histNote').innerHTML = '<span class="spin"></span>Спрашиваем у сайтов…';
+  try{
+    const data = await call('/api/library/check', {keys});
+    histBooks = data.books || histBooks;
+    histShow(data.state || {});
+    const missed = (data.missed || []).length;
+    if(missed || data.left){
+      $('histNote').textContent += (missed ? ` Не ответили: ${missed}.` : '')
+        + (data.left ? ` Осталось проверить: ${data.left} — нажмите ещё раз.`
+                     : '');
+    }
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('histCheck').disabled = false;
+  }
+}
+
+$('histToggle').onclick = () => {
+  const box = $('histList');
+  box.hidden = !box.hidden;
+  if(!box.hidden) histRender();
+};
+$('histCheck').onclick = histCheck;
+// Ввели свой код или ссылку — прежнее происхождение к ней отношения не
+// имеет: иначе новая книга легла бы в библиотеку под чужим ключом.
+$('q').addEventListener('input', () => { histOrigin = null; });
+document.addEventListener('DOMContentLoaded', histLoad);
+
 $('hold').onclick = hold;
 $('again').onclick = reset;
 </script>

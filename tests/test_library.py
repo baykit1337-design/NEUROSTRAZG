@@ -469,5 +469,110 @@ class TestTheLibraryOverHttp(Base):
         self.assertIn("апк", got.get_json()["error"])
 
 
+class TestAskingTheSiteForNewChapters(Base):
+    """Без переспроса «есть новые главы» не появилось бы никогда.
+
+    Число глав записывает прогон — а прогон и есть то, ради чего мы про
+    новые главы спрашиваем.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from mvl.api import Novel
+        from webapp import app as web
+
+        self.web = web
+        self.was = web.sources.get
+        self.addCleanup(setattr, web.sources, "get", self.was)
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+
+        asked = self.asked = []
+
+        class Site:
+            key = "novelcms"
+            name = "Сайт-слив"
+            needs_proxy = False
+
+            def find(self, client, query):
+                asked.append(query)
+                return Novel(code=1, name="异度旅社", slug=query,
+                             total_chapters=410)
+
+        web.sources.get = lambda key: Site()
+
+    def book(self, **more):
+        fields = dict(source="novelcms",
+                      address="https://ixdzs8.com/read/566155/",
+                      folder="/тут", chapters=402, last=402)
+        fields.update(more)
+        return self.qidian(**fields)
+
+    def test_the_count_is_refreshed(self):
+        book = self.book()
+        self.client.post("/api/library/check", json={"key": book.key})
+        self.assertEqual(library.get(book.key).chapters, 410)
+
+    def test_and_the_new_chapters_show_up(self):
+        book = self.book()
+        self.client.post("/api/library/check", json={"key": book.key})
+        self.assertEqual(library.get(book.key).fresh, 8)
+
+    def test_the_site_is_asked_by_what_we_downloaded_with(self):
+        """У книги с Цидяня спрашивать надо не Цидянь."""
+        book = self.book()
+        self.client.post("/api/library/check", json={"key": book.key})
+        self.assertEqual(self.asked, ["https://ixdzs8.com/read/566155/"])
+
+    def test_a_book_with_no_source_is_not_asked_about(self):
+        book = self.qidian()
+        said = self.client.post("/api/library/check",
+                                json={"key": book.key}).get_json()
+        self.assertEqual(self.asked, [])
+        self.assertEqual(len(said["missed"]), 1)
+
+    def test_a_silent_site_does_not_break_the_rest(self):
+        from mvl.client import NetworkError
+
+        good = self.book()
+        bad = library.remember(found_site="fanqie", found_id="9",
+                               source="novelcms", address="https://х/нет/",
+                               folder="/там", chapters=10, last=10)
+
+        asked = self.asked
+        was = self.web.sources.get
+
+        class Moody:
+            key = "novelcms"
+            name = "Сайт-слив"
+            needs_proxy = False
+
+            def find(self, client, query):
+                asked.append(query)
+                if "нет" in query:
+                    raise NetworkError("сайт молчит")
+                return was(self.key).find(client, query)
+
+        self.web.sources.get = lambda key: Moody()
+        said = self.client.post("/api/library/check",
+                                json={"keys": [bad.key, good.key]}).get_json()
+        self.assertIn(good.key, said["checked"])
+        self.assertEqual(len(said["missed"]), 1)
+
+    def test_too_many_books_are_split_over_several_presses(self):
+        """Проверить сотню разом — держать кнопку нажатой полчаса и
+        получить в конце «сайт устал»."""
+        keys = []
+        for n in range(self.web.CHECK_AT_ONCE + 3):
+            keys.append(library.remember(
+                found_site="fanqie", found_id=str(n), source="novelcms",
+                address=f"https://x/{n}/", folder="/тут", chapters=1,
+                last=1).key)
+        said = self.client.post("/api/library/check",
+                                json={"keys": keys}).get_json()
+        self.assertEqual(len(said["checked"]), self.web.CHECK_AT_ONCE)
+        self.assertEqual(said["left"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()

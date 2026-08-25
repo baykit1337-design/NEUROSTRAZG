@@ -640,6 +640,65 @@ def api_library_note():
     return jsonify(book=_book_out(book))
 
 
+#: Сколько книг проверять за один запрос.
+#:
+#: Каждая проверка — это поход на сайт, а книг в библиотеке бывают сотни.
+#: Проверить все разом значило бы держать кнопку нажатой полчаса и
+#: получить в конце «сайт устал». Остальные проверятся следующим
+#: нажатием: страница знает, какие уже посмотрели.
+CHECK_AT_ONCE = 12
+
+
+@app.post("/api/library/check")
+def api_library_check():
+    """Спросить у источника, сколько глав в книге сейчас.
+
+    Без этого «есть новые главы» не появилось бы никогда: число глав
+    записывается прогоном, а прогон и есть то, ради чего мы про новые
+    главы спрашиваем.
+    """
+    payload = request.json or {}
+    keys = [str(k) for k in (payload.get("keys") or []) if str(k)]
+    if payload.get("key"):
+        keys.append(str(payload["key"]))
+
+    checked, missed = [], []
+    for key in keys[:CHECK_AT_ONCE]:
+        book = library_op.get(key)
+        if book is None or not book.source or not book.address:
+            # Книга, которую вставили руками и не качали, спрашивать не у
+            # кого: источник у неё не записан.
+            missed.append({"key": key, "why": "не записано, чем её качали"})
+            continue
+        try:
+            source = sources.get(book.source)
+        except sources.SourceBroken as exc:
+            missed.append({"key": key, "why": str(exc)})
+            continue
+
+        client = Client()
+        try:
+            try:
+                novel = source.find(client, book.address)
+            except HttpError as direct:
+                novel, _ = _find_via_proxy(source, book.address, direct)
+                if novel is None:
+                    raise
+            library_op.remember(key, chapters=int(novel.total_chapters or 0))
+            checked.append(key)
+        except (HttpError, sources.SourceBroken, LookupError, ValueError) as exc:
+            missed.append({"key": key, "why": str(exc)})
+        finally:
+            client.close()
+
+    return jsonify(
+        checked=checked, missed=missed,
+        left=max(0, len(keys) - CHECK_AT_ONCE),
+        books=[_book_out(b) for b in library_op.all_books()],
+        state=library_op.state(),
+    )
+
+
 @app.post("/api/library/forget")
 def api_library_forget():
     """Убрать книгу из библиотеки. Файлы на диске не трогаются."""
