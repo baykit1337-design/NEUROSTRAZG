@@ -1301,6 +1301,21 @@ function fmStylePayload(){
   };
 }
 
+/** Что делать с названием: перевести, оставить, убрать. */
+function fmNamesWay(){
+  return fmState.menus.names ? fmState.menus.names.value : 'translate';
+}
+
+/** Выбор модели нужен только переводу — остальным способам к ней не
+ *  ходить вовсе, ни ключей, ни сети. Показывать его всегда значило бы
+ *  требовать ключ там, где он ни при чём. */
+function fmShowWay(){
+  const way = fmNamesWay();
+  $('fmModelRow').hidden = way !== 'translate';
+  $('fmRetitle').textContent = way === 'translate'
+    ? 'Перевести заголовки' : 'Переписать заголовки';
+}
+
 /** Показать, как будет выглядеть заголовок.
  *
  *  Правила ровно те же, что у `make_head` на сервере: пустое поле с
@@ -1568,6 +1583,8 @@ async function fmRetitle(){
       targets: CHOSEN.fmBookList || [],
       base: $('fmOutBase').value.trim(),
       name: $('fmOutName').value.trim(),
+      names: fmNamesWay(),
+      renumber: Number($('fmRenumber').value) || 0,
       model: fmState.menus.model ? fmState.menus.model.value : '',
       force: $('fmForce').checked,
       ...fmStylePayload(),
@@ -2990,6 +3007,10 @@ async function fmLoadOptions(){
       (data.separators || []).map(s => [s.key, s.name]));
     $('fmPaid').dataset.options = JSON.stringify(
       (data.payment || []).map(p => [p.key, p.name]));
+    $('fmNames').dataset.options = JSON.stringify(
+      (data.names || []).map(n => [n.key, n.name]));
+    fmState.menus.names = makeDropdown($('fmNames'), fmShowWay);
+    fmShowWay();
     fmState.menus.sep = makeDropdown($('fmSep'), () => {
       fmShowSample();
       fmScan();

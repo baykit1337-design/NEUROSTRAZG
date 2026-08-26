@@ -650,3 +650,130 @@ class TestTheBookReportOverHttp(WebBase):
                              json={"targets": [str(path)]}).get_json()
         self.assertFalse(said["look"]["ok"])
         self.assertEqual(said["look"]["gaps"], ["2"])
+
+
+class TestWhatToDoWithTheNames(WebBase):
+    """То же, что «Переименовать» делает с именами файлов, — но внутри
+    одного .md, который поедет на сайт. Наружу его имена не видны, и
+    править их можно только там."""
+
+    SOURCE = ("# [Глава 1 — Торговля :|: :|: 1 :|: ]\n\nТекст один.\n\n"
+              "# [Глава 2 — Император :|: :|: 1 :|: ]\n\nТекст два.\n\n"
+              "# [Пролог :|: :|: 1 :|: ]\n\nТекст три.\n")
+
+    def rewrite(self, **more):
+        path = self.root / "исходник.md"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        payload = {"targets": [str(path)], "base": str(self.root),
+                   "name": "готово"}
+        payload.update(more)
+        job = self.finish(self.app.post("/api/format/retitle", json=payload))
+        self.assertIsNone(job.error)
+        _, chapters = mdbook.read_book(
+            (self.root / "готово.md").read_text(encoding="utf-8"))
+        return [head.title for head, _ in chapters]
+
+    def test_the_names_can_be_dropped_leaving_the_number(self):
+        """Ровно то, ради чего всё: «оставить только нумерацию»."""
+        self.assertEqual(self.rewrite(names="drop")[:2],
+                         ["Глава 1", "Глава 2"])
+
+    def test_a_chapter_without_a_number_keeps_its_name(self):
+        """«Глава» вместо «Пролога» было бы неправдой."""
+        self.assertEqual(self.rewrite(names="drop")[2], "Пролог")
+
+    def test_dropping_the_names_asks_the_model_nothing(self):
+        """Ни ключей, ни сети для этого не нужно."""
+        self.rewrite(names="drop")
+        self.assertEqual(self.llm.asked, [])
+
+    def test_the_names_can_be_kept_and_only_restyled(self):
+        got = self.rewrite(names="keep", prefix="Гл.", separator=". ")
+        self.assertEqual(got[0], "Гл. 1. Торговля")
+
+    def test_keeping_the_names_asks_the_model_nothing_either(self):
+        self.rewrite(names="keep")
+        self.assertEqual(self.llm.asked, [])
+
+    def test_translating_is_still_the_default(self):
+        """Кнопка была про перевод, и молча менять это нельзя."""
+        self.assertTrue(self.rewrite()[0].startswith("Глава 1"))
+        self.assertTrue(self.llm.asked)
+
+    def test_an_unknown_way_is_refused(self):
+        path = self.root / "исходник.md"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        got = self.app.post("/api/format/retitle", json={
+            "targets": [str(path)], "base": str(self.root),
+            "name": "готово", "names": "выбросить всё"})
+        self.assertEqual(got.status_code, 400)
+
+    def test_the_price_survives_every_way(self):
+        """Заголовок несёт цену главы — её не трогает ни один способ."""
+        for way in ("drop", "keep", "translate"):
+            with self.subTest(way=way):
+                path = self.root / "исходник.md"
+                path.write_text(self.SOURCE, encoding="utf-8")
+                self.finish(self.app.post("/api/format/retitle", json={
+                    "targets": [str(path)], "base": str(self.root),
+                    "name": "готово", "names": way}))
+                _, chapters = mdbook.read_book(
+                    (self.root / "готово.md").read_text(encoding="utf-8"))
+                self.assertTrue(all(h.paid == "1" for h, _ in chapters))
+
+
+class TestRenumberingTheChapters(WebBase):
+
+    SOURCE = ("# [Глава 7 — А]\n\nТекст.\n\n"
+              "# [Глава 9 — Б]\n\nТекст.\n\n"
+              "# [Глава 40 — В]\n\nТекст.\n")
+
+    def rewrite(self, **more):
+        path = self.root / "исходник.md"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        payload = {"targets": [str(path)], "base": str(self.root),
+                   "name": "готово", "names": "keep"}
+        payload.update(more)
+        self.finish(self.app.post("/api/format/retitle", json=payload))
+        _, chapters = mdbook.read_book(
+            (self.root / "готово.md").read_text(encoding="utf-8"))
+        return [head.title for head, _ in chapters]
+
+    def test_the_numbers_go_in_a_row_from_the_given_one(self):
+        self.assertEqual(self.rewrite(renumber=1),
+                         ["Глава 1 — А", "Глава 2 — Б", "Глава 3 — В"])
+
+    def test_zero_leaves_the_numbers_alone(self):
+        """Они пришли из книги, и врать про них не надо."""
+        self.assertEqual(self.rewrite(renumber=0)[0], "Глава 7 — А")
+
+    def test_renumbering_works_together_with_dropping_the_names(self):
+        self.assertEqual(self.rewrite(names="drop", renumber=100),
+                         ["Глава 100", "Глава 101", "Глава 102"])
+
+    def test_a_chapter_without_a_number_is_not_given_one(self):
+        """Из «Пролога» вышла бы «Глава 3», а с «убрать названия» от него
+        не осталось бы и имени."""
+        source = ("# [Глава 7 — А]\n\nТекст.\n\n"
+                  "# [Пролог]\n\nТекст.\n\n"
+                  "# [Глава 9 — Б]\n\nТекст.\n")
+        path = self.root / "исходник.md"
+        path.write_text(source, encoding="utf-8")
+        self.finish(self.app.post("/api/format/retitle", json={
+            "targets": [str(path)], "base": str(self.root), "name": "готово",
+            "names": "keep", "renumber": 1}))
+        _, chapters = mdbook.read_book(
+            (self.root / "готово.md").read_text(encoding="utf-8"))
+        self.assertEqual([h.title for h, _ in chapters],
+                         ["Глава 1 — А", "Пролог", "Глава 2 — Б"])
+
+    def test_dropping_the_names_does_not_eat_the_prologue(self):
+        source = "# [Глава 7 — А]\n\nТекст.\n\n# [Пролог]\n\nТекст.\n"
+        path = self.root / "исходник.md"
+        path.write_text(source, encoding="utf-8")
+        self.finish(self.app.post("/api/format/retitle", json={
+            "targets": [str(path)], "base": str(self.root), "name": "готово",
+            "names": "drop", "renumber": 1}))
+        _, chapters = mdbook.read_book(
+            (self.root / "готово.md").read_text(encoding="utf-8"))
+        self.assertEqual([h.title for h, _ in chapters], ["Глава 1", "Пролог"])

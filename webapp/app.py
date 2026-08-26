@@ -2035,6 +2035,17 @@ def _md_output(payload: dict) -> Path:
     return folder / f"{naming.safe_filename(name)}.md"
 
 
+#: Что делать с названием главы при переписывании заголовков.
+#:
+#: Во вкладке «Переименовать» то же самое делается с именами файлов, а
+#: книга для загрузчика — один файл, и снаружи её имена не видны вовсе.
+NAME_WAYS = {
+    "translate": "перевести",
+    "keep": "оставить как есть",
+    "drop": "убрать, оставить номер",
+}
+
+
 @app.get("/api/format/options")
 def api_format_options():
     """Чем размечать заголовки.
@@ -2049,7 +2060,8 @@ def api_format_options():
                  {"key": mdbook.PAYMENT["paid"], "name": "платная"}],
         separators=[{"key": s, "name": f"«{s}»"} for s in mdbook.SEPARATORS],
         default_separator=mdbook.DEFAULT_SEPARATOR,
-        prefix=naming.DEFAULT_PREFIX)
+        prefix=naming.DEFAULT_PREFIX,
+        names=[{"key": k, "name": v} for k, v in NAME_WAYS.items()])
 
 
 @app.post("/api/format/files")
@@ -2172,8 +2184,17 @@ def api_format_book():
 
 @app.post("/api/format/retitle")
 def api_format_retitle():
-    """Перевести заголовки готовой книги, не трогая всё остальное."""
+    """Переписать заголовки готовой книги, не трогая всё остальное.
+
+    Что делать с названием, решает `names`: перевести, оставить как есть
+    или убрать вовсе, оставив один номер. Два последних способа к модели
+    не ходят вовсе — ни ключей, ни сети им не нужно.
+    """
     payload = request.json or {}
+    way = str(payload.get("names") or "translate").strip()
+    if way not in NAME_WAYS:
+        return jsonify(error=f"Неизвестно, что делать с названиями: {way}"), 400
+
     try:
         path, lead, chapters = _read_md(payload)
         output = _md_output(payload)
@@ -2181,17 +2202,23 @@ def api_format_retitle():
         return jsonify(error=str(exc)), 400
     if output == path:
         return jsonify(error="Выберите другое имя: исходник не перезаписываем "
-                             "— сверить перевод будет не с чем"), 400
+                             "— сверить с ним будет нечего"), 400
 
     style = _title_style(payload)
     parts = max(1, _whole(payload, "parts", 1))
     first = _whole(payload, "first")
+    # Номера глав подряд с этого числа. Ноль — не трогать номера вовсе:
+    # они пришли из книги и врать про них не надо.
+    renumber = _whole(payload, "renumber")
     force = bool(payload.get("force"))
     model = (payload.get("model") or "").strip()
 
+    doing = ("Переводим заголовки…" if way == "translate"
+             else "Переписываем заголовки…")
     job = Job(id=uuid.uuid4().hex[:12], kind="format",
-              meta={"total": len(chapters)}, output_dir=str(output))
-    job.progress = {"stage": "translate", "message": "Переводим заголовки…",
+              meta={"total": len(chapters), "names": way},
+              output_dir=str(output))
+    job.progress = {"stage": "translate", "message": doing,
                     "done": 0, "total": len(chapters), "written": 0,
                     "failed": 0, "keys": _keys_left()}
     # Журнал перевода: какой ключ, через какой адрес, что ответил сервер.
@@ -2203,29 +2230,55 @@ def api_format_retitle():
         # Просим только имена: номер главы у нас уже есть, и отдавать его
         # модели значило бы позволить ей его поправить.
         taken = [mdbook.split_title(head.title) for head, _ in chapters]
+        # Номера подряд, если попросили. Считаем до перевода: он про
+        # имена, а номер к нему отношения не имеет.
+        if renumber:
+            fresh, at = [], renumber
+            for number, name in taken:
+                # Пролог и послесловие номера не имели. Выдать им номер
+                # значило бы сделать из «Пролога» «Главу 3» — а вместе с
+                # «убрать названия» от него не осталось бы и имени.
+                if number is None:
+                    fresh.append((None, name))
+                    continue
+                fresh.append((at, name))
+                at += 1
+            taken = fresh
         wanted = [name for _, name in taken if name]
 
-        client = _llm_client(payload, log_to=job.log)
-        try:
-            def step(at, all_):
-                # Счётчик ключей обновляем на каждой пачке: на полутора
-                # тысячах заголовков квота кончается посреди работы, и
-                # узнать об этом в конце — поздно.
-                job.progress.update(
-                    done=at, total=all_, keys=_keys_left(),
-                    message=f"Переводим заголовки… {at} из {all_}")
+        done: dict = {}
+        if way == "translate":
+            client = _llm_client(payload, log_to=job.log)
+            try:
+                def step(at, all_):
+                    # Счётчик ключей обновляем на каждой пачке: на полутора
+                    # тысячах заголовков квота кончается посреди работы, и
+                    # узнать об этом в конце — поздно.
+                    job.progress.update(
+                        done=at, total=all_, keys=_keys_left(),
+                        message=f"Переводим заголовки… {at} из {all_}")
 
-            done = titles_op.translate_headings(
-                wanted, client, model=model, force=force, on_step=step)
-        finally:
-            client.close()
+                done = titles_op.translate_headings(
+                    wanted, client, model=model, force=force, on_step=step)
+            finally:
+                client.close()
+        else:
+            job.log.add(f"названия: {NAME_WAYS[way]} — к модели не ходим",
+                        "key")
 
         names = done.get("names") or {}
         out, order = [], first
         for (head, body), (number, name) in zip(chapters, taken):
-            # Не перевелось — оставляем как было. Пустой заголовок хуже
-            # непереведённого: главу в книге станет не найти.
-            ready = names.get(name) or name
+            if way == "keep":
+                ready = name
+            elif way == "drop":
+                # Убрать название можно только там, где остаётся номер:
+                # у пролога его нет, и «Глава» вместо «Пролога» — неправда.
+                ready = "" if number is not None else name
+            else:
+                # Не перевелось — оставляем как было. Пустой заголовок хуже
+                # непереведённого: главу в книге станет не найти.
+                ready = names.get(name) or name
             title = style.build(number, ready) if number is not None else ready
             fresh = head.with_title(title)
             if order:
@@ -2249,9 +2302,11 @@ def api_format_retitle():
                             done=len(chapters), total=len(chapters),
                             keys=_keys_left(),
                             message=f"Готово. Глав: {len(out)}.")
-        job.log.add(f"готово: глав {len(out)}, переведено "
-                    f"{done.get('translated', 0)}, из кэша "
-                    f"{done.get('cached', 0)}", "done")
+        job.log.add(
+            f"готово: глав {len(out)}"
+            + (f", переведено {done.get('translated', 0)}, из кэша "
+               f"{done.get('cached', 0)}" if way == "translate"
+               else f", названия — {NAME_WAYS[way]}"), "done")
 
     return jsonify(job=start_job(job, work).snapshot())
 

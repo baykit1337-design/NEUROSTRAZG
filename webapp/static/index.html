@@ -2144,10 +2144,12 @@
 
   <!-- Работа вторая: переписать заголовки в готовой книге. -->
   <div class="card">
-    <label>Перевести заголовки в готовой книге</label>
-    <p class="hint">Переводится только название главы. Номер, порядок,
+    <label>Заголовки в готовой книге</label>
+    <p class="hint">Меняется только название главы. Номер, порядок,
        платность, том и весь текст книги остаются как были — до пробела.
-       Исходник не переписывается: файл выходит новый.</p>
+       Исходник не переписывается: файл выходит новый. То же самое, что
+       «Переименовать» делает с именами файлов, — но внутри одного .md,
+       который поедет на сайт.</p>
     <div class="row" style="margin-top:10px">
       <input id="fmBookPath" class="pickpath" data-list="fmBookList" type="text"
              placeholder="Путь к .md книги" autocomplete="off">
@@ -2163,6 +2165,17 @@
     <div class="table" id="fmBookPreview" hidden style="margin-top:10px"></div>
 
     <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>что делать с названием<i class="hint-icon" data-tip="«Убрать» оставит один номер: «Глава 1171». У главы без номера — пролога, послесловия — название остаётся: «Глава» вместо «Пролога» было бы неправдой.">?</i></label>
+        <div class="dropdown" id="fmNames" data-options='[]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="fmRenumber">перенумеровать главы с<i class="hint-icon" data-tip="Номера глав подряд, начиная с этого числа, в том порядке, в каком они лежат в файле. 0 — не трогать номера: они пришли из книги.">?</i></label>
+        <input id="fmRenumber" type="number" value="0" min="0">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px" id="fmModelRow">
       <div style="flex:1">
         <label>модель<i class="hint-icon" data-tip="Ключи и выбор модели — на вкладке «Анализ». Заголовки идут пачками по 25.">?</i></label>
         <div class="dropdown" id="fmModel" data-options='[]'></div>
@@ -2181,7 +2194,7 @@
       <input id="fmOutName" type="text" placeholder="книга-ru" autocomplete="off">
     </div>
     <div class="row" style="margin-top:16px">
-      <button id="fmRetitle" class="primary" style="flex:1">Перевести заголовки</button>
+      <button id="fmRetitle" class="primary" style="flex:1">Переписать заголовки</button>
     </div>
   </div>
 
