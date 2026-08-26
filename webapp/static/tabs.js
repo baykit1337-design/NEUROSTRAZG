@@ -1357,6 +1357,75 @@ async function fmScan(){
 }
 window.fmScan = fmScan;
 
+/** Что не так с нумерацией книги.
+ *
+ *  Загрузчик сортирует главы по полю «Порядок», а человек читает номер в
+ *  названии — расходятся они молча, и заметить это можно только до
+ *  отправки на сайт.
+ */
+function fmShowLook(look){
+  const stats = $('fmLook');
+  const rows = $('fmLookRows');
+  stats.replaceChildren();
+  rows.replaceChildren();
+  stats.hidden = rows.hidden = !look;
+  if(!look) return;
+
+  const range = look.first !== null && look.last !== null
+    ? `${look.first}–${look.last}` : '—';
+  const counts = [
+    ['глав', look.total],
+    ['с номером', look.numbered],
+    ['номера', range],
+  ];
+  for(const [name, value] of counts){
+    const cell = document.createElement('span');
+    const bold = document.createElement('b');
+    bold.textContent = String(value);
+    cell.append(document.createTextNode(name + ' '), bold);
+    stats.append(cell);
+  }
+
+  const verdict = document.createElement('span');
+  verdict.className = look.ok ? 'fm-good' : 'fm-bad';
+  verdict.textContent = look.ok
+    ? 'с нумерацией всё в порядке'
+    : 'с нумерацией непорядок';
+  stats.append(verdict);
+
+  // Каждая находка своей строкой: чинить их всё равно по одной, а
+  // «непорядок» без подробностей не говорит, что именно чинить.
+  const found = [
+    ['Пропущены номера', look.gaps, look.gaps_count,
+     'этих глав в книге нет — похоже, потерялись по дороге'],
+    ['Номер встречается дважды', look.doubles, look.doubles_count,
+     'такая глава уедет на сайт двумя'],
+    ['Номер идёт назад', look.backwards, look.backwards_count,
+     'порядок глав собьётся'],
+    ['Повтор в поле «Порядок»', look.order_doubles, look.order_doubles_count,
+     'сайт сортирует именно по нему'],
+    ['Без номера в названии', look.nameless, look.nameless_count,
+     'сайт назначит порядок сам'],
+  ];
+  for(const [name, items, count, why] of found){
+    if(!count) continue;
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const head = document.createElement('span');
+    head.style.flex = '0 0 210px';
+    head.textContent = `${name}: ${count}`;
+    const body = document.createElement('code');
+    body.style.flex = '1';
+    body.textContent = (items || []).join(', ')
+      + (count > (items || []).length ? ' и другие' : '');
+    body.title = why;
+    row.append(head, body);
+    rows.append(row);
+  }
+  rows.hidden = !rows.children.length;
+}
+
 /** Готовые строки заголовков — как есть, без разбора на поля. */
 function fmShowLines(boxId, lines){
   const box = $(boxId);
@@ -1380,6 +1449,7 @@ async function fmBookScan(){
   if(!targets.length){
     fmState.book = null;
     $('fmBookNote').textContent = '';
+    fmShowLook(null);
     return;
   }
   showError('');
@@ -1391,6 +1461,7 @@ async function fmBookScan(){
       + (data.untranslated
         ? `Заголовков не по-русски: ${data.untranslated}.`
         : 'Все заголовки уже на русском — переводить нечего.');
+    fmShowLook(data.look);
     fmShowLines('fmBookPreview', data.sample);
     if(!$('fmOutName').value.trim()){
       $('fmOutName').value = 'книга-ru';
@@ -1398,28 +1469,70 @@ async function fmBookScan(){
   }catch(err){
     showError(err.message, $('fmBookNote'));
     fmState.book = null;
+    // Прежний отчёт относится к прежнему файлу: оставить его значило бы
+    // показывать разбор книги, которую не прочитали.
+    fmShowLook(null);
   }
 }
 window.fmBookScan = fmBookScan;
 
+/** Сколько ключей живо и сколько исчерпано — рядом с прогрессом.
+ *
+ *  Одним числом их не покажешь: «десять ключей» ничего не говорит, если
+ *  девять из них уже отдали свою квоту.
+ */
+function fmShowKeys(keys){
+  const box = $('fmKeys');
+  if(!keys || !keys.total){ box.hidden = true; return; }
+  box.hidden = false;
+  box.replaceChildren();
+
+  const live = document.createElement('b');
+  live.className = 'live';
+  live.textContent = String(keys.active || 0);
+  const spent = document.createElement('b');
+  spent.className = 'spent';
+  spent.textContent = String(keys.exhausted || 0);
+
+  box.append(document.createTextNode('ключи '), live,
+             document.createTextNode(' / '), spent);
+  box.title = `Ключей в работе: ${keys.active || 0}, `
+    + `исчерпано: ${keys.exhausted || 0}, всего: ${keys.total}`;
+}
+
 /** Общее для обеих работ: показать прогресс и дождаться конца. */
-function fmWatch(job, done){
+function fmWatch(job, done, withLog){
   fmState.job = job.id;
   ownJob('format', job.id);
   $('fmProgress').hidden = false;
   $('fmStop').hidden = false;
   $('fmErrors').hidden = true;
+  $('fmKeys').hidden = true;
   $('fmSummary').textContent = 'Файл: ' + job.output_dir;
+  // Строку состояния перерисовываем сразу по новой задаче: до первого
+  // опроса на экране висело «Готово» от прошлой работы, и запуск
+  // выглядел так, будто уже всё закончилось.
+  drawResult(job.progress || {}, 'fmFill', 'fmStatus', 'fmPct');
+
+  // Журнал заводим только там, где он есть: у сборки книги запросов к
+  // модели нет вовсе, и пустая раскрывашка обещала бы то, чего нет.
+  $('fmLogBox').hidden = true;
+  const watcher = withLog
+    ? logWatch(job.id, {box: 'fmLog', wrap: 'fmLogBox', save: 'fmLogSave'})
+    : null;
 
   pollJob(job.id,
     job => {
       const p = job.progress || {};
       $('fmWritten').textContent = p.written || p.done || 0;
       $('fmFailed').textContent = p.failed || 0;
+      fmShowKeys(p.keys);
       return drawResult(p, 'fmFill', 'fmStatus', 'fmPct');
     },
     job => {
       $('fmStop').hidden = true;
+      if(watcher) watcher.stop();
+      fmShowKeys(job.report?.keys || job.progress?.keys);
       if(job.error){ showError(job.error, $('fmSummary')); return; }
       $('fmSummary').textContent =
         'Файл: ' + (job.report?.output || job.output_dir);
@@ -1460,11 +1573,12 @@ async function fmRetitle(){
       ...fmStylePayload(),
     });
     fmWatch(job, job => {
+      // журнал нужен именно здесь: только перевод ходит к модели
       const r = job.report || {};
       $('fmSummary').textContent +=
         ` · переведено ${r.translated || 0}, из кэша ${r.cached || 0}`
         + (r.broken ? `, осталось как было ${r.broken}` : '');
-    });
+    }, true);
   }catch(err){ showError(err.message, $('fmRetitle')); }
   finally{ $('fmRetitle').disabled = false; }
 }
@@ -2297,15 +2411,8 @@ window.anScan = anScan;
 
 /* --------------------- сессия, журнал и результат (7.5–7.7) ---------- */
 
-//: Сколько строк журнала уже показано — дозапрашиваем только хвост.
-let anLogSeen = 0, anLogTimer = null;
-
-function anLogDraw(lines){
-  logDraw($('anLog'), lines);
-}
-
-/** Отрисовка строк журнала. Общая: журналов на экране два — под
- *  прогресс-баром разбора и под кнопкой проверки ключа. */
+/** Отрисовка строк журнала. Общая на все журналы: их на экране уже три —
+ *  под разбором глав, под переводом заголовков и под проверкой ключа. */
 function logDraw(box, lines){
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
   for(const line of lines){
@@ -2322,32 +2429,55 @@ function logDraw(box, lines){
   if(stick) box.scrollTop = box.scrollHeight;
 }
 
-async function anLogTick(jobId){
-  try{
-    const data = await call(`/api/job/${jobId}/log?since=${anLogSeen}`);
-    if(data.lines?.length){
-      anLogDraw(data.lines);
-      anLogSeen = data.total;
-    }
-  }catch(err){ /* журнал не повод ронять экран */ }
-}
+/** Наблюдение за журналом задачи: дозапрашивает хвост и рисует.
+ *
+ *  Общее, как и рисовалка: журналов под прогрессом уже два — разбор глав
+ *  и перевод заголовков, — и свой опрос у каждого разошёлся бы с чужим,
+ *  а чинить пришлось бы оба. Счётчик прочитанного держим в замыкании: у
+ *  двух журналов на экране он свой.
+ */
+function logWatch(jobId, where){
+  const box = $(where.box);
+  let seen = 0;
 
-function anLogStart(jobId){
-  anLogSeen = 0;
-  $('anLog').innerHTML = '';
-  $('anLogBox').hidden = false;
-  clearInterval(anLogTimer);
-  anLogTimer = setInterval(() => anLogTick(jobId), 900);
-  $('anLogSave').onclick = () => {
-    window.location = `/api/job/${jobId}/log.txt`;
+  async function tick(){
+    try{
+      const data = await call(`/api/job/${jobId}/log?since=${seen}`);
+      if(data.lines?.length){
+        logDraw(box, data.lines);
+        seen = data.total;
+      }
+    }catch(err){ /* журнал не повод ронять экран */ }
+  }
+
+  box.innerHTML = '';
+  if(where.wrap) $(where.wrap).hidden = false;
+  if(where.save){
+    $(where.save).onclick = () => {
+      window.location = `/api/job/${jobId}/log.txt`;
+    };
+  }
+  const timer = setInterval(tick, 900);
+
+  return {
+    stop(){
+      clearInterval(timer);
+      // Последний кусок: между опросами могло набежать.
+      tick();
+    },
   };
 }
 
-function anLogStop(jobId){
-  clearInterval(anLogTimer);
-  anLogTimer = null;
-  // Последний кусок: между опросами могло набежать.
-  if(jobId) anLogTick(jobId);
+let anLogger = null;
+
+function anLogStart(jobId){
+  anLogger = logWatch(jobId, {box: 'anLog', wrap: 'anLogBox',
+                              save: 'anLogSave'});
+}
+
+function anLogStop(){
+  if(anLogger) anLogger.stop();
+  anLogger = null;
 }
 
 /** 7.5: блок результата. Он показывается в любом исходе. */

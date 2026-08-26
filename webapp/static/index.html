@@ -851,6 +851,14 @@
   .hist-new{color:#9be8c0}
   .hist-lost{color:#ff9d9d}
 
+  /* Ключи рядом с прогрессом перевода: живые зелёным, исчерпанные
+     красным. Одним числом их не покажешь — они значат разное. */
+  .fmkeys .live{color:#9be8c0}
+  .fmkeys .spent{color:#ff9d9d}
+  #fmLookRows .tr code{font-size:12px;word-break:break-all}
+  .fm-bad{color:#ff9d9d}
+  .fm-good{color:#9be8c0}
+
   /* Глоссарий имён: одна строка — одно имя во всех написаниях. */
   #glList .gl{
     display:flex;align-items:center;gap:10px;flex-wrap:wrap;
@@ -2147,6 +2155,11 @@
     </div>
     <div class="chosen" id="fmBookList"></div>
     <p class="hint" id="fmBookNote"></p>
+    <!-- Что не так с нумерацией. Загрузчик сортирует главы по полю
+         «Порядок», а человек читает номер в названии — разъезжаются они
+         молча, и увидеть это можно только здесь. -->
+    <div class="stats" id="fmLook" hidden style="margin-top:10px"></div>
+    <div class="table" id="fmLookRows" hidden style="margin-top:8px"></div>
     <div class="table" id="fmBookPreview" hidden style="margin-top:10px"></div>
 
     <div class="row" style="margin-top:12px">
@@ -2179,6 +2192,9 @@
     <div class="stats">
       <span>глав <b id="fmWritten">0</b></span>
       <span>ошибок <b id="fmFailed">0</b></span>
+      <!-- Ключи рядом с прогрессом: на полутора тысячах заголовков квота
+           кончается посреди работы, и узнать об этом в конце — поздно. -->
+      <span class="fmkeys" id="fmKeys" hidden></span>
       <span id="fmPct"></span>
       <span class="timers" id="fmTimers"></span>
     </div>
@@ -2187,6 +2203,17 @@
     </div>
     <p class="result-path" id="fmSummary"></p>
     <div class="table" id="fmErrors" hidden></div>
+
+    <!-- Журнал перевода: какой ключ, через какой адрес, что ответил
+         сервер. Единственное место, где видно, почему работа встала. -->
+    <details id="fmLogBox" style="margin-top:12px" hidden>
+      <summary class="hint" style="cursor:pointer">Журнал перевода</summary>
+      <div class="joblog" id="fmLog"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="fmLogSave" class="ghost" style="flex:0 0 auto">Сохранить
+          журнал</button>
+      </div>
+    </details>
   </div>
 </section>
 

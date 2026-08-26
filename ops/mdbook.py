@@ -255,6 +255,92 @@ def looks_translated(title: str, alphabet: str = "а-яёА-ЯЁ") -> bool:
 # --------------------------------------------------------------- работы
 
 
+#: Сколько находок одного рода показывать. Полторы тысячи глав дадут при
+#: разнобое список во весь экран, а чинить его всё равно по одной.
+SHOW = 12
+
+
+def _ranges(numbers: list[int]) -> list[str]:
+    """Подряд идущие числа — одной строкой: «1170–1175»."""
+    out: list[str] = []
+    for number in sorted(numbers):
+        if out:
+            low, _, high = out[-1].partition("–")
+            if number == int(high or low) + 1:
+                out[-1] = f"{low}–{number}"
+                continue
+        out.append(str(number))
+    return out
+
+
+def inspect(chapters) -> dict:
+    """Что не так с нумерацией книги.
+
+    Загрузчик сортирует главы по полю «Порядок», а человек читает номер в
+    названии — и разъезжаются они молча. Пропуск в номерах значит, что
+    главу потеряли по дороге; повтор — что она уедет на сайт дважды;
+    номер назад — что порядок собьётся.
+    """
+    numbers: list[int] = []
+    nameless: list[str] = []
+    backwards: list[str] = []
+    orders: list[str] = []
+    plain: list[str] = []
+
+    previous = None
+    for head, _ in chapters:
+        number, _ = split_title(head.title)
+        if number is None:
+            nameless.append(head.title)
+        else:
+            if previous is not None and number < previous:
+                backwards.append(f"{previous} → {number}")
+            previous = number
+            numbers.append(number)
+        if head.order.strip():
+            orders.append(head.order.strip())
+        if not looks_translated(head.title):
+            plain.append(head.title)
+
+    seen, doubles = set(), []
+    for number in numbers:
+        if number in seen and number not in doubles:
+            doubles.append(number)
+        seen.add(number)
+
+    gaps: list[int] = []
+    if numbers:
+        low, high = min(numbers), max(numbers)
+        # Дыру ищем только внутри своего же диапазона: книга может
+        # начинаться с 1168-й главы, и «нет глав с 1 по 1167» — не находка.
+        gaps = [n for n in range(low, high + 1) if n not in seen]
+
+    order_seen, order_doubles = set(), []
+    for value in orders:
+        if value in order_seen and value not in order_doubles:
+            order_doubles.append(value)
+        order_seen.add(value)
+
+    return {
+        "total": len(chapters),
+        "numbered": len(numbers),
+        "first": min(numbers) if numbers else None,
+        "last": max(numbers) if numbers else None,
+        "nameless": nameless[:SHOW],
+        "nameless_count": len(nameless),
+        "gaps": _ranges(gaps)[:SHOW],
+        "gaps_count": len(gaps),
+        "doubles": [str(n) for n in doubles[:SHOW]],
+        "doubles_count": len(doubles),
+        "backwards": backwards[:SHOW],
+        "backwards_count": len(backwards),
+        "order_doubles": order_doubles[:SHOW],
+        "order_doubles_count": len(order_doubles),
+        "untranslated": len(plain),
+        "ok": not (gaps or doubles or backwards or order_doubles),
+    }
+
+
 def paragraphs_of(lines: list[str]) -> list[str]:
     """Строки тела главы — в абзацы: делить на части можно только их."""
     blocks: list[str] = []
@@ -349,6 +435,7 @@ def from_chapters(chapters, style: TitleStyle | None = None,
 
 __all__ = ["DEFAULT_SEPARATOR", "FREE", "HEAD_RE", "Head", "MARK", "PAID",
            "PAYMENT", "SEPARATORS", "TitleStyle", "cut_into_parts",
-           "from_chapters", "lines_of", "looks_translated", "make_head",
+           "from_chapters", "inspect", "lines_of", "looks_translated",
+           "make_head",
            "paragraphs_of", "parse_head", "read_book", "split_title",
            "write_book"]

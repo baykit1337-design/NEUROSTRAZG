@@ -91,9 +91,19 @@ class TestCheckLog(UiBase):
         self.assertIn('id="llmLogBox"', card)
 
     def test_draw_is_shared_with_the_job_log(self):
-        """Двух рисовалок журнала быть не должно — разъедутся."""
-        self.assertIn("function logDraw(box, lines)", self.tabs)
-        self.assertIn("logDraw($('anLog'), lines)", self.tabs)
+        """Двух рисовалок журнала быть не должно — разъедутся.
+
+        Журналов на экране уже три: разбор глав, перевод заголовков и
+        проверка ключа. Проверяем, что рисовалка одна, а не что её зовут
+        из какого-то одного места: мест становится больше.
+        """
+        self.assertEqual(self.tabs.count("function logDraw("), 1)
+
+    def test_the_polling_of_the_log_is_shared_too(self):
+        """Свой опрос у каждого журнала разошёлся бы с чужим, а чинить
+        пришлось бы оба."""
+        self.assertEqual(self.tabs.count("function logWatch("), 1)
+        self.assertEqual(self.tabs.count("/log?since="), 1)
 
     def test_check_shows_what_the_server_answered(self):
         self.assertIn("llmLog(data.log)", self.tabs)

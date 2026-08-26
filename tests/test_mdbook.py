@@ -518,3 +518,135 @@ class TestRetitlingOverHttp(WebBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLookingAtTheNumbering(unittest.TestCase):
+    """Загрузчик сортирует главы по полю «Порядок», а человек читает
+    номер в названии — расходятся они молча, и заметить это можно только
+    до отправки на сайт."""
+
+    def book(self, *lines):
+        text = "".join(f"{line}\nтекст главы\n\n" for line in lines)
+        return mdbook.inspect(mdbook.read_book(text)[1])
+
+    def test_a_tidy_book_is_called_tidy(self):
+        look = self.book("# [Глава 1 — А :|: 1]", "# [Глава 2 — Б :|: 2]")
+        self.assertTrue(look["ok"])
+        self.assertEqual(look["total"], 2)
+        self.assertEqual((look["first"], look["last"]), (1, 2))
+
+    def test_a_missing_number_is_found(self):
+        """Эта глава потерялась по дороге."""
+        look = self.book("# [Глава 1 — А]", "# [Глава 3 — В]")
+        self.assertEqual(look["gaps"], ["2"])
+        self.assertFalse(look["ok"])
+
+    def test_a_run_of_missing_numbers_is_one_line(self):
+        """Полторы тысячи глав дадут при разнобое список во весь экран."""
+        look = self.book("# [Глава 1 — А]", "# [Глава 6 — Е]")
+        self.assertEqual(look["gaps"], ["2–5"])
+
+    def test_nothing_is_missing_before_the_first_chapter(self):
+        """Книга может начинаться с 1168-й — это не пропуск."""
+        look = self.book("# [Глава 1168 — А]", "# [Глава 1169 — Б]")
+        self.assertEqual(look["gaps"], [])
+
+    def test_a_doubled_number_is_found(self):
+        """Такая глава уедет на сайт двумя."""
+        look = self.book("# [Глава 5 — А]", "# [Глава 5 — Б]")
+        self.assertEqual(look["doubles"], ["5"])
+
+    def test_a_number_going_backwards_is_found(self):
+        look = self.book("# [Глава 7 — А]", "# [Глава 3 — Б]")
+        self.assertEqual(look["backwards"], ["7 → 3"])
+
+    def test_a_doubled_order_field_is_found(self):
+        """Сайт сортирует именно по нему."""
+        look = self.book("# [Глава 1 — А :|: 4]", "# [Глава 2 — Б :|: 4]")
+        self.assertEqual(look["order_doubles"], ["4"])
+        self.assertFalse(look["ok"])
+
+    def test_a_chapter_without_a_number_is_counted_apart(self):
+        look = self.book("# [Пролог]", "# [Глава 1 — А]")
+        self.assertEqual(look["nameless_count"], 1)
+        self.assertEqual(look["numbered"], 1)
+
+    def test_a_prologue_alone_is_not_a_disorder(self):
+        """Без номера — не значит с ошибкой: сайт назначит порядок сам."""
+        self.assertTrue(self.book("# [Пролог]")["ok"])
+
+    def test_untranslated_headings_are_counted(self):
+        look = self.book("# [Chapter 1_ A]", "# [Глава 2 — Б]")
+        self.assertEqual(look["untranslated"], 1)
+
+    def test_the_findings_do_not_flood_the_screen(self):
+        lines = [f"# [Глава {n} — А]" for n in range(1, 200, 2)]
+        look = self.book(*lines)
+        self.assertLessEqual(len(look["gaps"]), mdbook.SHOW)
+        self.assertGreater(look["gaps_count"], mdbook.SHOW)
+
+    def test_an_empty_book_does_not_crash_the_check(self):
+        look = mdbook.inspect([])
+        self.assertEqual(look["total"], 0)
+        self.assertIsNone(look["first"])
+        self.assertTrue(look["ok"])
+
+
+class TestWatchingTheTranslation(WebBase):
+    """Полторы тысячи заголовков — это минуты, и всё это время экран
+    должен отвечать на два вопроса: что происходит и хватит ли ключей."""
+
+    SOURCE = "# [Chapter 1_ Trade :|: :|: 1 :|: ]\n\nТекст.\n"
+
+    def run_it(self):
+        path = self.root / "исходник.md"
+        path.write_text(self.SOURCE, encoding="utf-8")
+        return self.finish(self.app.post("/api/format/retitle", json={
+            "targets": [str(path)], "base": str(self.root), "name": "готово"}))
+
+    def test_the_translation_keeps_a_log(self):
+        job = self.run_it()
+        self.assertIsNotNone(job.log)
+        self.assertTrue(job.log.lines())
+
+    def test_the_log_is_readable_over_http(self):
+        job = self.run_it()
+        said = self.app.get(f"/api/job/{job.id}/log").get_json()
+        self.assertTrue(said["lines"])
+
+    def test_the_log_can_be_saved_to_a_file(self):
+        job = self.run_it()
+        got = self.app.get(f"/api/job/{job.id}/log.txt")
+        self.assertEqual(got.status_code, 200)
+
+    def test_the_keys_are_counted_beside_the_progress(self):
+        """«Десять ключей» ничего не говорит, если девять уже отдали
+        квоту."""
+        job = self.run_it()
+        self.assertIn("keys", job.progress)
+        self.assertIn("active", job.progress["keys"])
+        self.assertIn("exhausted", job.progress["keys"])
+
+    def test_the_report_says_how_the_keys_ended_up(self):
+        self.assertIn("keys", self.run_it().report)
+
+    def test_collecting_keeps_no_log_because_it_asks_nobody(self):
+        """Пустая раскрывашка обещала бы то, чего нет."""
+        folder = self.root / "главы"
+        folder.mkdir(exist_ok=True)
+        (folder / "Глава 1 - А.txt").write_text("Текст.", encoding="utf-8")
+        job = self.finish(self.app.post("/api/format/collect", json={
+            "targets": [str(folder)], "base": str(self.root), "name": "книга"}))
+        self.assertIsNone(job.log)
+
+
+class TestTheBookReportOverHttp(WebBase):
+
+    def test_the_numbering_report_travels_with_the_book(self):
+        path = self.root / "книга.md"
+        path.write_text("# [Глава 1 — А]\nтекст\n\n# [Глава 3 — В]\nтекст\n",
+                        encoding="utf-8")
+        said = self.app.post("/api/format/book",
+                             json={"targets": [str(path)]}).get_json()
+        self.assertFalse(said["look"]["ok"])
+        self.assertEqual(said["look"]["gaps"], ["2"])

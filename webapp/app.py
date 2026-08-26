@@ -2123,6 +2123,21 @@ def api_format_collect():
     return jsonify(job=start_job(job, work).snapshot())
 
 
+def _keys_left() -> dict:
+    """Сколько ключей ещё живы и сколько исчерпано.
+
+    Рядом с прогрессом это отвечает на вопрос, который иначе задать
+    некому: работа встала, потому что кончились ключи, или потому что
+    сломалось что-то ещё.
+    """
+    try:
+        said = keystore.state()
+        return {"active": said["active"], "exhausted": said["exhausted"],
+                "total": said["total"]}
+    except Exception:  # noqa: BLE001 — счётчик не повод ронять перевод
+        return {"active": 0, "exhausted": 0, "total": 0}
+
+
 def _read_md(payload: dict) -> tuple[Path, str, list]:
     """Готовая книга: путь, преамбула и главы."""
     targets = _targets(payload)
@@ -2148,10 +2163,10 @@ def api_format_book():
     except (ValueError, OSError) as exc:
         return jsonify(error=str(exc)), 400
 
-    plain = [head.title for head, _ in chapters]
-    left = [name for name in plain if not mdbook.looks_translated(name)]
-    return jsonify(path=str(path), total=len(chapters),
-                   untranslated=len(left),
+    look = mdbook.inspect(chapters)
+    return jsonify(path=str(path), total=look["total"],
+                   untranslated=look["untranslated"],
+                   look=look,
                    sample=[head.line() for head, _ in chapters[:5]])
 
 
@@ -2178,7 +2193,11 @@ def api_format_retitle():
               meta={"total": len(chapters)}, output_dir=str(output))
     job.progress = {"stage": "translate", "message": "Переводим заголовки…",
                     "done": 0, "total": len(chapters), "written": 0,
-                    "failed": 0}
+                    "failed": 0, "keys": _keys_left()}
+    # Журнал перевода: какой ключ, через какой адрес, что ответил сервер.
+    # На полутора тысячах заголовков это единственное место, где видно,
+    # почему работа встала.
+    job.log = joblog.JobLog()
 
     def work(job: Job):
         # Просим только имена: номер главы у нас уже есть, и отдавать его
@@ -2186,13 +2205,18 @@ def api_format_retitle():
         taken = [mdbook.split_title(head.title) for head, _ in chapters]
         wanted = [name for _, name in taken if name]
 
-        client = _llm_client(payload)
+        client = _llm_client(payload, log_to=job.log)
         try:
+            def step(at, all_):
+                # Счётчик ключей обновляем на каждой пачке: на полутора
+                # тысячах заголовков квота кончается посреди работы, и
+                # узнать об этом в конце — поздно.
+                job.progress.update(
+                    done=at, total=all_, keys=_keys_left(),
+                    message=f"Переводим заголовки… {at} из {all_}")
+
             done = titles_op.translate_headings(
-                wanted, client, model=model, force=force,
-                on_step=lambda at, all_: job.progress.update(
-                    done=at, total=all_,
-                    message=f"Переводим заголовки… {at} из {all_}"))
+                wanted, client, model=model, force=force, on_step=step)
         finally:
             client.close()
 
@@ -2219,10 +2243,15 @@ def api_format_retitle():
                       "translated": done.get("translated", 0),
                       "cached": done.get("cached", 0),
                       "broken": done.get("broken", 0),
-                      "missing": done.get("missing", [])}
+                      "missing": done.get("missing", []),
+                      "keys": _keys_left()}
         job.progress.update(stage="done", written=len(out),
                             done=len(chapters), total=len(chapters),
+                            keys=_keys_left(),
                             message=f"Готово. Глав: {len(out)}.")
+        job.log.add(f"готово: глав {len(out)}, переведено "
+                    f"{done.get('translated', 0)}, из кэша "
+                    f"{done.get('cached', 0)}", "done")
 
     return jsonify(job=start_job(job, work).snapshot())
 
