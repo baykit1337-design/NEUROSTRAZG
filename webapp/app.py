@@ -1623,7 +1623,11 @@ def _llm_client(payload: dict | None = None, log_to=None) -> LlmClient:
     payload = payload or {}
     with POOL_LOCK:
         pool = POOL
-    typed = (payload.get("key") or "").strip()
+    # В поле ключа может лежать вставка списком — оно для того и
+    # многострочное. Взять её целиком за один ключ значит отправить
+    # пятьдесят строк в поле `key`: Google отвечает «ключа нет вовсе», а
+    # человек видит отказ ключа, которого не вставлял.
+    typed = keys_mod.first_key(payload.get("key"))
     return LlmClient(key=typed, pool=pool,
                      # Введённый вручную ключ проверяется как есть: он ещё
                      # не сохранён, и ротации для него нет.

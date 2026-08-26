@@ -378,7 +378,12 @@ def working_proxies(pool) -> list:
         return []
     everything = [p for p in getattr(pool, "proxies", [])
                   if not getattr(p, "disabled", False)]
-    checked = [p for p in everything if getattr(p, "usable", False)]
+    # Проверенные — по замеренному времени ответа: быстрый впереди.
+    # Раньше шли по порядку в файле, и первым брался не самый быстрый, а
+    # тот, что человек вставил раньше других. Время уже замерено той же
+    # кнопкой — не пользоваться им значило бы мерить впустую.
+    checked = sorted((p for p in everything if getattr(p, "usable", False)),
+                     key=lambda p: getattr(p, "elapsed", None) or 1e9)
     return checked + [p for p in everything
                       if not getattr(p, "usable", False)]
 

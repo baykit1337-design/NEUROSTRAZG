@@ -37,6 +37,37 @@ RESET_HOURS = 24
 STAMP = "%Y-%m-%dT%H:%M:%S"
 
 
+def split_keys(text: str) -> list[str]:
+    """Ключи из вставленного текста: по строкам и по запятым.
+
+    Ключи заводят пачкой и копируют из блокнота целиком — поле для того и
+    многострочное. Разбор общий на всех нарочно: кнопка «Добавить» умела
+    разбирать вставку списком, а кнопка «Проверить» — нет, и отправляла
+    все пятьдесят строк одной строкой в поле `key`. Google на такое
+    отвечает «ключа нет вовсе», а в подписи к отказу оказывалось начало
+    первого ключа и конец последнего: с одним ключом всё работало, с
+    несколькими — ничего.
+    """
+    found, seen = [], set()
+    for line in str(text or "").replace(",", "\n").split("\n"):
+        value = line.strip()
+        if value and value not in seen:
+            seen.add(value)
+            found.append(value)
+    return found
+
+
+def first_key(text: str) -> str:
+    """Первый ключ из вставленного текста, пустая строка — если его нет.
+
+    Проверять список целиком незачем: моделей у ключей одного провайдера
+    один и тот же набор, а выбор модели — единственное, ради чего
+    проверка и делается.
+    """
+    found = split_keys(text)
+    return found[0] if found else ""
+
+
 @dataclass
 class Key:
     """Один ключ и всё, что о нём известно."""
@@ -145,9 +176,8 @@ class KeyStore:
             keys = self.all()
             have = {k.key for k in keys}
             added = 0
-            for line in str(text or "").replace(",", "\n").split("\n"):
-                value = line.strip()
-                if not value or value in have:
+            for value in split_keys(text):
+                if value in have:
                     continue
                 have.add(value)
                 keys.append(Key(key=value,

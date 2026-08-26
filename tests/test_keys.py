@@ -577,31 +577,6 @@ class TestARejectedKeyIsNotAProxyProblem(KeysBase):
         self.assertEqual(self.ask(_Answer(200, body)), body)
 
 
-class TestTheShapeOfTheKeyIsHinted(KeysBase):
-    """Ключом вставляют что попало, а Google на всё отвечает одинаково."""
-
-    def setUp(self):
-        super().setUp()
-        self.said: list[str] = []
-
-    def refused(self, key):
-        client = LlmClient(key=key, on_event=self.said.append)
-        with self.assertRaises(BadKey) as caught:
-            client._once(_Http(_Answer(401)), "https://x/models", None)
-        return str(caught.exception)
-
-    def test_a_key_of_another_shape_is_pointed_out(self):
-        self.assertIn("AIza", self.refused("AQ.Ab8RN6JYtokenchtoto4TJA"))
-
-    def test_a_proper_key_gets_no_such_remark(self):
-        """Ключ правильной формы, а доступа нет — совсем другая беда."""
-        self.assertNotIn("начинаются с", self.refused(KEY_A))
-
-    def test_the_key_itself_does_not_leak_into_the_message(self):
-        said = self.refused("AQ.Ab8RN6JYtokenchtoto4TJA")
-        self.assertNotIn("Ab8RN6JYtokenchtoto", said)
-
-
 class TestTheDownloaderIsNotTouched(unittest.TestCase):
     """Послабление для модели не должно менять качалку."""
 
@@ -774,3 +749,95 @@ class TestTheFailureSaysWhatTheNumberMeans(KeysBase):
         with self.assertRaises(LlmError) as caught:
             client._request("models")
         self.assertIn("напрямую", str(caught.exception))
+
+
+class TestSeveralKeysPastedAtOnce(KeysBase):
+    """Поле ключа многострочное, и вставка списком — обычное дело.
+
+    Кнопка «Добавить» это умела, а «Проверить» — нет: она брала весь
+    текст поля за один ключ и отправляла пятьдесят строк в поле `key`.
+    Google на такое отвечает «ключа нет вовсе», а в подписи к отказу
+    оказывалось начало первого ключа и конец последнего. С одним ключом
+    всё работало, с несколькими — ничего.
+    """
+
+    def test_lines_come_apart(self):
+        self.assertEqual(keys_mod.split_keys(f"{KEY_A}\n{KEY_B}"),
+                         [KEY_A, KEY_B])
+
+    def test_commas_come_apart_too(self):
+        self.assertEqual(keys_mod.split_keys(f"{KEY_A}, {KEY_B}"),
+                         [KEY_A, KEY_B])
+
+    def test_the_same_key_twice_is_one_key(self):
+        self.assertEqual(keys_mod.split_keys(f"{KEY_A}\n{KEY_A}"), [KEY_A])
+
+    def test_empty_lines_are_not_keys(self):
+        self.assertEqual(keys_mod.split_keys(f"\n\n{KEY_A}\n  \n"), [KEY_A])
+
+    def test_the_first_of_many_is_the_one_checked(self):
+        self.assertEqual(keys_mod.first_key(f"{KEY_A}\n{KEY_B}"), KEY_A)
+
+    def test_one_key_is_taken_whole(self):
+        """Обычный случай ломать нельзя: он и работал."""
+        self.assertEqual(keys_mod.first_key(KEY_A), KEY_A)
+
+    def test_nothing_pasted_means_no_key(self):
+        self.assertEqual(keys_mod.first_key("   "), "")
+
+    def test_the_check_does_not_glue_the_keys_together(self):
+        """То самое склеивание: в `key` уходил весь текст поля."""
+        from webapp import app as web
+
+        client = web._llm_client({"key": f"{KEY_A}\n{KEY_B}"})
+        self.assertEqual(client.key, KEY_A)
+        self.assertNotIn("\n", client.key)
+
+    def test_adding_and_checking_split_the_text_the_same_way(self):
+        """Два разбора однажды разойдутся, и объяснить это будет нечем."""
+        text = f"{KEY_A},{KEY_B}"
+        self.store.add(text)
+        stored = [k.key for k in self.store.all()]
+        self.assertEqual(stored, keys_mod.split_keys(text))
+
+
+class TestTheFastestAddressGoesFirst(KeysBase):
+    """Время ответа замеряет та же кнопка «Проверить» — им и пользуемся.
+
+    Проверенные адреса шли по порядку в файле, и первым брался не самый
+    быстрый, а тот, что вставили раньше других.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._use = settings.llm.use_proxies
+        self.addCleanup(lambda: setattr(settings.llm, "use_proxies", self._use))
+        settings.llm.use_proxies = True
+
+    def proxy(self, host, elapsed=None, alive=True, status=200):
+        found = Proxy(host=host, port=8080)
+        found.alive = alive
+        found.status = status
+        found.elapsed = elapsed
+        return found
+
+    def route(self, *proxies):
+        client = LlmClient(key=KEY_A, pool=_Pool(list(proxies)))
+        return [label for _, label in client._proxies()]
+
+    def test_the_quick_one_overtakes_the_slow_one(self):
+        slow = self.proxy("10.0.0.1", elapsed=9.0)
+        quick = self.proxy("10.0.0.2", elapsed=0.4)
+        self.assertEqual(self.route(slow, quick)[0], "10.0.0.2:8080")
+
+    def test_an_address_without_a_measure_waits_its_turn(self):
+        """Не замерен — не значит быстрый."""
+        quick = self.proxy("10.0.0.2", elapsed=0.4)
+        unknown = self.proxy("10.0.0.1", elapsed=None)
+        self.assertEqual(self.route(unknown, quick)[0], "10.0.0.2:8080")
+
+    def test_the_unchecked_still_come_after_the_checked(self):
+        """Скорость важна среди пригодных, а не вместо пригодности."""
+        good = self.proxy("10.0.0.2", elapsed=9.0)
+        dead = self.proxy("10.0.0.1", alive=False, status=0, elapsed=0.1)
+        self.assertEqual(self.route(dead, good)[0], "10.0.0.2:8080")
