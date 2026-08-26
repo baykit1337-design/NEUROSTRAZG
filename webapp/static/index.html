@@ -851,6 +851,31 @@
   .hist-new{color:#9be8c0}
   .hist-lost{color:#ff9d9d}
 
+  /* Глоссарий имён: одна строка — одно имя во всех написаниях. */
+  #glList .gl{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:9px 10px;border-radius:10px;
+    border:1px solid var(--stroke-soft);margin-bottom:8px;
+    background:rgba(255,255,255,.02);
+  }
+  #glList .gl.off{opacity:.5}
+  #glList .gl-side{flex:1;min-width:220px}
+  #glList .gl-names{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .gl-was{color:var(--muted);font-size:12px;margin-top:4px}
+  /* Написание. Главное горит, остальные приглушены — нажатие меняет
+     главное местами с нажатым. */
+  .glname{
+    font-size:12px;line-height:1.6;padding:2px 10px;border-radius:999px;
+    border:1px solid var(--stroke-soft);color:var(--muted);
+    background:transparent;cursor:pointer;
+  }
+  .glname:hover{color:#e9defc;border-color:#8c54ff}
+  .glname.on{
+    color:#e9defc;border-color:#8c54ff;background:rgba(140,84,255,.18);
+    cursor:default;
+  }
+  .glname.on:hover{border-color:#8c54ff}
+
   /* Очередь книг. Строка: обложка, книга, чем качать, состояние. */
   #dqList .q{
     display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;
@@ -2191,6 +2216,24 @@
       <button id="anGlossExport" class="ghost" style="flex:1">Выгрузить</button>
     </div>
     <p class="hint" id="anGlossNote"></p>
+  </div>
+
+  <!-- Глоссарий имён: варианты написания → словарь автозамен.
+       Реестр уже сводит написания одного имени в варианты — здесь
+       накопленное превращается в правила для замены по словарю. -->
+  <div class="card" id="glCard" hidden>
+    <label>Глоссарий имён — свести написания к одному</label>
+    <p class="hint">У машинного перевода имя плавает от главы к главе:
+       Юй Шэн в первой сотне и Ю Шен в третьей. Ниже — только разные
+       написания одного имени. Прозвища и вторые имена сюда не попадают:
+       заменить «Учитель Ю» на имя значит переписать книгу.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="glBuild" class="ghost" style="flex:1">Собрать из реестра</button>
+      <button id="glSave" class="primary" style="flex:1" hidden
+              title="Дописать выбранное в словарь замен книги">Записать в словарь замен</button>
+    </div>
+    <p class="hint" id="glNote"></p>
+    <div id="glList" style="margin-top:12px"></div>
   </div>
 
   <!-- Этап 3: противоречия -->

@@ -2063,7 +2063,7 @@ async function anScan(){
   // человек уже смотрит на новый.
   cancelTab('analyze');
   if(!targets.length){
-    ['anStage1','anStage2','anStage3','anGlossary','anRetell']
+    ['anStage1','anStage2','anStage3','anGlossary','glCard','anRetell']
       .forEach(id => { $(id).hidden = true; });
     $('anScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
@@ -2288,7 +2288,7 @@ async function anLoadRegistry(){
         + `глав разобрано ${s.chapters}. Подтверждено вручную: ${s.confirmed}.`
       : 'Реестр пуст — сначала разберите главы.';
 
-    ['anStage2','anGlossary','anStage3','anRetell'].forEach(id => {
+    ['anStage2','anGlossary','glCard','anStage3','anRetell'].forEach(id => {
       $(id).hidden = s.entities === 0;
     });
     anRenderEntities();
@@ -2394,6 +2394,118 @@ async function anGlossExport(){
     $('anGlossNote').textContent =
       `Выгружено в формате ${data.format}. Скопируйте и отдайте переводчику.`;
   }catch(err){ showError(err.message); }
+}
+
+/* ------------------------------------------ глоссарий имён (пункт 11)
+ *
+ * Реестр уже сводит написания одного имени в варианты — иначе считал бы
+ * одного человека двумя. Здесь накопленное превращается в словарь
+ * замен, тот самый, что применяет «Замена по словарю»: своей замены
+ * заводить не пришлось, а у неё есть предпросмотр и откат.
+ *
+ * Правит человек, а не программа. Главное написание выбирается
+ * нажатием, ненужную строку можно снять: угадать, «Юй Шэн» правильнее
+ * или «Юй Шен», по одному реестру нельзя.
+ */
+let glGroups = [];
+
+async function glBuild(){
+  showError('');
+  $('glBuild').disabled = true;
+  try{
+    const data = await call('/api/names/glossary', anPayload());
+    glGroups = (data.groups || []).map(g => ({...g, on: true}));
+    glPath = data.path || '';
+    glShow();
+  }catch(err){ showError(err.message, $('glBuild')); }
+  finally{ $('glBuild').disabled = false; }
+}
+
+let glPath = '';
+
+function glShow(){
+  const box = $('glList');
+  box.innerHTML = '';
+  $('glSave').hidden = !glGroups.length;
+
+  // Считаем по самим строкам, а не по сводке с сервера: сводка стареет
+  // в тот миг, когда человек снял галку или сменил главное написание.
+  const on = glGroups.filter(g => g.on);
+  const variants = on.reduce((sum, g) => sum + g.variants.length, 0);
+
+  $('glNote').textContent = !glGroups.length
+    ? 'Разнобоя в написаниях не нашлось — в реестре каждое имя записано '
+      + 'одинаково. Это хорошо: менять нечего.'
+    : `Имён с разнобоем: ${glGroups.length}. `
+      + `Написаний под замену: ${variants}. `
+      + (glPath ? `Правила лягут в ${glPath}.` : '');
+
+  for(const group of glGroups) box.append(glRow(group));
+}
+
+function glRow(group){
+  const row = document.createElement('div');
+  row.className = 'gl' + (group.on ? '' : ' off');
+
+  const use = document.createElement('input');
+  use.type = 'checkbox';
+  use.checked = group.on;
+  use.title = 'Включить это имя в словарь';
+  use.onchange = () => { group.on = use.checked; glShow(); };
+  row.append(use);
+
+  const side = document.createElement('div');
+  side.className = 'gl-side';
+
+  const line = document.createElement('div');
+  line.className = 'gl-names';
+  for(const name of [group.canonical, ...group.variants]){
+    const chip = document.createElement('button');
+    chip.className = 'glname' + (name === group.canonical ? ' on' : '');
+    chip.textContent = name;
+    chip.title = name === group.canonical
+      ? 'К этому написанию приводим'
+      : 'Сделать главным это написание';
+    chip.onclick = () => {
+      if(name === group.canonical) return;
+      // Меняем местами: прежнее главное становится вариантом, иначе
+      // оно бы просто пропало из словаря.
+      group.variants = [group.canonical,
+                        ...group.variants.filter(v => v !== name)];
+      group.canonical = name;
+      glShow();
+    };
+    line.append(chip);
+  }
+  side.append(line);
+
+  const was = document.createElement('div');
+  was.className = 'gl-was';
+  was.textContent = `${group.variants.join(', ')} → ${group.canonical}`
+    + (group.kind ? ` · ${group.kind}` : '')
+    + (group.confirmed ? ' · подтверждено' : '');
+  side.append(was);
+  row.append(side);
+  return row;
+}
+
+async function glSave(){
+  showError('');
+  const chosen = glGroups.filter(g => g.on);
+  if(!chosen.length){
+    showError('Ни одного имени не отмечено', $('glSave'));
+    return;
+  }
+  $('glSave').disabled = true;
+  try{
+    const data = await call('/api/names/save', anPayload({groups: chosen}));
+    $('glNote').textContent = data.added
+      ? `Дописано правил: ${data.added}. Всего в словаре: ${data.rules}. `
+        + `Файл: ${data.path}. Применить их — на вкладке «Инструменты», `
+        + 'замена по словарю: там есть предпросмотр.'
+      : `Новых правил не появилось — все уже были в словаре (${data.rules}).`;
+  }catch(err){ showError(err.message, $('glSave')); }
+  finally{ $('glSave').disabled = false; }
 }
 
 /* ---------------------------------------------------- противоречия */
@@ -2533,6 +2645,8 @@ $('anRebuild').onclick = async () => {
 };
 $('anGlossImport').onclick = anGlossImport;
 $('anGlossExport').onclick = anGlossExport;
+$('glBuild').onclick = glBuild;
+$('glSave').onclick = glSave;
 $('anCheck').onclick = anCheck;
 $('anCards').onclick = anCards;
 $('anSaveReport').onclick = anSaveReport;

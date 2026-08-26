@@ -40,6 +40,7 @@ from ops import covers  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
+from ops import names as names_op  # noqa: E402
 from ops import convert as convert_op  # noqa: E402
 from llm.client import BadKey, LlmClient, LlmError, NoKeysLeft, mask, short  # noqa: E402
 from llm import keys as keys_mod  # noqa: E402
@@ -2262,6 +2263,54 @@ def api_registry_merge():
     analyze_op.save_registry(root, registry)
     return jsonify(entity=merged.as_dict() if merged else None,
                    stats=registry.stats())
+
+
+# ============ Глоссарий имён (пункт 11) ============
+#
+# «Анализ» строит реестр персонажей и сводит написания одного имени в
+# варианты. Здесь накопленное превращается в словарь замен для той
+# замены по словарю, что уже написана: имя перестаёт плясать между
+# главами, а своей замены заводить не пришлось.
+
+
+@app.post("/api/names/glossary")
+def api_names_glossary():
+    """Что стоит свести к одному написанию — по реестру книги."""
+    payload = request.json or {}
+    root = _book_root(payload)
+    registry = analyze_op.load_registry(root)
+    found = names_op.groups(registry)
+    return jsonify(groups=[g.as_dict() for g in found],
+                   summary=names_op.summary(found),
+                   dictionary=names_op.as_dictionary(found),
+                   path=str(replace_op.dictionary_path(root)))
+
+
+@app.post("/api/names/save")
+def api_names_save():
+    """Дописать выбранное в словарь замен книги.
+
+    Именно дописать: в словаре лежат замены, которые человек вносил
+    руками, и глоссарий не вправе их стирать.
+    """
+    payload = request.json or {}
+    root = _book_root(payload)
+    chosen = names_op.from_dicts(payload.get("groups"))
+    fresh = names_op.as_dictionary(chosen)
+    if not fresh:
+        return jsonify(error="Нечего записывать: ни одного написания не "
+                             "выбрано"), 400
+
+    path = replace_op.dictionary_path(root)
+    try:
+        was = path.read_text(encoding="utf-8", errors="replace") \
+            if path.is_file() else ""
+        text, added = names_op.merge_into(was, fresh)
+        replace_op.save_dictionary(root, text)
+    except OSError as exc:
+        return jsonify(error=f"Не удалось записать словарь: {exc}"), 400
+    return jsonify(path=str(path), added=added,
+                   rules=len(replace_op.parse_dictionary(text)))
 
 
 @app.post("/api/registry/rebuild")

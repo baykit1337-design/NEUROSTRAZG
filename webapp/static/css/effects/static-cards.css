@@ -38,7 +38,7 @@
 .fx-static-cards .card :is(
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
   .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip,
-  .q-where, .q-path
+  .q-where, .q-path, .gl-was, .glname
 ),
 .fx-static-cards .card > label{
   transition:color .22s ease;
@@ -49,7 +49,8 @@
   .hist-where:not(.hist-new):not(.hist-lost), .hist-path,
   .lb-was, .lb-where:not(.lb-new), .lb-path,
   .lbchip:not(.on):not(.auto):not(:hover),
-  .q-where, .q-path
+  .q-where, .q-path,
+  .gl-was, .glname:not(.on):not(:hover)
 ),
 .fx-static-cards .card:hover > label{
   color:#bdb7cf;
