@@ -4681,28 +4681,56 @@ async function rkRefresh(){
   }
 }
 
+/** Переводы описаний, полученные скопом.
+ *
+ *  Раскрытая карточка спрашивает свой перевод у сервера, но после общего
+ *  перевода он уже здесь: ходить за ним второй раз незачем.
+ */
+let rkAbouts = {};
+
 async function rkTranslate(){
   showError('');
   $('rkTranslate').disabled = true;
+  const was = $('rkTranslate').textContent;
+  $('rkTranslate').textContent = 'Переводим…';
   try{
+    // Одной кнопкой — и названия, и описания. Описания идут пачками по
+    // шесть: полсотни укладываются в девять запросов, а не в полсотни.
     const data = await call('/api/rank/translate',
-      {...rkWhere(), model: llmMenu ? llmMenu.value : ''});
+      {...rkWhere(), model: llmMenu ? llmMenu.value : '', abstracts: true});
     rkTitles = data.titles || {};
+    rkAbouts = {...rkAbouts, ...((data.abouts || {}).abstracts || {})};
+
     // «Не разобрано ответов» человеку ничего не говорило: ответы — наше
     // внутреннее дело, а видит он китайские названия. Считаем и называем
     // именно их.
     const left = (data.missing || []).join(', ');
-    $('rkNote').textContent =
-      `Переведено ${data.translated}, из кэша ${data.cached}.`
+    let note = `Названия: переведено ${data.translated}, из кэша ${data.cached}.`
       + (data.broken
         ? ` Осталось китайскими: ${data.broken}`
           + (left ? ` — ${left}${data.broken > (data.missing || []).length
             ? ' и другие' : ''}.` : '.')
-          + ' Нажмите «Перевести названия» ещё раз.'
+          + ' Нажмите ещё раз.'
         : '');
+
+    // Счётчики раздельные: названия и описания стоят разного числа
+    // запросов, и одно число на двоих прятало бы цену.
+    const about = data.abouts;
+    if(about){
+      note += ` Описания: переведено ${about.translated}, `
+        + `из кэша ${about.cached}.`
+        + (about.absent
+          ? ` Без описания на сайте: ${about.absent}.`
+          : '')
+        + (about.broken ? ` Не далось: ${about.broken}.` : '');
+    }
+    $('rkNote').textContent = note;
     rkRender();
   }catch(err){ showError(err.message); }
-  finally{ $('rkTranslate').disabled = false; }
+  finally{
+    $('rkTranslate').disabled = false;
+    $('rkTranslate').textContent = was;
+  }
 }
 
 /* Раскрытие строки рейтинга (2.4 ТЗ).
@@ -4854,7 +4882,9 @@ const RK_SECRET_ABOUT = 'Описание зашифровано шрифтом 
 function rkAbout(row, data){
   const wrap = document.createElement('div');
   const own = (data.abstract || '').trim();
-  let done = (data.abstract_ru || '').trim();
+  // Перевод мог приехать общей кнопкой — тогда он уже здесь.
+  let done = (data.abstract_ru || '').trim()
+             || (rkAbouts[row.book_id] || '').trim();
 
   const text = document.createElement('p');
   text.className = 'hint';

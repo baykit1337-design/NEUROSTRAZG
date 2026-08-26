@@ -2667,7 +2667,10 @@
     <div class="row" style="margin-top:10px">
       <input id="rkFilter" type="text" placeholder="фильтр по названию или категории"
              autocomplete="off">
-      <button id="rkTranslate" class="ghost" style="flex:0 0 auto">Перевести названия</button>
+      <!-- Одной кнопкой: и названия, и описания. Описания идут пачками,
+           поэтому полсотни книг стоят девяти запросов, а не полусотни. -->
+      <button id="rkTranslate" class="ghost" style="flex:0 0 auto"
+              title="Перевести названия и описания всего среза">Перевести всё</button>
     </div>
     <p class="hint" id="rkNote"></p>
     <div class="table" id="rkDetails" hidden style="margin-top:10px"></div>

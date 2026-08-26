@@ -2912,9 +2912,35 @@ def api_find_translate():
         client.close()
 
 
+def _about_texts(rows) -> dict:
+    """Описания книг среза: `book_id` → текст на языке сайта.
+
+    Цидянь печатает описание прямо в строке доски; у остальных сайтов оно
+    появляется в кэше карточки, когда строку раскрывали. Чего нет ни там,
+    ни там — переводить нечего, и ходить за этим на сайт мы не идём:
+    полсотни походов по одной кнопке — это уже не перевод.
+    """
+    texts = {}
+    for row in rows:
+        if not row.book_id:
+            continue
+        text = str(getattr(row, "about", "") or "").strip()
+        if not text:
+            card = books_op.load(row.book_id) or {}
+            text = str(card.get("abstract") or "").strip()
+        if text:
+            texts[row.book_id] = text
+    return texts
+
+
 @app.post("/api/rank/translate")
 def api_rank_translate():
-    """Прогоняет названия через модель. Кэш по book_id."""
+    """Прогоняет названия через модель. Кэш по book_id.
+
+    С `abstracts` заодно переводит и описания — то самое «одной кнопкой».
+    Счётчики у них раздельные: названия и описания стоят разного числа
+    запросов, и складывать их в одно число значило бы прятать цену.
+    """
     payload = request.json or {}
     site = _rank_site(payload)
     board, category = _rank_board(payload, site)
@@ -2928,12 +2954,22 @@ def api_rank_translate():
     if snapshot is None:
         return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
 
+    model = (payload.get("model") or "").strip()
+    force = bool(payload.get("force"))
+
     client = _llm_client()
     try:
-        return jsonify(**titles_op.translate(
-            snapshot.rows, client,
-            model=(payload.get("model") or "").strip(),
-            force=bool(payload.get("force"))))
+        done = titles_op.translate(snapshot.rows, client, model=model,
+                                   force=force)
+        if payload.get("abstracts"):
+            texts = _about_texts(snapshot.rows)
+            done["abouts"] = titles_op.translate_all_abstracts(
+                texts, client, model=model, force=force)
+            # Сколько книг остались без перевода описания просто потому,
+            # что описания у них нет вовсе. Без этого числа «переведено
+            # 12 из 80» читалось бы как поломка.
+            done["abouts"]["absent"] = len(snapshot.rows) - len(texts)
+        return jsonify(**done)
     except NoKeysLeft as exc:
         return jsonify(error=str(exc)), 400
     except BadKey as exc:

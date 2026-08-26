@@ -151,6 +151,120 @@ class TestAbstractRoutes(AbstractBase):
         self.assertIn("нечего", res.get_json()["error"])
 
 
+class TestOneButtonForEverything(AbstractBase):
+    """Пункт 13: одной кнопкой и названия, и описания.
+
+    Раньше описания переводились строго по одному, по кнопке в раскрытой
+    строке. Возражение было про цену — запрос на каждое описание, — и
+    пачками оно снимается: полсотни описаний стоят девяти запросов.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from webapp.app import app
+
+        app.config["TESTING"] = True
+        cls.app = app.test_client()
+
+    def setUp(self):
+        super().setUp()
+        from net.sources import rank as rank_net
+        from ops import rank as rank_op
+        from webapp import app as web
+
+        self.rank_net = rank_net
+
+        self._data = TemporaryDirectory()
+        self.addCleanup(self._data.cleanup)
+        kept = rank_op.RANK_DIR
+        rank_op.RANK_DIR = Path(self._data.name)
+        self.addCleanup(setattr, rank_op, "RANK_DIR", kept)
+        self.rank_op = rank_op
+
+        held = titles.TITLES_FILE
+        titles.TITLES_FILE = Path(self._data.name) / "titles.json"
+        self.addCleanup(setattr, titles, "TITLES_FILE", held)
+
+        self._books = TemporaryDirectory()
+        self.addCleanup(self._books.cleanup)
+        saved = books.BOOK_DIR
+        books.BOOK_DIR = Path(self._books.name)
+        self.addCleanup(setattr, books, "BOOK_DIR", saved)
+
+        # Модель подменяем целиком: ключей в тестах нет, а спрашивать
+        # надо именно то, что маршрут ей отдаёт.
+        self.llm = FakeLlm('{"1": "перевод"}')
+        was = web._llm_client
+        web._llm_client = lambda *a, **kw: self.llm
+        self.addCleanup(setattr, web, "_llm_client", was)
+        self.web = web
+
+    def snapshot(self, rows, day="2026-01-01"):
+        """Срез той доски, которую маршрут и станет искать.
+
+        Сохранить его под `all` мало: у Фанкью доска складывается из пола
+        и вида, и по умолчанию маршрут смотрит именно туда.
+        """
+        from net.sources import categories as rank_cats
+
+        board = rank_cats.board_key(rank_cats.MALE, rank_cats.READING)
+        self.rank_op.save(rows, board=board, day=day)
+        return day
+
+    def row(self, book_id, about=""):
+        return self.rank_net.RankRow(place=1, book_id=book_id,
+                                     name=f"книга {book_id}", about=about)
+
+    def test_descriptions_are_translated_along_with_the_titles(self):
+        self.snapshot([self.row("1", about=CHINESE)])
+        said = self.app.post("/api/rank/translate",
+                             json={"abstracts": True}).get_json()
+        self.assertIn("abouts", said)
+        self.assertEqual(said["abouts"]["abstracts"]["1"], "перевод")
+
+    def test_without_asking_the_descriptions_are_left_alone(self):
+        """Кнопка «перевести всё» — не единственный путь сюда: за
+        названиями ходят и мимо неё."""
+        self.snapshot([self.row("1", about=CHINESE)])
+        said = self.app.post("/api/rank/translate", json={}).get_json()
+        self.assertNotIn("abouts", said)
+
+    def test_the_qidian_description_comes_from_the_row_itself(self):
+        """Цидянь печатает описание прямо в строке доски — ходить за ним
+        на сайт второй раз незачем."""
+        self.snapshot([self.row("1", about=CHINESE)])
+        self.app.post("/api/rank/translate", json={"abstracts": True})
+        self.assertIn(CHINESE, self.llm.last)
+
+    def test_for_other_sites_it_comes_from_the_opened_card(self):
+        books.save("1", {"name": "书", "abstract": CHINESE, "book_id": "1"})
+        self.snapshot([self.row("1")])
+        self.app.post("/api/rank/translate", json={"abstracts": True})
+        self.assertIn(CHINESE, self.llm.last)
+
+    def test_books_with_no_description_anywhere_are_counted_not_hidden(self):
+        """«Переведено 1 из 80» без этого числа читалось бы поломкой."""
+        self.snapshot([self.row("1", about=CHINESE), self.row("2")])
+        said = self.app.post("/api/rank/translate",
+                             json={"abstracts": True}).get_json()
+        self.assertEqual(said["abouts"]["absent"], 1)
+
+    def test_the_counts_of_titles_and_descriptions_stay_apart(self):
+        """Складывать их в одно число значило бы прятать цену: названия
+        и описания стоят разного числа запросов."""
+        self.snapshot([self.row("1", about=CHINESE)])
+        said = self.app.post("/api/rank/translate",
+                             json={"abstracts": True}).get_json()
+        self.assertIn("translated", said)
+        self.assertIn("translated", said["abouts"])
+
+    def test_nothing_to_translate_is_not_an_error(self):
+        self.snapshot([self.row("1")])
+        res = self.app.post("/api/rank/translate", json={"abstracts": True})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["abouts"]["translated"], 0)
+
+
 class TestTitlesUi(unittest.TestCase):
     """Что показано в браузере."""
 

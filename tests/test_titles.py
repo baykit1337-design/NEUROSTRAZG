@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -234,6 +235,128 @@ class TestWhatWorkedKeepsWorking(Base):
         again = Model(honest("ИНАЧЕ "))
         found = titles_op.translate(rows(2), again, force=True)
         self.assertTrue(found["titles"]["1"].startswith("ИНАЧЕ"))
+
+
+def abouts(count, first=1):
+    """Описания: абзац на книгу, а не строка."""
+    return {str(n): f"简介 {n}\n\n第二段 {n}" for n in range(first, first + count)}
+
+
+#: Пронумерованная строка запроса. По разделителю запрос не разберёшь:
+#: `---` стоит и в самом задании, до описаний.
+NUMBERED = re.compile(r"^(\d+)\. (.+)$", re.M)
+
+
+def honest_about(prefix="ПЕРЕВОД ", skip=()):
+    """Ответ, переводящий описания. `skip` — номера, которые «не дались»."""
+
+    def answer(prompt):
+        return json.dumps(
+            {number: prefix + text
+             for number, text in NUMBERED.findall(prompt)
+             if number not in skip},
+            ensure_ascii=False)
+
+    return answer
+
+
+class AboutBase(Base):
+
+    def setUp(self):
+        super().setUp()
+        was = titles_op.ABSTRACTS_FILE
+        titles_op.ABSTRACTS_FILE = Path(self.dir.name) / "abstracts.json"
+        self.addCleanup(setattr, titles_op, "ABSTRACTS_FILE", was)
+
+
+class TestDescriptionsGoInBatches(AboutBase):
+    """Возражение было про запрос на описание, а не про перевод как
+    таковой: пачкой полсотни описаний стоят девяти запросов."""
+
+    def test_a_batch_is_one_request_not_one_per_description(self):
+        model = Model(honest_about())
+        titles_op.translate_all_abstracts(abouts(titles_op.ABOUT_BATCH), model)
+        self.assertEqual(model.calls, 1)
+
+    def test_more_than_a_batch_is_split_by_the_batch_size(self):
+        model = Model(honest_about())
+        titles_op.translate_all_abstracts(
+            abouts(titles_op.ABOUT_BATCH * 2), model)
+        self.assertEqual(model.calls, 2)
+
+    def test_a_batch_of_descriptions_is_smaller_than_of_titles(self):
+        """Двадцать пять абзацев в одном запросе модель обрывает."""
+        self.assertLess(titles_op.ABOUT_BATCH, titles_op.BATCH)
+
+    def test_paragraphs_reach_the_model_whole(self):
+        model = Model(honest_about())
+        titles_op.translate_all_abstracts({"1": "первый\n\nвторой"}, model)
+        self.assertIn("второй", model.asked[0])
+
+    def test_descriptions_do_not_run_together(self):
+        """Без разделителя два описания слипаются в одно, и модель
+        возвращает один перевод на двоих. Смотрим между ними: `---` есть
+        и в самом задании, до описаний."""
+        model = Model(honest_about())
+        titles_op.translate_all_abstracts(abouts(2), model)
+        asked = model.asked[0]
+        between = asked[asked.index("1. "):asked.index("2. ")]
+        self.assertIn("\n---\n", between)
+
+
+class TestDescriptionsAreRemembered(AboutBase):
+
+    def test_the_translation_is_kept(self):
+        titles_op.translate_all_abstracts(abouts(2), Model(honest_about()))
+        self.assertTrue(titles_op.abstract_of("1").startswith("ПЕРЕВОД"))
+
+    def test_the_known_are_not_asked_again(self):
+        titles_op.translate_all_abstracts(abouts(2), Model(honest_about()))
+        again = Model("мусор")
+        found = titles_op.translate_all_abstracts(abouts(2), again)
+        self.assertEqual(again.calls, 0)
+        self.assertEqual(found["cached"], 2)
+
+    def test_force_asks_again(self):
+        titles_op.translate_all_abstracts(abouts(1), Model(honest_about()))
+        again = Model(honest_about("ИНАЧЕ "))
+        found = titles_op.translate_all_abstracts(abouts(1), again, force=True)
+        self.assertTrue(found["abstracts"]["1"].startswith("ИНАЧЕ"))
+
+    def test_the_single_translation_and_the_bulk_one_share_a_cupboard(self):
+        """Иначе описание, переведённое по кнопке в раскрытой строке,
+        общий перевод запросил бы заново."""
+        titles_op.remember_abstract("1", "уже переведено")
+        model = Model("мусор")
+        found = titles_op.translate_all_abstracts(abouts(1), model)
+        self.assertEqual(model.calls, 0)
+        self.assertEqual(found["abstracts"]["1"], "уже переведено")
+
+
+class TestDescriptionsSurviveTrouble(AboutBase):
+
+    def test_a_book_without_a_description_is_not_asked_about(self):
+        model = Model(honest_about())
+        found = titles_op.translate_all_abstracts({"1": "", "2": "  "}, model)
+        self.assertEqual(model.calls, 0)
+        self.assertEqual(found["translated"], 0)
+
+    def test_a_stubborn_batch_does_not_swallow_the_rest(self):
+        """Та же механика, что у названий: пачку переспрашивают и делят."""
+        found = titles_op.translate_all_abstracts(
+            abouts(3), Model(honest_about(skip=("1",))))
+        self.assertEqual(found["broken"], 1)
+        self.assertTrue(found["abstracts"]["2"])
+        self.assertTrue(found["abstracts"]["3"])
+
+    def test_what_did_not_come_back_is_named(self):
+        found = titles_op.translate_all_abstracts(abouts(2), Model("мусор"))
+        self.assertEqual(sorted(found["missing"]), ["1", "2"])
+
+    def test_a_broken_run_keeps_what_was_already_translated(self):
+        titles_op.translate_all_abstracts(abouts(1), Model(honest_about()))
+        titles_op.translate_all_abstracts(abouts(1, first=2), Model("мусор"))
+        self.assertTrue(titles_op.abstract_of("1"))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,14 @@
 поправленной запятой запрашивался бы заново.
 
 Описания живут в своём файле: названий полсотни на срез и они короткие, а
-описание — абзац, и переводится оно по одному, по кнопке.
+описание — абзац.
+
+Раньше описания переводились строго по одному, по кнопке: полсотни
+отдельных запросов на срез — слишком дорого ради «вдруг откроют».
+Возражение было про запрос на описание, а не про перевод как таковой:
+пачкой по шесть те же полсотни укладываются в девять запросов, и кнопка
+«перевести всё» перестала быть разорительной. Перевод по одному никуда
+не делся — он остался для раскрытой строки.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from dataclasses import dataclass
 
 from .history import DATA_DIR
 
@@ -62,6 +70,56 @@ ABSTRACT_PROMPT = """Ниже описание книги с китайског�
 текста, ни кавычек вокруг. Разбиение на абзацы сохрани.
 
 {text}"""
+
+#: Сколько описаний отдавать модели за раз.
+#:
+#: Описание — абзац, а не строка: двадцать пять абзацев в одном запросе
+#: модель обрывает на середине. Шесть проходят целиком, и полсотни
+#: описаний укладываются в девять запросов вместо полусотни.
+ABOUT_BATCH = 6
+
+ABOUTS_PROMPT = """Ниже описания книг с китайских сайтов, каждое под своим
+номером и отделено строкой ---.
+
+Переведи каждое на русский. Верни СТРОГО JSON: объект, где ключ — номер
+описания, значение — перевод целиком. Без пояснений и без текста вокруг.
+
+Переводи по смыслу, а не пословно. Имена собственные передавай так, как
+их принято передавать по-русски.
+
+{lines}"""
+
+
+@dataclass(frozen=True)
+class Kind:
+    """Что переводим.
+
+    У названий и описаний разное всё, кроме главного: их одинаково
+    спрашивают пачкой, одинаково разбирают ответ и одинаково дробят
+    пачку, когда ответ не разобрался. Держать эту механику двумя копиями
+    значило бы чинить её дважды — а чинилась она уже трижды.
+    """
+
+    prompt: str
+    size: int
+    word: str
+    #: Чем разделять строки в запросе. Названия — по строке на каждое,
+    #: описания — абзацами, и без разделителя они слипаются в одно.
+    joiner: str = "\n"
+
+
+TITLES = Kind(prompt=PROMPT, size=BATCH, word="Названия")
+ABOUTS = Kind(prompt=ABOUTS_PROMPT, size=ABOUT_BATCH, word="Описания",
+              joiner="\n---\n")
+
+
+@dataclass(frozen=True)
+class Line:
+    """Одна строка запроса: чья она и что переводим."""
+
+    book_id: str
+    text: str
+
 
 _LOCK = threading.Lock()
 
@@ -205,14 +263,14 @@ def _read(answer: str, batch: list) -> dict:
             return {}
 
     out = {}
-    for index, row in enumerate(batch, 1):
-        text = _said(found, index, row.name)
+    for index, line in enumerate(batch, 1):
+        text = _said(found, index, line.text)
         if text:
             out[index] = text
     return out
 
 
-def _ask(client, batch: list, model: str) -> dict:
+def _ask(client, batch: list, model: str, kind: Kind = TITLES) -> dict:
     """Перевод одной пачки: book_id → перевод. Чего нет — то не далось.
 
     Порядок такой: спросить, при неразборчивом ответе спросить ещё раз,
@@ -222,46 +280,53 @@ def _ask(client, batch: list, model: str) -> dict:
     if not batch:
         return {}
 
-    lines = "\n".join(f"{i}. {row.name}" for i, row in enumerate(batch, 1))
+    lines = kind.joiner.join(f"{i}. {line.text}"
+                             for i, line in enumerate(batch, 1))
     for attempt in range(1, TRIES + 1):
-        answer = client.generate(PROMPT.format(lines=lines), model=model)
+        answer = client.generate(kind.prompt.format(lines=lines), model=model)
         found = _read(answer, batch)
         if found:
             got = {batch[index - 1].book_id: text
                    for index, text in found.items()}
-            left = [row for row in batch if row.book_id not in got]
+            left = [line for line in batch if line.book_id not in got]
             if left:
                 # Ответ разобрался, но не на все строки. Остаток — своей
                 # пачкой: он меньше, и шансов у него больше.
-                log.info("Названия: в ответе не нашлось %s из %s — "
-                         "спрашиваем остаток отдельно", len(left), len(batch))
+                log.info("%s: в ответе не нашлось %s из %s — "
+                         "спрашиваем остаток отдельно", kind.word, len(left),
+                         len(batch))
                 # Остаток строго меньше пачки: сюда мы попадаем, только
                 # если хоть одна строка перевелась.
-                got.update(_ask(client, left, model))
+                got.update(_ask(client, left, model, kind))
             return got
-        log.warning("Названия: ответ модели не разобрался "
-                    "(попытка %s из %s, в пачке %s)", attempt, TRIES,
-                    len(batch))
+        log.warning("%s: ответ модели не разобрался "
+                    "(попытка %s из %s, в пачке %s)", kind.word, attempt,
+                    TRIES, len(batch))
 
     if len(batch) <= SMALLEST:
         return {}
 
     half = len(batch) // 2
-    out = _ask(client, batch[:half], model)
-    out.update(_ask(client, batch[half:], model))
+    out = _ask(client, batch[:half], model, kind)
+    out.update(_ask(client, batch[half:], model, kind))
     return out
+
+
+def _run(lines: list, client, model: str, kind: Kind) -> dict:
+    """Прогнать готовые строки пачками. Общее для названий и описаний."""
+    added = {}
+    for start in range(0, len(lines), kind.size):
+        added.update(_ask(client, lines[start:start + kind.size], model, kind))
+    return added
 
 
 def translate(rows, client, model: str = "", force: bool = False) -> dict:
     """Переводит названия строк рейтинга. Переведённые не перезапрашивает."""
     have = known()
-    todo = [row for row in rows
+    todo = [Line(row.book_id, row.name) for row in rows
             if row.book_id and (force or row.book_id not in have)]
 
-    added = {}
-    for start in range(0, len(todo), BATCH):
-        added.update(_ask(client, todo[start:start + BATCH], model))
-
+    added = _run(todo, client, model, TITLES)
     if added:
         have = remember(added)
 
@@ -269,8 +334,39 @@ def translate(rows, client, model: str = "", force: bool = False) -> dict:
     # «Не перевелось» считаем по строкам, а не по пачкам: человеку важно,
     # сколько названий осталось китайскими, а на сколько запросов они были
     # разложены — наше внутреннее дело.
-    missing = [row.name for row in todo if not titles.get(row.book_id)]
+    missing = [line.text for line in todo if not titles.get(line.book_id)]
     return {"titles": titles,
             "translated": len(added), "broken": len(missing),
             "missing": missing[:10],
             "cached": len(rows) - len(added) - len(missing)}
+
+
+def translate_all_abstracts(texts: dict, client, model: str = "",
+                            force: bool = False) -> dict:
+    """Переводит описания пачками: `book_id` → описание на языке сайта.
+
+    Берёт готовые тексты, а не строки рейтинга: описание у Цидяня лежит
+    прямо в строке доски, у остальных сайтов — в кэше раскрытой карточки,
+    и знать про оба места этому модулю незачем.
+    """
+    have = abstracts()
+    todo = [Line(str(book_id), str(text).strip())
+            for book_id, text in (texts or {}).items()
+            if str(book_id) and str(text).strip()
+            and (force or str(book_id) not in have)]
+
+    added = _run(todo, client, model, ABOUTS)
+    if added:
+        with _LOCK:
+            data = _load(ABSTRACTS_FILE)
+            data.update({str(k): str(v).strip() for k, v in added.items()
+                         if str(v).strip()})
+            _write(ABSTRACTS_FILE, data)
+            have = dict(data)
+
+    ready = {book_id: have.get(str(book_id), "") for book_id in (texts or {})}
+    missing = [line.book_id for line in todo if not ready.get(line.book_id)]
+    return {"abstracts": ready,
+            "translated": len(added), "broken": len(missing),
+            "missing": missing[:10],
+            "cached": len(texts or {}) - len(added) - len(missing)}
