@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -572,6 +573,79 @@ class TestAskingTheSiteForNewChapters(Base):
                                 json={"keys": keys}).get_json()
         self.assertEqual(len(said["checked"]), self.web.CHECK_AT_ONCE)
         self.assertEqual(said["left"], 3)
+
+
+class TestTheLibraryTab(unittest.TestCase):
+    """Вкладка, где книга видна целиком: обложка, где нашли, чем качали,
+    главы, метки, теги, заметка.
+
+    Проверяем не вид, а то, чем вид держится: список книг один на две
+    вкладки, а закрытый список меток — один на программу.
+    """
+
+    page = (Path(__file__).resolve().parent.parent / "webapp" / "static"
+            / "index.html").read_text(encoding="utf-8")
+
+    def block(self, head):
+        """Тело одной страничной функции — от заголовка до следующего."""
+        body = self.page[self.page.index(head):]
+        after = body.find("\nfunction ", 1)
+        return body[:after] if after > 0 else body
+
+    def test_the_tab_button_has_a_section_of_its_own(self):
+        self.assertIn('data-tab="library"', self.page)
+        self.assertIn('id="tab-library"', self.page)
+
+    def test_the_mark_names_are_not_a_second_copy_in_the_markup(self):
+        """Список меток закрытый и живёт в `ops/library`. Впиши его в
+        разметку вторым экземпляром — и однажды метка есть, а называть
+        её нечем."""
+        for name in library.MARKS.values():
+            self.assertNotIn(name, self.page, f"«{name}» вписано в разметку")
+
+    def test_the_chips_are_built_from_what_the_server_sent(self):
+        card = self.block("function libCard(")
+        self.assertIn("libMarks", card)
+        self.assertIn("auto_names", card)
+
+    def test_the_history_and_the_tab_read_one_list(self):
+        """Два списка одних и тех же книг разошлись бы: там докачали,
+        тут забыли."""
+        holders = set(re.findall(r"(\w+)\s*=\s*data\.books", self.page))
+        self.assertEqual(holders, {"libBooks"})
+
+    def test_the_program_marks_cannot_be_clicked(self):
+        """«Скачана» снимается удалением папки, а не нажатием: обещать
+        нажатием нельзя того, чего оно не делает."""
+        style = self.page[self.page.index(".lbchip.auto{"):]
+        self.assertIn("cursor:default", style[:style.index("}")])
+
+        # Своя метка — кнопка с обработчиком, программная — просто текст.
+        card = self.block("function libCard(")
+        auto = card[card.index("auto_names"):card.index("for(const item of libMarks)")]
+        self.assertIn("createElement('span')", auto)
+        self.assertNotIn("onclick", auto)
+
+    def test_a_bare_code_does_not_become_a_link(self):
+        """У книги, взятой по коду, вместо адреса лежит сам код —
+        ссылка из него вела бы в никуда."""
+        self.assertIn("^https?", self.block("function libWhere("))
+
+    def test_the_filter_sees_both_kinds_of_marks(self):
+        """Отбор «Есть новые главы» нужен ровно так же, как «Читаю»."""
+        fits = self.block("function libFits(")
+        self.assertIn("book.marks", fits)
+        self.assertIn("book.auto", fits)
+
+    def test_the_counts_are_taken_from_the_books_themselves(self):
+        """Сводка с сервера стареет в тот миг, когда метку поставили."""
+        self.assertIn("libBooks", self.block("function libCount("))
+
+    def test_the_note_does_not_redraw_the_list_under_the_cursor(self):
+        """Перерисовка на каждой букве выбрасывала бы курсор из поля."""
+        card = self.block("function libCard(")
+        note = card[card.index("note.onchange"):]
+        self.assertNotIn("libShow()", note[:note.index("side.append(note)")])
 
 
 if __name__ == "__main__":

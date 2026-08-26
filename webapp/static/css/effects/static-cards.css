@@ -27,16 +27,27 @@
 
 /* Весь приглушённый текст карточки разгорается заодно с её рамкой.
    Список — это все классы, которым назначен `--muted`; держать его
-   списком приходится потому, что «выбрать по цвету» в стилях нельзя. */
+   списком приходится потому, что «выбрать по цвету» в стилях нельзя.
+
+   Строки истории и библиотеки исключают свой цветной случай: «вышло
+   новых глав» написано зелёным нарочно, и гасить его до общего серого
+   значило бы стирать смысл. Метка, стоящая на книге, и метка, которую
+   ставит программа, тоже не приглушённые — приглушены как раз те, что
+   не стоят. А метка под курсором разгорается сильнее общего: у неё
+   свой отклик, и перебивать его нечем. */
 .fx-static-cards .card :is(
-  .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub
+  .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
+  .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip
 ),
 .fx-static-cards .card > label{
   transition:color .22s ease;
 }
 
 .fx-static-cards .card:hover :is(
-  .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub
+  .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
+  .hist-where:not(.hist-new):not(.hist-lost), .hist-path,
+  .lb-was, .lb-where:not(.lb-new), .lb-path,
+  .lbchip:not(.on):not(.auto):not(:hover)
 ),
 .fx-static-cards .card:hover > label{
   color:#bdb7cf;
