@@ -37,7 +37,8 @@
    свой отклик, и перебивать его нечем. */
 .fx-static-cards .card :is(
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
-  .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip
+  .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip,
+  .q-where, .q-path
 ),
 .fx-static-cards .card > label{
   transition:color .22s ease;
@@ -47,7 +48,8 @@
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
   .hist-where:not(.hist-new):not(.hist-lost), .hist-path,
   .lb-was, .lb-where:not(.lb-new), .lb-path,
-  .lbchip:not(.on):not(.auto):not(:hover)
+  .lbchip:not(.on):not(.auto):not(:hover),
+  .q-where, .q-path
 ),
 .fx-static-cards .card:hover > label{
   color:#bdb7cf;

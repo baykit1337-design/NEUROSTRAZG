@@ -31,6 +31,7 @@ from core.writers.txt import ENCODINGS  # noqa: E402
 from net import sources  # noqa: E402
 from net.sources import categories as rank_cats  # noqa: E402
 from net.sources import mvlrank as mvl_rank_net  # noqa: E402
+from net.sources import novelcms  # noqa: E402
 from net.sources import rank as rank_net  # noqa: E402
 from net.sources import qidianrank as qd_rank_net  # noqa: E402
 from net.sources import webnovelrank as wn_rank_net  # noqa: E402
@@ -47,6 +48,7 @@ from ops import analyze as analyze_op  # noqa: E402
 from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
+from ops import downloads as downloads_op  # noqa: E402
 from ops import library as library_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
 from ops import docs as docs_op  # noqa: E402
@@ -720,6 +722,291 @@ def api_library_passport():
     return jsonify(path=path)
 
 
+# ===================== Очередь книг (пункт 6) =====================
+#
+# Очередь качает книги подряд, и у каждой свой источник: одну нашли в
+# рейтинге Фанкью и качают оттуда же, вторую — через посредника, третью
+# нашли на Цидяне, где скачивания нет вовсе. Общего «источника очереди»
+# не бывает — он записан в строке.
+
+
+def _split_folder(path: str) -> tuple[str, str]:
+    """Полный путь книги — на «где» и «как назвать».
+
+    Библиотека помнит папку целиком, а очередь и форма скачивания просят
+    их по отдельности: имя папки человек правит, а место — выбирает.
+    """
+    clean = str(path or "").rstrip("/\\")
+    if not clean:
+        return "", ""
+    at = max(clean.rfind("/"), clean.rfind("\\"))
+    return (clean[:at], clean[at + 1:]) if at > 0 else ("", clean)
+
+
+#: Как называть состояния строки на экране. Здесь, а не в разметке: и
+#: сами состояния, и их порядок живут в `ops/downloads`, а второй
+#: экземпляр списка однажды разошёлся бы с первым.
+QUEUE_STATES = {
+    downloads_op.WAITING: "Ждёт",
+    downloads_op.RUNNING: "Качается",
+    downloads_op.DONE: "Скачана",
+    downloads_op.FAILED: "Не вышло",
+    downloads_op.NEEDS_LINK: "Нужна ссылка",
+}
+
+
+def _queue_out() -> dict:
+    return {"items": [x.as_dict() for x in downloads_op.all_items()],
+            "state": downloads_op.state(),
+            "states": [{"key": k, "name": v} for k, v in QUEUE_STATES.items()]}
+
+
+@app.get("/api/downloads")
+def api_downloads():
+    """Очередь целиком и сводка по ней."""
+    return jsonify(**_queue_out())
+
+
+@app.post("/api/downloads/add")
+def api_downloads_add():
+    """Поставить книгу в очередь.
+
+    Источник и адрес не обязательны: книгу с Цидяня качать не с чего, и
+    строка встанет ждать вставленной ссылки. Отказать в постановке
+    значило бы стереть саму память о том, что книгу хотели.
+    """
+    payload = request.json or {}
+    folder = (payload.get("folder") or "").strip()
+    base = (payload.get("base") or "").strip()
+    if not base or not folder:
+        return jsonify(error="Выберите папку и её имя: очередь работает "
+                             "сама, спросить будет некого"), 400
+
+    item = downloads_op.add(
+        name=(payload.get("name") or "").strip(),
+        name_ru=(payload.get("name_ru") or "").strip(),
+        cover=(payload.get("cover") or "").strip(),
+        source=(payload.get("source") or "").strip(),
+        address=(payload.get("address") or "").strip(),
+        base=base, folder=folder,
+        first=payload.get("first") or 0, last=payload.get("last") or 0,
+        origin=payload.get("origin") or {},
+    )
+    return jsonify(item=item.as_dict(), **_queue_out())
+
+
+@app.post("/api/downloads/fill")
+def api_downloads_fill():
+    """Поставить в очередь всё, у чего вышли новые главы.
+
+    Ради этого библиотека и помнит, чем книгу качали: строка очереди
+    берёт источник и адрес у каждой книги свои.
+    """
+    payload = request.json or {}
+    keys = {str(k) for k in (payload.get("keys") or []) if str(k)}
+    books = [b for b in library_op.all_books()
+             if (b.key in keys if keys else b.fresh)]
+
+    added, missed = 0, []
+    for book in books:
+        base, folder = _split_folder(book.folder)
+        if not folder or not book.source or not book.address:
+            missed.append({"key": book.key, "title": book.title,
+                           "why": "не записано, чем и куда её качали"})
+            continue
+        downloads_op.add(
+            name=book.name, name_ru=book.name_ru, cover=book.cover,
+            source=book.source, address=book.address,
+            base=base, folder=folder,
+            origin={"site": book.found_site, "book_id": book.found_id,
+                    "link": book.found_link, "cover": book.cover,
+                    "name": book.name, "name_ru": book.name_ru},
+        )
+        added += 1
+    return jsonify(added=added, missed=missed, **_queue_out())
+
+
+def _source_for(address: str) -> str:
+    """Каким источником брать этот адрес — по хосту, а не наугад.
+
+    Человек вставляет в ждущую строку ссылку с сайта-слива; спрашивать
+    после этого, чем качать, значило бы переспрашивать то, что уже
+    сказано в самом адресе. Хост не из известных — не угадываем: пустой
+    ответ честнее подстановки наобум, и источник выберут руками.
+    """
+    address = str(address or "").strip()
+    if not address.lower().startswith(("http://", "https://")):
+        return ""
+    return "novelcms" if novelcms.rule_for(address) else ""
+
+
+@app.post("/api/downloads/update")
+def api_downloads_update():
+    """Поправить строку: вставить ссылку, сменить папку, задать главы."""
+    payload = request.json or {}
+    fields = {name: payload[name] for name in
+              ("source", "address", "base", "folder", "first", "last")
+              if name in payload}
+
+    # Вставили ссылку в строку, которой нечем качать: источник виден по
+    # адресу. Заданный руками не трогаем — он сильнее догадки.
+    item_id = (payload.get("id") or "").strip()
+    if fields.get("address") and not fields.get("source"):
+        was = downloads_op.get(item_id)
+        if was is not None and not was.source:
+            guess = _source_for(fields["address"])
+            if guess:
+                fields["source"] = guess
+
+    item = downloads_op.update(item_id, **fields)
+    if item is None:
+        return jsonify(error="Такой книги в очереди нет"), 404
+    return jsonify(item=item.as_dict(), **_queue_out())
+
+
+@app.post("/api/downloads/remove")
+def api_downloads_remove():
+    payload = request.json or {}
+    gone = downloads_op.remove((payload.get("id") or "").strip())
+    return jsonify(gone=gone, **_queue_out())
+
+
+@app.post("/api/downloads/move")
+def api_downloads_move():
+    """Порядок в очереди и есть её смысл: что качать первым."""
+    payload = request.json or {}
+    try:
+        delta = int(payload.get("delta") or 0)
+    except (TypeError, ValueError):
+        return jsonify(error="Куда двигать — числом"), 400
+    downloads_op.move((payload.get("id") or "").strip(), delta)
+    return jsonify(**_queue_out())
+
+
+@app.post("/api/downloads/clear")
+def api_downloads_clear():
+    payload = request.json or {}
+    gone = downloads_op.clear(only_done=bool(payload.get("only_done")))
+    return jsonify(gone=gone, **_queue_out())
+
+
+def _queue_note(rows, item=None, stopped: bool = False) -> str:
+    """Строка над прогрессом: где очередь и на какой книге."""
+    done = sum(1 for x in rows if x.state == downloads_op.DONE)
+    total = sum(1 for x in rows if x.ready)
+    if item is not None and item.state == downloads_op.RUNNING:
+        return f"Книга {done + 1} из {total}: {item.title}"
+
+    failed = sum(1 for x in rows if x.state == downloads_op.FAILED)
+    if stopped:
+        # «Пройдена» после остановки — неправда: остальные книги ждут, и
+        # человеку надо знать, что продолжат их тем же нажатием.
+        return (f"Очередь остановлена. Скачано книг: {done} из {total}. "
+                "Остальные ждут — «Запустить очередь» продолжит с них.")
+    said = f"Очередь пройдена. Скачано книг: {done} из {total}."
+    return said + (f" Не вышло: {failed}." if failed else "")
+
+
+@app.post("/api/downloads/start")
+def api_downloads_start():
+    """Запустить очередь: книги качаются подряд, каждая своим источником.
+
+    Упавшая книга не отменяет остальные — в этом всё отличие от очереди
+    операций, где следующий шаг ждёт результата предыдущего.
+    """
+    payload = request.json or {}
+    rows = downloads_op.all_items()
+    if not any(x.ready for x in rows):
+        return jsonify(error="В очереди нет ни одной книги, которую есть "
+                             "чем качать"), 400
+
+    try:
+        run = _run_settings(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    with POOL_LOCK:
+        pool = POOL
+    if pool is not None and pool.checked and pool.usable_count == 0:
+        return jsonify(
+            error="Ни один прокси не пропускает до сайта. Напрямую не идём — "
+            "этот путь заблокирован. Обновите список и проверьте снова."
+        ), 400
+
+    job = Job(id=uuid.uuid4().hex[:12], kind="downloads",
+              meta={"books": sum(1 for x in rows if x.ready)})
+    job.progress = {"stage": "queued", "message": "Запускаем очередь…",
+                    "done": 0, "total": 0, "downloaded": 0, "skipped": 0,
+                    "failed": 0, "switches": 0,
+                    "queue": [x.as_dict() for x in rows],
+                    "queue_done": 0,
+                    "queue_total": sum(1 for x in rows if x.ready)}
+    job.log = joblog.JobLog()
+
+    def one(item):
+        """Скачать одну книгу очереди и вернуть текст итога."""
+        source = sources.get(item.source)
+        client = Client(timeout=run.read_timeout,
+                        connect_timeout=run.connect_timeout)
+        try:
+            try:
+                novel = source.find(client, item.address)
+            except (HttpError, NetworkError, Blocked) as direct:
+                novel, tried = _find_via_proxy(source, item.address, direct)
+                if novel is None:
+                    raise HttpError(f"{direct}{tried}") from direct
+
+            output_dir = _prepare(item.base, item.folder, "download")
+            # «С какой главы» считается сейчас, а не при постановке в
+            # очередь: за ночь вышло бы ещё три главы, а очередь качала
+            # бы вчерашний остаток.
+            first = item.first or (_reached(output_dir) + 1)
+            last = item.last or novel.total_chapters or first
+            if last < first:
+                return "Новых глав нет — качать нечего"
+
+            job.progress.update(total=last - first + 1, done=0,
+                                downloaded=0, skipped=0, failed=0)
+            downloader = Downloader(
+                client=client, pool=pool,
+                on_progress=lambda p: job.progress.update(p.as_dict()),
+                on_event=job.log.add,
+                cancel_event=job.cancel, pause_event=job.paused,
+                threads=run.threads, probe=run.probe, source=source,
+                timeout=run.read_timeout,
+                connect_timeout=run.connect_timeout,
+            )
+            report = downloader.run(novel, output_dir,
+                                    first=first, last=last).as_dict()
+            item.done = int(report.get("downloaded") or 0)
+            _remember_book(novel, source.key, output_dir, item.origin, report)
+            skipped = int(report.get("skipped") or 0)
+            return (f"Скачано глав: {item.done}"
+                    + (f", пропущено {skipped}" if skipped else ""))
+        finally:
+            client.close()
+
+    def changed(rows, item):
+        job.progress.update(
+            queue=[x.as_dict() for x in rows],
+            queue_done=sum(1 for x in rows if x.state == downloads_op.DONE),
+            message=_queue_note(rows, item))
+
+    def work(job: Job):
+        done = downloads_op.run(one, on_change=changed, cancel=job.cancel)
+        stopped = job.cancel.is_set()
+        job.progress.update(stage="cancelled" if stopped else "done",
+                            queue=[x.as_dict() for x in done],
+                            message=_queue_note(done, stopped=stopped))
+        job.report = {"books": sum(1 for x in done
+                                   if x.state == downloads_op.DONE),
+                      "failed": sum(1 for x in done
+                                    if x.state == downloads_op.FAILED),
+                      "chapters": sum(x.done for x in done)}
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
 @app.get("/api/pick/available")
 def api_pick_available():
     """Есть ли системный проводник — если нет, интерфейс прячет кнопку."""
@@ -769,6 +1056,49 @@ def api_browse():
         return jsonify(list_dirs(request.args.get("path"), suffixes or None))
     except OSError as exc:
         return jsonify(error=str(exc)), 400
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    """Как качать: сроки, потоки, проба способа."""
+
+    read_timeout: int
+    connect_timeout: int
+    threads: int
+    probe: bool
+
+
+def _run_settings(payload: dict) -> RunSettings:
+    """Разобрать и проверить настройки прогона.
+
+    Одни и те же для одной книги и для очереди: держи мы их двумя
+    списками проверок — однажды в очереди оказалось бы разрешено то, что
+    поштучно запрещено.
+    """
+    payload = payload or {}
+    try:
+        read_timeout = int(payload.get("timeout") or client_mod.TIMEOUT)
+        connect_timeout = int(payload.get("connect_timeout")
+                              or client_mod.CONNECT_TIMEOUT)
+    except (TypeError, ValueError):
+        raise ValueError("Таймаут должен быть числом секунд") from None
+    if read_timeout < 5 or connect_timeout < 1:
+        raise ValueError("Слишком маленький таймаут")
+    if read_timeout > MAX_TIMEOUT or connect_timeout > MAX_TIMEOUT:
+        raise ValueError(
+            f"Таймаут больше {MAX_TIMEOUT} секунд не имеет смысла")
+
+    try:
+        threads = int(payload.get("threads") or 1)
+    except (TypeError, ValueError):
+        raise ValueError("Потоков должно быть числом") from None
+    if not 1 <= threads <= downloader_mod.MAX_THREADS:
+        raise ValueError(f"Потоков: от 1 до {downloader_mod.MAX_THREADS}")
+
+    # Ручной режим пропускает пробу: пользователь сам увидит по времени,
+    # работает многопоточность или нет, — это надёжнее любой эвристики.
+    probe = str(payload.get("mode") or "auto").strip() != "manual"
+    return RunSettings(read_timeout, connect_timeout, threads, probe)
 
 
 def _reached(output_dir) -> int:
@@ -874,27 +1204,11 @@ def api_start():
                     "switches": 0}
 
     try:
-        read_timeout = int(payload.get("timeout") or client_mod.TIMEOUT)
-        connect_timeout = int(payload.get("connect_timeout") or client_mod.CONNECT_TIMEOUT)
-    except (TypeError, ValueError):
-        return jsonify(error="Таймаут должен быть числом секунд"), 400
-    if read_timeout < 5 or connect_timeout < 1:
-        return jsonify(error="Слишком маленький таймаут"), 400
-    if read_timeout > MAX_TIMEOUT or connect_timeout > MAX_TIMEOUT:
-        return jsonify(error=f"Таймаут больше {MAX_TIMEOUT} секунд не имеет смысла"), 400
-
-    try:
-        threads = int(payload.get("threads") or 1)
-    except (TypeError, ValueError):
-        return jsonify(error="Потоков должно быть числом"), 400
-    if not 1 <= threads <= downloader_mod.MAX_THREADS:
-        return jsonify(
-            error=f"Потоков: от 1 до {downloader_mod.MAX_THREADS}"
-        ), 400
-
-    # Ручной режим пропускает пробу: пользователь сам увидит по времени,
-    # работает многопоточность или нет, — это надёжнее любой эвристики.
-    probe = str(payload.get("mode") or "auto").strip() != "manual"
+        run = _run_settings(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    read_timeout, connect_timeout = run.read_timeout, run.connect_timeout
+    threads, probe = run.threads, run.probe
 
     try:
         source = sources.get(payload.get("source") or "")

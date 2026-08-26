@@ -1,0 +1,376 @@
+"""Очередь книг: несколько книг подряд, каждая своим источником.
+
+Зачем отдельным предметом, когда очередь уже есть. `ops/queue.py` — это
+цепочка операций над файлами: разбить → переименовать → проверить. Там
+шаги зависят друг от друга, и оборвись один — остальным нечего брать на
+вход, поэтому очередь останавливается. Здесь наоборот: книги друг о
+друге не знают. Не открылся сайт у третьей — четвёртую качать всё равно
+надо, иначе одна закрытая книга съедала бы ночь работы.
+
+Главная тонкость — **у каждой книги свой источник**. Одну нашли в
+рейтинге Фанкью и качают оттуда же, вторую — через посредника, третью
+нашли на Цидяне, где скачивания нет вовсе, и качать её придётся с
+сайта-слива по вставленной ссылке. Общего «источника очереди» не бывает:
+он записан в каждой строке отдельно, вместе с адресом и папкой.
+
+Отсюда третье состояние строки, которого нет у обычной очереди:
+`NEEDS_LINK` — книга в очереди есть, а качать её не с чего. Такую строку
+не выбрасывают: ссылку дописывают прямо в ней, и она встаёт в общий ряд.
+Выброси мы её при добавлении — человек потерял бы саму память о том, что
+книгу хотел.
+
+Чего здесь нет: границ глав, посчитанных заранее. «С какой главы» у
+докачки считается в момент запуска, по тому, что лежит в папке. Заморозь
+мы номер при добавлении — за ночь вышло бы ещё три главы, а очередь
+качала бы вчерашний остаток.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .history import DATA_DIR
+from .queue import DONE, FAILED, RUNNING, SKIPPED, WAITING
+
+log = logging.getLogger(__name__)
+
+QUEUE_FILE = DATA_DIR / "downloads.json"
+
+#: Книга в очереди есть, а качать её не с чего: нашли там, где
+#: скачивания нет. Ждёт вставленной ссылки, а не выбрасывается.
+NEEDS_LINK = "needs_link"
+
+#: Сколько книг держать в очереди. Больше сотни за раз никто не ставит, а
+#: список читается на каждое открытие вкладки.
+KEEP = 200
+
+_LOCK = threading.Lock()
+
+
+@dataclass
+class Item:
+    """Одна книга в очереди — со своим источником, папкой и границами."""
+
+    id: str = ""
+    #: Как показывать. Название с сайта и его перевод, если он есть.
+    name: str = ""
+    name_ru: str = ""
+    cover: str = ""
+
+    #: Чем качать и что подставлять. Пустой источник — строка ждёт ссылки.
+    source: str = ""
+    address: str = ""
+
+    #: Куда класть: где создать папку и как её назвать.
+    base: str = ""
+    folder: str = ""
+
+    #: Границы глав. Ноль — «сама разберётся»: с первой недостающей и до
+    #: конца оглавления на момент запуска.
+    first: int = 0
+    last: int = 0
+
+    #: Откуда книга взялась — для библиотеки. Книгу находят на одном
+    #: сайте, а качают с другого, и без этого она легла бы туда дважды.
+    origin: dict = field(default_factory=dict)
+
+    state: str = WAITING
+    message: str = ""
+    #: Сколько глав легло на диск в прошлый запуск этой строки.
+    done: int = 0
+
+    @property
+    def ready(self) -> bool:
+        """Можно ли эту строку качать прямо сейчас."""
+        return bool(self.source and self.address and self.base and self.folder)
+
+    @property
+    def title(self) -> str:
+        return self.name_ru or self.name or self.address or self.folder
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "name_ru": self.name_ru,
+            "cover": self.cover, "source": self.source,
+            "address": self.address, "base": self.base, "folder": self.folder,
+            "first": self.first, "last": self.last, "origin": dict(self.origin),
+            "state": self.state, "message": self.message, "done": self.done,
+            # Считаемое отдаём наружу, но в файл не пишем.
+            "title": self.title, "ready": self.ready,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Item:
+        data = data or {}
+
+        def whole(name):
+            try:
+                return max(0, int(data.get(name) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        return cls(
+            id=str(data.get("id") or ""),
+            name=str(data.get("name") or ""),
+            name_ru=str(data.get("name_ru") or ""),
+            cover=str(data.get("cover") or ""),
+            source=str(data.get("source") or ""),
+            address=str(data.get("address") or ""),
+            base=str(data.get("base") or ""),
+            folder=str(data.get("folder") or ""),
+            first=whole("first"), last=whole("last"),
+            origin=dict(data.get("origin") or {}),
+            state=str(data.get("state") or WAITING),
+            message=str(data.get("message") or ""),
+            done=whole("done"),
+        )
+
+
+# ------------------------------------------------------------- хранение
+
+
+def _load() -> list[Item]:
+    if not QUEUE_FILE.is_file():
+        return []
+    try:
+        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Битая очередь не должна мешать качать по одной книге.
+        log.warning("Битая очередь книг — начинаем заново")
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [Item.from_dict(x) for x in data if isinstance(x, dict)]
+    return [x for x in rows if x.id]
+
+
+def _save(rows: list[Item]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    plain = []
+    for item in rows[:KEEP]:
+        data = item.as_dict()
+        for made in ("title", "ready"):
+            data.pop(made, None)
+        plain.append(data)
+    tmp = QUEUE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(plain, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    tmp.replace(QUEUE_FILE)
+
+
+def all_items() -> list[Item]:
+    """Очередь целиком, в том порядке, в каком её качать."""
+    with _LOCK:
+        return _load()
+
+
+def get(item_id: str) -> Item | None:
+    return next((x for x in all_items() if x.id == str(item_id or "")), None)
+
+
+def _settle(item: Item) -> Item:
+    """Строке без источника или адреса — своё состояние, а не «ждёт».
+
+    «Ждёт» на строке, которую никогда не начнут, — это обещание, которое
+    некому исполнить: очередь дошла бы до неё и молча прошла мимо.
+    """
+    if item.state in (RUNNING, DONE, FAILED):
+        return item
+    item.state = WAITING if item.ready else NEEDS_LINK
+    if item.state == NEEDS_LINK and not item.message:
+        item.message = ("Нечем качать: книга нашлась там, где скачивания "
+                        "нет. Вставьте ссылку с сайта, где она есть.")
+    return item
+
+
+def add(**fields) -> Item:
+    """Поставить книгу в очередь. Повтор той же книги не плодит строк."""
+    item = Item.from_dict(fields)
+    item.id = item.id or uuid.uuid4().hex[:12]
+    _settle(item)
+
+    with _LOCK:
+        rows = _load()
+        same = next((x for x in rows if _twins(x, item)), None)
+        if same is not None:
+            # Ту же книгу поставили второй раз: не строка-близнец, а
+            # обновление той, что уже стоит. Иначе очередь качала бы одну
+            # книгу дважды в одну и ту же папку.
+            item.id = same.id
+            item.done = same.done
+            rows[rows.index(same)] = item
+        else:
+            rows.append(item)
+        _save(rows)
+    return item
+
+
+def _twins(one: Item, two: Item) -> bool:
+    """Одна ли это книга. Сначала по происхождению, потом по папке.
+
+    Книгу находят на одном сайте, а качают с другого — сравнивать только
+    адреса значило бы считать разными строку с Цидяня и её же после
+    вставленной ссылки на слив.
+    """
+    here, there = one.origin or {}, two.origin or {}
+    site, code = here.get("site"), here.get("book_id")
+    if site and code and (site, code) == (there.get("site"),
+                                          there.get("book_id")):
+        return True
+    if one.base and one.folder:
+        return (one.base, one.folder) == (two.base, two.folder)
+    return bool(one.source) and (one.source, one.address) == (two.source,
+                                                              two.address)
+
+
+def update(item_id: str, **fields) -> Item | None:
+    """Поправить строку: вставить ссылку, сменить папку, задать границы."""
+    with _LOCK:
+        rows = _load()
+        item = next((x for x in rows if x.id == str(item_id or "")), None)
+        if item is None:
+            return None
+        for name, value in fields.items():
+            if name in ("id", "state") or not hasattr(item, name):
+                continue
+            if name in ("first", "last", "done"):
+                try:
+                    value = max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    continue
+            setattr(item, name, value)
+        # Вставили ссылку — строка перестаёт ждать и встаёт в общий ряд.
+        item.message = ""
+        item.state = WAITING
+        _settle(item)
+        _save(rows)
+        return item
+
+
+def remove(item_id: str) -> bool:
+    with _LOCK:
+        rows = _load()
+        left = [x for x in rows if x.id != str(item_id or "")]
+        if len(left) == len(rows):
+            return False
+        _save(left)
+    return True
+
+
+def move(item_id: str, delta: int) -> bool:
+    """Подвинуть строку вверх или вниз: порядок здесь и есть смысл."""
+    with _LOCK:
+        rows = _load()
+        at = next((n for n, x in enumerate(rows) if x.id == str(item_id or "")),
+                  None)
+        if at is None:
+            return False
+        to = min(max(0, at + int(delta or 0)), len(rows) - 1)
+        if to == at:
+            return False
+        rows.insert(to, rows.pop(at))
+        _save(rows)
+    return True
+
+
+def clear(only_done: bool = False) -> int:
+    """Убрать всё или только отработавшее."""
+    with _LOCK:
+        rows = _load()
+        left = [x for x in rows if x.state != DONE] if only_done else []
+        _save(left)
+        return len(rows) - len(left)
+
+
+def reset() -> list[Item]:
+    """Приготовить очередь к новому запуску, не трогая ждущих ссылку."""
+    with _LOCK:
+        rows = _load()
+        for item in rows:
+            item.done = 0
+            item.message = ""
+            item.state = WAITING
+            _settle(item)
+        _save(rows)
+        return rows
+
+
+def state() -> dict:
+    """Сводка для подписи над очередью."""
+    rows = all_items()
+    return {
+        "books": len(rows),
+        "waiting": sum(1 for x in rows if x.state == WAITING),
+        "done": sum(1 for x in rows if x.state == DONE),
+        "failed": sum(1 for x in rows if x.state == FAILED),
+        "needs_link": sum(1 for x in rows if x.state == NEEDS_LINK),
+        "chapters": sum(x.done for x in rows),
+    }
+
+
+# --------------------------------------------------------------- запуск
+
+
+def run(perform, on_change=None, cancel=None) -> list[Item]:
+    """Качает книги подряд. Упавшая книга не отменяет остальные.
+
+    `perform(item)` качает одну книгу и возвращает текст итога либо
+    возбуждает исключение. В отличие от очереди операций, здесь отказ
+    одной строки останавливает только её: книги друг о друге не знают, и
+    закрытый сайт у третьей — не повод бросать четвёртую.
+    """
+    rows = reset()
+
+    for item in rows:
+        if cancel is not None and cancel.is_set():
+            # Не начатое остаётся ждать, а не помечается пропущенным:
+            # очередь продолжат тем же нажатием, что и начали.
+            break
+        if not item.ready:
+            continue
+
+        item.state = RUNNING
+        item.message = ""
+        _keep(rows)
+        if on_change:
+            on_change(rows, item)
+
+        try:
+            item.message = str(perform(item) or "")
+            item.state = DONE
+        except Exception as exc:  # noqa: BLE001 — причину показываем целиком
+            if cancel is not None and cancel.is_set():
+                # Остановили руками — это не отказ книги. Пометь мы её
+                # неудачей, и «не вышло: 1» обвиняло бы сайт в том, что
+                # сделал человек, а книга не попала бы в продолжение.
+                item.state = WAITING
+                item.message = ""
+                _keep(rows)
+                if on_change:
+                    on_change(rows, item)
+                break
+            item.state = FAILED
+            item.message = f"{type(exc).__name__}: {exc}"
+            log.warning("Очередь книг: «%s» не скачалась: %s",
+                        item.title, item.message)
+        _keep(rows)
+        if on_change:
+            on_change(rows, item)
+
+    return rows
+
+
+def _keep(rows: list[Item]) -> None:
+    """Записать ход очереди на диск: закройся окно — не пропадёт."""
+    with _LOCK:
+        _save(rows)
+
+
+__all__ = ["DONE", "FAILED", "Item", "KEEP", "NEEDS_LINK", "QUEUE_FILE",
+           "RUNNING", "SKIPPED", "WAITING", "add", "all_items", "clear",
+           "get", "move", "remove", "reset", "run", "state", "update"]

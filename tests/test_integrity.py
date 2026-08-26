@@ -471,15 +471,62 @@ class TestNeurostrazhWebApi(unittest.TestCase):
             "name": "К", "format": "txt", "encoding": "koi8-r"})
         self.assertEqual(res.status_code, 400)
 
-    def test_manual_mode_reaches_the_downloader(self):
-        """Переключатель режима должен доходить до качалки, а не теряться."""
-        import inspect
+    def catch_downloader(self):
+        """Подменяет качалку записной книжкой: с чем её завели.
 
+        Спрашивать текст маршрута — значит запрещать его переписывать:
+        проверка падала от переноса разбора настроек в общую функцию,
+        хотя до качалки доходило ровно то же самое. Спрашиваем саму
+        качалку.
+        """
         from webapp import app as webapp_app
 
-        source = inspect.getsource(webapp_app.api_start)
-        self.assertIn('payload.get("mode")', source)
-        self.assertIn("probe=probe", source)
+        seen = {}
+
+        class Fake:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+            def run(self, *a, **kw):
+                raise RuntimeError("дальше не идём: сеть в тестах ни к чему")
+
+        was = webapp_app.Downloader
+        webapp_app.Downloader = Fake
+        self.addCleanup(setattr, webapp_app, "Downloader", was)
+        return webapp_app, seen
+
+    def start_one(self, webapp_app, folder, **more):
+        payload = {"novel": {"code": 1, "name": "x", "total_chapters": 1},
+                   "base": str(self.tmp), "folder": folder}
+        payload.update(more)
+        res = self.app.post("/api/start", json=payload)
+        self.assertEqual(res.status_code, 200, res.get_json())
+        webapp_app.JOBS[res.get_json()["job"]["id"]].thread.join(timeout=30)
+
+    def test_manual_mode_reaches_the_downloader(self):
+        """Переключатель режима должен доходить до качалки, а не теряться."""
+        webapp_app, seen = self.catch_downloader()
+        self.start_one(webapp_app, "ручной", mode="manual")
+        self.assertFalse(seen["probe"])
+
+    def test_auto_mode_still_probes(self):
+        """Умолчание не меняем: молча отказаться от пробы тоже неверно."""
+        webapp_app, seen = self.catch_downloader()
+        self.start_one(webapp_app, "авто")
+        self.assertTrue(seen["probe"])
+
+    def test_the_number_of_threads_reaches_the_downloader(self):
+        webapp_app, seen = self.catch_downloader()
+        self.start_one(webapp_app, "потоки", threads=3, mode="manual")
+        self.assertEqual(seen["threads"], 3)
+
+    def test_the_timeouts_reach_the_downloader(self):
+        """Выставленное на экране число должно влиять на сами главы."""
+        webapp_app, seen = self.catch_downloader()
+        self.start_one(webapp_app, "сроки", timeout=99, connect_timeout=7,
+                       mode="manual")
+        self.assertEqual(seen["timeout"], 99)
+        self.assertEqual(seen["connect_timeout"], 7)
 
     def test_download_rejects_too_many_threads(self):
         res = self.app.post("/api/start", json={

@@ -851,6 +851,35 @@
   .hist-new{color:#9be8c0}
   .hist-lost{color:#ff9d9d}
 
+  /* Очередь книг. Строка: обложка, книга, чем качать, состояние. */
+  #dqList .q{
+    display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;
+    padding:10px;border-radius:10px;
+    border:1px solid var(--stroke-soft);margin-bottom:8px;
+    background:rgba(255,255,255,.02);
+  }
+  /* Та, что качается прямо сейчас, видна не подписью, а собой. */
+  #dqList .q.on{
+    border-color:#8c54ff;background:rgba(140,84,255,.08);
+    box-shadow:0 0 14px rgba(140,84,255,.18);
+  }
+  #dqList .q.off{opacity:.65}
+  #dqList .q-cover{
+    flex:0 0 44px;width:44px;height:62px;border-radius:6px;
+    object-fit:cover;background:#15121e;border:1px solid var(--stroke-soft);
+  }
+  #dqList .q-side{flex:1;min-width:200px}
+  #dqList .q-name{font-weight:600}
+  .q-where{color:var(--muted);font-size:12px;margin-top:3px}
+  .q-path{color:var(--muted);font-size:11px;margin-top:3px;word-break:break-all}
+  .q-msg{font-size:12px;margin-top:4px}
+  .q-msg.bad{color:#ff9d9d}
+  .q-msg.good{color:#9be8c0}
+  #dqList .q-link{margin-top:8px;font-size:13px;padding:6px 10px}
+  #dqList .q-deeds{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap}
+  #dqList .q-deeds button{padding:5px 10px;font-size:12px}
+  #dqList .q-move{padding:5px 9px;font-size:12px;line-height:1}
+
   /* Библиотека. Карточка книги шире строки истории: здесь показывают
      не «чем докачать», а всё, что про книгу известно. */
   .lb-filters{display:flex;flex-wrap:wrap;gap:6px}
@@ -1287,6 +1316,10 @@
 
     <div class="row" style="margin-top:18px">
       <button id="start" class="primary" style="flex:1">Скачать</button>
+      <!-- Та же книга, но не сейчас: очередь качает подряд, и у каждой
+           строки свой источник — тот, что выбран здесь. -->
+      <button id="toQueue" class="ghost"
+              title="Поставить в очередь и заняться следующей книгой">В очередь</button>
       <button id="links" class="ghost" title="Список ссылок для WebToEpub">Ссылки</button>
     </div>
     <p class="hint" id="finalPath"></p>
@@ -1380,6 +1413,27 @@
     </div>
     <p class="hint" id="histNote" style="margin-top:8px"></p>
     <div id="histList" hidden style="margin-top:10px"></div>
+  </div>
+
+  <!-- Очередь книг: качает подряд, и у каждой строки свой источник.
+       Одну нашли в рейтинге Фанкью и качают оттуда же, вторую — через
+       посредника, третью нашли на Цидяне, где скачивания нет вовсе, и
+       она стоит и ждёт вставленной ссылки. -->
+  <div class="card" id="dqCard">
+    <div class="row" style="align-items:center;gap:10px">
+      <button id="dqToggle" class="ghost" style="flex:1;text-align:left">
+        Очередь книг <span id="dqCount" class="tag"></span>
+      </button>
+      <button id="dqFill" class="ghost"
+              title="Поставить в очередь все книги, у которых вышли новые главы">Докачать всё новое</button>
+      <button id="dqStart" class="primary" hidden>Запустить очередь</button>
+    </div>
+    <p class="hint" id="dqNote" style="margin-top:8px"></p>
+    <div id="dqList" hidden style="margin-top:10px"></div>
+    <div class="row" id="dqSweep" hidden style="margin-top:8px">
+      <button id="dqDone" class="ghost" style="flex:1">Убрать скачанные</button>
+      <button id="dqClear" class="ghost" style="flex:1">Очистить очередь</button>
+    </div>
   </div>
 </section>
 
@@ -3486,6 +3540,14 @@ async function tick(){
       $('sMethod').classList.toggle('warn', !many);
     }
 
+    // Идёт очередь — она сама и есть отчёт: видно, какая книга сейчас и
+    // что стало с прошлыми. Своего опроса очередь не ведёт, чисел из
+    // прогона ей хватает.
+    if(p.queue){
+      dqItems = p.queue;
+      if(!$('dqList').hidden) dqRender();
+    }
+
     // Дождь под карточкой живёт с тех же чисел, что и строка выше:
     // струй в нём столько, сколько потоков. Своего опроса он не ведёт —
     // эффекту нечего знать про задачи и запросы.
@@ -3508,7 +3570,14 @@ async function tick(){
       if(p.stage === 'done') $('fill').style.width = '100%';
       if(job.report){
         const r = job.report;
-        let text = `Папка: ${r.output_dir}`;
+        // У очереди отчёт свой: папка у каждой книги своя, и одной
+        // строки «Папка:» здесь быть не может.
+        let text = r.output_dir === undefined
+          ? `Скачано книг: ${r.books || 0}`
+            + (r.chapters ? `, глав ${r.chapters}` : '')
+            + (r.failed ? `. Не вышло: ${r.failed} — причина у строки `
+                          + 'в очереди' : '')
+          : `Папка: ${r.output_dir}`;
         if(r.blocked_at != null){
           text += `\nСайт закрыл доступ на главе ${r.blocked_at}. Повторять сразу не стоит —`
                 + `\nподождите и нажмите «Скачать» снова, продолжит с этого места.`;
@@ -3523,6 +3592,7 @@ async function tick(){
       // Без этого история и библиотека показывали бы вчерашнее до
       // перезагрузки страницы.
       libLoad();
+      dqLoad();
     }
   }catch(err){
     clearInterval(poll);
@@ -4291,6 +4361,288 @@ $('lbCheck').onclick = () => libCheck('lbNote', 'lbCheck');
 // Открыли вкладку — перечитываем: книгу могли скачать минуту назад.
 document.querySelector('.tabs button[data-tab="library"]')
   ?.addEventListener('click', libLoad);
+
+/* ====================== Очередь книг (пункт 6) ======================
+ *
+ * Очередь качает книги подряд, и у каждой строки свой источник: одну
+ * нашли в рейтинге Фанкью и качают оттуда же, вторую — через
+ * посредника, третью нашли на Цидяне, где скачивания нет вовсе, и она
+ * стоит и ждёт вставленной ссылки. Общего «источника очереди» не
+ * бывает — он записан в строке, вместе с адресом и папкой.
+ *
+ * Названия состояний приходят с сервера: и сами состояния, и их
+ * порядок живут в `ops/downloads`.
+ */
+let dqItems = [], dqState = {}, dqNames = {};
+
+function dqTook(data){
+  dqItems = data.items || [];
+  dqState = data.state || {};
+  for(const row of data.states || []) dqNames[row.key] = row.name;
+  dqShow();
+}
+
+async function dqLoad(){
+  try{
+    dqTook(await call('/api/downloads'));
+  }catch(err){
+    // Очередь — удобство. Не открылась — качать по одной это не мешает.
+    $('dqNote').textContent = 'Очередь не прочиталась: ' + err.message;
+  }
+}
+
+function dqShow(){
+  const count = $('dqCount');
+  count.textContent = dqItems.length ? String(dqItems.length) : '';
+  count.hidden = !dqItems.length;
+  $('dqStart').hidden = !(dqState.waiting || 0);
+  $('dqSweep').hidden = !dqItems.length;
+
+  const bits = [];
+  if(dqState.waiting) bits.push(`ждут ${dqState.waiting}`);
+  if(dqState.done) bits.push(`скачано ${dqState.done}`);
+  if(dqState.failed) bits.push(`не вышло ${dqState.failed}`);
+  if(dqState.needs_link) bits.push(`ждут ссылку ${dqState.needs_link}`);
+  $('dqNote').textContent = !dqItems.length
+    ? 'Пусто. Найдите книгу и нажмите «В очередь» — она скачается, когда '
+      + 'дойдёт черёд, своим источником.'
+    : `Книг: ${dqItems.length} — ` + bits.join(', ') + '.';
+  if(!$('dqList').hidden) dqRender();
+}
+
+function dqRender(){
+  const box = $('dqList');
+  box.innerHTML = '';
+  for(const item of dqItems) box.append(dqRow(item));
+}
+
+function dqRow(item){
+  const row = document.createElement('div');
+  row.className = 'q' + (item.state === 'running' ? ' on' : '')
+                      + (item.state === 'done' ? ' off' : '');
+  row.dataset.item = item.id;
+
+  if(item.cover){
+    const cover = document.createElement('img');
+    cover.className = 'q-cover';
+    cover.alt = '';
+    cover.loading = 'lazy';
+    cover.src = item.cover;
+    cover.onerror = () => cover.remove();
+    row.append(cover);
+  }
+
+  const side = document.createElement('div');
+  side.className = 'q-side';
+
+  const name = document.createElement('div');
+  name.className = 'q-name';
+  name.textContent = item.title;
+  side.append(name);
+
+  const where = document.createElement('div');
+  where.className = 'q-where';
+  const bits = [dqNames[item.state] || item.state];
+  if(item.source) bits.push('качать: ' + item.source);
+  if(item.first || item.last){
+    bits.push(`главы ${item.first || 1}–${item.last || '…'}`);
+  }
+  where.textContent = bits.join(' · ');
+  side.append(where);
+
+  const path = document.createElement('div');
+  path.className = 'q-path';
+  path.textContent = [item.base, item.folder].filter(Boolean).join('/');
+  side.append(path);
+
+  if(item.message){
+    const said = document.createElement('div');
+    said.className = 'q-msg'
+      + (item.state === 'failed' ? ' bad' : item.state === 'done' ? ' good' : '');
+    said.textContent = item.message;
+    side.append(said);
+  }
+
+  // Строке, которой нечем качать, ссылку вставляют прямо здесь: сайт
+  // виден по адресу, и переспрашивать «чем качать» незачем.
+  if(!item.ready){
+    const link = document.createElement('input');
+    link.className = 'q-link';
+    link.type = 'text';
+    link.placeholder = 'ссылка на книгу с сайта, где она есть';
+    link.value = item.address || '';
+    link.onchange = async () => {
+      try{
+        dqTook(await call('/api/downloads/update',
+                         {id: item.id, address: link.value.trim()}));
+      }catch(err){ showError(err.message); }
+    };
+    side.append(link);
+  }
+  row.append(side);
+
+  const deeds = document.createElement('div');
+  deeds.className = 'q-deeds';
+  for(const [sign, delta, why] of [['↑', -1, 'Выше'], ['↓', 1, 'Ниже']]){
+    const move = document.createElement('button');
+    move.className = 'ghost q-move';
+    move.textContent = sign;
+    move.title = why;
+    move.onclick = async () => {
+      try{
+        dqTook(await call('/api/downloads/move', {id: item.id, delta}));
+      }catch(err){ showError(err.message); }
+    };
+    deeds.append(move);
+  }
+
+  const form = document.createElement('button');
+  form.className = 'ghost';
+  form.textContent = 'В форму';
+  form.title = 'Открыть в качалке: выбрать источник, найти, поправить главы';
+  form.onclick = () => dqToForm(item);
+  deeds.append(form);
+
+  const drop = document.createElement('button');
+  drop.className = 'ghost';
+  drop.textContent = 'Убрать';
+  drop.onclick = async () => {
+    try{
+      dqTook(await call('/api/downloads/remove', {id: item.id}));
+    }catch(err){ showError(err.message); }
+  };
+  deeds.append(drop);
+  row.append(deeds);
+  return row;
+}
+
+/** Строка очереди — обратно в форму: там есть выбор источника и поиск. */
+async function dqToForm(item){
+  showError('');
+  histOrigin = item.origin && item.origin.site ? item.origin : null;
+  if(typeof srcMenu !== 'undefined' && srcMenu && item.source){
+    srcMenu.set(item.source, {notify: true});
+  }
+  $('q').value = item.address || '';
+  if(item.base) await browse(item.base);
+  $('folder').value = item.folder || '';
+  $('first').value = item.first ? String(item.first) : '';
+  $('last').value = item.last ? String(item.last) : '';
+  rangeNote('');
+  if(item.address){
+    try{ await find(false); }
+    catch(err){ /* карточку покажем, даже если книга не нашлась сразу */ }
+  }
+  $('place').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+/** Поставить в очередь то, что сейчас в форме. */
+async function dqAdd(){
+  showError('');
+  const folder = $('folder').value.trim();
+  if(!basePath || !folder){
+    showError('Выберите папку и её имя: очередь работает сама, '
+              + 'спросить будет некого', $('toQueue'));
+    return;
+  }
+  const asked = {first: Number($('first').value) || 0,
+                 last: Number($('last').value) || 0};
+  const origin = dlOrigin();
+
+  $('toQueue').disabled = true;
+  try{
+    dqTook(await call('/api/downloads/add', {
+      // Название и обложка — только чтобы строку было видно глазами.
+      name: (novel && novel.name) || origin.name || '',
+      name_ru: origin.name_ru || '',
+      cover: (novel && novel.cover) || origin.cover || '',
+      // Источник берётся из формы: он и есть ответ на вопрос «чем
+      // качать эту книгу», и у каждой строки он свой.
+      source: srcMenu ? srcMenu.value : '',
+      address: $('q').value.trim(),
+      base: basePath, folder,
+      first: asked.first, last: asked.last,
+      origin,
+    }));
+    $('dqList').hidden = false;
+    dqRender();
+    $('dqNote').textContent = `«${$('folder').value.trim()}» — в очереди. `
+      + $('dqNote').textContent;
+  }catch(err){
+    showError(err.message, $('toQueue'));
+  }finally{
+    $('toQueue').disabled = false;
+  }
+}
+
+async function dqFill(){
+  $('dqFill').disabled = true;
+  try{
+    const data = await call('/api/downloads/fill', {});
+    dqTook(data);
+    $('dqList').hidden = false;
+    dqRender();
+    const missed = (data.missed || []).length;
+    $('dqNote').textContent = (data.added
+      ? `Поставлено книг: ${data.added}. `
+      : 'Новых глав ни у одной книги — по тем сведениям, что есть. ')
+      + (missed ? `Не записано, чем качать: ${missed}. ` : '')
+      + $('dqNote').textContent;
+  }catch(err){
+    showError(err.message, $('dqFill'));
+  }finally{
+    $('dqFill').disabled = false;
+  }
+}
+
+/** Запустить очередь. Прогресс тот же, что у одной книги. */
+async function dqStart(){
+  showError('');
+  $('dqStart').disabled = true;
+  try{
+    const data = await call('/api/downloads/start', {
+      threads: Number($('dlThreads').value) || 1,
+      mode: dlMode,
+      timeout: Number($('tmRead').value) || 120,
+      connect_timeout: Number($('tmConnect').value) || 15,
+    });
+    jobId = data.job.id;
+    $('sSource').textContent = 'очередь книг';
+    $('place').hidden = true;
+    $('progress').hidden = false;
+    $('again').hidden = true;
+    $('stop').hidden = false;
+    held = false;
+    stopping = false;
+    $('hold').hidden = false;
+    showHold();
+    $('summary').textContent = '';
+    poll = setInterval(tick, 700);
+    tick();
+  }catch(err){
+    showError(err.message, $('dqStart'));
+  }finally{
+    $('dqStart').disabled = false;
+  }
+}
+
+$('dqToggle').onclick = () => {
+  const box = $('dqList');
+  box.hidden = !box.hidden;
+  if(!box.hidden) dqRender();
+};
+$('toQueue').onclick = dqAdd;
+$('dqFill').onclick = dqFill;
+$('dqStart').onclick = dqStart;
+$('dqDone').onclick = async () => {
+  try{ dqTook(await call('/api/downloads/clear', {only_done: true})); }
+  catch(err){ showError(err.message); }
+};
+$('dqClear').onclick = async () => {
+  try{ dqTook(await call('/api/downloads/clear', {})); }
+  catch(err){ showError(err.message); }
+};
+document.addEventListener('DOMContentLoaded', dqLoad);
 
 $('hold').onclick = hold;
 $('again').onclick = reset;
