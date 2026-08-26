@@ -108,9 +108,26 @@ class Kind:
     joiner: str = "\n"
 
 
+HEADINGS_PROMPT = """Ниже названия глав книги, по одному в строке, с
+номерами.
+
+Переведи каждое на русский. Верни СТРОГО JSON: объект, где ключ — номер
+строки, значение — перевод. Без пояснений и без текста вокруг.
+
+Это названия глав художественной книги: переводи по смыслу, коротко, как
+принято называть главы. Слово «глава» и номер главы в перевод НЕ
+добавляй — они подставляются отдельно.
+
+{lines}"""
+
 TITLES = Kind(prompt=PROMPT, size=BATCH, word="Названия")
 ABOUTS = Kind(prompt=ABOUTS_PROMPT, size=ABOUT_BATCH, word="Описания",
               joiner="\n---\n")
+HEADINGS = Kind(prompt=HEADINGS_PROMPT, size=BATCH, word="Заголовки")
+
+#: Переводы названий глав. Отдельно от рейтинга: там ключ — код книги на
+#: сайте, а здесь само название, потому что никакого кода у главы нет.
+HEADINGS_FILE = DATA_DIR / "headings.json"
 
 
 @dataclass(frozen=True)
@@ -339,6 +356,65 @@ def translate(rows, client, model: str = "", force: bool = False) -> dict:
             "translated": len(added), "broken": len(missing),
             "missing": missing[:10],
             "cached": len(rows) - len(added) - len(missing)}
+
+
+def headings() -> dict:
+    """Что уже переведено: название главы → перевод."""
+    with _LOCK:
+        return dict(_load(HEADINGS_FILE))
+
+
+def remember_headings(pairs: dict) -> dict:
+    with _LOCK:
+        data = _load(HEADINGS_FILE)
+        data.update({str(k): str(v).strip() for k, v in pairs.items()
+                     if str(v).strip()})
+        _write(HEADINGS_FILE, data)
+        return dict(data)
+
+
+def forget_headings() -> None:
+    with _LOCK:
+        _write(HEADINGS_FILE, {})
+
+
+def translate_headings(names, client, model: str = "",
+                       force: bool = False, on_step=None) -> dict:
+    """Переводит названия глав пачками. Кэш — по самому названию.
+
+    Кэш здесь важнее, чем в рейтинге: глав бывает полторы тысячи, и
+    оборвись работа на середине — без него второй заход начинался бы с
+    нуля и стоил бы столько же, сколько первый.
+
+    Ключ — само название, а не номер главы: у главы номер свой, а имя
+    может повторяться, и переводить «Trade» дважды незачем.
+    """
+    names = [str(x or "").strip() for x in (names or [])]
+    have = headings()
+
+    todo, seen = [], set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        if force or name not in have:
+            seen.add(name)
+            todo.append(Line(name, name))
+
+    added = {}
+    for start in range(0, len(todo), HEADINGS.size):
+        added.update(_ask(client, todo[start:start + HEADINGS.size], model,
+                          HEADINGS))
+        if on_step:
+            on_step(min(start + HEADINGS.size, len(todo)), len(todo))
+    if added:
+        have = remember_headings(added)
+
+    ready = {name: have.get(name, "") for name in names if name}
+    missing = [line.text for line in todo if not ready.get(line.book_id)]
+    return {"names": ready,
+            "translated": len(added), "broken": len(missing),
+            "missing": missing[:10],
+            "cached": len(set(names)) - len(added) - len(missing)}
 
 
 def translate_all_abstracts(texts: dict, client, model: str = "",

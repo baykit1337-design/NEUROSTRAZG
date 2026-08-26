@@ -780,3 +780,82 @@ def trim_scenes(blocks: list[Block]) -> list[Block]:
 def to_text(blocks: list[Block]) -> str:
     """Собирает блоки обратно в плоский текст — для .txt и .md."""
     return "\n\n".join(b.text for b in blocks if b.text)
+
+
+# ------------------------------------------------- деление на части
+#
+# Живёт здесь, а не во вкладке «Переименовать», потому что делить
+# главу на части просят две работы сразу: переименование файлов и
+# сборка книги для загрузчика. Работа чисто текстовая — ни файлов,
+# ни имён она не знает.
+
+
+def split_into_parts(paragraphs: list[str], count: int) -> list[list[str]]:
+    """Делит абзацы на `count` частей, максимально равных по числу символов.
+
+    Режем только по границам абзацев. Разделитель сцен (`*`) не должен
+    оказаться первым или последним абзацем части — такие границы сдвигаем.
+    """
+    if count < 2:
+        return [list(paragraphs)]
+    blocks = [p for p in paragraphs if p.strip()]
+    if len(blocks) < count:
+        # Абзацев меньше, чем частей — делить нечего.
+        return [list(blocks)]
+
+    lengths = [len(p) for p in blocks]
+    total = sum(lengths)
+    # Накопленная длина после каждого абзаца.
+    cumulative: list[int] = []
+    running = 0
+    for length in lengths:
+        running += length
+        cumulative.append(running)
+
+    cuts: list[int] = []
+    for index in range(1, count):
+        ideal = total * index / count
+        # Граница — индекс абзаца, после которого режем.
+        best = min(range(len(blocks)), key=lambda i: abs(cumulative[i] - ideal))
+        cut = best + 1
+        # Каждая часть должна быть непустой, границы строго возрастают.
+        low = (cuts[-1] + 1) if cuts else 1
+        high = len(blocks) - (count - index)
+        cuts.append(max(low, min(cut, high)))
+
+    cuts = _avoid_scene_breaks(blocks, cuts)
+
+    parts: list[list[str]] = []
+    start = 0
+    for cut in [*cuts, len(blocks)]:
+        parts.append(blocks[start:cut])
+        start = cut
+    return [p for p in parts if p]
+
+
+def _avoid_scene_breaks(blocks: list[str], cuts: list[int]) -> list[int]:
+    """Сдвигает границы так, чтобы `*` не открывал и не закрывал часть."""
+    adjusted = []
+    for index, cut in enumerate(cuts):
+        low = (adjusted[-1] + 1) if adjusted else 1
+        high = len(blocks) - (len(cuts) - index)
+        for candidate in _nearby(cut, low, high):
+            ends_with_break = SCENE_BREAK.match(blocks[candidate - 1])
+            starts_with_break = SCENE_BREAK.match(blocks[candidate])
+            if not ends_with_break and not starts_with_break:
+                cut = candidate
+                break
+        adjusted.append(max(low, min(cut, high)))
+    return adjusted
+
+
+def _nearby(value: int, low: int, high: int):
+    """Кандидаты в порядке удаления от исходной границы."""
+    if low > high:
+        return
+    seen = set()
+    for shift in range(0, high - low + 2):
+        for candidate in (value - shift, value + shift):
+            if low <= candidate <= high and candidate not in seen:
+                seen.add(candidate)
+                yield candidate

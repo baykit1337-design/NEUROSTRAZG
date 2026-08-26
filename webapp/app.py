@@ -65,6 +65,9 @@ from ops import signature as signature_op  # noqa: E402
 from ops import spelling as spelling_op  # noqa: E402
 from ops import stats as stats_op  # noqa: E402
 from ops import split as split_op  # noqa: E402
+from core.models import OpReport  # noqa: E402
+from ops import base as base_op  # noqa: E402
+from ops import mdbook  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
 from ops.base import Progress  # noqa: E402
 from mvl import api, checks, cleanup, nativedialog, rename  # noqa: E402
@@ -1987,6 +1990,235 @@ def api_convert_start():
             style=Style.from_dict(payload.get("style")),
             progress=_progress(job, "Файл"),
         ), "Перегнано")
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+# --------------------------------------- вкладка «Форматировать»
+#
+# Книга уезжает на сайт одним `.md`, где главы размечены строками вида
+# `# [Название :|: Порядок :|: Платность :|: Том]`. Отсюда две работы:
+# собрать такой файл из папки глав и переписать заголовки в уже готовом,
+# когда переводчик оставил их английскими.
+
+
+def _title_style(payload: dict) -> mdbook.TitleStyle:
+    prefix = str(payload.get("prefix") or naming.DEFAULT_PREFIX).strip()
+    separator = payload.get("separator")
+    if separator is None:
+        separator = mdbook.DEFAULT_SEPARATOR
+    return mdbook.TitleStyle(prefix=prefix, separator=str(separator))
+
+
+def _whole(payload: dict, name: str, default: int = 0) -> int:
+    try:
+        return max(0, int(payload.get(name) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _md_output(payload: dict) -> Path:
+    """Куда писать. Своё имя и своя папка — исходник не трогаем."""
+    base = (payload.get("base") or "").strip()
+    name = (payload.get("name") or "").strip()
+    if not base:
+        raise ValueError("Выберите, куда сохранить")
+    if not name:
+        raise ValueError("Введите имя файла")
+    folder = Path(base).expanduser()
+    if not folder.is_dir():
+        raise ValueError(f"Папка не найдена: {folder}")
+    return folder / f"{naming.safe_filename(name)}.md"
+
+
+@app.get("/api/format/options")
+def api_format_options():
+    """Чем размечать заголовки.
+
+    Значения платности задал сайт: `0`, `1` и пробел «как в форме».
+    Держать их вторым экземпляром в разметке нельзя — при расхождении
+    книга уедет туда с чужой ценой.
+    """
+    return jsonify(
+        payment=[{"key": mdbook.PAYMENT["form"], "name": "как в форме"},
+                 {"key": mdbook.PAYMENT["free"], "name": "бесплатная"},
+                 {"key": mdbook.PAYMENT["paid"], "name": "платная"}],
+        separators=[{"key": s, "name": f"«{s}»"} for s in mdbook.SEPARATORS],
+        default_separator=mdbook.DEFAULT_SEPARATOR,
+        prefix=naming.DEFAULT_PREFIX)
+
+
+@app.post("/api/format/files")
+def api_format_files():
+    """Что соберётся в книгу: сколько глав и как назовутся первые."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+
+    report = OpReport()
+    try:
+        files = base_op.collect_files(targets)
+        chapters = sorted(base_op.read_all(files, report),
+                          key=naming.sort_key)
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    style = _title_style(payload)
+    made = mdbook.from_chapters(
+        chapters[:5], style=style,
+        paid=str(payload.get("paid") or ""),
+        volume=str(payload.get("volume") or ""),
+        first=_whole(payload, "first"),
+        parts=max(1, _whole(payload, "parts", 1)))
+    return jsonify(files=len(files), total=len(chapters),
+                   sample=[head.line() for head, _ in made],
+                   unreadable=[f.as_text() for f in report.failures],
+                   skipped=base_op.skipped_files(targets))
+
+
+@app.post("/api/format/collect")
+def api_format_collect():
+    """Собрать главы в один .md с заголовками загрузчика."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        output = _md_output(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    style = _title_style(payload)
+    paid = str(payload.get("paid") or "")
+    volume = str(payload.get("volume") or "")
+    first = _whole(payload, "first")
+    parts = max(1, _whole(payload, "parts", 1))
+
+    job = Job(id=uuid.uuid4().hex[:12], kind="format",
+              meta={"targets": targets}, output_dir=str(output))
+    job.progress = {"stage": "merge", "message": "Читаем главы…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    def work(job: Job):
+        report = OpReport(output=str(output))
+        progress = _progress(job, "Файл")
+        files = base_op.collect_files(targets)
+        chapters = sorted(base_op.read_all(files, report, progress),
+                          key=naming.sort_key)
+        if not chapters:
+            raise ValueError("Не удалось прочитать ни одной главы.")
+
+        made = mdbook.from_chapters(chapters, style=style, paid=paid,
+                                    volume=volume, first=first, parts=parts)
+        output.write_text(mdbook.write_book(made), encoding="utf-8")
+        report.total = len(chapters)
+        report.written = len(made)
+        _finish(job, report, "Собрано")
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
+def _read_md(payload: dict) -> tuple[Path, str, list]:
+    """Готовая книга: путь, преамбула и главы."""
+    targets = _targets(payload)
+    if not targets:
+        raise ValueError("Выберите файл книги (.md)")
+    path = Path(targets[0]).expanduser()
+    if not path.is_file():
+        raise ValueError(f"Файл не найден: {path}")
+    lead, chapters = mdbook.read_book(
+        path.read_text(encoding="utf-8", errors="replace"))
+    if not chapters:
+        raise ValueError("В файле нет заголовков вида «# [Название :|: …]» — "
+                         "похоже, это не книга для загрузчика.")
+    return path, lead, chapters
+
+
+@app.post("/api/format/book")
+def api_format_book():
+    """Что в готовом .md: сколько глав и сколько заголовков не переведено."""
+    payload = request.json or {}
+    try:
+        path, _, chapters = _read_md(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    plain = [head.title for head, _ in chapters]
+    left = [name for name in plain if not mdbook.looks_translated(name)]
+    return jsonify(path=str(path), total=len(chapters),
+                   untranslated=len(left),
+                   sample=[head.line() for head, _ in chapters[:5]])
+
+
+@app.post("/api/format/retitle")
+def api_format_retitle():
+    """Перевести заголовки готовой книги, не трогая всё остальное."""
+    payload = request.json or {}
+    try:
+        path, lead, chapters = _read_md(payload)
+        output = _md_output(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    if output == path:
+        return jsonify(error="Выберите другое имя: исходник не перезаписываем "
+                             "— сверить перевод будет не с чем"), 400
+
+    style = _title_style(payload)
+    parts = max(1, _whole(payload, "parts", 1))
+    first = _whole(payload, "first")
+    force = bool(payload.get("force"))
+    model = (payload.get("model") or "").strip()
+
+    job = Job(id=uuid.uuid4().hex[:12], kind="format",
+              meta={"total": len(chapters)}, output_dir=str(output))
+    job.progress = {"stage": "translate", "message": "Переводим заголовки…",
+                    "done": 0, "total": len(chapters), "written": 0,
+                    "failed": 0}
+
+    def work(job: Job):
+        # Просим только имена: номер главы у нас уже есть, и отдавать его
+        # модели значило бы позволить ей его поправить.
+        taken = [mdbook.split_title(head.title) for head, _ in chapters]
+        wanted = [name for _, name in taken if name]
+
+        client = _llm_client(payload)
+        try:
+            done = titles_op.translate_headings(
+                wanted, client, model=model, force=force,
+                on_step=lambda at, all_: job.progress.update(
+                    done=at, total=all_,
+                    message=f"Переводим заголовки… {at} из {all_}"))
+        finally:
+            client.close()
+
+        names = done.get("names") or {}
+        out, order = [], first
+        for (head, body), (number, name) in zip(chapters, taken):
+            # Не перевелось — оставляем как было. Пустой заголовок хуже
+            # непереведённого: главу в книге станет не найти.
+            ready = names.get(name) or name
+            title = style.build(number, ready) if number is not None else ready
+            fresh = head.with_title(title)
+            if order:
+                fresh = mdbook.make_head(title, str(order), head.paid,
+                                         head.volume)
+            pieces = mdbook.cut_into_parts(fresh, body, parts, style,
+                                           number, ready)
+            out.extend(pieces)
+            if order:
+                order += len(pieces)
+
+        output.write_text(mdbook.write_book(out, lead), encoding="utf-8")
+        job.report = {"output": str(output), "total": len(out),
+                      "written": len(out),
+                      "translated": done.get("translated", 0),
+                      "cached": done.get("cached", 0),
+                      "broken": done.get("broken", 0),
+                      "missing": done.get("missing", [])}
+        job.progress.update(stage="done", written=len(out),
+                            done=len(chapters), total=len(chapters),
+                            message=f"Готово. Глав: {len(out)}.")
 
     return jsonify(job=start_job(job, work).snapshot())
 

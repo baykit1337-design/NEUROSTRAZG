@@ -454,7 +454,11 @@ class TestPickingFilesLooksTheSameEverywhere(UiBase):
     """
 
     #: Поля, у которых должен быть одинаковый вид.
-    FIELDS = ("spPath", "mgPath", "cvPath", "rnIn")
+    #:
+    #: `fmBookPath` сюда не входит нарочно: там выбирают не «файлы или
+    #: папку», а одну готовую книгу, и заполнитель у него свой. Вид
+    #: строки при этом тот же — поле и «Выбрать…» рядом.
+    FIELDS = ("spPath", "mgPath", "cvPath", "rnIn", "fmPath")
 
     def row_of(self, field):
         """Строка разметки с этим полем и кнопкой рядом."""

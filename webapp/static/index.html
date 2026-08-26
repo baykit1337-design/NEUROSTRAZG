@@ -1115,6 +1115,18 @@
         <path d="M11.5 9h4m0 0-1.8-1.8M15.5 9l-1.8 1.8" stroke="#8c54ff"
               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>Конвертация</button>
+    <!-- Формат загрузчика: книга одним файлом с размеченными главами.
+         Стоит рядом с «Конвертацией» — работа та же, меняется только
+         то, для кого готовим файл: для читалки или для сайта. -->
+    <button data-tab="format">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M5 3.5h9l5 5V20a.5.5 0 0 1-.5.5h-13A.5.5 0 0 1 5 20V3.5Z"
+              stroke="#c084fc" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M14 3.5V9h5" stroke="#c084fc" stroke-width="1.6"
+              stroke-linejoin="round"/>
+        <path d="M8.5 13h7M8.5 16.5h4.5" stroke="#8c54ff" stroke-width="1.8"
+              stroke-linecap="round"/>
+      </svg>Форматировать</button>
     <button data-tab="rename">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <path d="M4 6h10M4 12h7M4 18h10" stroke="#c084fc" stroke-width="1.6"
@@ -2039,6 +2051,142 @@
     </div>
     <p class="result-path" id="cvSummary"></p>
     <div class="table" id="cvErrors" hidden></div>
+  </div>
+</section>
+
+
+<!-- ====================== Форматировать ======================
+     Книга уезжает на сайт одним .md, где главы размечены строками
+     `# [Название :|: Порядок :|: Платность :|: Том]`. Отсюда две
+     работы: собрать такой файл из папки глав и переписать заголовки в
+     уже готовом, когда переводчик оставил их английскими. -->
+<section id="tab-format" hidden>
+
+  <!-- Общее для обеих работ: как называть главы. -->
+  <div class="card" id="fmStyle">
+    <label>Как назвать главы</label>
+    <p class="hint">Номер главы берётся из её заголовка и не меняется:
+       модели его не отдаём вовсе, чтобы она не могла его поправить.
+       Меняется только слово перед номером и знак после него.</p>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label for="fmPrefix">слово перед номером</label>
+        <input id="fmPrefix" type="text" value="Глава" autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label>знак после номера</label>
+        <div class="dropdown" id="fmSep" data-options='[]'></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>платность<i class="hint-icon" data-tip="Что поставить в третье поле заголовка. «Как в форме» — оставить пробел: сайт возьмёт значение из своей формы загрузки.">?</i></label>
+        <div class="dropdown" id="fmPaid" data-options='[]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="fmVolume">том<i class="hint-icon" data-tip="Необязательно. Если указать, платность будет заполнена обязательно — иначе сайт прочитает том как цену.">?</i></label>
+        <input id="fmVolume" type="text" placeholder="без тома" autocomplete="off">
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label for="fmFirst">порядок с числа<i class="hint-icon" data-tip="Второе поле заголовка. 0 — не писать порядок вовсе: сайт расставит его сам. Это честнее выдуманных чисел.">?</i></label>
+        <input id="fmFirst" type="number" value="0" min="0">
+      </div>
+      <div style="flex:1">
+        <label for="fmParts">делить каждую главу на части<i class="hint-icon" data-tip="1 — не делить. 2 — разбить пополам: получится «Глава 1171.1» и «Глава 1171.2», текст делится по границам абзацев.">?</i></label>
+        <input id="fmParts" type="number" value="1" min="1" max="20">
+      </div>
+    </div>
+    <p class="hint" id="fmSample"></p>
+  </div>
+
+  <!-- Работа первая: много файлов → одна книга. -->
+  <div class="card lit">
+    <label>Собрать книгу из глав<span class="formats" data-formats="readable"></span></label>
+    <p class="hint">Главы читаются из файлов, название и номер берутся из
+       их имён. На выходе — один .md с размеченными заголовками.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="fmPath" class="pickpath" data-list="fmList" type="text"
+             placeholder="Путь к файлу или папке" autocomplete="off">
+      <button class="ghost pickany" data-list="fmList">Выбрать…</button>
+    </div>
+    <div class="row" id="fmListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="fmCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="fmList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="fmList"></div>
+    <p class="hint" id="fmScanned">Файлы читаются сразу после выбора.</p>
+    <p class="hint warn" id="fmSkipped" hidden></p>
+    <div class="table" id="fmPreview" hidden style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:14px">
+      <input id="fmBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="fmBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="fmName">имя файла</label>
+      <input id="fmName" type="text" placeholder="книга" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="fmCollect" class="primary" style="flex:1">Собрать книгу</button>
+    </div>
+  </div>
+
+  <!-- Работа вторая: переписать заголовки в готовой книге. -->
+  <div class="card">
+    <label>Перевести заголовки в готовой книге</label>
+    <p class="hint">Переводится только название главы. Номер, порядок,
+       платность, том и весь текст книги остаются как были — до пробела.
+       Исходник не переписывается: файл выходит новый.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="fmBookPath" class="pickpath" data-list="fmBookList" type="text"
+             placeholder="Путь к .md книги" autocomplete="off">
+      <button class="ghost pickany" data-list="fmBookList">Выбрать…</button>
+    </div>
+    <div class="chosen" id="fmBookList"></div>
+    <p class="hint" id="fmBookNote"></p>
+    <div class="table" id="fmBookPreview" hidden style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>модель<i class="hint-icon" data-tip="Ключи и выбор модели — на вкладке «Анализ». Заголовки идут пачками по 25.">?</i></label>
+        <div class="dropdown" id="fmModel" data-options='[]'></div>
+      </div>
+      <label class="chk" style="flex:1;align-self:flex-end">
+        <input type="checkbox" id="fmForce"> переводить заново, не глядя в кэш
+        <i class="hint-icon" data-tip="Переведённые заголовки запоминаются по самому названию: второй заход не платит за них снова.">?</i></label>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <input id="fmOutBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="fmOutBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="fmOutName">имя файла</label>
+      <input id="fmOutName" type="text" placeholder="книга-ru" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="fmRetitle" class="primary" style="flex:1">Перевести заголовки</button>
+    </div>
+  </div>
+
+  <div class="card lit" id="fmProgress" hidden>
+    <div class="status result-block"><span class="result-dot"></span>
+      <span class="result-text" id="fmStatus"></span></div>
+    <div class="bar"><i id="fmFill"></i></div>
+    <div class="stats">
+      <span>глав <b id="fmWritten">0</b></span>
+      <span>ошибок <b id="fmFailed">0</b></span>
+      <span id="fmPct"></span>
+      <span class="timers" id="fmTimers"></span>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="fmStop" class="ghost">Остановить</button>
+    </div>
+    <p class="result-path" id="fmSummary"></p>
+    <div class="table" id="fmErrors" hidden></div>
   </div>
 </section>
 

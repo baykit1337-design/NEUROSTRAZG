@@ -1277,6 +1277,198 @@ async function cvStart(){
   }
 }
 
+/* ==================== Форматировать ====================
+ *
+ * Книга уезжает на сайт одним .md, где главы размечены строками
+ * `# [Название :|: Порядок :|: Платность :|: Том]`. Работы две: собрать
+ * такой файл из папки глав и переписать заголовки в уже готовом, когда
+ * переводчик оставил их английскими.
+ *
+ * Во второй работе правится только название. Номер главы модели не
+ * отдаётся вовсе — его подставляем сами: полторы тысячи заголовков, и
+ * поправь она номер хоть в одном, книга на сайте съедет.
+ */
+const fmState = {menus: {}, files: null, book: null, job: null};
+
+function fmStylePayload(){
+  return {
+    prefix: $('fmPrefix').value.trim(),
+    separator: fmState.menus.sep ? fmState.menus.sep.value : ' — ',
+    paid: fmState.menus.paid ? fmState.menus.paid.value : '',
+    volume: $('fmVolume').value.trim(),
+    first: Number($('fmFirst').value) || 0,
+    parts: Number($('fmParts').value) || 1,
+  };
+}
+
+/** Показать, как будет выглядеть заголовок.
+ *
+ *  Правила ровно те же, что у `make_head` на сервере: пустое поле с
+ *  конца не пишем вовсе, а пропуск в середине оставляем — том без
+ *  платности перед ним съехал бы на чужое поле. Платность «как в форме»
+ *  — это пробел, и отдельным полем она не нужна: сайт и без неё возьмёт
+ *  значение из формы.
+ */
+function fmShowSample(){
+  const s = fmStylePayload();
+  const mark = s.parts > 1 ? '1171.1' : '1171';
+  const order = s.first ? String(s.first) : '';
+  const paid = (s.paid || '').trim();
+
+  let rest = [];
+  if(s.volume.trim()) rest = [order, paid || ' ', s.volume];
+  else if(paid) rest = [order, paid];
+  else if(order) rest = [order];
+
+  const tail = rest.map(x => ` :|: ${x}`).join('');
+  $('fmSample').textContent =
+    `Заголовок выйдет такой: # [${s.prefix} ${mark}${s.separator}Название${tail}]`;
+}
+
+async function fmScan(){
+  const targets = CHOSEN.fmList || [];
+  $('fmPreview').hidden = true;
+  if(!targets.length){
+    fmState.files = null;
+    $('fmScanned').textContent = 'Файлы читаются сразу после выбора.';
+    $('fmSkipped').hidden = true;
+    return;
+  }
+  showError('');
+  try{
+    const data = await call('/api/format/files',
+                            {targets, ...fmStylePayload()});
+    fmState.files = data;
+    updateListBar('fmList', data.files);
+    $('fmScanned').textContent =
+      `Глав найдено: ${data.total} в ${data.files} `
+      + `${plural(data.files, 'файле', 'файлах', 'файлах')}.`;
+    $('fmSkipped').hidden = !data.skipped?.length;
+    if(data.skipped?.length){
+      const shown = data.skipped.slice(0, 8).join(', ');
+      $('fmSkipped').textContent =
+        `Пропущено по формату: ${data.skipped.length} (${shown}`
+        + `${data.skipped.length > 8 ? ' и другие' : ''}).`;
+    }
+    fmShowLines('fmPreview', data.sample);
+  }catch(err){
+    showError(err.message, $('fmScanned'));
+  }
+}
+window.fmScan = fmScan;
+
+/** Готовые строки заголовков — как есть, без разбора на поля. */
+function fmShowLines(boxId, lines){
+  const box = $(boxId);
+  box.innerHTML = '';
+  box.hidden = !(lines || []).length;
+  for(const line of lines || []){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const cell = document.createElement('code');
+    cell.textContent = line;
+    cell.style.fontSize = '12px';
+    cell.style.wordBreak = 'break-all';
+    row.append(cell);
+    box.append(row);
+  }
+}
+
+async function fmBookScan(){
+  const targets = CHOSEN.fmBookList || [];
+  $('fmBookPreview').hidden = true;
+  if(!targets.length){
+    fmState.book = null;
+    $('fmBookNote').textContent = '';
+    return;
+  }
+  showError('');
+  try{
+    const data = await call('/api/format/book', {targets});
+    fmState.book = data;
+    $('fmBookNote').textContent =
+      `Глав в книге: ${data.total}. `
+      + (data.untranslated
+        ? `Заголовков не по-русски: ${data.untranslated}.`
+        : 'Все заголовки уже на русском — переводить нечего.');
+    fmShowLines('fmBookPreview', data.sample);
+    if(!$('fmOutName').value.trim()){
+      $('fmOutName').value = 'книга-ru';
+    }
+  }catch(err){
+    showError(err.message, $('fmBookNote'));
+    fmState.book = null;
+  }
+}
+window.fmBookScan = fmBookScan;
+
+/** Общее для обеих работ: показать прогресс и дождаться конца. */
+function fmWatch(job, done){
+  fmState.job = job.id;
+  ownJob('format', job.id);
+  $('fmProgress').hidden = false;
+  $('fmStop').hidden = false;
+  $('fmErrors').hidden = true;
+  $('fmSummary').textContent = 'Файл: ' + job.output_dir;
+
+  pollJob(job.id,
+    job => {
+      const p = job.progress || {};
+      $('fmWritten').textContent = p.written || p.done || 0;
+      $('fmFailed').textContent = p.failed || 0;
+      return drawResult(p, 'fmFill', 'fmStatus', 'fmPct');
+    },
+    job => {
+      $('fmStop').hidden = true;
+      if(job.error){ showError(job.error, $('fmSummary')); return; }
+      $('fmSummary').textContent =
+        'Файл: ' + (job.report?.output || job.output_dir);
+      if(done) done(job);
+      showFailures('fmErrors', job.report?.failures);
+    });
+}
+
+async function fmCollect(){
+  showError('');
+  $('fmCollect').disabled = true;
+  try{
+    const {job} = await call('/api/format/collect', {
+      targets: CHOSEN.fmList || [],
+      base: $('fmBase').value.trim(),
+      name: $('fmName').value.trim(),
+      ...fmStylePayload(),
+    });
+    fmWatch(job, job => {
+      const total = job.report?.written || 0;
+      $('fmSummary').textContent +=
+        ` · глав в книге: ${total}`;
+    });
+  }catch(err){ showError(err.message, $('fmCollect')); }
+  finally{ $('fmCollect').disabled = false; }
+}
+
+async function fmRetitle(){
+  showError('');
+  $('fmRetitle').disabled = true;
+  try{
+    const {job} = await call('/api/format/retitle', {
+      targets: CHOSEN.fmBookList || [],
+      base: $('fmOutBase').value.trim(),
+      name: $('fmOutName').value.trim(),
+      model: fmState.menus.model ? fmState.menus.model.value : '',
+      force: $('fmForce').checked,
+      ...fmStylePayload(),
+    });
+    fmWatch(job, job => {
+      const r = job.report || {};
+      $('fmSummary').textContent +=
+        ` · переведено ${r.translated || 0}, из кэша ${r.cached || 0}`
+        + (r.broken ? `, осталось как было ${r.broken}` : '');
+    });
+  }catch(err){ showError(err.message, $('fmRetitle')); }
+  finally{ $('fmRetitle').disabled = false; }
+}
+
 /* ------------------------------------------------------------ привязка */
 
 for(const [p, state, update, scan] of [
@@ -1799,6 +1991,16 @@ function llmFillModels(models, suggested){
   box.innerHTML = '';
   llmMenu = makeDropdown(box);
   if(suggested) llmMenu.set(suggested);
+
+  // Тот же список — на вкладке «Форматировать»: модель там та же самая,
+  // а второй список однажды разошёлся бы с первым.
+  const spare = $('fmModel');
+  if(spare){
+    spare.dataset.options = JSON.stringify(options);
+    spare.innerHTML = '';
+    fmState.menus.model = makeDropdown(spare);
+    if(suggested) fmState.menus.model.set(suggested, {notify: false});
+  }
 
   $('llmModelNote').textContent = suggested
     ? `Подобрана сама: ${suggested}. Для разбора глав этого достаточно, `
@@ -2635,6 +2837,44 @@ function anSaveReport(){
 }
 
 $('anList').dataset.onchange = 'anScan';
+
+/* ---------------------------------------- привязка «Форматировать» */
+
+$('fmList').dataset.onchange = 'fmScan';
+$('fmBookList').dataset.onchange = 'fmBookScan';
+$('fmCollect').onclick = fmCollect;
+$('fmRetitle').onclick = fmRetitle;
+$('fmStop').onclick = () => cancelTab('format');
+
+// Пересчитываем образец на каждое изменение: он и есть ответ на вопрос
+// «что получится», а получить его после сборки книги поздно.
+for(const id of ['fmPrefix', 'fmVolume', 'fmFirst', 'fmParts']){
+  $(id).addEventListener('input', () => { fmShowSample(); fmScan(); });
+}
+
+async function fmLoadOptions(){
+  try{
+    const data = await call('/api/format/options');
+    $('fmPrefix').value = data.prefix || 'Глава';
+    $('fmSep').dataset.options = JSON.stringify(
+      (data.separators || []).map(s => [s.key, s.name]));
+    $('fmPaid').dataset.options = JSON.stringify(
+      (data.payment || []).map(p => [p.key, p.name]));
+    fmState.menus.sep = makeDropdown($('fmSep'), () => {
+      fmShowSample();
+      fmScan();
+    });
+    fmState.menus.paid = makeDropdown($('fmPaid'), () => {
+      fmShowSample();
+      fmScan();
+    });
+    if(data.default_separator){
+      fmState.menus.sep.set(data.default_separator, {notify: false});
+    }
+    fmShowSample();
+  }catch(err){ /* вкладка ещё может быть не нужна */ }
+}
+document.addEventListener('DOMContentLoaded', fmLoadOptions);
 $('anStart').onclick = () => anStart();
 $('anStop').onclick = () => stopJob(anJob);
 $('anRebuild').onclick = async () => {

@@ -359,5 +359,78 @@ class TestDescriptionsSurviveTrouble(AboutBase):
         self.assertTrue(titles_op.abstract_of("1"))
 
 
+class HeadingBase(Base):
+
+    def setUp(self):
+        super().setUp()
+        was = titles_op.HEADINGS_FILE
+        titles_op.HEADINGS_FILE = Path(self.dir.name) / "headings.json"
+        self.addCleanup(setattr, titles_op, "HEADINGS_FILE", was)
+
+
+class TestTranslatingChapterHeadings(HeadingBase):
+    """Полторы тысячи заголовков в книге переводчика."""
+
+    def test_the_names_come_back_translated(self):
+        found = titles_op.translate_headings(["Trade", "Shocked Emperor"],
+                                             Model(honest()))
+        self.assertEqual(found["names"]["Trade"], "ПЕРЕВОД Trade")
+        self.assertEqual(found["translated"], 2)
+
+    def test_the_same_name_is_asked_about_once(self):
+        """«Trade» встречается в книге не раз — платить дважды незачем."""
+        model = Model(honest())
+        titles_op.translate_headings(["Trade", "Trade", "Trade"], model)
+        self.assertEqual(len(NUMBERED.findall(model.asked[0])), 1)
+
+    def test_a_second_run_costs_nothing(self):
+        """Оборвись работа на середине — второй заход не начинается с
+        нуля: полторы тысячи глав стоили бы столько же."""
+        titles_op.translate_headings(["Trade"], Model(honest()))
+        again = Model("мусор")
+        found = titles_op.translate_headings(["Trade"], again)
+        self.assertEqual(again.calls, 0)
+        self.assertEqual(found["cached"], 1)
+
+    def test_what_was_translated_before_the_break_is_kept(self):
+        titles_op.translate_headings(["Trade"], Model(honest()))
+        titles_op.translate_headings(["Другое"], Model("мусор"))
+        self.assertTrue(titles_op.headings()["Trade"])
+
+    def test_force_asks_again(self):
+        titles_op.translate_headings(["Trade"], Model(honest()))
+        found = titles_op.translate_headings(["Trade"],
+                                             Model(honest("ИНАЧЕ ")),
+                                             force=True)
+        self.assertTrue(found["names"]["Trade"].startswith("ИНАЧЕ"))
+
+    def test_an_empty_name_is_not_asked_about(self):
+        model = Model(honest())
+        found = titles_op.translate_headings(["", "   "], model)
+        self.assertEqual(model.calls, 0)
+        self.assertEqual(found["translated"], 0)
+
+    def test_what_did_not_come_back_is_named(self):
+        found = titles_op.translate_headings(["Trade"], Model("мусор"))
+        self.assertEqual(found["missing"], ["Trade"])
+        self.assertEqual(found["broken"], 1)
+
+    def test_the_rating_cupboard_is_not_touched(self):
+        """У рейтинга ключ — код книги, здесь — само название. Общий
+        файл смешал бы одно с другим."""
+        titles_op.translate_headings(["Trade"], Model(honest()))
+        self.assertEqual(titles_op.known(), {})
+
+    def test_the_caller_learns_how_far_it_got(self):
+        """Полторы тысячи заголовков — это минуты: без счётчика экран
+        молчит всё это время."""
+        seen = []
+        titles_op.translate_headings([f"Name {n}" for n in range(60)],
+                                     Model(honest()),
+                                     on_step=lambda done, total: seen.append(done))
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1], 60)
+
+
 if __name__ == "__main__":
     unittest.main()
