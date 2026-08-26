@@ -260,6 +260,16 @@ class Client:
     #: Отдавать ли RateLimited на 429 вместо ретрая с backoff.
     raise_on_rate_limit: bool = False
 
+    #: Статусы, ответ на которые отдаём целиком, а не бросаем.
+    #:
+    #: Есть собеседники, у которых причина отказа лежит в теле ответа, а
+    #: не в коде: Gemini одним и тем же 400 отвечает и «ключ недействителен»,
+    #: и «слишком длинный запрос». Бросив исключение, мы это тело
+    #: выбрасываем не читая — и вызывающему остаётся гадать.
+    #:
+    #: Пусто по умолчанию: качалка ведёт себя ровно как прежде.
+    pass_statuses: frozenset[int] = frozenset()
+
     def __init__(
         self,
         max_attempts: int = MAX_ATTEMPTS,
@@ -415,6 +425,10 @@ class Client:
                         log.warning("%s: %s", url, short)
                     else:
                         return resp
+                # Отдать раньше всех разборов: смысл такого ответа знает
+                # только тот, кто его просил, и лежит он в теле.
+                if status in self.pass_statuses:
+                    return resp
                 if status in self.block_statuses:
                     raise Blocked(f"HTTP {status} — доступ закрыт: {url}", status=status)
                 if status in (407, 502, 503) and self.proxy_url:

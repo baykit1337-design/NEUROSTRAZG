@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import settings  # noqa: E402
 from llm import keys as keys_mod  # noqa: E402
 from llm.client import (BadKey, DIRECT, LlmClient, LlmError, NoKeysLeft,  # noqa: E402
-                        key_id, mask, short)
+                        QuotaSpent, key_id, mask, short)
 from mvl.proxies import Proxy  # noqa: E402
 from ops import joblog, session as session_op  # noqa: E402
 
@@ -486,3 +486,291 @@ class TestOneKeyStore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class _Answer:
+    """Ответ модели: код и тело, как их видит клиент."""
+
+    def __init__(self, status: int, body: dict | None = None):
+        self.status_code = status
+        self._body = body or {}
+
+    def json(self):
+        return self._body
+
+
+class _Http:
+    """Клиент, который всегда отдаёт один и тот же ответ."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked = 0
+
+    def get(self, url, params=None):
+        self.asked += 1
+        return self.answer
+
+
+class TestARejectedKeyIsNotAProxyProblem(KeysBase):
+    """Ключ отклонён Google — адреса тут ни при чём.
+
+    Проверка выше подменяла `_once` целиком и потому доказывала только
+    половину: что `_request` умеет остановиться на `BadKey`. А сам стык —
+    превращается ли настоящий 401 в `BadKey` — не проверялся ничем, и
+    там и жила поломка. Транспорт бросал исключение раньше разбора, тело
+    ответа выбрасывалось не читая, и отказ ключа шёл как молчание
+    прокси: программа обходила все четырнадцать адресов и две минуты
+    спустя говорила о них, а не о ключе.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.said: list[str] = []
+
+    def client(self, key=KEY_A, pool=None):
+        return LlmClient(key=key, pool=pool, on_event=self.said.append)
+
+    def ask(self, answer, key=KEY_A):
+        return self.client(key)._once(_Http(answer), "https://x/models", None)
+
+    def test_a_401_is_a_bad_key(self):
+        with self.assertRaises(BadKey):
+            self.ask(_Answer(401))
+
+    def test_a_403_is_a_bad_key_too(self):
+        with self.assertRaises(BadKey):
+            self.ask(_Answer(403))
+
+    def test_the_answer_says_the_address_will_not_help(self):
+        """Иначе человек ищет беду в списке прокси, а она в ключе."""
+        with self.assertRaises(BadKey) as caught:
+            self.ask(_Answer(401))
+        self.assertIn("адреса", str(caught.exception))
+
+    def test_googles_own_words_reach_the_person(self):
+        answer = _Answer(403, {"error": {"message": "API key not valid"}})
+        with self.assertRaises(BadKey) as caught:
+            self.ask(answer)
+        self.assertIn("API key not valid", str(caught.exception))
+
+    def test_a_rejected_key_stops_the_tour_of_addresses(self):
+        """Тот самый обход четырнадцати адресов на две минуты."""
+        client = self.client(pool=_Pool([Proxy(host="10.0.0.1", port=8080),
+                                         Proxy(host="10.0.0.2", port=8080)]))
+        client._http = lambda url: _Http(_Answer(401))
+        with self.assertRaises(BadKey):
+            client._request("models")
+        went = [line for line in self.said if line.startswith("запрос к модели")]
+        self.assertEqual(len(went), 1)
+
+    def test_a_spent_quota_is_told_from_a_dead_address(self):
+        with self.assertRaises(QuotaSpent):
+            self.ask(_Answer(429))
+
+    def test_a_400_about_the_key_is_a_bad_key(self):
+        answer = _Answer(400, {"error": {"message": "API key not valid."}})
+        with self.assertRaises(BadKey):
+            self.ask(answer)
+
+    def test_a_good_answer_still_comes_through(self):
+        body = {"models": [{"name": "models/gemini-x"}]}
+        self.assertEqual(self.ask(_Answer(200, body)), body)
+
+
+class TestTheShapeOfTheKeyIsHinted(KeysBase):
+    """Ключом вставляют что попало, а Google на всё отвечает одинаково."""
+
+    def setUp(self):
+        super().setUp()
+        self.said: list[str] = []
+
+    def refused(self, key):
+        client = LlmClient(key=key, on_event=self.said.append)
+        with self.assertRaises(BadKey) as caught:
+            client._once(_Http(_Answer(401)), "https://x/models", None)
+        return str(caught.exception)
+
+    def test_a_key_of_another_shape_is_pointed_out(self):
+        self.assertIn("AIza", self.refused("AQ.Ab8RN6JYtokenchtoto4TJA"))
+
+    def test_a_proper_key_gets_no_such_remark(self):
+        """Ключ правильной формы, а доступа нет — совсем другая беда."""
+        self.assertNotIn("начинаются с", self.refused(KEY_A))
+
+    def test_the_key_itself_does_not_leak_into_the_message(self):
+        said = self.refused("AQ.Ab8RN6JYtokenchtoto4TJA")
+        self.assertNotIn("Ab8RN6JYtokenchtoto", said)
+
+
+class TestTheDownloaderIsNotTouched(unittest.TestCase):
+    """Послабление для модели не должно менять качалку."""
+
+    def test_by_default_nothing_is_passed_through(self):
+        from mvl.client import Client
+
+        self.assertEqual(Client.pass_statuses, frozenset())
+
+    def test_the_model_client_asks_for_the_body(self):
+        from llm.client import MODEL_ANSWERS, _model_client
+
+        client = _model_client(max_attempts=1)
+        self.addCleanup(client.close)
+        self.assertEqual(client.pass_statuses, MODEL_ANSWERS)
+
+
+class TestTheAnswerReachesTheParser(unittest.TestCase):
+    """Настоящий 401 должен доехать до разбора, а не оборваться в пути.
+
+    Проверки выше подсовывают готовый ответ и потому доказывают только,
+    что разбор умеет его читать. Здесь ответ идёт через настоящий
+    клиент — тот самый, который раньше бросал исключение, не дав разбору
+    ни тела, ни возможности отличить плохой ключ от молчания прокси.
+    """
+
+    def serve(self, status: int, body: bytes):
+        import json as _json
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 — имя задано библиотекой
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def answer(self, status: int, body: dict):
+        import json as _json
+
+        from llm.client import _model_client
+
+        base = self.serve(status, _json.dumps(body).encode("utf-8"))
+        client = _model_client(max_attempts=1)
+        self.addCleanup(client.close)
+        return LlmClient(key=KEY_A)._once(client, f"{base}/models", None)
+
+    def test_a_real_401_becomes_a_bad_key(self):
+        with self.assertRaises(BadKey) as caught:
+            self.answer(401, {"error": {"message": "API key not valid"}})
+        self.assertIn("API key not valid", str(caught.exception))
+
+    def test_a_real_429_becomes_a_spent_quota(self):
+        with self.assertRaises(QuotaSpent):
+            self.answer(429, {"error": {"message": "Quota exceeded"}})
+
+    def test_a_real_200_comes_back_whole(self):
+        body = {"models": [{"name": "models/gemini-x"}]}
+        self.assertEqual(self.answer(200, body), body)
+
+    def test_a_status_nobody_asked_for_still_raises(self):
+        """Послабление узкое: 500 как был отказом, так и остался."""
+        with self.assertRaises(Exception) as caught:
+            self.answer(500, {"error": {"message": "server is sad"}})
+        self.assertNotIsInstance(caught.exception, BadKey)
+
+
+class TestTheModelTakesTheCheckedAddressesFirst(KeysBase):
+    """Проверка кнопкой должна значить что-то и для модели.
+
+    Отсеивался только `disabled`, а его ставит одна лишь неудача на
+    ходу. Проверка кнопкой помечает иначе — через `alive` и `status`, —
+    и запрос к модели шёл по файлу сверху: сначала в адрес, который не
+    пустил по паролю, потом в тот, что молчит пятнадцать секунд. Человек
+    при этом видел в качалке восемь проверенных рабочих.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._use = settings.llm.use_proxies
+        self.addCleanup(lambda: setattr(settings.llm, "use_proxies", self._use))
+        settings.llm.use_proxies = True
+
+    def proxy(self, host, alive=None, status=0):
+        found = Proxy(host=host, port=8080)
+        found.alive = alive
+        found.status = status
+        return found
+
+    def route(self, *proxies):
+        client = LlmClient(key=KEY_A, pool=_Pool(list(proxies)))
+        return [label for _, label in client._proxies()]
+
+    def test_a_checked_address_goes_before_an_unchecked_one(self):
+        dead = self.proxy("10.0.0.1", alive=False)
+        good = self.proxy("10.0.0.2", alive=True, status=200)
+        self.assertEqual(self.route(dead, good)[0], "10.0.0.2:8080")
+
+    def test_the_one_that_failed_the_check_is_not_thrown_away(self):
+        """Проверка могла быть давней, а адрес — ожить."""
+        dead = self.proxy("10.0.0.1", alive=False)
+        good = self.proxy("10.0.0.2", alive=True, status=200)
+        self.assertEqual(len(self.route(dead, good)), 2)
+
+    def test_unchecked_addresses_still_work(self):
+        """Кнопку не нажимали — пригодных нет ни одного, и это не отказ."""
+        self.assertEqual(len(self.route(self.proxy("10.0.0.1"),
+                                        self.proxy("10.0.0.2"))), 2)
+
+    def test_an_address_that_failed_on_the_run_is_skipped(self):
+        good = self.proxy("10.0.0.2", alive=True, status=200)
+        gone = self.proxy("10.0.0.1", alive=True, status=200)
+        gone.disabled = True
+        self.assertEqual(self.route(gone, good), ["10.0.0.2:8080"])
+
+    def test_the_model_and_the_downloader_agree_on_the_order(self):
+        """Два разных порядка однажды разойдутся, и объяснить это будет
+        нечем: адреса-то одни и те же."""
+        from mvl.proxies import working_proxies
+
+        dead = self.proxy("10.0.0.1", alive=False)
+        good = self.proxy("10.0.0.2", alive=True, status=200)
+        pool = _Pool([dead, good])
+        theirs = [p.label for p in working_proxies(pool)]
+        mine = [label for _, label in
+                LlmClient(key=KEY_A, pool=pool)._proxies()]
+        self.assertEqual(mine, theirs)
+
+
+class TestTheFailureSaysWhatTheNumberMeans(KeysBase):
+    """«Ни через один из 14» человек прочитал как «14 ключей».
+
+    Рядом в журнале стоит имя проверяемого ключа, и без уточнения две
+    строки склеиваются в одну мысль: «ключей не хватило». На деле число
+    про посредников, а ключ проверяется ровно один — текущий.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._use = settings.llm.use_proxies
+        self.addCleanup(lambda: setattr(settings.llm, "use_proxies", self._use))
+        settings.llm.use_proxies = True
+
+    def test_the_number_is_named_as_addresses_not_keys(self):
+        client = LlmClient(key=KEY_A,
+                           pool=_Pool([Proxy(host="10.0.0.1", port=8080),
+                                       Proxy(host="10.0.0.2", port=8080)]))
+        client._http = lambda url: None
+        client._once = _refuse
+        with self.assertRaises(LlmError) as caught:
+            client._request("models")
+        said = str(caught.exception)
+        self.assertIn("посредник", said)
+        self.assertNotIn("ключ", said.lower())
+
+    def test_going_straight_names_no_number_at_all(self):
+        client = LlmClient(key=KEY_A)
+        client._http = lambda url: None
+        client._once = _refuse
+        with self.assertRaises(LlmError) as caught:
+            client._request("models")
+        self.assertIn("напрямую", str(caught.exception))

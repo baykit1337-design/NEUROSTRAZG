@@ -31,6 +31,58 @@ VISIBLE = 4
 DIRECT = "напрямую"
 
 
+#: С чего начинается ключ Gemini из AI Studio.
+#:
+#: Проверка нужна не для запрета, а для подсказки: ключом сюда вставляют
+#: то, что под руку попалось — токен доступа, идентификатор проекта,
+#: строку из чужой инструкции. Google на всё это отвечает одинаковым
+#: «отклонён», и по такому ответу не понять, что вставили не то.
+#:
+#: Поэтому — только подсказка при отказе, и никогда не отказ со своей
+#: стороны: список приставок у Google свой, и меняет он его без нас.
+KEY_PREFIX = "AIza"
+
+
+def _key_shape(key: str) -> str:
+    """Приписка к отказу, если ключ не похож на ключ Gemini."""
+    if not key or str(key).startswith(KEY_PREFIX):
+        return ""
+    return (f" И ещё: ключи Gemini начинаются с «{KEY_PREFIX}», а этот — "
+            f"с «{str(key)[:3]}». Похоже, вставлен не ключ из AI Studio, "
+            "а что-то другое.")
+
+
+#: Статусы, ответ на которые нужен целиком, а не исключением.
+#:
+#: Причина отказа у Gemini лежит в теле: одним и тем же 400 он отвечает
+#: и «ключ недействителен», и «запрос слишком длинный». Обычный клиент на
+#: такой ответ бросает, тело выбрасывается не читая — и разбор ниже,
+#: который умеет отличать плохой ключ от исчерпанной квоты, не получал
+#: управления никогда. На экране это выглядело так: отказ ключа шёл как
+#: молчание прокси, и программа обходила все четырнадцать адресов,
+#: тратя две минуты на беду, к которой адрес отношения не имеет.
+MODEL_ANSWERS = frozenset({400, 401, 403, 429})
+
+
+#: Заводится при первом обращении: `mvl` лежит слоем выше, и тянуть его
+#: при импорте значило бы завязать нижний слой на верхний.
+_MODEL_HTTP = None
+
+
+def _model_client(**kwargs):
+    """Клиент к модели: ответы с отказом приносит целиком."""
+    global _MODEL_HTTP
+
+    if _MODEL_HTTP is None:
+        from mvl.client import Client
+
+        class ModelHttp(Client):
+            pass_statuses = MODEL_ANSWERS
+
+        _MODEL_HTTP = ModelHttp
+    return _MODEL_HTTP(**kwargs)
+
+
 class LlmError(Exception):
     """Запрос к модели не удался."""
 
@@ -256,28 +308,34 @@ class LlmClient:
         with self._lock:
             client = self._clients.get(proxy_url)
             if client is None:
-                from mvl.client import Client
-
-                client = Client(timeout=self.timeout, proxy_url=proxy_url,
-                                max_attempts=1)
+                client = _model_client(timeout=self.timeout,
+                                       proxy_url=proxy_url, max_attempts=1)
                 self._clients[proxy_url] = client
             return client
 
     def _proxies(self) -> list[tuple[str | None, str]]:
         """Адреса для перебора парами «url, как звать в журнале».
 
-        Имя для журнала берём у самого прокси (`label` — адрес без учётных
-        данных): пароль в журнале не нужен никому.
+        Порядок берём общий с качалкой: сперва прошедшие проверку, потом
+        остальные. Раньше здесь отсеивались только `disabled`, а его
+        ставит одна лишь неудача на ходу — проверка кнопкой помечает
+        иначе, через `alive` и `status`. Выходило, что человек проверял
+        список, видел восемь рабочих адресов, а запрос к модели всё
+        равно шёл по файлу сверху и утыкался в мёртвые: сначала в тот,
+        что не пустил по паролю, потом в тот, что молчит пятнадцать
+        секунд, и так далее.
+
+        Имя для журнала берём у самого прокси (`label` — адрес без
+        учётных данных): пароль в журнале не нужен никому.
         """
         if self.pool is None:
             # Галочка «использовать прокси для модели» снята — так и скажем.
             return [(None, DIRECT)]
 
-        live = []
-        for proxy in getattr(self.pool, "proxies", []):
-            if getattr(proxy, "disabled", False):
-                continue
-            live.append((proxy.url, getattr(proxy, "label", "") or DIRECT))
+        from mvl.proxies import working_proxies
+
+        live = [(proxy.url, getattr(proxy, "label", "") or DIRECT)
+                for proxy in working_proxies(self.pool)]
         # Прокси не заданы — идём напрямую, это не ошибка.
         return live or [(None, DIRECT)]
 
@@ -313,8 +371,12 @@ class LlmClient:
 
         # Наружу — причина словами. Внутренности curl человек всё равно не
         # чинит, а понять «сеть не пустила» или «ключ плохой» ему нужно.
+        # «Ни через один из 14» человек прочитал как «14 ключей» — и
+        # пошёл вставлять пятидесятый. Число здесь про посредников, и
+        # сказать это надо в самой строке: рядом с ней стоит имя ключа,
+        # и без уточнения они склеиваются в одно.
         where = "напрямую" if len(route) == 1 and route[0][1] == DIRECT \
-            else f"ни через один из {len(route)} адресов"
+            else f"ни через один из {len(route)} адресов посредников"
         raise LlmError(f"Не удалось связаться с Gemini {where}. "
                        f"Подробности: {mask(last or 'ответа нет')}")
 
@@ -364,7 +426,15 @@ class LlmClient:
             raise ModelBusy(mask(_error_text(body) or "модель перегружена"),
                             _retry_after(body, response))
         if status in (401, 403):
-            raise BadKey("Ключ отклонён: нет доступа к API.")
+            # Отказал Google, а не прокси: через любой другой адрес ответ
+            # будет тот же. Сказать это прямо важнее самого кода — иначе
+            # человек ищет беду в списке прокси, а она в ключе.
+            said = _error_text(body)
+            raise BadKey(
+                "Ключ отклонён Google"
+                + (f": {mask(said)}" if said else f" (HTTP {status})")
+                + ". Смена адреса не поможет — дело в самом ключе."
+                + _key_shape(self.key))
         if status >= 400:
             raise LlmError(mask(_error_text(body) or f"HTTP {status}"))
         return body
