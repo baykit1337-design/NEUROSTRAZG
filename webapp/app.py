@@ -52,6 +52,7 @@ from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
 from ops import downloads as downloads_op  # noqa: E402
 from ops import everywhere as everywhere_op  # noqa: E402
+from ops import junk  # noqa: E402
 from ops import library as library_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
 from ops import docs as docs_op  # noqa: E402
@@ -2238,6 +2239,49 @@ def api_format_book():
                    untranslated=look["untranslated"],
                    look=look,
                    sample=[head.line() for head, _ in chapters[:5]])
+
+
+def _md_pairs(chapters) -> list:
+    """Главы книги парами «заголовок, абзацы» — как их видит `ops/junk`."""
+    return [(head.title, mdbook.paragraphs_of(lines)) for head, lines in chapters]
+
+
+@app.post("/api/format/junk")
+def api_format_junk():
+    """Что в главах лишнего: дубли заголовка, название книги, артефакты."""
+    payload = request.json or {}
+    try:
+        path, _, chapters = _read_md(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    found = junk.inspect(_md_pairs(chapters))
+    return jsonify(path=str(path), **found.as_dict())
+
+
+@app.post("/api/format/junk/clean")
+def api_format_junk_clean():
+    """Убрать отмеченное. Исходник не трогаем — пишем рядом."""
+    payload = request.json or {}
+    keys = [str(key) for key in (payload.get("keys") or []) if str(key)]
+    if not keys:
+        return jsonify(error="Отметьте, что убрать"), 400
+    try:
+        path, lead, chapters = _read_md(payload)
+        output = _md_output(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    made, gone = junk.clean(_md_pairs(chapters), keys)
+    rebuilt = [(head, mdbook.lines_of(paragraphs))
+               for (head, _), (_, paragraphs) in zip(chapters, made)]
+    try:
+        output.write_text(mdbook.write_book(rebuilt, lead), encoding="utf-8")
+    except OSError as exc:
+        return jsonify(error=f"Не удалось записать: {exc}"), 400
+
+    return jsonify(output=str(output), removed=gone, chapters=len(rebuilt),
+                   source=str(path))
 
 
 @app.post("/api/format/retitle")

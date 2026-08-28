@@ -3173,12 +3173,116 @@ function anSaveReport(){
 
 $('anList').dataset.onchange = 'anScan';
 
+/* ------------------------------------------------ мусор в главах
+ *
+ * Подписи находок и разбор строк живут в `ops/junk`: страница только
+ * показывает и отмечает. Своя копия правила «что считать лишним» здесь
+ * однажды разошлась бы с той, по которой чистят, и человек убрал бы не
+ * то, что видел.
+ */
+
+let fmJunkFinds = [];
+const fmJunkPicked = new Set();
+
+async function fmJunkLook(){
+  showError('');
+  const targets = CHOSEN.fmBookList || [];
+  if(!targets.length){ showError('Сначала выберите готовый .md'); return; }
+
+  $('fmJunkLook').disabled = true;
+  $('fmJunkNote').innerHTML = '<span class="spin"></span>Смотрим…';
+  try{
+    const data = await call('/api/format/junk', {targets});
+    fmJunkFinds = data.finds || [];
+    fmJunkPicked.clear();
+    // Отмечаем сразу то, что мешает загрузчику: остальное — на выбор.
+    for(const find of fmJunkFinds) if(find.spoils) fmJunkPicked.add(find.key);
+    $('fmJunkNote').textContent = data.summary || '';
+    fmJunkDraw();
+  }catch(err){
+    showError(err.message);
+    $('fmJunkNote').textContent = '';
+  }finally{
+    $('fmJunkLook').disabled = false;
+  }
+}
+
+function fmJunkDraw(){
+  const table = $('fmJunkTable');
+  table.innerHTML = '';
+  if(!fmJunkFinds.length){
+    table.hidden = true;
+    $('fmJunkWhere').hidden = true;
+    return;
+  }
+
+  for(const find of fmJunkFinds){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = fmJunkPicked.has(find.key);
+    box.onchange = () => {
+      box.checked ? fmJunkPicked.add(find.key) : fmJunkPicked.delete(find.key);
+    };
+
+    const name = document.createElement('span');
+    name.className = 'grow' + (find.spoils ? ' cu-hole' : '');
+    name.textContent = find.kind_name + (find.text ? ` — ${find.text}` : '');
+    name.title = find.sample || name.textContent;
+
+    const count = document.createElement('span');
+    count.className = 'num';
+    count.textContent = find.count;
+
+    row.append(box, name, count);
+    table.append(row);
+
+    // Пример строки: без него непонятно, что именно уйдёт из книги.
+    if(find.sample){
+      const sample = document.createElement('div');
+      sample.className = 'hint';
+      sample.style.margin = '2px 10px 8px';
+      sample.textContent = find.sample;
+      table.append(sample);
+    }
+  }
+  table.hidden = false;
+  $('fmJunkWhere').hidden = false;
+}
+
+async function fmJunkClean(){
+  showError('');
+  const targets = CHOSEN.fmBookList || [];
+  if(!targets.length){ showError('Сначала выберите готовый .md'); return; }
+  if(!fmJunkPicked.size){ showError('Отметьте, что убрать'); return; }
+
+  $('fmJunkClean').disabled = true;
+  try{
+    const data = await call('/api/format/junk/clean', {
+      targets,
+      keys: [...fmJunkPicked],
+      base: $('fmJunkBase').value.trim(),
+      name: $('fmJunkName').value.trim(),
+    });
+    $('fmJunkResult').textContent =
+      `Готово. Снято строк: ${data.removed}, глав: ${data.chapters}.\n${data.output}`;
+  }catch(err){
+    showError(err.message, $('fmJunkResult'));
+  }finally{
+    $('fmJunkClean').disabled = false;
+  }
+}
+
 /* ---------------------------------------- привязка «Форматировать» */
 
 $('fmList').dataset.onchange = 'fmScan';
 $('fmBookList').dataset.onchange = 'fmBookScan';
 $('fmCollect').onclick = fmCollect;
 $('fmRetitle').onclick = fmRetitle;
+$('fmJunkLook').onclick = fmJunkLook;
+$('fmJunkClean').onclick = fmJunkClean;
 $('fmStop').onclick = () => cancelTab('format');
 
 // Пересчитываем образец на каждое изменение: он и есть ответ на вопрос

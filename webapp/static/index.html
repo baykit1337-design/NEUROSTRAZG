@@ -2265,6 +2265,39 @@
     </div>
   </div>
 
+  <!-- Мусор в главах. Слив кладёт в каждую главу название книги и второй
+       заголовок; загрузчик прочитает второй заголовок как начало ещё
+       одной главы. Сюда же — всё, что не перевелось: иероглифы и
+       английские абзацы посреди русского текста. Ничего не удаляется
+       само: убирается только отмеченное, и в новый файл. -->
+  <div class="card" id="fmJunkCard">
+    <label>Мусор в главах</label>
+    <p class="hint">Смотрит выбранный выше <code>.md</code>: название книги,
+       повторённый заголовок и всё, что не по-русски. Исходник не
+       трогается — чистое пишется рядом.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="fmJunkLook" class="ghost" style="flex:1">Посмотреть, что лишнее</button>
+    </div>
+    <p class="hint" id="fmJunkNote"></p>
+    <div class="table" id="fmJunkTable" hidden style="margin-top:10px;max-height:420px"></div>
+
+    <div id="fmJunkWhere" hidden style="margin-top:14px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="fmJunkBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <button class="ghost browse" data-target="fmJunkBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <input id="fmJunkName" type="text" placeholder="книга-чисто"
+               value="книга-чисто" autocomplete="off">
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="fmJunkClean" class="primary" style="flex:1">Убрать отмеченное</button>
+      </div>
+      <p class="result-path" id="fmJunkResult"></p>
+    </div>
+  </div>
+
   <div class="card lit" id="fmProgress" hidden>
     <div class="status result-block"><span class="result-dot"></span>
       <span class="result-text" id="fmStatus"></span></div>
