@@ -532,19 +532,29 @@ class TestTheRouteForTheOpenedRow(unittest.TestCase):
         self.assertIn("Описание книги", got.get_json()["abstract"])
 
     def test_a_site_without_a_reader_says_so_instead_of_guessing(self):
-        """У Webnovel рейтинг — готовая страница, лишнего про книгу там
-        нет. Честный отказ лучше карточки-копии."""
+        """Честный отказ лучше карточки, повторяющей строку слово в
+        слово. Читатель есть теперь у всех четырёх рейтингов, поэтому
+        случай без него делается нарочно."""
+        site = self.web.RANK_SITES["webnovel"]
+        kept = site.pop("book")
+        self.addCleanup(site.__setitem__, "book", kept)
+
         got = self.client.get("/api/rank/book/12345?site=webnovel")
         self.assertEqual(got.status_code, 400)
         self.assertIn("Webnovel", got.get_json()["error"])
 
     def test_the_page_is_told_which_sites_can_answer(self):
-        """Иначе страница раскрывает строку и показывает пустоту."""
+        """Иначе страница раскрывает строку и показывает пустоту.
+
+        Отвечают теперь все четыре: у Webnovel читатель книги появился
+        последним — до него раскрытая строка показывала ровно то, что и
+        так стоит в самой строке.
+        """
         sites = self.client.get("/api/rank/categories").get_json()["sites"]
         by_key = {s["key"]: s for s in sites}
-        self.assertTrue(by_key[""]["details"])
-        self.assertTrue(by_key[mvlrank.SITE_KEY]["details"])
-        self.assertFalse(by_key["webnovel"]["details"])
+        for key in ("", mvlrank.SITE_KEY, "webnovel", "qidian"):
+            with self.subTest(key or "фанкью"):
+                self.assertTrue(by_key[key]["details"])
 
     def test_a_bad_code_is_still_the_first_thing_checked(self):
         got = self.client.get("/api/rank/book/..%2Fetc?site="

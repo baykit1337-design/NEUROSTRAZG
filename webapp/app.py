@@ -3020,6 +3020,10 @@ RANK_SITES = {
         "name": "Webnovel",
         "source": "webnovel",
         "boards": wn_rank_net.BOARDS,
+        # Страницу книги и так разбирает сам источник ради названия и
+        # числа глав. Раскрытая строка брала оттуда только то, что уже
+        # стояло в самой строке, — описания не показывала вовсе.
+        "book": wn_rank_net.book,
         "about": "Рейтинг приходит готовой страницей — ни входа, ни токена. "
                  "Число рядом с книгой на каждой доске своё: голоса, покупки "
                  "или добавления в библиотеку, — поэтому оно подписано. "
@@ -3294,14 +3298,37 @@ def _rank_book_elsewhere(site: str, book_id: str):
 
     client = _rank_client()
     try:
-        return jsonify(reader(client, book_id,
-                              slug=request.args.get("slug", "")))
+        found = reader(client, book_id, slug=request.args.get("slug", ""))
     except sources.SourceBroken as exc:
         return jsonify(error=str(exc)), 502
     except HttpError as exc:
         return jsonify(error=f"Сайт недоступен: {exc}"), 502
     finally:
         client.close()
+
+    # Карточку кладём в кэш, как это делает фанкьюшная ветка. Раньше
+    # здесь она никуда не сохранялась, и «Перевести всё» не видело
+    # описаний этих сайтов никогда — сколько строк ни раскрывай.
+    saved = books_op.save(book_id, found)
+    return jsonify(**saved, abstract_ru=titles_op.abstract_of(book_id))
+
+
+def _fetch_card(client, site: str, book_id: str, slug: str = "") -> dict:
+    """Карточка книги с сайта, сохранённая в кэш. Без Flask вокруг.
+
+    Одна и та же работа нужна и раскрытой строке, и прогону за всеми
+    описаниями сразу. Второй её экземпляр разошёлся бы с первым на
+    первой же правке.
+    """
+    if site:
+        reader = RANK_SITES[site].get("book")
+        if reader is None:
+            raise sources.SourceBroken(
+                f"{RANK_SITES[site]['name']} не отдаёт подробностей книги")
+        found = reader(client, book_id, slug=slug)
+    else:
+        found = rank_net.fetch_book(client, book_id)
+    return books_op.save(book_id, found)
 
 
 @app.get("/api/rank/book/<book_id>")
@@ -3470,6 +3497,85 @@ def _about_missing(rows) -> tuple[int, int]:
     return absent, unknown
 
 
+def _rank_snapshot(payload, site: str, board: str, category: str):
+    """Срез, о котором идёт речь: названный день или самый свежий."""
+    day = (payload.get("day") or "").strip()
+    found = rank_op.load(day, board, category, site) if day else None
+    if found is not None:
+        return found
+    days = rank_op.days(board, category, site)
+    return rank_op.load(days[0], board, category, site) if days else None
+
+
+@app.post("/api/rank/abouts/start")
+def api_rank_abouts_start():
+    """Забрать описания книг среза, которых ещё нет.
+
+    Отдельной задачей, а не внутри перевода: это прогон по сайту на
+    полсотни страниц. Держать кнопку нажатой минуту нельзя, а без
+    описаний «Перевести всё» переводит одни названия — на что человек
+    и жаловался.
+    """
+    payload = request.json or {}
+    site = _rank_site(payload)
+    board, category = _rank_board(payload, site)
+
+    snapshot = _rank_snapshot(payload, site, board, category)
+    if snapshot is None:
+        return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
+
+    # Идём только за теми, у кого описания нет ни в строке, ни в кэше.
+    wanted = []
+    for row in snapshot.rows:
+        if not row.book_id or str(getattr(row, "about", "") or "").strip():
+            continue
+        card = books_op.load(row.book_id)
+        if card is None:
+            wanted.append(row)
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="rank",
+        meta={"site": site, "board": board, "category": category},
+    )
+    job.progress = {"stage": "abouts", "done": 0, "total": len(wanted),
+                    "message": (f"Описаний забрать: {len(wanted)}" if wanted
+                                else "Все описания уже забраны")}
+
+    def work(job: Job):
+        got = missed = 0
+        client = _rank_client()
+        try:
+            for index, row in enumerate(wanted, 1):
+                if job.cancel.is_set():
+                    break
+                slug = (row.link or "").rstrip("/").split("/")[-1]
+                try:
+                    _fetch_card(client, site, row.book_id,
+                                slug="" if slug == row.book_id else slug)
+                    got += 1
+                except (sources.SourceBroken, HttpError, ValueError,
+                        rank_net.Diagnosis) as exc:
+                    # Одна закрывшаяся книга не должна ронять весь прогон:
+                    # её просто не будет в переводе, а остальные приедут.
+                    missed += 1
+                    log.info("Описание %s не забралось: %s", row.book_id, exc)
+                job.progress.update(
+                    done=index, got=got, missed=missed,
+                    message=f"Описание {index} из {len(wanted)}")
+        finally:
+            client.close()
+
+        job.report = {"got": got, "missed": missed, "total": len(wanted)}
+        job.progress.update(
+            stage="done",
+            message=(f"Забрано описаний: {got}"
+                     + (f", не далось: {missed}" if missed else "")
+                     if wanted else "Все описания уже были забраны"))
+
+    return jsonify(job=start_job(job, work).snapshot())
+
+
 @app.post("/api/rank/translate")
 def api_rank_translate():
     """Прогоняет названия через модель. Кэш по book_id.
@@ -3481,13 +3587,7 @@ def api_rank_translate():
     payload = request.json or {}
     site = _rank_site(payload)
     board, category = _rank_board(payload, site)
-    day = (payload.get("day") or "").strip()
-
-    snapshot = rank_op.load(day, board, category, site) if day else None
-    if snapshot is None:
-        found = rank_op.days(board, category, site)
-        snapshot = rank_op.load(found[0], board, category, site) if found \
-            else None
+    snapshot = _rank_snapshot(payload, site, board, category)
     if snapshot is None:
         return jsonify(error="Срезов пока нет — сначала обновите рейтинг"), 400
 

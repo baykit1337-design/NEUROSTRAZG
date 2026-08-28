@@ -330,5 +330,186 @@ class TestTitlesUi(unittest.TestCase):
         self.assertIn("RK_NO_ABOUT", self.tabs)
 
 
+class TestFetchingTheMissingDescriptions(TestOneButtonForEverything):
+    """«Перевести всё» сначала забирает описания, которых ещё нет.
+
+    Раньше кнопка переводила только те книги, чью карточку уже забирали
+    с сайта, и молча пропускала половину среза. Ходить за полусотней
+    страниц внутри перевода нельзя — это минута с виду зависшей кнопки,
+    поэтому прогон вынесен в задачу.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        self.broken = set()
+
+        def card(client, site, book_id, slug=""):
+            self.asked.append(book_id)
+            if book_id in self.broken:
+                from net.sources.base import SourceBroken
+
+                raise SourceBroken(f"книги {book_id} больше нет")
+            return books.save(book_id, {"name": f"книга {book_id}",
+                                        "abstract": CHINESE})
+
+        kept = self.web._fetch_card
+        self.web._fetch_card = card
+        self.addCleanup(setattr, self.web, "_fetch_card", kept)
+
+        held = self.web._rank_client
+        self.web._rank_client = lambda *a, **kw: FakeLlm()
+        self.addCleanup(setattr, self.web, "_rank_client", held)
+
+    def run_job(self, payload=None):
+        from webapp.app import JOBS
+
+        said = self.app.post("/api/rank/abouts/start",
+                             json=payload or {}).get_json()
+        job = JOBS[said["job"]["id"]]
+        job.thread.join(timeout=30)
+        return job
+
+    def test_it_fetches_the_books_that_have_no_description(self):
+        self.snapshot([self.row("1"), self.row("2")])
+        job = self.run_job()
+
+        self.assertEqual(sorted(self.asked), ["1", "2"])
+        self.assertEqual(job.report["got"], 2)
+
+    def test_what_it_fetched_becomes_translatable(self):
+        """Ради этого прогон и затевается: после него кнопка переводит
+        то, что раньше пропускала."""
+        self.snapshot([self.row("1")])
+        self.run_job()
+
+        said = self.app.post("/api/rank/translate",
+                             json={"abstracts": True}).get_json()
+        self.assertEqual(said["abouts"]["abstracts"]["1"], "перевод")
+        self.assertEqual(said["abouts"]["unknown"], 0)
+
+    def test_a_book_already_in_the_cache_is_not_asked_again(self):
+        books.save("1", {"name": "книга 1", "abstract": CHINESE})
+        self.snapshot([self.row("1"), self.row("2")])
+        self.run_job()
+
+        self.assertEqual(self.asked, ["2"])
+
+    def test_a_description_printed_in_the_row_needs_no_trip(self):
+        """Цидянь печатает описание прямо в строке доски."""
+        self.snapshot([self.row("1", about=CHINESE), self.row("2")])
+        self.run_job()
+
+        self.assertEqual(self.asked, ["2"])
+
+    def test_one_closed_book_does_not_stop_the_rest(self):
+        """Книгу могли убрать с сайта после того, как срез был снят."""
+        self.broken = {"1"}
+        self.snapshot([self.row("1"), self.row("2"), self.row("3")])
+        job = self.run_job()
+
+        self.assertEqual(job.report["got"], 2)
+        self.assertEqual(job.report["missed"], 1)
+        self.assertIsNone(job.error)
+
+    def test_stopping_really_stops_and_keeps_what_was_fetched(self):
+        """«Остановить» должно останавливать: прогон на полсотни книг
+        иначе не бросить."""
+        import threading
+
+        stop, ready = [], threading.Event()
+
+        def card(client, site, book_id, slug=""):
+            # Ждём, пока тест отдаст нам саму задачу: поток стартует
+            # раньше, чем запрос успевает вернуть её номер.
+            ready.wait(10)
+            self.asked.append(book_id)
+            # Первая книга приезжает, после неё жмём «Остановить».
+            stop[0].cancel.set()
+            return books.save(book_id, {"name": "книга", "abstract": CHINESE})
+
+        self.web._fetch_card = card
+        self.snapshot([self.row(str(n)) for n in range(1, 6)])
+
+        from webapp.app import JOBS
+
+        said = self.app.post("/api/rank/abouts/start", json={}).get_json()
+        job = JOBS[said["job"]["id"]]
+        stop.append(job)
+        ready.set()
+        job.thread.join(timeout=30)
+
+        self.assertIsNone(job.error)
+        # Остановились на первой, а не прошли все пять.
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(job.report["got"], 1)
+
+    def test_nothing_to_fetch_is_said_plainly(self):
+        """«Забрано описаний: 0» читалось бы как поломка."""
+        books.save("1", {"name": "книга 1", "abstract": CHINESE})
+        self.snapshot([self.row("1")])
+        job = self.run_job()
+
+        self.assertEqual(self.asked, [])
+        self.assertIn("уже", job.progress["message"])
+
+    def test_without_a_snapshot_it_says_so(self):
+        answer = self.app.post("/api/rank/abouts/start", json={})
+        self.assertEqual(answer.status_code, 400)
+
+
+class TestTheOpenedRowRemembersTheCard(AbstractBase):
+    """Раскрытая строка должна оставлять описание в кэше.
+
+    У Фанкью карточка сохранялась, а у остальных сайтов — нет: их ветка
+    отдавала ответ прямо со страницы, мимо кэша. Из-за этого «Перевести
+    всё» не видело их описаний никогда, сколько строк ни раскрывай.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from webapp.app import app
+
+        app.config["TESTING"] = True
+        cls.app = app.test_client()
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        self._books = TemporaryDirectory()
+        self.addCleanup(self._books.cleanup)
+        saved = books.BOOK_DIR
+        books.BOOK_DIR = Path(self._books.name)
+        self.addCleanup(setattr, books, "BOOK_DIR", saved)
+
+        self.web = web
+        held = web._rank_client
+        web._rank_client = lambda *a, **kw: FakeLlm()
+        self.addCleanup(setattr, web, "_rank_client", held)
+
+        # Подменяем читателя подробностей у одного сайта — на сеть не идём.
+        self.site = "mvlempyr"
+        kept = web.RANK_SITES[self.site].get("book")
+        web.RANK_SITES[self.site]["book"] = lambda client, code, slug="": {
+            "name": "книга", "abstract": CHINESE, "author": "кто-то"}
+        self.addCleanup(lambda: web.RANK_SITES[self.site].__setitem__("book",
+                                                                     kept))
+
+    def test_the_card_lands_in_the_cache(self):
+        self.app.get(f"/api/rank/book/777?site={self.site}")
+        saved = books.load("777")
+
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["abstract"], CHINESE)
+
+    def test_the_answer_carries_the_translation_it_already_has(self):
+        """Переключатель «原/RU» должен сразу знать, есть ли что
+        показывать по второй кнопке."""
+        titles.remember_abstract("777", RUSSIAN)
+        body = self.app.get(f"/api/rank/book/777?site={self.site}").get_json()
+        self.assertEqual(body["abstract_ru"], RUSSIAN)
+
+
 if __name__ == "__main__":
     unittest.main()

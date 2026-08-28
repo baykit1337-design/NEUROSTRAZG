@@ -28,6 +28,8 @@ import re
 
 from bs4 import BeautifulSoup
 
+from mvl.client import HttpError
+
 from .base import SourceBroken
 from .rank import RankRow
 from .webnovel import SITE, page_of
@@ -234,4 +236,72 @@ def _version(rows) -> str:
     return f"{len(rows)}:{head}" if head else ""
 
 
-__all__ = ["BOARDS", "METRICS", "PATHS", "SITE_KEY", "TOP", "fetch", "url_of"]
+# ------------------------------------------- подробности одной книги
+
+
+#: Где на странице книги лежит описание. Имя поля у сайта одно, но
+#: какое именно — снаружи не проверить: страница из песочницы не
+#: открывается. Поэтому пробуем несколько подряд и берём первое
+#: непустое: лишний ключ в списке ничего не стоит, а угаданный неверно
+#: оставил бы карточку пустой навсегда.
+ABOUT_FIELDS = ("description", "synopsis", "bookIntro", "intro")
+
+#: Метки книги — жанр и вид. Лежат порознь, а в карточке им место рядом.
+TAG_FIELDS = ("categoryName", "subCategoryName", "typeName")
+
+
+def book(client, code: str, slug: str = "") -> dict:
+    """Подробности книги — для раскрытой строки рейтинга.
+
+    Страницу книги уже разбирает сам источник (`net/sources/webnovel`):
+    он достаёт оттуда `bookInfo` ради названия, автора и числа глав.
+    Здесь берётся тот же разбор — заводить второй значило бы однажды
+    чинить сайт в двух местах.
+
+    Зачем это вообще: раскрытая строка Webnovel показывала ровно то, что
+    и так стоит в строке. Раскрывают, чтобы узнать больше.
+    """
+    from .webnovel import BOOK_MARK, WebnovelSource, _object_after, _text_of
+
+    code = str(code or "").strip()
+    if not code:
+        raise SourceBroken("Не сказано, какую книгу открывать")
+
+    try:
+        page = page_of(client, f"{SITE}/book/{code}")
+    except HttpError as exc:
+        raise SourceBroken(
+            f"Страница книги {code} на Webnovel не открылась: {exc}") from exc
+
+    info = (_object_after(page, BOOK_MARK) or {}).get("bookInfo") or {}
+    if not info:
+        raise SourceBroken(
+            "На странице книги нет её описания — сайт сменил разметку")
+
+    abstract = ""
+    for name in ABOUT_FIELDS:
+        abstract = _text_of(str(info.get(name) or "")).strip()
+        if abstract:
+            break
+
+    tags = [str(info.get(name) or "").strip() for name in TAG_FIELDS]
+
+    return {
+        "name": str(info.get("bookName") or "").strip(),
+        # Ключ называется как у остальных сайтов нарочно: карточку рисует
+        # один и тот же код, и переключатель «原/RU» с кнопкой перевода
+        # достаётся Webnovel даром.
+        "abstract": abstract,
+        "tags": [tag for tag in tags if tag],
+        "author": str(info.get("authorName") or "").strip(),
+        "chapters": int(info.get("totalChapterNum")
+                        or info.get("chapterNum") or 0),
+        "status": WebnovelSource._status(info),
+        "language": str(info.get("languageName") or "").strip().lower(),
+        "cover": WebnovelSource._cover(code, info),
+        "link": f"{SITE}/book/{code}",
+    }
+
+
+__all__ = ["BOARDS", "METRICS", "PATHS", "SITE_KEY", "TOP", "book", "fetch",
+           "url_of"]

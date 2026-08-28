@@ -5814,12 +5814,57 @@ async function rkRefresh(){
  */
 let rkAbouts = {};
 
+//: Идущий прогон за описаниями. Пока он есть, кнопка — «Остановить».
+let rkAboutsJob = null;
+
+/** Забрать недостающие описания — задачей, с прогрессом и остановкой.
+ *
+ *  Перевод описаний работал только по тем книгам, чью карточку уже
+ *  забирали с сайта. Кнопка называлась «Перевести всё» и молча
+ *  пропускала половину среза. Ходить за полусотней страниц внутри
+ *  перевода нельзя: это минута с виду зависшей кнопкой.
+ */
+async function rkFetchAbouts(){
+  const {job} = await call('/api/rank/abouts/start', rkWhere());
+  rkAboutsJob = job.id;
+  $('rkTranslate').textContent = 'Остановить';
+  $('rkTranslate').disabled = false;
+
+  return new Promise(done => {
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('rkNote').textContent = p.message || '';
+        return !TERMINAL.includes(p.stage);
+      },
+      job => {
+        rkAboutsJob = null;
+        done({...(job.report || {}), stopped: !!job.cancelled});
+      });
+  });
+}
+
 async function rkTranslate(){
+  // Кнопка на время прогона становится «Остановить»: другой ей быть
+  // негде, а бросать задачу нечем.
+  if(rkAboutsJob){ stopJob(rkAboutsJob); return; }
+
   showError('');
   $('rkTranslate').disabled = true;
   const was = $('rkTranslate').textContent;
-  $('rkTranslate').textContent = 'Переводим…';
+  $('rkTranslate').textContent = 'Читаем описания…';
   try{
+    const got = await rkFetchAbouts();
+    if(got.stopped){
+      // Остановили — значит, остановили всё: тратить ключи на перевод
+      // после «Остановить» человек не просил.
+      $('rkNote').textContent = 'Остановлено. Что успели забрать — осталось.';
+      return;
+    }
+    $('rkTranslate').textContent = 'Переводим…';
+    $('rkTranslate').disabled = true;
+    if(got.missed) showError(`Не забралось описаний: ${got.missed}. `
+      + 'Остальные переведены.');
     // Одной кнопкой — и названия, и описания. Описания идут пачками по
     // шесть: полсотни укладываются в девять запросов, а не в полсотни.
     const data = await call('/api/rank/translate',

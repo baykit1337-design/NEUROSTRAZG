@@ -281,5 +281,82 @@ class TestTheRouteEndToEnd(unittest.TestCase):
         self.assertEqual(len(self.rank_op.days("hot", site="webnovel")), 1)
 
 
+class TestBookDetails(unittest.TestCase):
+    """Подробности книги для раскрытой строки.
+
+    Раскрытая строка Webnovel показывала ровно то, что и так стоит в
+    самой строке: то же название, то же число, те же кнопки. Раскрывают,
+    чтобы узнать больше.
+
+    Страницу книги разбирает сам источник — здесь берётся его же разбор,
+    и заготовка страницы взята оттуда же, чтобы формы не разошлись.
+    """
+
+    def setUp(self):
+        from tests.test_webnovel import FakeClient, book_page
+
+        self.page = book_page
+        self.client = FakeClient({"/book/36543528000922105": book_page()})
+
+    def look(self, client=None):
+        return wnrank.book(client or self.client, "36543528000922105")
+
+    def test_the_description_comes_back(self):
+        """То, ради чего строку и раскрывают."""
+        self.assertIn("Every world has power", self.look()["abstract"])
+
+    def test_the_key_is_the_same_as_on_other_sites(self):
+        """Карточку рисует один и тот же код на все рейтинги: своё имя
+        поля здесь означало бы свою ветку в отрисовке."""
+        self.assertIn("abstract", self.look())
+
+    def test_the_rest_of_the_card_comes_too(self):
+        found = self.look()
+        self.assertEqual(found["author"], "Masked_Narrator")
+        self.assertEqual(found["chapters"], 41)
+        self.assertTrue(found["cover"])
+        self.assertTrue(found["link"].endswith("36543528000922105"))
+
+    def test_the_genre_becomes_a_tag(self):
+        self.assertIn("Anime & Comics", self.look()["tags"])
+
+    def test_a_page_without_the_object_is_a_broken_source(self):
+        """«Сайт не ответил» лечится повтором, «разметка другая» — нет."""
+        from tests.test_webnovel import FakeClient
+
+        client = FakeClient({"/book/": "<html><body>ничего</body></html>"})
+        with self.assertRaises(SourceBroken):
+            self.look(client)
+
+    def test_a_page_with_the_mark_but_no_book_is_told_apart(self):
+        """Метка на месте, а книги в ней нет: сайт поменял не адрес, а
+        содержимое. Отдать пустую карточку значило бы показать человеку
+        пустое место вместо причины."""
+        from tests.test_webnovel import FakeClient
+
+        page = ("<html><body><script>g_data.book= "
+                '{"curReadChapter":0},g_data.pageId="qi_p_bookdetail"'
+                "</script></body></html>")
+        with self.assertRaises(SourceBroken):
+            self.look(FakeClient({"/book/": page}))
+
+    def test_an_empty_code_says_so(self):
+        with self.assertRaises(SourceBroken):
+            wnrank.book(self.client, "")
+
+    def test_a_book_without_a_description_does_not_break_the_card(self):
+        """Описание есть не у каждой книги, и это не поломка разбора."""
+        from tests.test_webnovel import FakeClient, escaped
+
+        # Сайт экранирует строки по-своему, поэтому вырезаем описание тем
+        # же кодом, каким заготовка его туда положила.
+        page = self.page().replace(
+            escaped("Every world has power worth taking."), '""')
+        found = wnrank.book(FakeClient({"/book/": page}),
+                            "36543528000922105")
+        self.assertEqual(found["abstract"], "")
+        self.assertEqual(found["author"], "Masked_Narrator")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
