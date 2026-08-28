@@ -242,12 +242,29 @@ class TestOneButtonForEverything(AbstractBase):
         self.app.post("/api/rank/translate", json={"abstracts": True})
         self.assertIn(CHINESE, self.llm.last)
 
-    def test_books_with_no_description_anywhere_are_counted_not_hidden(self):
-        """«Переведено 1 из 80» без этого числа читалось бы поломкой."""
+    def test_a_book_whose_card_has_no_description_is_counted(self):
+        """«Переведено 1 из 80» без этого числа читалось бы поломкой.
+
+        Карточку забирали, описания в ней нет — это ответ сайта, и
+        делать дальше нечего.
+        """
+        books.save("2", {"name": "书", "abstract": "", "book_id": "2"})
         self.snapshot([self.row("1", about=CHINESE), self.row("2")])
         said = self.app.post("/api/rank/translate",
                              json={"abstracts": True}).get_json()
         self.assertEqual(said["abouts"]["absent"], 1)
+        self.assertEqual(said["abouts"]["unknown"], 0)
+
+    def test_a_book_whose_card_was_never_fetched_is_told_apart(self):
+        """Раньше такие книги считались как «без описания на сайте», и
+        кнопка молча пропускала половину среза. Описание у них может
+        быть — мы за ним просто не ходили, и это наше, а не ответ сайта.
+        """
+        self.snapshot([self.row("1", about=CHINESE), self.row("2")])
+        said = self.app.post("/api/rank/translate",
+                             json={"abstracts": True}).get_json()
+        self.assertEqual(said["abouts"]["unknown"], 1)
+        self.assertEqual(said["abouts"]["absent"], 0)
 
     def test_the_counts_of_titles_and_descriptions_stay_apart(self):
         """Складывать их в одно число значило бы прятать цену: названия

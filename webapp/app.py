@@ -3120,6 +3120,11 @@ def api_rank_categories():
         audiences=[{"key": k, "name": v} for k, v in rank_cats.AUDIENCES.items()],
         kinds=[{"key": k, "name": v} for k, v in rank_cats.KINDS.items()],
         boards=[{"key": k, "name": v} for k, v in rank_cats.BOARDS.items()],
+        # По чему можно упорядочить срез и какое поле строки за это
+        # отвечает. Список приходит отсюда, а не вписан в страницу:
+        # порядок, которого нет в `ops/rank`, показывать нечем.
+        orders=[{"key": k, "name": v, "field": rank_op.ORDER_FIELDS.get(k, "")}
+                for k, v in rank_op.ORDERS.items()],
         # Какие рейтинги вообще есть и какие доски у каждого. Список
         # приходит с сервера, а не вписан в страницу: добавить третий
         # сайт иначе значило бы править ещё и разметку.
@@ -3443,6 +3448,28 @@ def _about_texts(rows) -> dict:
     return texts
 
 
+def _about_missing(rows) -> tuple[int, int]:
+    """Сколько описаний нет вовсе и сколько просто не забирали с сайта.
+
+    Разница важная. «Описания нет» — это ответ, дальше делать нечего.
+    «Не забирали» — это наше, и человеку надо сказать, что делать:
+    раскрыть строку. Раньше оба случая складывались в одно число, и
+    «Перевести всё» молча пропускало половину среза.
+    """
+    absent = unknown = 0
+    for row in rows:
+        if not row.book_id:
+            continue
+        if str(getattr(row, "about", "") or "").strip():
+            continue
+        card = books_op.load(row.book_id)
+        if card is None:
+            unknown += 1
+        elif not str(card.get("abstract") or "").strip():
+            absent += 1
+    return absent, unknown
+
+
 @app.post("/api/rank/translate")
 def api_rank_translate():
     """Прогоняет названия через модель. Кэш по book_id.
@@ -3475,10 +3502,13 @@ def api_rank_translate():
             texts = _about_texts(snapshot.rows)
             done["abouts"] = titles_op.translate_all_abstracts(
                 texts, client, model=model, force=force)
-            # Сколько книг остались без перевода описания просто потому,
-            # что описания у них нет вовсе. Без этого числа «переведено
-            # 12 из 80» читалось бы как поломка.
-            done["abouts"]["absent"] = len(snapshot.rows) - len(texts)
+            # Почему остальные остались без перевода. Без этих чисел
+            # «переведено 12 из 80» читалось бы как поломка, а «нет
+            # описания» врало бы про книги, у которых оно есть — просто
+            # мы за ним не ходили.
+            absent, unknown = _about_missing(snapshot.rows)
+            done["abouts"]["absent"] = absent
+            done["abouts"]["unknown"] = unknown
         return jsonify(**done)
     except NoKeysLeft as exc:
         return jsonify(error=str(exc)), 400

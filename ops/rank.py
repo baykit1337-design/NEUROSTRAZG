@@ -42,6 +42,30 @@ WEEK = 7
 TOP_HOLD = 50
 
 
+#: По чему можно упорядочить срез. Список закрытый: интерфейс берёт
+#: подписи отсюда, а не держит свой второй экземпляр.
+#:
+#: Даты выхода книги здесь нет намеренно. Её не отдаёт ни один из четырёх
+#: рейтингов: три не пишут поле вовсе, а Цидянь кладёт в него строку со
+#: страницы («3 часа назад»), по которой упорядочить нельзя. Пункт меню,
+#: который на трёх сайтах из четырёх молча ничего не делает, хуже, чем
+#: его отсутствие. Вместо даты — «новинки», и считаются они по своей
+#: истории срезов: книга, которой вчера в доске не было.
+ORDERS = {
+    "place": "по месту",
+    "new": "новинки вверх",
+    "chapters": "по числу глав",
+    "words": "по объёму",
+    "readers": "по числу читающих",
+    "score": "по числу рядом с книгой",
+}
+
+#: Какое поле строки отвечает за каждый порядок. У «места» и «новинок»
+#: своё правило, поэтому их здесь нет.
+ORDER_FIELDS = {"chapters": "chapters", "words": "words",
+                "readers": "readers", "score": "score"}
+
+
 class RankError(Exception):
     """С историей рейтинга что-то не так."""
 
@@ -86,6 +110,60 @@ class Snapshot:
 
     def by_book(self) -> dict:
         return {row.book_id: row for row in self.rows if row.book_id}
+
+
+def known(rows, by: str) -> int:
+    """Скольким строкам это поле вообще известно.
+
+    Поля у сайтов разные: у MVLEMPYR есть число глав, у Фанкью — объём и
+    читающие, у Webnovel только число рядом с книгой. Молча оставить
+    прежний порядок нельзя — человек решит, что сортировка сломана,
+    поэтому счётчик уходит наружу и становится подписью под списком.
+    """
+    field = ORDER_FIELDS.get(by)
+    if not field:
+        return len(list(rows))
+    return sum(1 for row in rows if _value(row, field) is not None)
+
+
+def _value(row, field):
+    """Число из строки. Ноль и пусто — это «не знаем», а не «ноль»."""
+    value = getattr(row, field, None)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number or None
+
+
+def order(rows, by: str = "place", desc: bool = True, fresh=()) -> list:
+    """Упорядочивает срез. Незнакомый порядок — оставляем как есть.
+
+    Строки без нужного числа всегда уходят вниз, независимо от
+    направления: «сначала те, у кого мало глав» не должно означать
+    «сначала те, про кого мы ничего не знаем».
+    """
+    rows = list(rows)
+    if by not in ORDERS or by == "place":
+        return sorted(rows, key=lambda row: row.place or 10**6)
+
+    if by == "new":
+        fresh = set(fresh or ())
+        # Новинки наверх, внутри — по месту: новая книга на пятом месте
+        # интереснее новой книги на сороковом.
+        return sorted(rows, key=lambda row: (row.book_id not in fresh,
+                                             row.place or 10**6))
+
+    field = ORDER_FIELDS[by]
+    sign = -1 if desc else 1
+
+    def key(row):
+        value = _value(row, field)
+        # Незаполненное — всегда вниз: первый элемент пары это и делает.
+        return (value is None, sign * value if value is not None else 0,
+                row.place or 10**6)
+
+    return sorted(rows, key=key)
 
 
 def _slug(board: str, category: str = "", site: str = "") -> str:

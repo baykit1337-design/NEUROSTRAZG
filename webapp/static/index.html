@@ -3086,6 +3086,13 @@
       <button id="rkRefresh" class="primary" style="flex:0 0 auto">Обновить срез</button>
     </div>
     <div class="row" style="margin-top:10px">
+      <!-- Порядок среза. Список приходит с сервера (`ops/rank.ORDERS`):
+           порядка, которого там нет, показывать нечем. Даты выхода в
+           списке нет намеренно — её не отдаёт ни один из четырёх
+           рейтингов, а «новинки» считаются по своей истории срезов. -->
+      <div class="dropdown" id="rkOrder" style="flex:0 0 auto" data-options='[]'></div>
+      <button id="rkOrderDir" class="ghost" style="flex:0 0 auto"
+              title="Сверху больше или сверху меньше">↓ больше сверху</button>
       <input id="rkFilter" type="text" placeholder="фильтр по названию или категории"
              autocomplete="off">
       <!-- Одной кнопкой: и названия, и описания. Описания идут пачками,
@@ -3094,6 +3101,10 @@
               title="Перевести названия и описания всего среза">Перевести всё</button>
     </div>
     <p class="hint" id="rkNote"></p>
+    <!-- Поля у сайтов разные: у MVLEMPYR есть число глав, у Webnovel —
+         только число рядом с книгой. Молча оставить прежний порядок
+         нельзя: человек решит, что сортировка сломана. -->
+    <p class="hint" id="rkOrderNote" hidden></p>
     <div class="table" id="rkDetails" hidden style="margin-top:10px"></div>
 
     <!-- 2.5: «названия расшифровать не удалось» не говорит, что чинить.

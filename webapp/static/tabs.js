@@ -5339,14 +5339,79 @@ function rkMove(value){
   return {text: '=', cls: 'flat'};
 }
 
+/* --------------------------------------------------- порядок среза
+ *
+ * Список порядков и то, какое поле строки за каждый отвечает, приходит
+ * с сервера (`ops/rank.ORDERS`): второго перечня здесь быть не должно.
+ * Само сравнение чисел — рядом с фильтром, который тоже считается на
+ * странице: и то и другое лишь показывает уже полученный срез.
+ */
+
+let rkOrders = [];       // что пришло с сервера
+let rkOrderMenu = null;
+let rkOrderBy = 'place';
+let rkOrderDesc = true;
+
+function rkOrderField(){
+  return (rkOrders.find(o => o.key === rkOrderBy) || {}).field || '';
+}
+
+/** Скольким строкам известно поле выбранного порядка. */
+function rkOrderKnown(rows){
+  const field = rkOrderField();
+  if(!field) return rows.length;
+  return rows.filter(row => Number(row[field])).length;
+}
+
+function rkSort(rows){
+  if(rkOrderBy === 'place' || !rkOrders.length){
+    return [...rows].sort((a, b) => (a.place || 1e6) - (b.place || 1e6));
+  }
+  if(rkOrderBy === 'new'){
+    // Новинки наверх, внутри — по месту: новая книга на пятом месте
+    // интереснее новой книги на сороковом. Признак `is_new` считает
+    // сервер по своей истории срезов — на сайте этого нет вовсе.
+    return [...rows].sort((a, b) =>
+      (a.is_new ? 0 : 1) - (b.is_new ? 0 : 1) || (a.place || 1e6) - (b.place || 1e6));
+  }
+
+  const field = rkOrderField();
+  const sign = rkOrderDesc ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const one = Number(a[field]) || null, two = Number(b[field]) || null;
+    // Строки без числа всегда вниз, в обе стороны: «сначала те, у кого
+    // мало глав» не должно означать «сначала те, про кого не знаем».
+    if(one === null || two === null){
+      return (one === null ? 1 : 0) - (two === null ? 1 : 0);
+    }
+    return sign * (one - two) || (a.place || 1e6) - (b.place || 1e6);
+  });
+}
+
+function rkOrderNote(rows){
+  const field = rkOrderField();
+  if(!field) return '';
+  const have = rkOrderKnown(rows);
+  if(have === rows.length) return '';
+  return have
+    ? `Это число известно у ${have} книг из ${rows.length} — остальные внизу.`
+    : 'Этого числа нет ни у одной книги этого рейтинга — порядок не изменился.';
+}
+
 function rkRender(){
   const box = $('rkTable');
   box.innerHTML = '';
   const filter = $('rkFilter').value.trim().toLowerCase();
-  const shown = rkRows.filter(row => !filter
+  const shown = rkSort(rkRows.filter(row => !filter
     || (row.name || '').toLowerCase().includes(filter)
     || (rkTitles[row.book_id] || '').toLowerCase().includes(filter)
-    || (row.author || '').toLowerCase().includes(filter));
+    || (row.author || '').toLowerCase().includes(filter)));
+
+  const said = rkOrderNote(shown);
+  $('rkOrderNote').textContent = said;
+  $('rkOrderNote').hidden = !said;
+  // Направление имеет смысл только у числовых порядков.
+  $('rkOrderDir').hidden = !rkOrderField();
 
   if(!shown.length){
     box.innerHTML = '<div class="tr"><span class="grow hint">'
@@ -5664,6 +5729,14 @@ async function rkLoadCategories(fetchFromSite){
                             + (fetchFromSite ? '?fetch=1' : ''));
     rkCats = data.categories || {};
     rkSites = data.sites || [];
+    rkOrders = data.orders || [];
+
+    if(!rkOrderMenu && rkOrders.length){
+      const box = $('rkOrder');
+      box.dataset.options = JSON.stringify(rkOrders.map(o => [o.key, o.name]));
+      box.innerHTML = '';
+      rkOrderMenu = makeDropdown(box, value => { rkOrderBy = value; rkRender(); });
+    }
 
     if(!rkSiteMenu && rkSites.length){
       const box = $('rkSite');
@@ -5754,6 +5827,13 @@ async function rkTranslate(){
         + `из кэша ${about.cached}.`
         + (about.absent
           ? ` Без описания на сайте: ${about.absent}.`
+          : '')
+        // «Не забирали» — это наше, и человеку надо сказать, что делать.
+        // Раньше такие книги считались как «без описания», и кнопка
+        // молча пропускала половину среза.
+        + (about.unknown
+          ? ` Ещё у ${about.unknown} описание не забирали с сайта —`
+            + ' раскройте строку, и оно переведётся.'
           : '')
         + (about.broken ? ` Не далось: ${about.broken}.` : '');
     }
@@ -6243,6 +6323,13 @@ function rkCardFlash(){
 $('rkRefresh').onclick = rkRefresh;
 $('rkTranslate').onclick = rkTranslate;
 $('rkFilter').addEventListener('input', rkRender);
+
+$('rkOrderDir').onclick = () => {
+  rkOrderDesc = !rkOrderDesc;
+  $('rkOrderDir').textContent = rkOrderDesc ? '↓ больше сверху' : '↑ меньше сверху';
+  rkRender();
+};
+
 rkLoadCategories().then(rkState);
 
 
