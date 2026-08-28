@@ -19,6 +19,7 @@ def all_sources() -> list:
     from .fanqiemirror import FanqieMirrorSource
     from .mvlempyr import MvlempyrSource
     from .novelcms import NovelCmsSource
+    from .ranobelib import RanobeLibSource
     from .webnovel import WebnovelSource
 
     # Посредник идёт последним и по умолчанию не выбран намеренно: он
@@ -32,8 +33,12 @@ def all_sources() -> list:
     # Webnovel стоит последним не по важности, а потому что берёт не
     # каждую книгу: часть глав там платная, и такие остаются пропусками.
     # Выбирать его должен человек, знающий про этот размен.
+    #
+    # RanobeLIB стоит особняком: оттуда книга приходит уже по-русски, и
+    # переводить её после скачивания не нужно вовсе. Это другой размен —
+    # не «текст подешевле», а «чужой перевод вместо своего».
     return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource(),
-            NovelCmsSource(), WebnovelSource()]
+            NovelCmsSource(), WebnovelSource(), RanobeLibSource()]
 
 
 def get(name: str) -> Source:
