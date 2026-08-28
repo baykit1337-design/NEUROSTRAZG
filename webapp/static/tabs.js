@@ -926,7 +926,9 @@ function toggleOptions(p, format){
 
 /* ------------------------------------------------------------ Разбить */
 
-const spState = {format: '.txt', job: null, menus: {}, scan: null};
+const spState = {format: '.txt', job: null, menus: {}, scan: null,
+                 //: главам поимённо — на сколько частей резать
+                 pieces: {}, chosen: new Set()};
 
 function spUpdateFinal(){
   const base = $('spBase').value.trim(), name = $('spFolder').value.trim();
@@ -940,11 +942,24 @@ function spUpdateFinal(){
 function spDrawSchema(){
   const data = spState.scan;
   if(!data){ $('spSchema').hidden = true; return; }
-  const parts = Math.max(1, Number($('spParts').value) || 1);
+  // Число файлов на выходе считает сервер: он же их и пишет. Своё
+  // умножение здесь однажды разошлось бы с настоящим делением.
   drawSchema('spSchema',
     {count: data.file_count, formats: extensions(data.files)},
     'разбить',
-    {count: data.total * parts, format: spState.format});
+    {count: data.total, format: spState.format});
+}
+
+/** Формат имени файла — тот же набор, что во вкладке «Переименовать». */
+function spNameFormat(){
+  return {
+    number: $('spNum').checked,
+    part: $('spPartNum').checked,
+    title: $('spTitleOn').checked,
+    prefix: $('spPrefix').value,
+    separator: spState.menus.sep ? spState.menus.sep.value : ': ',
+    part_style: spState.menus.partStyle ? spState.menus.partStyle.value : 'dot',
+  };
 }
 
 /** Читается сразу после выбора — отдельной кнопки «Прочитать» нет. */
@@ -952,28 +967,38 @@ async function spScan(){
   const targets = CHOSEN.spList || [];
   if(!targets.length){
     spState.scan = null;
-    ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard', 'spSchema']
-      .forEach(id => { $(id).hidden = true; });
+    spState.pieces = {};
+    spState.chosen.clear();
+    ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard', 'spSchema',
+     'spChaptersCard', 'spPreviewCard'].forEach(id => { $(id).hidden = true; });
     $('spScanned').textContent = 'Файлы читаются сразу после выбора.';
     return;
   }
   showError('');
+  // Читаем книгу заново — набор глав может быть другим, и деление,
+  // заданное прежним главам по номерам, уехало бы не на те.
+  spState.pieces = {};
+  spState.chosen.clear();
   $('spScanned').innerHTML = '<span class="spin"></span>Читаем…';
   try{
     const data = await call('/api/split/scan', {
       targets,
       pattern: $('spPattern').value.trim(),
-      parts: Number($('spParts').value) || 1,
+      pieces: spState.pieces,
+      name_format: spNameFormat(),
+      seq: $('spSeq').checked,
     });
     spState.scan = data;
     updateListBar('spList', data.file_count);
     $('spScanned').textContent =
-      `Файлов: ${data.file_count}, глав: ${data.total}. ` +
-      (data.titles.length ? 'Первые: ' + data.titles.join(' · ') : '');
+      `Файлов: ${data.file_count}, глав: ${data.found}` +
+      (data.total !== data.found ? `, файлов на выходе: ${data.total}` : '') + '.';
     if(data.unreadable?.length) showError('Не прочитаны: ' + data.unreadable.join('; '));
     $('spOpts').hidden = false;
     $('spPlace').hidden = false;
     $('spPatternCard').hidden = true;
+    spDrawChapters();
+    spDrawPreview();
     if(!$('spFolder').value && targets.length === 1){
       const name = targets[0].split(/[/\\]/).pop() || '';
       $('spFolder').value = name.replace(/\.[^.]+$/, '');
@@ -985,6 +1010,8 @@ async function spScan(){
     $('spScanned').textContent = '';
     $('spOpts').hidden = true;
     $('spPlace').hidden = true;
+    $('spChaptersCard').hidden = true;
+    $('spPreviewCard').hidden = true;
     // Заголовков не нашлось — наугад не режем, просим шаблон.
     if(err.needPattern){
       $('spPatternCard').hidden = false;
@@ -994,6 +1021,145 @@ async function spScan(){
   }
 }
 window.spScan = spScan;
+
+/** Найденные главы: что отмечено и на сколько частей режется. */
+function spDrawChapters(){
+  const data = spState.scan;
+  const table = $('spChapters');
+  table.innerHTML = '';
+  if(!data || !data.chapters?.length){
+    $('spChaptersCard').hidden = true;
+    return;
+  }
+
+  for(const chapter of data.chapters){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = spState.chosen.has(chapter.index);
+    box.onchange = () => {
+      box.checked ? spState.chosen.add(chapter.index)
+                  : spState.chosen.delete(chapter.index);
+      spShowPicked();
+    };
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = chapter.title || `Глава ${chapter.index}`;
+    name.title = name.textContent;
+
+    const size = document.createElement('span');
+    size.className = 'num';
+    size.textContent = chapter.size.toLocaleString('ru') + ' симв.';
+
+    // Сколько частей — из своего же состояния, а не из ответа: ответ
+    // приходит только при чтении с диска, а галочку жмут чаще.
+    const count = spState.pieces[String(chapter.index)] || 1;
+    row.append(box, name);
+    if(count > 1){
+      const tag = document.createElement('span');
+      tag.className = 'tag warn';
+      tag.textContent = `на ${count} ${plural(count, 'часть', 'части', 'частей')}`;
+      row.append(tag);
+    }
+    row.append(size);
+    table.append(row);
+  }
+  $('spChaptersCard').hidden = false;
+  spShowPicked();
+}
+
+/** Пересобрать имена, не перечитывая книгу с диска. */
+async function spRefresh(){
+  const data = spState.scan;
+  if(!data?.chapters?.length) return;
+  try{
+    const fresh = await call('/api/split/names', {
+      chapters: data.chapters.map(c => ({index: c.index, number: c.number,
+                                         title: c.title})),
+      pieces: spState.pieces,
+      name_format: spNameFormat(),
+      seq: $('spSeq').checked,
+    });
+    data.names = fresh.names || [];
+    data.total = data.names.length;
+    spDrawChapters();
+    spDrawPreview();
+    spDrawSchema();
+    $('spScanned').textContent =
+      `Файлов: ${data.file_count}, глав: ${data.found}` +
+      (data.total !== data.found ? `, файлов на выходе: ${data.total}` : '') + '.';
+  }catch(err){
+    showError(err.message);
+  }
+}
+
+//: Приставку набирают по букве — дёргать сервер на каждой не нужно.
+let spNameTimer = null;
+function spRefreshSoon(){
+  clearTimeout(spNameTimer);
+  spNameTimer = setTimeout(spRefresh, 250);
+}
+
+function spShowPicked(){
+  const picked = spState.chosen.size;
+  $('spPicked').textContent = picked ? `отмечено: ${picked}` : '';
+}
+
+/** Что ляжет на диск. Имена приходят с сервера — он же их и пишет. */
+function spDrawPreview(){
+  const data = spState.scan;
+  const table = $('spPreview');
+  table.innerHTML = '';
+  if(!data || !data.names?.length){
+    $('spPreviewCard').hidden = true;
+    return;
+  }
+
+  for(const name of data.names){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = name + spState.format;
+    text.title = text.textContent;
+    row.append(text);
+    table.append(row);
+  }
+  $('spPreviewNote').textContent =
+    `файлов: ${data.total}` + (data.total !== data.found
+      ? ` из ${data.found} ${plural(data.found, 'главы', 'глав', 'глав')}` : '');
+  $('spPreviewCard').hidden = false;
+}
+
+/** Задаёт отмеченным главам число частей и перечитывает предпросмотр. */
+function spApplyParts(count){
+  if(!spState.chosen.size){
+    showError('Отметьте главы, которые нужно поделить');
+    return;
+  }
+  for(const index of spState.chosen){
+    if(count > 1) spState.pieces[String(index)] = count;
+    else delete spState.pieces[String(index)];
+  }
+  spRefresh();
+}
+
+function spAskParts(){
+  if(!spState.chosen.size){
+    showError('Отметьте главы, которые нужно поделить');
+    return;
+  }
+  $('spDialog').hidden = false;
+}
+
+function spPickAll(on){
+  spState.chosen.clear();
+  if(on) for(const chapter of spState.scan?.chapters || []) spState.chosen.add(chapter.index);
+  spDrawChapters();
+}
 
 async function spStart(){
   showError('');
@@ -1006,7 +1172,9 @@ async function spStart(){
       folder: $('spFolder').value.trim(),
       format: spState.format,
       pattern: $('spPattern').value.trim(),
-      parts: Number($('spParts').value) || 1,
+      pieces: spState.pieces,
+      name_format: spNameFormat(),
+      seq: $('spSeq').checked,
       headings: $('spHeadings').checked,
       encoding: spState.menus.encoding ? spState.menus.encoding.value : 'utf-8',
       style: styleOf('sp', spState.menus),
@@ -1621,9 +1789,29 @@ for(const [p, state, update, scan] of [
 }
 
 $('spFolder').addEventListener('input', spUpdateFinal);
-$('spParts').addEventListener('input', spUpdateFinal);
 $('spRescan').onclick = () => spScan();
 $('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') spScan(); });
+
+// Формат имени: любая правка перечитывает предпросмотр. Имена считает
+// сервер, поэтому «показать» и «записать» здесь одно и то же действие.
+spState.menus.sep = makeDropdown($('spSep'), () => spRefresh());
+spState.menus.partStyle = makeDropdown($('spPartStyle'), () => spRefresh());
+const spPartsMenu = makeDropdown($('spPartsPick'));
+for(const id of ['spNum', 'spPartNum', 'spTitleOn', 'spSeq']){
+  $(id).addEventListener('change', () => spRefresh());
+}
+$('spPrefix').addEventListener('input', spRefreshSoon);
+
+$('spAll').onclick = () => spPickAll(true);
+$('spNone').onclick = () => spPickAll(false);
+$('spHalve').onclick = () => spApplyParts(2);
+$('spMany').onclick = spAskParts;
+$('spWhole').onclick = () => spApplyParts(1);
+$('spPartsOk').onclick = () => {
+  $('spDialog').hidden = true;
+  spApplyParts(parseInt(spPartsMenu.value, 10));
+};
+$('spPartsCancel').onclick = () => { $('spDialog').hidden = true; };
 
 $('mgName').addEventListener('input', mgUpdateFinal);
 mgState.menus.order = makeDropdown($('mgOrder'), () => mgScan());

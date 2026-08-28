@@ -1528,10 +1528,34 @@
     <label>Формат на выходе</label>
     <div class="row" id="spFormats"></div>
 
+    <!-- Как назвать файлы. Тот же набор, что во вкладке «Переименовать»,
+         и та же сборка на сервере (`naming.build`): книга, разбитая
+         здесь, не должна отличаться от неё же, переименованной там. -->
     <div style="margin-top:16px">
-      <label for="spParts">делить каждую главу на части
-        <i class="hint-icon" data-tip="1 — не делить. 2 — разбить пополам. Отдельные главы можно поделить точечно во вкладке «Переименовать».">?</i></label>
-      <input id="spParts" type="number" value="1" min="1" max="20">
+      <label>Имя файла</label>
+      <div class="checks">
+        <label class="chk"><input type="checkbox" id="spSeq" checked> порядковый номер
+          <i class="hint-icon" data-tip="«0001 - » в начале имени. Держит файлы в правильном порядке в любом проводнике.">?</i></label>
+        <label class="chk"><input type="checkbox" id="spNum" checked> номер главы</label>
+        <label class="chk"><input type="checkbox" id="spPartNum" checked> номер части</label>
+        <label class="chk"><input type="checkbox" id="spTitleOn" checked> название</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div style="flex:1">
+          <label for="spPrefix">приставка</label>
+          <input id="spPrefix" type="text" value="Глава" autocomplete="off">
+        </div>
+        <div style="flex:1">
+          <label>разделитель</label>
+          <div class="dropdown" id="spSep"
+               data-options='[[": ",": (двоеточие)"],[". ",". (точка)"],[" — "," — (тире)"],[" - "," - (дефис)"]]'></div>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label>номер части пишется</label>
+        <div class="dropdown" id="spPartStyle"
+             data-options='[["dot","Глава 22.2"],["word","Глава 22. Часть 2"]]'></div>
+      </div>
     </div>
 
     <div class="row" style="margin-top:14px">
@@ -1545,6 +1569,45 @@
     <label class="chk" style="margin-top:14px">
       <input type="checkbox" id="spHeadings" checked> добавлять название главы перед текстом
       <i class="hint-icon" data-tip="Название берётся из заголовка главы.">?</i></label>
+  </div>
+
+  <!-- Найденные главы. Раньше здесь было одно поле «делить каждую главу
+       на части», общее на всю книгу: забытая в нём двойка молча давала
+       вдвое больше файлов, чем глав, и узнать об этом можно было только
+       по готовой папке. Теперь деление задаётся главам поимённо, а
+       увидеть его можно до записи. -->
+  <div class="card" id="spChaptersCard" hidden>
+    <label>Главы <span class="hint hint-inline" id="spPicked"></span></label>
+    <div class="row" style="margin-bottom:8px;flex-wrap:wrap">
+      <button class="ghost" id="spAll" style="padding:5px 12px;font-size:12px">Выбрать все</button>
+      <button class="ghost" id="spNone" style="padding:5px 12px;font-size:12px">Снять</button>
+      <button class="ghost" id="spHalve" style="padding:5px 12px;font-size:12px">Разбить пополам</button>
+      <button class="ghost" id="spMany" style="padding:5px 12px;font-size:12px">Разделить…</button>
+      <button class="ghost" id="spWhole" style="padding:5px 12px;font-size:12px">Не делить</button>
+    </div>
+    <p class="hint">кнопки действуют на отмеченные главы</p>
+    <div class="table" id="spChapters" style="max-height:420px"></div>
+  </div>
+
+  <!-- Окно «Разделить»: единственный вопрос — на сколько частей. -->
+  <div class="modal" id="spDialog" hidden>
+    <div class="card lit" style="max-width:320px;width:100%">
+      <label>На сколько частей разделить</label>
+      <div class="dropdown" id="spPartsPick"
+           data-options='[["2","2 части"],["3","3 части"],["4","4 части"],["5","5 частей"],["6","6 частей"],["8","8 частей"],["10","10 частей"]]'></div>
+      <div class="row" style="margin-top:16px">
+        <button id="spPartsOk" class="primary" style="flex:1">Разделить</button>
+        <button id="spPartsCancel" class="ghost" style="flex:1">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Что ляжет на диск. Имена считает сервер тем же кодом, что и пишет:
+       разойдись они, предпросмотр показывал бы одно, а в папке лежало бы
+       другое. -->
+  <div class="card" id="spPreviewCard" hidden>
+    <label>Предпросмотр <span class="hint hint-inline" id="spPreviewNote"></span></label>
+    <div class="table" id="spPreview" style="max-height:420px"></div>
   </div>
 
   <!-- Оформление .docx: показывается, только когда выбран этот формат. -->

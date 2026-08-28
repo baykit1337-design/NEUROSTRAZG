@@ -380,5 +380,145 @@ class TestSplitWebApi(SplitTestCase):
         self.assertEqual(res.get_json()["job"]["kind"], "split")
 
 
+class TestPerChapterSplitting(unittest.TestCase):
+    """Деление главам поимённо и предпросмотр до записи.
+
+    Раньше на всю книгу было одно поле «делить каждую главу на части».
+    Забытая в нём двойка молча давала вдвое больше файлов, чем глав, и
+    узнать об этом можно было только по готовой папке.
+    """
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.book = self.tmp / "книга.txt"
+        lines = []
+        for number in range(1, 6):
+            lines.append(f"Глава {number}: Название {number}")
+            lines += [f"Абзац {k} главы {number}. {LONG}" for k in range(1, 5)]
+        self.book.write_text("\n\n".join(lines), encoding="utf-8")
+
+    def look(self, **kw):
+        from ops import split as split_op
+
+        return split_op.look([str(self.book)], **kw)
+
+    def test_a_book_without_settings_falls_apart_into_chapters(self):
+        """Ради этого вкладка и существует."""
+        data = self.look()
+        self.assertEqual(data["found"], 5)
+        self.assertEqual(data["total"], 5)
+        self.assertEqual(len(data["names"]), 5)
+
+    def test_one_chapter_can_be_cut_while_the_rest_stay_whole(self):
+        data = self.look(pieces={"2": 3})
+        self.assertEqual(data["found"], 5)
+        self.assertEqual(data["total"], 7)
+        self.assertEqual([row["parts"] for row in data["chapters"]],
+                         [1, 3, 1, 1, 1])
+
+    def test_the_named_chapter_wins_over_the_number_for_all(self):
+        """Частное правило важнее общего — иначе поимённое деление
+        нечем было бы отменить."""
+        data = self.look(parts=2, pieces={"1": 1})
+        self.assertEqual([row["parts"] for row in data["chapters"]],
+                         [1, 2, 2, 2, 2])
+
+    def test_the_table_says_how_big_each_chapter_is(self):
+        """«Малая или большая» — то, ради чего в таблицу и смотрят."""
+        for row in self.look()["chapters"]:
+            with self.subTest(row["index"]):
+                self.assertGreater(row["size"], 0)
+                self.assertTrue(row["title"])
+
+    def test_the_preview_shows_the_names_that_will_be_written(self):
+        from ops import split as split_op
+
+        out = self.tmp / "готово"
+        want = self.look(pieces={"3": 2})["names"]
+        split_op.run([str(self.book)], out, out_format=".txt",
+                     pieces={"3": 2})
+        got = sorted(path.stem for path in out.glob("*.txt"))
+        self.assertEqual(sorted(want), got)
+
+    def test_names_are_rebuilt_without_reading_the_book_again(self):
+        """Предпросмотр перестраивается на каждую галочку, а книга в
+        полторы тысячи глав читается с диска секунды."""
+        from ops import split as split_op
+
+        rows = [{"index": row["index"], "number": row["number"],
+                 "title": row["title"]} for row in self.look()["chapters"]]
+        # Файла на диске уже нет — значит, имена собраны по строкам.
+        self.book.unlink()
+        made = split_op.names(rows, pieces={"2": 2})
+        self.assertEqual(len(made), 6)
+
+    def test_the_part_number_is_written_the_chosen_way(self):
+        from core import naming
+        from ops import split as split_op
+
+        rows = [{"index": 1, "number": 7, "title": "Глава 7: Имя"}]
+        dot = split_op.names(rows, pieces={"1": 2},
+                             fmt=naming.NameFormat.from_dict({}))
+        word = split_op.names(
+            rows, pieces={"1": 2},
+            fmt=naming.NameFormat.from_dict({"part_style": "word"}))
+
+        self.assertTrue(any("7.2" in name for name in dot), dot)
+        self.assertTrue(any("Часть 2" in name for name in word), word)
+
+    def test_the_ordinal_prefix_can_be_dropped(self):
+        from core import naming
+        from ops import split as split_op
+
+        rows = [{"index": 1, "number": 7, "title": "Глава 7: Имя"}]
+        made = split_op.names(rows, fmt=naming.NameFormat.from_dict({}),
+                              seq=False)
+        self.assertFalse(made[0].startswith("0001"), made)
+
+
+class TestSplitOverHttp(unittest.TestCase):
+    """Те же правила через маршруты: страница ходит только сюда."""
+
+    def setUp(self):
+        from webapp.app import app
+
+        app.config["TESTING"] = True
+        self.app = app.test_client()
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.book = self.tmp / "книга.txt"
+        lines = []
+        for number in range(1, 4):
+            lines.append(f"Глава {number}: Название {number}")
+            lines += [f"Абзац {k} главы {number}. {LONG}" for k in range(1, 5)]
+        self.book.write_text("\n\n".join(lines), encoding="utf-8")
+
+    def test_scan_returns_the_chapters_and_the_names(self):
+        data = self.app.post("/api/split/scan",
+                             json={"path": str(self.book)}).get_json()
+        self.assertEqual(len(data["chapters"]), 3)
+        self.assertEqual(len(data["names"]), 3)
+
+    def test_names_route_needs_no_file(self):
+        data = self.app.post("/api/split/names", json={
+            "chapters": [{"index": 1, "number": 1, "title": "Глава 1: Имя"}],
+            "pieces": {"1": 2},
+        }).get_json()
+        self.assertEqual(len(data["names"]), 2)
+
+    def test_the_name_format_does_not_collide_with_the_file_format(self):
+        """`format` — расширение файла, имя собирается по `name_format`.
+        Одно значение под двумя смыслами разошлось бы на первой правке."""
+        data = self.app.post("/api/split/names", json={
+            "chapters": [{"index": 1, "number": 5, "title": "Глава 5: Имя"}],
+            "format": ".docx",
+            "name_format": {"prefix": "Chapter", "title": False},
+        }).get_json()
+        self.assertEqual(data["names"], ["0001 - Chapter 5"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

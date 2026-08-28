@@ -239,6 +239,36 @@ def _parts(payload: dict) -> int:
         return 1
 
 
+def _pieces(payload: dict) -> dict:
+    """На сколько частей делить каждую главу поимённо.
+
+    Ключ — порядковый номер главы в книге, а не имя файла: книга приходит
+    одним файлом, и делить в ней надо отдельные главы, а не файл целиком.
+    """
+    raw = payload.get("pieces")
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for key, value in raw.items():
+        try:
+            count = max(1, int(value))
+        except (TypeError, ValueError):
+            continue
+        if count > 1:
+            found[str(key)] = count
+    return found
+
+
+def _name_format(payload: dict):
+    """Свой формат имени файла. Нет его — оставляем прежние имена.
+
+    Ключ не `format`: там уже лежит расширение файла на выходе, и второе
+    значение под тем же именем разошлось бы с первым на первой же правке.
+    """
+    data = payload.get("name_format")
+    return naming.NameFormat.from_dict(data) if isinstance(data, dict) else None
+
+
 def _progress(job: Job, unit: str) -> Progress:
     """Единый прогресс операции: колбэк и флаг отмены задачи."""
     def on_progress(done: int, total: int, message: str = "") -> None:
@@ -1387,18 +1417,39 @@ def api_formats():
 
 @app.post("/api/split/scan")
 def api_split_scan():
-    """Сколько глав нашлось и первые названия — до записи на диск."""
+    """Какие главы нашлись и какие имена выйдут — до записи на диск."""
     payload = request.json or {}
     targets = _targets(payload)
     if not targets:
         return jsonify(error="Выберите файл книги или папку"), 400
     try:
-        return jsonify(**split_op.scan(targets, _pattern(payload), _parts(payload)))
+        return jsonify(**split_op.look(
+            targets, _pattern(payload), _parts(payload),
+            pieces=_pieces(payload), fmt=_name_format(payload),
+            seq=bool(payload.get("seq", True))))
     except HeadingsNotFound as exc:
         # Наугад не режем — просим своё регулярное выражение.
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/split/names")
+def api_split_names():
+    """Имена файлов по уже прочитанным главам — без похода на диск.
+
+    Предпросмотр перестраивается на каждую галочку, а книга в полторы
+    тысячи глав читается секунды. Страница присылает обратно то, что
+    получила при чтении; собирает имена всё равно сервер.
+    """
+    payload = request.json or {}
+    rows = payload.get("chapters")
+    if not isinstance(rows, list):
+        return jsonify(error="Сначала прочитайте книгу"), 400
+    rows = [row for row in rows if isinstance(row, dict)]
+    return jsonify(names=split_op.names(
+        rows, _parts(payload), pieces=_pieces(payload),
+        fmt=_name_format(payload), seq=bool(payload.get("seq", True))))
 
 
 @app.post("/api/split/start")
@@ -1424,7 +1475,8 @@ def api_split_start():
 
     # Читаем до создания папки, чтобы не плодить пустые каталоги.
     try:
-        info = split_op.scan(targets, _pattern(payload), _parts(payload))
+        info = split_op.look(targets, _pattern(payload), _parts(payload),
+                             pieces=_pieces(payload))
     except HeadingsNotFound as exc:
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
     except (ReadError, ValueError) as exc:
@@ -1450,6 +1502,9 @@ def api_split_start():
             targets, Path(job.output_dir),
             out_format=out_format,
             parts=_parts(payload),
+            pieces=_pieces(payload),
+            fmt=_name_format(payload),
+            seq=bool(payload.get("seq", True)),
             pattern=_pattern(payload),
             prep=PrepOptions.from_dict(payload.get("prep")),
             style=Style.from_dict(payload.get("style")),
