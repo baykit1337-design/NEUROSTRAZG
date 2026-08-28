@@ -129,9 +129,13 @@ def save(rows, board: str = "all", day: str = "", category: str = "",
     return snapshot
 
 
-def load(day: str, board: str = "all", category: str = "",
-         site: str = "") -> Snapshot | None:
-    path = _path(day, board, category, site)
+def read(path: Path) -> Snapshot | None:
+    """Срез из файла.
+
+    Имя файла разбирать не нужно: день, сайт, доска и раздел записаны
+    внутри самого среза. Общей доске это и требуется — она проходит по
+    всем файлам подряд, не зная заранее, чьи они.
+    """
     if not path.is_file():
         return None
     try:
@@ -139,6 +143,11 @@ def load(day: str, board: str = "all", category: str = "",
     except (OSError, ValueError):
         log.warning("Битый срез рейтинга: %s", path)
         return None
+
+
+def load(day: str, board: str = "all", category: str = "",
+         site: str = "") -> Snapshot | None:
+    return read(_path(day, board, category, site))
 
 
 def days(board: str = "all", category: str = "", site: str = "") -> list[str]:

@@ -3420,6 +3420,76 @@ $('cmpStart').onclick = cmpStart;
 cmpLoadKinds();
 
 
+/* ----------------------------------------- два слива одной книги
+ *
+ * Подписи находок и вывод «какую папку брать» считает сервер: разница
+ * между «есть только слева» и «слева обрезано» одна на всю программу, и
+ * второй её экземпляр здесь однажды разошёлся бы с первым.
+ */
+
+async function sdStart(){
+  showError('');
+  const left = $('sdLeft').value.trim(), right = $('sdRight').value.trim();
+  if(!left || !right){ showError('Укажите обе папки'); return; }
+
+  $('sdStart').disabled = true;
+  $('sdNote').innerHTML = '<span class="spin"></span>Сравниваем…';
+  try{
+    const data = await call('/api/sides/start', {left: [left], right: [right]});
+
+    const here = data.left_name || 'первая', there = data.right_name || 'вторая';
+    $('sdNote').textContent =
+      `Глав: ${here} — ${data.left_total}, ${there} — ${data.right_total}, `
+      + `общих ${data.matched}. Расхождений: ${data.total}.`;
+    $('sdAdvice').textContent = data.advice || '';
+
+    const chips = $('sdSummary');
+    chips.innerHTML = '';
+    for(const row of data.summary || []){
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = `${row.kind_name}: ${row.count}`;
+      chips.append(chip);
+    }
+
+    const table = $('sdFindings');
+    table.innerHTML = '';
+    for(const finding of data.findings || []){
+      const row = document.createElement('div');
+      row.className = 'tr';
+      const where = document.createElement('span');
+      where.className = 'num';
+      where.textContent = finding.chapter;
+      const kind = document.createElement('span');
+      kind.className = 'tag warn';
+      kind.textContent = finding.kind_name;
+      const size = document.createElement('span');
+      size.className = 'grow';
+      // Числа рядом с находкой: без них «короче» нечем поверить.
+      size.textContent = `${finding.left} ↔ ${finding.right} знаков`;
+      row.append(where, kind, size);
+      table.append(row);
+    }
+    for(const bad of data.unreadable || []){
+      const row = document.createElement('div');
+      row.className = 'tr';
+      const text = document.createElement('span');
+      text.className = 'grow';
+      text.textContent = bad;
+      row.append(text);
+      table.append(row);
+    }
+  }catch(err){
+    showError(err.message);
+    $('sdNote').textContent = '';
+  }finally{
+    $('sdStart').disabled = false;
+  }
+}
+
+$('sdStart').onclick = sdStart;
+
+
 /* ============= Сравнение версий, журнал и корзина =============
  *
  * Обе вещи — страховка. Автоматическая очистка иногда портит текст, и без
@@ -4600,6 +4670,85 @@ $('ckSearch').addEventListener('input', ckRenderTable);
 $('ckCleanPreview').onclick = ckCleanPreview;
 $('ckClean').onclick = ckClean;
 
+/* ------------------------------------------- осмотр: всё ли на месте
+ *
+ * Отдельно от «Проверить» намеренно: там разбор текста по двум десяткам
+ * правил, здесь — один вопрос, можно ли книгу выкладывать. Подписи
+ * находок приходят с сервера вместе с отчётом: список родов закрытый и
+ * живёт в `ops/checkup`, и держать его вторым экземпляром здесь значило
+ * бы однажды разойтись — находка есть, а называть её нечем.
+ */
+
+let cuJob = null;
+
+async function cuStart(targets){
+  showError('');
+  targets = targets || CHOSEN.ckList || [];
+  if(!targets.length){ showError('Сначала выберите папку книги'); return; }
+
+  $('cuStart').disabled = true;
+  try{
+    const {job} = await call('/api/checkup/start', {targets});
+    cuJob = job.id;
+    ownJob('check', job.id);
+    $('cuBox').hidden = false;
+    $('cuStop').hidden = false;
+    $('cuFound').hidden = true;
+    // Сразу рисуем свой прогресс: иначе в блоке до первого опроса висит
+    // «Готово» от прошлого осмотра.
+    drawResult(job.progress || {}, 'cuFill', 'cuStatus');
+
+    pollJob(job.id,
+      job => drawResult(job.progress || {}, 'cuFill', 'cuStatus'),
+      job => {
+        $('cuStop').hidden = true;
+        if(job.error){ showError(job.error, $('cuCard')); return; }
+        cuShow(job.report || {});
+      });
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('cuStart').disabled = false;
+  }
+}
+
+function cuShow(report){
+  const box = $('cuFound');
+  box.innerHTML = '';
+  const troubles = report.troubles || [];
+  if(!troubles.length){ box.hidden = true; return; }
+
+  for(const trouble of troubles){
+    const row = document.createElement('div');
+    row.className = 'tr';
+
+    const name = document.createElement('span');
+    name.className = 'grow' + (trouble.hole ? ' cu-hole' : '');
+    name.textContent = trouble.kind_name
+      + (trouble.detail ? ' — ' + trouble.detail : '');
+    name.title = name.textContent;
+
+    const count = document.createElement('span');
+    count.className = 'num';
+    count.textContent = trouble.count;
+    row.append(name, count);
+    box.append(row);
+
+    const where = document.createElement('div');
+    // Класс общий, «приглушённый»: карточка подсвечивает свой текст
+    // целиком, и своя копия того же цвета из подсветки бы выпала.
+    where.className = 'hint';
+    where.style.margin = '2px 10px 8px';
+    where.textContent = (trouble.where || []).join(' · ')
+      + (trouble.more ? ` … и ещё ${trouble.more}` : '');
+    box.append(where);
+  }
+  box.hidden = false;
+}
+
+$('cuStart').onclick = () => cuStart();
+$('cuStop').onclick = () => stopJob(cuJob);
+
 // Раздел 3: свои стрелки у всех числовых полей приложения.
 addSpinners();
 
@@ -5716,3 +5865,102 @@ $('rkRefresh').onclick = rkRefresh;
 $('rkTranslate').onclick = rkTranslate;
 $('rkFilter').addEventListener('input', rkRender);
 rkLoadCategories().then(rkState);
+
+
+/* ------------------------------------------------- общая доска «Везде»
+ *
+ * Склейка книг по сайтам считается на сервере: сравнение названий и
+ * правило «одинаковое название при разных авторах — не одна книга»
+ * живут в `ops/everywhere`, и второй их экземпляр здесь однажды
+ * разошёлся бы с первым.
+ */
+
+let evRows = [];
+
+async function evLoad(){
+  showError('');
+  $('evStart').disabled = true;
+  $('evNote').innerHTML = '<span class="spin"></span>Сводим срезы…';
+  try{
+    const data = await call('/api/rank/everywhere');
+    evRows = data.rows || [];
+
+    $('evNote').textContent = data.total
+      ? `Книг: ${data.total}, из них на нескольких сайтах: ${data.shared}.`
+        + (data.more ? ` Показаны первые ${data.total - data.more}.` : '')
+      : 'Срезов ещё нет. Снимите хотя бы один рейтинг кнопкой «Обновить срез».';
+
+    // Из чего собрана доска: срез месячной давности — не «читают
+    // сейчас», и не сказать об этом значило бы соврать датой.
+    const taken = $('evTaken');
+    taken.innerHTML = '';
+    for(const row of data.taken || []){
+      const line = document.createElement('div');
+      line.className = 'tr';
+      const name = document.createElement('span');
+      name.className = 'grow';
+      name.textContent = [row.site_name, row.board_name, row.category_name]
+        .filter(Boolean).join(' · ');
+      const when = document.createElement('span');
+      when.className = 'num';
+      when.textContent = `${row.day} · ${row.rows}`;
+      line.append(name, when);
+      taken.append(line);
+    }
+    taken.hidden = !(data.taken || []).length;
+
+    evRender();
+  }catch(err){
+    showError(err.message);
+    $('evNote').textContent = '';
+  }finally{
+    $('evStart').disabled = false;
+  }
+}
+
+function evRender(){
+  const only = $('evOnlyShared').checked;
+  const table = $('evTable');
+  table.innerHTML = '';
+
+  const rows = evRows.filter(row => !only || row.sites > 1);
+  if(!rows.length){
+    const line = document.createElement('div');
+    line.className = 'tr';
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = only
+      ? 'Ни одной книги не узнали больше чем в одном рейтинге.'
+      : 'Пусто.';
+    line.append(text);
+    table.append(line);
+    return;
+  }
+
+  for(const row of rows){
+    const line = document.createElement('div');
+    line.className = 'tr';
+
+    const place = document.createElement('span');
+    place.className = 'num';
+    place.textContent = row.best || '—';
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.name + (row.author ? ` — ${row.author}` : '');
+    name.title = name.textContent;
+
+    line.append(place, name);
+    for(const seat of row.seats){
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = `${seat.site_name} #${seat.place || '—'}`;
+      tag.title = [seat.board, seat.day].filter(Boolean).join(' · ');
+      line.append(tag);
+    }
+    table.append(line);
+  }
+}
+
+$('evStart').onclick = evLoad;
+$('evOnlyShared').addEventListener('change', evRender);

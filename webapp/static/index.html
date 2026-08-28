@@ -486,6 +486,10 @@
   .table .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .table .num{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
   .table .tr.service{opacity:.62}
+  /* Осмотр папки: дыра в книге и повод присмотреться должны отличаться
+     на глаз. Ровный перечень читается как «десять одинаковых бед», и
+     пропущенная глава теряется среди коротких. */
+  .cu-hole{color:#ff9b9b}
   .table .tag{
     font-size:10.5px;padding:2px 7px;border-radius:99px;white-space:nowrap;
     background:rgba(176,108,255,.2);color:#e2d3ff;
@@ -2577,6 +2581,32 @@
     <div class="table" id="cmpFindings" style="margin-top:10px"></div>
   </div>
 
+  <!-- Два слива одной книги. От сверки выше отличается тем, что главной
+       стороны здесь нет: обе папки равны, объём должен совпадать один к
+       одному, и вопрос ровно один — какую из двух брать. -->
+  <div class="card">
+    <label>Два слива одной книги</label>
+    <p class="hint">Одна книга, скачанная с двух сайтов. Слив бывает
+       обрезан, и по одной папке этого не видно — она выглядит целой.
+       Главы сопоставляются по номерам, ничего не сливается и не
+       правится.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="sdLeft" type="text" placeholder="первая папка" autocomplete="off">
+      <button class="ghost browse" data-target="sdLeft" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="sdRight" type="text" placeholder="вторая папка" autocomplete="off">
+      <button class="ghost browse" data-target="sdRight" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="sdStart" class="primary" style="flex:1">Сравнить</button>
+    </div>
+    <p class="hint" id="sdNote"></p>
+    <p class="result-path" id="sdAdvice"></p>
+    <div class="chips" id="sdSummary" style="margin-top:8px"></div>
+    <div class="table" id="sdFindings" style="margin-top:10px;max-height:460px"></div>
+  </div>
+
   <!-- 4.4 Читалка -->
   <div class="card">
     <label>Читалка</label>
@@ -2791,6 +2821,29 @@
     <div class="chosen" id="ckList"></div>
   </div>
 
+  <!-- Осмотр скачанного. Дыры в нумерации, пустые главы, обрывки и
+       повторы программа умеет ловить и по отдельности — но каждая
+       проверка со своей галочкой, и книгу на тысячу глав так никто не
+       смотрит. Здесь одна кнопка на всё, до разбора текста.
+       Выбор берётся тот же, что у остальных проверок вкладки. -->
+  <div class="card" id="cuCard">
+    <label>Всё ли на месте</label>
+    <p class="hint">Быстрый проход по папке: чего не хватает, что пустое,
+       что оборвано на полуслове и что лежит дважды. Ничего не чинит,
+       файлы не трогает.</p>
+    <div class="row" style="margin-top:14px">
+      <button id="cuStart" class="ghost" style="flex:1">Осмотреть</button>
+      <button id="cuStop" class="ghost" style="flex:0 0 auto" hidden>Остановить</button>
+    </div>
+
+    <div id="cuBox" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="cuStatus"></span></div>
+      <div class="bar"><i id="cuFill"></i></div>
+      <div class="stats"><span class="timers" id="cuTimers"></span></div>
+      <div class="table" id="cuFound" hidden style="margin-top:10px;max-height:460px"></div>
+    </div>
+  </div>
+
   <div class="card">
     <label>Что искать</label>
     <div class="presets" id="ckPresets"></div>
@@ -2914,6 +2967,27 @@
       <div class="table" id="rkFontRows" style="margin-top:8px"></div>
     </details>
     <div class="table" id="rkTable" style="margin-top:10px;max-height:520px"></div>
+  </div>
+
+  <!-- Общая доска. Каждый рейтинг знает только свой сайт, и книга,
+       которую читают везде, стоит в четырёх списках порознь. Здесь
+       последние срезы всех сайтов сведены в один список: узнали книгу
+       больше чем в одном рейтинге — она одной строкой с местом на
+       каждом сайте. Сводятся по названию, поэтому склеиваются прежде
+       всего соседи по языку; это предел способа, а не недоделка. -->
+  <div class="card">
+    <label>Везде</label>
+    <p class="hint">Книга, которую узнали сразу в нескольких рейтингах, —
+       одной строкой. Берутся последние срезы каждого сайта: чего не
+       снимали, того здесь и нет.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="evStart" class="ghost" style="flex:1">Собрать общую доску</button>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="evOnlyShared" checked> только те, что на нескольких</label>
+    </div>
+    <p class="hint" id="evNote"></p>
+    <div class="table" id="evTaken" hidden style="margin-top:8px"></div>
+    <div class="table" id="evTable" style="margin-top:10px;max-height:520px"></div>
   </div>
 
 </section>
@@ -4551,6 +4625,21 @@ function libCard(book){
   }
 
   if(book.folder){
+    // Осмотр папки живёт на «Проверке»: там же выбор файлов и там же
+    // разбор текста. Отсюда — один щелчок, чтобы не искать папку руками
+    // через полгода после скачивания.
+    const look = document.createElement('button');
+    look.className = 'ghost';
+    look.textContent = 'Осмотреть';
+    look.title = 'Всё ли на месте: пропуски, пустые главы, обрывки, повторы';
+    look.onclick = () => {
+      goTab('check');
+      CHOSEN.ckList = [book.folder];
+      renderChosen('ckList');
+      cuStart([book.folder]);
+    };
+    deeds.append(look);
+
     const doc = document.createElement('button');
     doc.className = 'ghost';
     doc.textContent = 'Паспорт';

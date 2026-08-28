@@ -46,10 +46,12 @@ from llm.client import BadKey, LlmClient, LlmError, NoKeysLeft, mask, short  # n
 from llm import keys as keys_mod  # noqa: E402
 from llm.keys import store as keystore  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
+from ops import checkup as checkup_op  # noqa: E402
 from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
 from ops import downloads as downloads_op  # noqa: E402
+from ops import everywhere as everywhere_op  # noqa: E402
 from ops import library as library_op  # noqa: E402
 from ops import diff as diff_op  # noqa: E402
 from ops import docs as docs_op  # noqa: E402
@@ -61,6 +63,7 @@ from ops import session as session_op  # noqa: E402
 from ops import queue as queue_op  # noqa: E402
 from ops import reader as reader_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
+from ops import sides as sides_op  # noqa: E402
 from ops import signature as signature_op  # noqa: E402
 from ops import spelling as spelling_op  # noqa: E402
 from ops import stats as stats_op  # noqa: E402
@@ -3019,6 +3022,26 @@ def api_rank_categories():
     )
 
 
+@app.get("/api/rank/everywhere")
+def api_rank_everywhere():
+    """Общая доска: книга, которую узнали сразу в нескольких рейтингах."""
+    names = {key: site["name"] for key, site in RANK_SITES.items()}
+
+    # Подписи досок и разделов складываются здесь: у Фанкью доска
+    # собирается из пола и вида, у остальных приходит с сайта, а вторым
+    # измерением у Цидяня идёт раздел, у Фанкью — жанр. Общей доске эти
+    # различия знать незачем — ей нужны готовые названия.
+    boards = {key: dict(site["boards"]) for key, site in RANK_SITES.items()}
+    boards[""] = dict(rank_cats.BOARDS)
+
+    cats = dict(rank_cats.NAMES)
+    for site in RANK_SITES.values():
+        cats.update(site.get("channels") or {})
+
+    return jsonify(**everywhere_op.board(
+        names=names, boards=boards, categories=cats).as_dict())
+
+
 @app.get("/api/rank/state")
 def api_rank_state():
     """Что уже накоплено по этому разделу и категории."""
@@ -3568,6 +3591,54 @@ def api_compare_start():
 @app.get("/api/compare/kinds")
 def api_compare_kinds():
     return jsonify(kinds=[{"key": k, "name": v} for k, v in compare_op.KINDS.items()])
+
+
+@app.post("/api/sides/start")
+def api_sides_start():
+    """Одна книга с двух сайтов: где они расходятся и какую папку брать."""
+    payload = request.json or {}
+    left = _targets({"targets": payload.get("left")})
+    right = _targets({"targets": payload.get("right")})
+
+    if not left or not right:
+        return jsonify(error="Выберите обе папки: два слива одной книги"), 400
+    try:
+        return jsonify(**sides_op.compare(left, right).as_dict())
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/checkup/start")
+def api_checkup_start():
+    """Осмотр скачанного: дыры в нумерации, пустые главы, обрывки, повторы.
+
+    Задачей, а не сразу ответом: книга на полторы тысячи глав читается
+    целиком, и держать страницу немой полминуты нельзя.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите папку книги"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="checkup",
+        meta={"targets": targets},
+        output_dir=targets[0],
+    )
+    job.progress = {"stage": "checkup", "message": "Читаем главы…",
+                    "done": 0, "total": 0}
+
+    def work(job: Job):
+        found = checkup_op.look(targets, Progress(
+            lambda done, total, message="": job.progress.update(
+                done=done, total=total,
+                message=message or f"Файл {done} из {total}"),
+            job.cancel))
+        job.report = found.as_dict()
+        job.progress.update(stage="done", message=found.summary())
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 
