@@ -156,5 +156,81 @@ class TestSignature(Base):
         self.assertEqual(sorted(p.name for p in Path(book).iterdir()), before)
 
 
+class TestStandout(Base):
+    """Какая глава выделяется объёмом (кнопка «Проверить объём»).
+
+    Мерка — медиана самой книги: у одной книги обычная глава на две
+    тысячи знаков, у другой на десять, и общий порог соврал бы обеим.
+    """
+
+    NORMAL = "Обычный абзац главы, длинный и содержательный. " * 12
+
+    def book(self, odd=None):
+        """Ровная книга из пятнадцати глав, кроме названных."""
+        chapters = {n: [self.NORMAL] for n in range(1, 16)}
+        chapters.update(odd or {})
+        return self.folder("книга", chapters)
+
+    def out(self, folder):
+        return stats.collect(folder).as_dict()["standout"]
+
+    def test_an_even_book_has_nothing_standing_out(self):
+        """Проверка, которая всегда что-то находит, ничего не говорит."""
+        out = self.out(self.book())
+        self.assertTrue(out["enough"])
+        self.assertEqual(out["total"], 0)
+
+    def test_a_chapter_half_the_usual_size_stands_out(self):
+        out = self.out(self.book({4: ["Он ушёл."]}))
+        self.assertEqual(out["small"], 1)
+        self.assertEqual(out["chapters"][0]["mark"], "small")
+        self.assertEqual(out["chapters"][0]["mark_name"], stats.MARKS["small"])
+
+    def test_a_chapter_twice_the_usual_size_stands_out(self):
+        out = self.out(self.book({9: [self.NORMAL] * 4}))
+        self.assertEqual(out["big"], 1)
+        self.assertEqual(out["chapters"][0]["mark"], "big")
+
+    def test_it_says_by_how_much_not_just_that(self):
+        """«Заметно длиннее» без числа не помогает решить, делить ли."""
+        out = self.out(self.book({9: [self.NORMAL] * 4}))
+        self.assertGreater(out["chapters"][0]["times"], 2)
+
+    def test_ordinary_spread_is_not_a_finding(self):
+        """Главы разной длины — норма, и звать это находкой значило бы
+        завалить отчёт шумом."""
+        out = self.out(self.book({
+            # Заметно больше и заметно меньше обычной, но не вдвое.
+            3: [self.NORMAL, self.NORMAL[:200]],
+            7: ["Короче обычной, но не вдвое. " * 14],
+        }))
+        self.assertEqual(out["total"], 0, out)
+
+    def test_a_short_book_is_not_measured_against_its_own_median(self):
+        """В книге из трёх глав любая отличается от любой вдвое просто
+        так, и «выделяется» сказать не о чем."""
+        folder = self.folder("мало", {1: ["Раз."], 2: [self.NORMAL], 3: ["Три."]})
+        self.assertFalse(self.out(folder)["enough"])
+
+    def test_the_measure_is_the_books_own_median(self):
+        """У книги с длинными главами короткой считается другая длина."""
+        big = self.folder("толстая", {n: [self.NORMAL * 5] for n in range(1, 16)})
+        out = self.out(big)
+        self.assertGreater(out["middle"], len(self.NORMAL) * 4)
+        self.assertEqual(out["total"], 0)
+
+    def test_the_same_code_measures_chapters_read_elsewhere(self):
+        """Книга одним .md читается своим разбором, а считаться должна
+        тем же кодом: иначе объём главы в одной вкладке разойдётся с ним
+        же в соседней."""
+        rows = [(f"Глава {n}", f"Глава {n}", [self.NORMAL], "книга.md")
+                for n in range(1, 16)]
+        rows[3] = ("Глава 4", "Глава 4", ["Он ушёл."], "книга.md")
+        out = stats.measure(rows).as_dict()["standout"]
+
+        self.assertEqual(out["small"], 1)
+        self.assertEqual(out["chapters"][0]["title"], "Глава 4")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

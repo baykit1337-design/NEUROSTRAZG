@@ -2246,6 +2246,25 @@ def _md_pairs(chapters) -> list:
     return [(head.title, mdbook.paragraphs_of(lines)) for head, lines in chapters]
 
 
+@app.post("/api/format/volume")
+def api_format_volume():
+    """Объём глав готовой книги: какие выделяются на фоне остальных.
+
+    Считает `ops/stats` — тот же, что и в «Разбить» с «Переименовать»:
+    объём главы не должен зависеть от того, из какой вкладки смотрят.
+    """
+    payload = request.json or {}
+    try:
+        path, _, chapters = _read_md(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    report = stats_op.measure(
+        (head.title, head.title, mdbook.paragraphs_of(lines), str(path))
+        for head, lines in chapters)
+    return jsonify(path=str(path), **report.as_dict())
+
+
 @app.post("/api/format/junk")
 def api_format_junk():
     """Что в главах лишнего: дубли заголовка, название книги, артефакты."""

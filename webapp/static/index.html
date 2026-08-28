@@ -1610,6 +1610,21 @@
     <div class="table" id="spPreview" style="max-height:420px"></div>
   </div>
 
+  <!-- Объём глав. Тот же вопрос стоит на «Переименовать» и
+       «Форматировать», и считает его один и тот же `ops/stats`: объём
+       главы не должен зависеть от того, из какой вкладки смотрят. -->
+  <div class="card" id="spVolCard">
+    <label>Объём глав</label>
+    <p class="hint">Какие главы выделяются на фоне остальных. Мерка —
+       медиана самой книги, а не круглое число знаков: у одной книги
+       обычная глава на две тысячи знаков, у другой на десять.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="spVolLook" class="ghost" style="flex:1">Проверить объём</button>
+    </div>
+    <p class="hint" id="spVolNote"></p>
+    <div class="table" id="spVolTable" hidden style="margin-top:10px;max-height:360px"></div>
+  </div>
+
   <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
   <div class="card" id="spStyle" hidden>
     <label>Оформление документа</label>
@@ -1794,6 +1809,18 @@
       <button class="ghost" id="rnNone" style="padding:5px 12px;font-size:12px">Снять</button>
     </div>
     <div class="table" id="rnList"></div>
+  </div>
+
+  <!-- Объём глав — тот же блок, что в «Разбить» и «Форматировать». -->
+  <div class="card" id="rnVolCard">
+    <label>Объём глав</label>
+    <p class="hint">Какие главы выделяются на фоне остальных. Мерка —
+       медиана самой книги, а не круглое число знаков.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="rnVolLook" class="ghost" style="flex:1">Проверить объём</button>
+    </div>
+    <p class="hint" id="rnVolNote"></p>
+    <div class="table" id="rnVolTable" hidden style="margin-top:10px;max-height:360px"></div>
   </div>
 
   <div class="card" id="rnPreviewCard" hidden>
@@ -2296,6 +2323,20 @@
       </div>
       <p class="result-path" id="fmJunkResult"></p>
     </div>
+  </div>
+
+  <!-- Объём глав — тот же блок, что в «Разбить» и «Переименовать».
+       Здесь книга лежит одним .md, поэтому за главы берутся куски между
+       заголовками загрузчика, а считает их всё тот же `ops/stats`. -->
+  <div class="card" id="fmVolCard">
+    <label>Объём глав</label>
+    <p class="hint">Какие главы выделяются на фоне остальных. Мерка —
+       медиана самой книги, а не круглое число знаков.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="fmVolLook" class="ghost" style="flex:1">Проверить объём</button>
+    </div>
+    <p class="hint" id="fmVolNote"></p>
+    <div class="table" id="fmVolTable" hidden style="margin-top:10px;max-height:360px"></div>
   </div>
 
   <div class="card lit" id="fmProgress" hidden>

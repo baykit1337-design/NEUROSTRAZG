@@ -1788,6 +1788,93 @@ for(const [p, state, update, scan] of [
   $(p + 'Base').addEventListener('input', update);
 }
 
+/* ------------------------------------------------------- объём глав
+ *
+ * Один и тот же вопрос на трёх вкладках: какая глава выделяется, малая
+ * или большая. Считает его сервер (`ops/stats`), а рисуется он здесь
+ * одним кодом на все три — иначе объём главы в одной вкладке однажды
+ * разошёлся бы с ним же в соседней.
+ */
+
+async function volumeLook(prefix, url, body){
+  showError('');
+  const button = $(prefix + 'VolLook');
+  button.disabled = true;
+  $(prefix + 'VolNote').innerHTML = '<span class="spin"></span>Считаем…';
+  try{
+    volumeShow(prefix, await call(url, body));
+  }catch(err){
+    showError(err.message);
+    $(prefix + 'VolNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
+function volumeShow(prefix, data){
+  const table = $(prefix + 'VolTable');
+  table.innerHTML = '';
+  const out = data.standout || {};
+
+  if(!data.chapters){
+    $(prefix + 'VolNote').textContent = 'Глав не нашлось.';
+    table.hidden = true;
+    return;
+  }
+  if(!out.enough){
+    // Порог живёт на сервере, и причина молчания приходит оттуда же.
+    $(prefix + 'VolNote').textContent =
+      `Глав: ${data.chapters}. Их слишком мало, чтобы говорить, какая ` +
+      'выделяется: в короткой книге любая отличается от любой вдвое.';
+    table.hidden = true;
+    return;
+  }
+
+  $(prefix + 'VolNote').textContent =
+    `Глав: ${data.chapters}, обычная около ${out.middle.toLocaleString('ru')} ` +
+    `знаков. Короче обычного: ${out.small}, длиннее: ${out.big}.` +
+    (out.total ? '' : ' Все главы ровные.');
+
+  for(const row of out.chapters || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.title || row.label;
+    name.title = row.source || name.textContent;
+
+    const tag = document.createElement('span');
+    tag.className = 'tag warn';
+    tag.textContent = row.mark_name;
+
+    const size = document.createElement('span');
+    size.className = 'num';
+    // «В 4 раза» отвечает на «насколько», а голые знаки — нет.
+    size.textContent = `${row.characters.toLocaleString('ru')} симв. · ×${row.times}`;
+
+    line.append(name, tag, size);
+    table.append(line);
+  }
+  if(out.more){
+    const line = document.createElement('div');
+    line.className = 'tr';
+    const rest = document.createElement('span');
+    rest.className = 'grow';
+    rest.textContent = `…и ещё ${out.more}`;
+    line.append(rest);
+    table.append(line);
+  }
+  table.hidden = !(out.chapters || []).length;
+}
+
+$('spVolLook').onclick = () =>
+  volumeLook('sp', '/api/stats', {targets: CHOSEN.spList || []});
+$('rnVolLook').onclick = () =>
+  volumeLook('rn', '/api/stats', {targets: [$('rnIn').value.trim()]});
+$('fmVolLook').onclick = () =>
+  volumeLook('fm', '/api/format/volume', {targets: CHOSEN.fmBookList || []});
+
 $('spFolder').addEventListener('input', spUpdateFinal);
 $('spRescan').onclick = () => spScan();
 $('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') spScan(); });
