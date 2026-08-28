@@ -36,6 +36,20 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(names(rank.order(rows(), "place")),
                          ["Первая", "Вторая", "Третья", "Четвёртая"])
 
+    def test_by_place_from_the_last_one(self):
+        """«От первого места или от последнего» — то же переключение
+        направления, что и у чисел."""
+        self.assertEqual(names(rank.order(rows(), "place", desc=False)),
+                         ["Четвёртая", "Третья", "Вторая", "Первая"])
+
+    def test_a_row_without_a_place_stays_at_the_bottom_either_way(self):
+        """«Последними» их звать не за что — мы их просто не знаем."""
+        found = rows() + [RankRow(place=0, book_id="e", name="Безместная")]
+        for desc in (True, False):
+            with self.subTest(desc=desc):
+                self.assertEqual(names(rank.order(found, "place", desc=desc))[-1],
+                                 "Безместная")
+
     def test_many_chapters_first(self):
         self.assertEqual(names(rank.order(rows(), "chapters", desc=True))[:2],
                          ["Вторая", "Первая"])

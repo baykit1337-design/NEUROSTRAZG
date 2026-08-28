@@ -145,7 +145,12 @@ def order(rows, by: str = "place", desc: bool = True, fresh=()) -> list:
     """
     rows = list(rows)
     if by not in ORDERS or by == "place":
-        return sorted(rows, key=lambda row: row.place or 10**6)
+        # Сверху первое место или сверху последнее. Строки без места
+        # всегда внизу: «последними» их звать не за что — мы их просто
+        # не знаем.
+        sign = 1 if desc else -1
+        return sorted(rows, key=lambda row: (not row.place,
+                                             sign * (row.place or 0)))
 
     if by == "new":
         fresh = set(fresh or ())

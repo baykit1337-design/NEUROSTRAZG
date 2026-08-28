@@ -739,3 +739,57 @@ class TestTheShakeRunsOnEveryRefusal(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class TestNeonStart(Base):
+    """Неон включается при запуске: раз — разраз — раз — разразраз."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "neon-start.css").read_text(encoding="utf-8")
+        cls.js = (JS / "neonstart.js").read_text(encoding="utf-8")
+
+    def test_it_flickers_rather_than_fades_in(self):
+        """Ровное появление читалось бы как «страница медленно грузится».
+        Вывеска же схватывается рывками, поэтому шаги, а не плавность."""
+        self.assertIn("steps(", self.css.replace(" ", ""))
+
+    def test_the_flicker_is_uneven(self):
+        """У настоящей вывески промежутки между вспышками разной длины.
+        Ровный пульс выглядел бы как индикатор загрузки."""
+        block = self.css[self.css.index("@keyframes fx-neon-warm"):]
+        stops = [int(found) for found in
+                 re.findall(r"\n\s*(\d+)%", block)]
+        gaps = {b - a for a, b in zip(stops, stops[1:])}
+        self.assertGreater(len(gaps), 3, stops)
+
+    def test_it_ends_fully_lit(self):
+        """Слой обязан догореть до нуля: иначе страница осталась бы
+        притемнённой навсегда."""
+        block = self.css[self.css.index("@keyframes fx-neon-warm"):]
+        self.assertRegex(block, r"100%\s*\{opacity:\s*0\s*\}")
+
+    def test_the_page_itself_is_not_dimmed(self):
+        """`opacity` и `filter` у body делают его точкой отсчёта для
+        `position:fixed`, и на пару секунд уехали бы подсказки, тосты и
+        звёздное поле. Поэтому мигает вуаль поверх страницы."""
+        self.assertNotIn("body{", self.css.replace(" ", ""))
+        self.assertIn("position:fixed", self.css.replace(" ", ""))
+
+    def test_the_veil_lets_clicks_through(self):
+        self.assertIn("pointer-events:none", self.css.replace(" ", ""))
+
+    def test_the_veil_is_taken_away_afterwards(self):
+        """Лишний слой во весь экран — лишний повод однажды поймать им
+        нажатие."""
+        self.assertIn("veil.remove()", self.js)
+        self.assertIn("animationend", self.js)
+
+    def test_a_timer_takes_it_away_even_without_the_animation(self):
+        """При «уменьшить движение» анимация не играет и `animationend`
+        не придёт — слой снял бы кто-то другой или никто."""
+        self.assertIn("setTimeout(drop", self.js)
+
+    def test_it_does_not_light_up_when_the_switch_is_off(self):
+        self.assertIn("fx-neon-start", self.js)
+

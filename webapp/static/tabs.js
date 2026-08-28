@@ -5365,7 +5365,12 @@ function rkOrderKnown(rows){
 
 function rkSort(rows){
   if(rkOrderBy === 'place' || !rkOrders.length){
-    return [...rows].sort((a, b) => (a.place || 1e6) - (b.place || 1e6));
+    // Сверху первое место или сверху последнее. Строки без места всегда
+    // внизу: «последними» их звать не за что — мы их просто не знаем.
+    const sign = rkOrderDesc ? 1 : -1;
+    return [...rows].sort((a, b) =>
+      (a.place ? 0 : 1) - (b.place ? 0 : 1)
+      || sign * ((a.place || 0) - (b.place || 0)));
   }
   if(rkOrderBy === 'new'){
     // Новинки наверх, внутри — по месту: новая книга на пятом месте
@@ -5386,6 +5391,22 @@ function rkSort(rows){
     }
     return sign * (one - two) || (a.place || 1e6) - (b.place || 1e6);
   });
+}
+
+/** Подпись на переключателе направления — своя у места и у чисел.
+ *
+ *  Положение переключателя у них общее: «сверху то, что выше в
+ *  рейтинге» — первое место или большее число. Разные подписи на одну
+ *  кнопку нужны затем, чтобы «↓ больше сверху» не стояло над списком,
+ *  где сортируют по месту.
+ */
+function rkShowDir(){
+  const button = $('rkOrderDir');
+  // У «новинок» направления нет: они либо наверху, либо это уже не они.
+  button.hidden = rkOrderBy === 'new';
+  button.textContent = rkOrderBy === 'place'
+    ? (rkOrderDesc ? '↓ с первого места' : '↑ с последнего места')
+    : (rkOrderDesc ? '↓ больше сверху' : '↑ меньше сверху');
 }
 
 function rkOrderNote(rows){
@@ -5410,8 +5431,7 @@ function rkRender(){
   const said = rkOrderNote(shown);
   $('rkOrderNote').textContent = said;
   $('rkOrderNote').hidden = !said;
-  // Направление имеет смысл только у числовых порядков.
-  $('rkOrderDir').hidden = !rkOrderField();
+  rkShowDir();
 
   if(!shown.length){
     box.innerHTML = '<div class="tr"><span class="grow hint">'
@@ -6326,7 +6346,6 @@ $('rkFilter').addEventListener('input', rkRender);
 
 $('rkOrderDir').onclick = () => {
   rkOrderDesc = !rkOrderDesc;
-  $('rkOrderDir').textContent = rkOrderDesc ? '↓ больше сверху' : '↑ меньше сверху';
   rkRender();
 };
 
