@@ -4185,6 +4185,98 @@ async function hsRestore(record, button){
 $('dfStart').onclick = dfStart;
 $('hsLoad').onclick = hsLoad;
 
+/* ------------------------------------------- обновление программы
+ *
+ * Проверка и загрузка разделены нарочно: трафик у человека может быть на
+ * счету, и решать, тратить ли его на файлы, должен он — увидев сперва,
+ * сколько их и насколько они изменились.
+ *
+ * Вес в байтах до загрузки не обещаем: сравнение отдаёт число строк, а не
+ * байт, и выдавать одно за другое нельзя.
+ */
+
+let upPlan = null;
+
+function upDrawFiles(plan){
+  const table = $('upFiles');
+  table.innerHTML = '';
+  for(const one of plan.changes || []){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = one.path;
+    name.title = one.path;
+    const tag = document.createElement('span');
+    tag.className = 'tag' + (one.gone ? ' warn' : '');
+    tag.textContent = one.gone ? 'удалён'
+      : one.status === 'added' ? 'новый' : 'изменён';
+    const size = document.createElement('span');
+    size.className = 'num';
+    size.textContent = one.gone ? '—' : `${one.lines} стр.`;
+    row.append(name, tag, size);
+    table.append(row);
+  }
+  table.hidden = !(plan.changes || []).length;
+}
+
+async function upLook(){
+  showError('');
+  const button = $('upLook');
+  button.disabled = true;
+  $('upNote').innerHTML = '<span class="spin"></span>Спрашиваем…';
+  try{
+    const plan = await call('/api/update/look');
+    upPlan = plan;
+    $('upWhere').textContent = `Источник: ${plan.where}`;
+    upDrawFiles(plan);
+    $('upApply').hidden = plan.fresh || !plan.files || !!plan.trouble;
+    if(plan.trouble){
+      $('upNote').textContent = plan.trouble;
+    }else if(plan.fresh){
+      $('upNote').textContent = 'Стоит последняя версия.';
+    }else{
+      $('upNote').textContent =
+        `Изменилось файлов: ${plan.files}, строк: ${plan.lines}. `
+        + 'Точный вес станет известен при загрузке — сравнение его не '
+        + 'сообщает. Старые файлы уйдут в корзину.';
+    }
+  }catch(err){
+    showError(err.message, $('upNote'));
+    $('upNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
+async function upApply(){
+  showError('');
+  $('upApply').disabled = true;
+  $('upErrors').hidden = true;
+  try{
+    const {job} = await call('/api/update/apply', {});
+    $('upProgress').hidden = false;
+    pollJob(job.id,
+      job => drawResult(job.progress || {}, 'upFill', 'upStatus', 'upPct'),
+      job => {
+        $('upApply').disabled = false;
+        if(job.error){ showError(job.error, $('upNote')); return; }
+        $('upApply').hidden = true;
+        $('upFiles').hidden = true;
+        showFailures('upErrors', (job.report?.failures || []).map(
+          one => ({file: one, step: 'обновление', error: ''})));
+        $('upNote').textContent =
+          'Обновлено. Изменения вступят в силу после перезапуска программы.';
+      });
+  }catch(err){
+    showError(err.message, $('upNote'));
+    $('upApply').disabled = false;
+  }
+}
+
+$('upLook').onclick = upLook;
+$('upApply').onclick = upApply;
+
 /* ------------------------------------------- отчёт о проблеме
  *
  * Журнал теперь пишется в файл, но найти его в папке данных и вырезать

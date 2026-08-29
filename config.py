@@ -139,6 +139,25 @@ class Llm:
 
 
 @dataclass
+class Update:
+    """Откуда программа обновляет саму себя.
+
+    Вынесено в настройки, а не вбито в код, по простой причине: репозиторий,
+    из которого качают готовую программу, и репозиторий, в котором её
+    пишут, — не обязательно один и тот же. Сменить адрес должно быть
+    можно, не трогая код.
+    """
+
+    owner: str = "baykit1337-design"
+    repo: str = "mvlparser"
+    branch: str = "main"
+    #: Спрашивать ли при запуске, вышло ли новое. Один запрос примерно на
+    #: триста байт: трафик у человека может быть на счету, и решать, тратить
+    #: ли его, должен он.
+    check_on_start: bool = True
+
+
+@dataclass
 class Config:
     network: Network = field(default_factory=Network)
     threads: Threads = field(default_factory=Threads)
@@ -146,6 +165,7 @@ class Config:
     mirror: Mirror = field(default_factory=Mirror)
     output: Output = field(default_factory=Output)
     llm: Llm = field(default_factory=Llm)
+    update: Update = field(default_factory=Update)
     #: Метод многопоточности, сработавший в прошлый раз, — пробуем первым.
     last_download_method: str = ""
 

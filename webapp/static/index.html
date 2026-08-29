@@ -2968,6 +2968,32 @@
     <div class="table" id="hsRecords" style="margin-top:10px"></div>
   </div>
 
+  <!-- Обновление программы. Забираются только изменившиеся файлы:
+       проверка стоит около трёхсот байт, а качается ровно то, что
+       поменялось, — трафик может быть на счету. Загрузка отделена от
+       проверки нарочно: сколько платить, человек решает сам, увидев
+       список. -->
+  <div class="card" id="upCard">
+    <label>Обновление программы</label>
+    <p class="hint" id="upWhere"></p>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <button id="upLook" class="ghost">Проверить обновления</button>
+      <button id="upApply" class="primary" hidden>Обновить</button>
+    </div>
+    <p class="hint" id="upNote">Проверка спрашивает у GitHub один адрес —
+       это около трёхсот байт. Сами файлы качаются только по кнопке
+       «Обновить», и до неё видно, сколько их.</p>
+    <div class="table" id="upFiles" hidden style="margin-top:10px;max-height:260px"></div>
+
+    <div id="upProgress" hidden style="margin-top:12px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="upStatus"></span></div>
+      <div class="bar"><i id="upFill"></i></div>
+      <div class="stats"><span id="upPct"></span></div>
+    </div>
+    <div class="table" id="upErrors" hidden style="margin-top:10px"></div>
+  </div>
+
   <!-- Отчёт о проблеме. Раньше журнал уходил только в консоль, а окно на
        Windows закрывается вместе с программой: единственная строка, по
        которой поломку можно было разобрать, пропадала. Теперь журнал

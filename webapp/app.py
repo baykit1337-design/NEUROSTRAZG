@@ -38,6 +38,7 @@ from net.sources import webnovelrank as wn_rank_net  # noqa: E402
 from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
 from ops import logbook  # noqa: E402
+from ops import update as update_op  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
@@ -4759,6 +4760,66 @@ def api_open():
         return jsonify(error=str(exc)), 400
 
     return jsonify(opened=str(opened))
+
+
+@app.get("/api/update/look")
+def api_update_look():
+    """Вышло ли новое. Один запрос примерно на триста байт.
+
+    Проверка отделена от загрузки нарочно: трафик у человека может быть
+    на счету, и решать, тратить ли его на сами файлы, должен он — увидев
+    сперва, сколько их и насколько они изменились.
+    """
+    client = Client()
+    try:
+        return jsonify(**update_op.look(client).as_dict())
+    except HttpError as exc:
+        return jsonify(error=f"GitHub ответил {exc.status}. "
+                             "Проверьте адрес репозитория в настройках."), 400
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось спросить об обновлении: {exc}"), 400
+    finally:
+        client.close()
+
+
+@app.post("/api/update/apply")
+def api_update_apply():
+    """Забирает изменившиеся файлы. Только по нажатию, не сама."""
+    client = Client()
+    try:
+        plan = update_op.look(client)
+    except (HttpError, OSError, ValueError) as exc:
+        client.close()
+        return jsonify(error=f"Не удалось получить список изменений: {exc}"), 400
+
+    if plan.trouble:
+        client.close()
+        return jsonify(error=plan.trouble), 400
+    if plan.fresh or not plan.changes:
+        client.close()
+        return jsonify(error="Обновлять нечего: стоит последняя версия"), 400
+
+    total = len(plan.changes)
+    job = Job(id=uuid.uuid4().hex[:12], kind="update",
+              meta={"files": total, "revision": plan.there})
+    job.progress = {"stage": "update", "message": f"Забираем {total} файлов…",
+                    "done": 0, "total": total}
+
+    def work(job: Job):
+        try:
+            done = update_op.apply(client, plan, _progress(job, "Файл"))
+        finally:
+            client.close()
+        job.report = done.as_dict()
+        job.progress.update(
+            stage="done", done=total, total=total,
+            message=(f"Готово. Обновлено {done.written}"
+                     + (f", удалено {done.removed}" if done.removed else "")
+                     + (f", не вышло {len(done.failures)}"
+                        if done.failures else "")
+                     + ". Перезапустите программу."))
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 @app.post("/api/report")
