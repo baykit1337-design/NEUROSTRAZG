@@ -737,17 +737,29 @@ class TestTheShakeRunsOnEveryRefusal(Base):
         self.assertIn("showError", self.code)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 class TestNeonStart(Base):
-    """Неон включается при запуске: раз — разраз — раз — разразраз."""
+    """Неон включается при запуске: раз — разраз — и горит.
+
+    Главное здесь — что мигает. Вывеска, у которой при включении мигает
+    сам щиток, выглядит не как вывеска, а как непрогрузившаяся страница;
+    схватываться рывками должна одна трубка.
+    """
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.css = (CSS / "neon-start.css").read_text(encoding="utf-8")
         cls.js = (JS / "neonstart.js").read_text(encoding="utf-8")
+
+    def block(self, name):
+        """Один набор кадров, без соседних."""
+        start = self.css.index("@keyframes " + name)
+        rest = self.css.find("@keyframes ", start + 1)
+        return self.css[start:rest if rest > 0 else len(self.css)]
+
+    def stops(self, name):
+        return [int(found) for found in
+                re.findall(r"\n\s*(\d+)%", self.block(name))]
 
     def test_it_flickers_rather_than_fades_in(self):
         """Ровное появление читалось бы как «страница медленно грузится».
@@ -757,22 +769,37 @@ class TestNeonStart(Base):
     def test_the_flicker_is_uneven(self):
         """У настоящей вывески промежутки между вспышками разной длины.
         Ровный пульс выглядел бы как индикатор загрузки."""
-        block = self.css[self.css.index("@keyframes fx-neon-warm"):]
-        stops = [int(found) for found in
-                 re.findall(r"\n\s*(\d+)%", block)]
+        stops = self.stops("fx-neon-warm")
         gaps = {b - a for a, b in zip(stops, stops[1:])}
         self.assertGreater(len(gaps), 3, stops)
 
+    def test_only_the_neon_goes_out_not_the_page(self):
+        """Слой не закрывает страницу собой, а отбирает цвет у того, что
+        под ним: фиолетовое сереет, а тёмный фон и белые буквы остаются —
+        цвета у них и так нет, отбирать нечего."""
+        tight = self.css.replace(" ", "")
+        self.assertIn("background:transparent", tight)
+        self.assertNotIn("background:var(--bg)", tight)
+        self.assertIn("saturate(", self.block("fx-neon-warm"))
+
     def test_it_ends_fully_lit(self):
-        """Слой обязан догореть до нуля: иначе страница осталась бы
-        притемнённой навсегда."""
-        block = self.css[self.css.index("@keyframes fx-neon-warm"):]
-        self.assertRegex(block, r"100%\s*\{opacity:\s*0\s*\}")
+        """Последний кадр обязан не оставить на странице ничего: иначе
+        она осталась бы обесцвеченной навсегда."""
+        self.assertRegex(self.block("fx-neon-warm"),
+                         r"100%\s*\{[^}]*backdrop-filter:\s*none")
+
+    def test_the_scrollbar_flickers_in_step(self):
+        """Полосу рисует браузер, и под слой она не попадает: её цвет
+        мигает своей анимацией — но теми же вспышками, иначе неон
+        разъедется сам с собой."""
+        self.assertEqual(self.stops("fx-neon-tube"),
+                         self.stops("fx-neon-warm"))
+        self.assertIn("scrollbar-color", self.block("fx-neon-tube"))
 
     def test_the_page_itself_is_not_dimmed(self):
         """`opacity` и `filter` у body делают его точкой отсчёта для
         `position:fixed`, и на пару секунд уехали бы подсказки, тосты и
-        звёздное поле. Поэтому мигает вуаль поверх страницы."""
+        звёздное поле. Поэтому работает слой поверх страницы."""
         self.assertNotIn("body{", self.css.replace(" ", ""))
         self.assertIn("position:fixed", self.css.replace(" ", ""))
 
@@ -793,3 +820,7 @@ class TestNeonStart(Base):
     def test_it_does_not_light_up_when_the_switch_is_off(self):
         self.assertIn("fx-neon-start", self.js)
 
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
