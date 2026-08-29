@@ -161,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    # Журнал в файл — тот же, что у окна программы: разбирать поломку
+    # потом придётся по нему, чем бы её ни поймали.
+    from ops import logbook
+
+    logbook.start()
 
     if args.verify:
         report = verify(Path(args.verify).expanduser())

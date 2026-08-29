@@ -2416,8 +2416,13 @@ window.hdScan = hdScan;
 /** Предлагается сама при чтении папки, если находка есть. */
 async function hdOffer(source){
   const found = await hdScan(source, true);
-  if(found) toast(`В начале файлов нашлась шапка: находок ${found}. `
-                  + 'Блок «Мусорная шапка» открыт выше.');
+  if(!found) return;
+  // Карточка лежит свёрнутой, пока в ней нечего смотреть. Нашлась
+  // находка — разворачиваем: иначе сообщение «блок открыт выше» врёт, и
+  // человек ищет глазами то, что от него спрятано.
+  unfold('hdCard');
+  toast(`В начале файлов нашлась шапка: находок ${found}. `
+        + 'Блок «Мусорная шапка» открыт выше.');
 }
 window.hdOffer = hdOffer;
 
@@ -4179,6 +4184,59 @@ async function hsRestore(record, button){
 
 $('dfStart').onclick = dfStart;
 $('hsLoad').onclick = hsLoad;
+
+/* ------------------------------------------- отчёт о проблеме
+ *
+ * Журнал теперь пишется в файл, но найти его в папке данных и вырезать
+ * оттуда нужное — работа, которую человек делать не станет. Кнопка
+ * собирает готовый текст: версия, система, последние строки журнала и
+ * то, что человек сам написал про поломку.
+ *
+ * Свой набор имён (`dg`), а не `rp`: тот занят вкладкой «Замена», и
+ * повторный `id` на странице отваливается молча.
+ */
+
+async function dgMake(){
+  showError('');
+  const button = $('dgMake');
+  button.disabled = true;
+  $('dgNote').innerHTML = '<span class="spin"></span>Собираем…';
+  try{
+    const got = await call('/api/report', {what: $('dgWhat').value.trim()});
+    $('dgText').value = got.text || '';
+    $('dgText').hidden = false;
+    $('dgCopy').hidden = false;
+    $('dgOpen').hidden = !got.kept;
+    $('dgOpen').dataset.path = got.file || '';
+    $('dgNote').textContent = got.kept
+      ? 'Готово. Ключи и пароли вырезаны — можно отправлять.'
+      : 'Журнала ещё нет: он заводится при запуске программы. '
+        + 'Отчёт собран без него.';
+  }catch(err){
+    showError(err.message);
+    $('dgNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
+$('dgMake').onclick = dgMake;
+$('dgCopy').onclick = async () => {
+  try{
+    await navigator.clipboard.writeText($('dgText').value);
+    $('dgNote').textContent = 'Скопировано.';
+  }catch(err){
+    // Буфер бывает закрыт настройками браузера — выделяем, чтобы
+    // человек нажал Ctrl+C сам, а не остался ни с чем.
+    $('dgText').select();
+    $('dgNote').textContent = 'Буфер недоступен — текст выделен, нажмите Ctrl+C.';
+  }
+};
+$('dgOpen').onclick = async () => {
+  try{
+    await call('/api/open', {path: $('dgOpen').dataset.path});
+  }catch(err){ showError(err.message); }
+};
 
 
 /* ============== Статистика книги, шапка и подпись ============== */

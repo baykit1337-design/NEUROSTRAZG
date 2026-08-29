@@ -37,6 +37,7 @@ from net.sources import qidianrank as qd_rank_net  # noqa: E402
 from net.sources import webnovelrank as wn_rank_net  # noqa: E402
 from ops import books as books_op  # noqa: E402
 from ops import covers  # noqa: E402
+from ops import logbook  # noqa: E402
 from ops import rank as rank_op  # noqa: E402
 from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
@@ -176,6 +177,7 @@ def start_job(job: Job, work) -> Job:
 
     job.thread = threading.Thread(target=runner, daemon=True)
     with JOBS_LOCK:
+        _forget_old()
         JOBS[job.id] = job
     job.thread.start()
     return job
@@ -183,6 +185,34 @@ def start_job(job: Job, work) -> Job:
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+
+#: Сколько доигравших задач держать и как долго. Задача хранит свой отчёт
+#: целиком — со списком ошибок по каждому файлу, — и за день работы на
+#: сотнях книг это растёт без предела: до сих пор из `JOBS` не удалялось
+#: ничего и никогда.
+#:
+#: Час и сорок штук — с большим запасом: интерфейсу задача нужна ровно до
+#: того мига, когда он дорисует её итог.
+KEEP_JOBS = 40
+JOB_TTL = 3600.0
+
+
+def _forget_old() -> None:
+    """Убирает доигравшие задачи. Звать под `JOBS_LOCK`.
+
+    Работающие не трогаем ни при каких условиях: у задачи, которую сейчас
+    показывают, отнимать себя нельзя. Отбор по `finished` это и
+    обеспечивает — у работающей его нет вовсе.
+    """
+    now = time.monotonic()
+    done = sorted((job.finished, key) for key, job in JOBS.items()
+                  if job.finished)
+
+    stale = {key for when, key in done if now - when > JOB_TTL}
+    # Сверх меры — тоже вон, начиная с самых старых.
+    stale.update(key for _, key in done[:max(0, len(done) - KEEP_JOBS)])
+    for key in stale:
+        JOBS.pop(key, None)
 
 #: Текущий пул прокси. Список меняется часто, поэтому перезагружается по
 #: кнопке — перезапуск программы для этого не нужен.
@@ -4731,6 +4761,26 @@ def api_open():
     return jsonify(opened=str(opened))
 
 
+@app.post("/api/report")
+def api_report():
+    """Готовый отчёт о проблеме: версия, система, хвост журнала.
+
+    Одна кнопка вместо переписки «пришлите строку из консоли» — тем
+    более что консоли у человека может не быть вовсе: на Windows окно
+    закрывается вместе с программой.
+
+    Ключи и пароли вычищаются здесь, а не «не попадают в журнал сами»:
+    отчёт уходит наружу, и полагаться на «сами» тут нельзя.
+    """
+    payload = request.json or {}
+    return jsonify(
+        text=logbook.report(str(payload.get("what") or "")),
+        folder=str(logbook.LOG_DIR),
+        file=str(logbook.LOG_FILE),
+        kept=logbook.LOG_FILE.is_file(),
+    )
+
+
 @app.get("/api/check/<job_id>/report")
 def api_check_report(job_id: str):
     """Выгрузка отчёта в .txt."""
@@ -4819,6 +4869,11 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    # Журнал в файл. Консоль на Windows закрывается вместе с программой,
+    # и разбирать поломку по ней потом нечем.
+    written = logbook.start()
+    if written:
+        print(f"  Журнал: {written}")
 
     try:
         pool = load_pool(args.proxies)

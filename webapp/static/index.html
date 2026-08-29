@@ -2968,6 +2968,31 @@
     <div class="table" id="hsRecords" style="margin-top:10px"></div>
   </div>
 
+  <!-- Отчёт о проблеме. Раньше журнал уходил только в консоль, а окно на
+       Windows закрывается вместе с программой: единственная строка, по
+       которой поломку можно было разобрать, пропадала. Теперь журнал
+       пишется в файл, а эта кнопка собирает из него готовый отчёт. Ключи
+       и пароли из отчёта вычищаются: он уходит наружу. -->
+  <div class="card folded" data-fold id="dgCard">
+    <label class="foldhead">Отчёт о проблеме</label>
+    <p class="hint">Собирает версию, систему и последние строки журнала
+       в один текст — его можно сразу отправить. Ключи и пароли из отчёта
+       вырезаются.</p>
+    <div style="margin-top:10px">
+      <label for="dgWhat">что делали, когда сломалось</label>
+      <textarea id="dgWhat" rows="2" spellcheck="false"
+                placeholder="вставил ссылку на RanobeLIB, нажал «Найти» — ошибка"></textarea>
+    </div>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap">
+      <button id="dgMake" class="ghost">Собрать отчёт</button>
+      <button id="dgCopy" class="ghost" hidden>Скопировать</button>
+      <button id="dgOpen" class="ghost" hidden>Открыть папку журнала</button>
+    </div>
+    <p class="hint" id="dgNote"></p>
+    <textarea id="dgText" rows="14" spellcheck="false" hidden
+              style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+  </div>
+
   <!-- 4.7 Статистика книги -->
   <div class="card">
     <label>Статистика книги</label>
@@ -4835,6 +4860,16 @@ function libCard(book){
 
   // Поле для своих тегов. Раньше их было видно и нельзя было поставить:
   // паспорт их печатал, карточка рисовала, а записать не мог никто.
+  //
+  // Подпись обязательна. Поле стоит сразу под цветными метками, которые
+  // сами выглядят как теги, а единственной приметой была подсказка
+  // внутри поля: функция есть, а прочитать интерфейс нельзя.
+  const tagsLabel = document.createElement('label');
+  tagsLabel.textContent = 'свои теги';
+  tagsLabel.title = 'Вписать через запятую и нажать Enter. '
+    + 'Снять — нажатием на сам тег.';
+  side.append(tagsLabel);
+
   const tags = document.createElement('input');
   tags.className = 'lb-note';
   tags.type = 'text';
