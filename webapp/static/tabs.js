@@ -18,6 +18,11 @@ async function pickPath(button){
     if(data.path){
       input.value = data.path;
       input.dispatchEvent(new Event('input'));
+      // И `change` следом: выбор в системном окне — такое же решение
+      // человека, как набранный руками путь, и запомниться должен так же.
+      // Обработчиков `change` на этих полях больше нет ни одного, так
+      // что второе событие никого не будит зря.
+      input.dispatchEvent(new Event('change'));
     }
   }catch(err){
     // Проводника нет — встроенный обозреватель остаётся запасным вариантом.
@@ -6818,3 +6823,109 @@ function evRender(){
 
 $('evStart').onclick = evLoad;
 $('evOnlyShared').addEventListener('change', evRender);
+
+
+/* ============ Память полей и последние папки ============
+ *
+ * Программа не помнила между запусками ничего, кроме галочек эффектов:
+ * папку назначения приходилось набирать заново каждый раз, и на каждой
+ * вкладке отдельно. При работе «в два клика» это самая дорогая потеря
+ * времени из всех.
+ *
+ * Запоминаем не всё подряд, а только помеченное `data-keep`. Правило
+ * нарочно от обратного: попади сюда поле ключа или ссылка на книгу, они
+ * молча осели бы в хранилище браузера. Помечено — значит, кто-то решил,
+ * что это можно хранить.
+ *
+ * Хранилище браузера бывает закрыто настройками, и тогда всё это просто
+ * не работает — но не мешает: каждый поход в него обёрнут.
+ */
+
+const KEEP_STORE = 'nz-fields';
+const FOLDER_STORE = 'nz-folders';
+
+//: Сколько последних папок подсказывать. Больше — уже не подсказка, а
+//: список, в котором надо искать.
+const FOLDERS_KEPT = 8;
+
+function keepRead(name){
+  try{
+    return JSON.parse(localStorage.getItem(name) || 'null') || null;
+  }catch(err){
+    return null;
+  }
+}
+
+function keepWrite(name, value){
+  try{
+    localStorage.setItem(name, JSON.stringify(value));
+  }catch(err){
+    // Приватное окно или запрет на хранение: молча живём без памяти.
+  }
+}
+
+/** Последние папки назначения — в общий список подсказок. */
+function foldersDraw(){
+  const box = $('nzFolders');
+  if(!box) return;
+  box.innerHTML = '';
+  for(const path of keepRead(FOLDER_STORE) || []){
+    const item = document.createElement('option');
+    item.value = path;
+    box.append(item);
+  }
+}
+
+/** Запоминает папку как недавнюю. Повтор поднимается наверх, а не
+ *  ложится вторым: список из одной папки в трёх экземплярах бесполезен. */
+function folderUsed(path){
+  const clean = String(path || '').trim();
+  if(!clean) return;
+  const kept = (keepRead(FOLDER_STORE) || []).filter(one => one !== clean);
+  kept.unshift(clean);
+  keepWrite(FOLDER_STORE, kept.slice(0, FOLDERS_KEPT));
+  foldersDraw();
+}
+
+function keepFields(){
+  return [...document.querySelectorAll('[data-keep]')];
+}
+
+function keepSave(){
+  const kept = {};
+  for(const field of keepFields()){
+    const value = field.type === 'checkbox' ? field.checked : field.value;
+    if(value !== '' && value !== false) kept[field.id] = value;
+  }
+  keepWrite(KEEP_STORE, kept);
+}
+
+/** Возвращает поля на место при запуске.
+ *
+ * Событие `input` шлём нарочно: на нём висят подписи «главы лягут в…» и
+ * схемы «файл → разбить → файлы». Молча подставленное значение оставило
+ * бы их пустыми, и человек решил бы, что поле не заполнено.
+ */
+function keepLoad(){
+  const kept = keepRead(KEEP_STORE) || {};
+  for(const field of keepFields()){
+    const value = kept[field.id];
+    if(value === undefined) continue;
+    if(field.type === 'checkbox') field.checked = !!value;
+    else field.value = value;
+    field.dispatchEvent(new Event('input'));
+  }
+  foldersDraw();
+}
+
+for(const field of keepFields()){
+  // Набранное запоминаем сразу, а в список недавних папок кладём только
+  // по `change` — то есть когда путь дописан, а не на каждой букве.
+  field.addEventListener('input', keepSave);
+  field.addEventListener('change', () => {
+    keepSave();
+    folderUsed(field.value);
+  });
+}
+
+keepLoad();

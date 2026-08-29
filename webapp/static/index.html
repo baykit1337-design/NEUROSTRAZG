@@ -1098,6 +1098,11 @@
 </head>
 <body>
 <input type="hidden" id="baseHidden">
+<!-- Последние папки назначения. Один список на все поля «куда сохранить»:
+     папка обычно одна и та же, а набирать её заново на каждой вкладке —
+     работа на пустом месте. Заполняется скриптом из того, что человек
+     уже выбирал. -->
+<datalist id="nzFolders"></datalist>
 <div id="toasts"></div>
 <div class="wrap">
   <h1 class="app-title">NEUROSTRAZH 2.0</h1>
@@ -1273,7 +1278,8 @@
     <div style="margin-top:14px">
       <label>Куда сохранить очищенное</label>
       <div class="row">
-        <input id="hdBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <input id="hdBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
         <button class="ghost browse" data-target="hdBase" data-kind="folder">Обзор…</button>
       </div>
       <div style="margin-top:10px">
@@ -1722,7 +1728,8 @@
   <div class="card" id="spPlace" hidden>
     <label>Куда сохранить главы</label>
     <div class="row">
-      <input id="spBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="spBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="spBase" data-kind="folder">Обзор…</button>
     </div>
     <!-- Своя папка на книгу — по желанию, а не по обязанности. Пустое
@@ -1885,7 +1892,8 @@
   <div class="card" id="rnPlace" hidden>
     <label>Куда сохранить (оригиналы не трогаем)</label>
     <div class="row">
-      <input id="rnBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="rnBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="rnBase" data-kind="folder">Обзор…</button>
     </div>
     <details id="rnOwnFolder" style="margin-top:10px">
@@ -2048,7 +2056,8 @@
   <div class="card" id="mgPlace" hidden>
     <label>Куда сохранить</label>
     <div class="row">
-      <input id="mgBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="mgBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="mgBase" data-kind="folder">Обзор…</button>
     </div>
     <div style="margin-top:10px">
@@ -2180,7 +2189,8 @@
   <div class="card" id="cvPlace" hidden>
     <label>Куда сохранить</label>
     <div class="row">
-      <input id="cvBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="cvBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="cvBase" data-kind="folder">Обзор…</button>
     </div>
     <div style="margin-top:12px">
@@ -2240,7 +2250,8 @@
     <div class="table" id="fmPreview" hidden style="margin-top:10px"></div>
 
     <div class="row" style="margin-top:14px">
-      <input id="fmBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="fmBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="fmBase" data-kind="folder">Обзор…</button>
     </div>
     <div style="margin-top:10px">
@@ -2344,7 +2355,8 @@
     </div>
 
     <div class="row" style="margin-top:14px">
-      <input id="fmOutBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <input id="fmOutBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
       <button class="ghost browse" data-target="fmOutBase" data-kind="folder">Обзор…</button>
     </div>
     <div style="margin-top:10px">
@@ -2375,7 +2387,8 @@
     <div id="fmJunkWhere" hidden style="margin-top:14px">
       <label>Куда сохранить</label>
       <div class="row">
-        <input id="fmJunkBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <input id="fmJunkBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
         <button class="ghost browse" data-target="fmJunkBase" data-kind="folder">Обзор…</button>
       </div>
       <div style="margin-top:10px">
@@ -2738,7 +2751,8 @@
     <div id="rpPlace" hidden style="margin-top:14px">
       <label>Куда сохранить</label>
       <div class="row">
-        <input id="rpBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <input id="rpBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
         <button class="ghost browse" data-target="rpBase" data-kind="folder">Обзор…</button>
       </div>
       <div style="margin-top:10px">
@@ -3056,7 +3070,8 @@
     <div style="margin-top:14px">
       <label>Куда сохранить копию</label>
       <div class="row">
-        <input id="sgBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <input id="sgBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
         <button class="ghost browse" data-target="sgBase" data-kind="folder">Обзор…</button>
       </div>
       <div style="margin-top:10px">
@@ -3175,7 +3190,8 @@
     <div style="margin-top:14px">
       <label>Куда сохранить (новая папка, оригиналы не трогаем)</label>
       <div class="row">
-        <input id="ckBase" type="text" placeholder="Папка назначения" autocomplete="off">
+        <input id="ckBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
         <button class="ghost browse" data-target="ckBase" data-kind="folder">Обзор…</button>
       </div>
       <div style="margin-top:10px">

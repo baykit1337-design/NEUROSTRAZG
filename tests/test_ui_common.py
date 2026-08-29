@@ -1198,5 +1198,78 @@ class TestTheHeadingStyleIsAttachedToItsWork(UiBase):
         self.assertEqual(self.page.count('id="fmStyle"'), 1)
 
 
+class TestTheProgramRemembersWhereYouSave(UiBase):
+    """Между запусками не помнилось ничего, кроме галочек эффектов.
+
+    Папку назначения приходилось набирать заново каждый раз и на каждой
+    вкладке отдельно. При работе «в два клика» это самая дорогая потеря
+    времени из всех.
+    """
+
+    def field(self, name):
+        start = self.page.index(f'id="{name}"')
+        return self.page[self.page.rindex("<input", 0, start):
+                         self.page.index(">", start) + 1]
+
+    def test_every_destination_folder_is_remembered(self):
+        for name in ("spBase", "rnBase", "mgBase", "cvBase", "fmBase",
+                     "fmOutBase", "fmJunkBase", "hdBase", "rpBase",
+                     "sgBase", "ckBase"):
+            with self.subTest(name):
+                self.assertIn("data-keep", self.field(name))
+
+    def test_only_marked_fields_are_remembered(self):
+        """Правило нарочно от обратного: попади сюда поле ключа или
+        ссылка на книгу, они молча осели бы в хранилище браузера."""
+        self.assertIn("[data-keep]", self.tabs)
+        self.assertNotIn("data-keep", self.field("llmKey"))
+
+    def test_the_key_field_is_not_marked(self):
+        """Ключ в хранилище браузера — это ключ, отданный любому скрипту
+        на этой странице."""
+        start = self.page.index('id="llmKey"')
+        block = self.page[self.page.rindex("<textarea", 0, start):
+                          self.page.index(">", start) + 1]
+        self.assertNotIn("data-keep", block)
+
+    def test_restoring_wakes_the_labels(self):
+        """На событии висят подписи «главы лягут в…» и схемы. Молча
+        подставленное значение оставило бы их пустыми, и человек решил
+        бы, что поле не заполнено."""
+        start = self.tabs.index("function keepLoad")
+        body = self.tabs[start:self.tabs.index("\n}", start)]
+        self.assertIn("dispatchEvent", body)
+
+    def test_the_recent_folders_list_has_a_limit(self):
+        """Список, в котором надо искать, — уже не подсказка."""
+        self.assertIn("FOLDERS_KEPT", self.tabs)
+        start = self.tabs.index("function folderUsed")
+        self.assertIn("slice(0, FOLDERS_KEPT)",
+                      self.tabs[start:self.tabs.index("\n}", start)])
+
+    def test_a_repeated_folder_rises_instead_of_piling_up(self):
+        """Список из одной папки в трёх экземплярах бесполезен."""
+        start = self.tabs.index("function folderUsed")
+        body = self.tabs[start:self.tabs.index("\n}", start)]
+        self.assertIn("filter", body)
+        self.assertIn("unshift", body)
+
+    def test_a_closed_storage_does_not_break_the_page(self):
+        """Приватное окно или запрет на хранение: живём без памяти, но
+        живём."""
+        for name in ("function keepRead", "function keepWrite"):
+            with self.subTest(name):
+                start = self.tabs.index(name)
+                self.assertIn("catch",
+                              self.tabs[start:self.tabs.index("\n}", start)])
+
+    def test_the_native_picker_also_counts_as_a_choice(self):
+        """Выбор в системном окне — такое же решение человека, как
+        набранный руками путь, и запомниться должен так же."""
+        start = self.tabs.index("async function pickPath")
+        body = self.tabs[start:self.tabs.index("\n}", start)]
+        self.assertIn("new Event('change')", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
