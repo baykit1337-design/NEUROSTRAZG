@@ -2400,15 +2400,18 @@
 
     <div class="table" id="llmKeys" style="margin-top:12px"></div>
 
-    <div class="row" style="margin-top:12px">
-      <button id="llmEstimate" class="ghost" style="flex:1">Оценить расход</button>
+    <!-- Кнопки по своей ширине, а не по трети строки на каждую. С `flex:1`
+         на самую длинную подпись оставалась треть, подпись переносилась на
+         вторую строку, а `align-items:stretch` вытягивал под неё и две
+         соседние: три кнопки в две строки высотой. Не хватило места —
+         строка переносится, а не раздувается. -->
+    <div class="row" style="margin-top:12px;flex-wrap:wrap">
+      <button id="llmEstimate" class="ghost">Оценить расход</button>
       <!-- Проверка одного ключа отвечает на вопрос «какая модель», а
            проверка всех — на вопрос «сколько живых». Вопросы разные, и
            кнопки разные. -->
-      <button id="llmCheckAll" class="ghost" style="flex:1">Проверить все
-        ключи</button>
-      <button id="llmCheck" class="primary" style="flex:1">Проверить и выбрать
-        модель</button>
+      <button id="llmCheckAll" class="ghost">Проверить все ключи</button>
+      <button id="llmCheck" class="primary">Проверить и выбрать модель</button>
     </div>
     <p class="hint" id="llmEstimateNote"></p>
 

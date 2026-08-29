@@ -971,3 +971,36 @@ class TestTheFastestAddressGoesFirst(KeysBase):
         good = self.proxy("10.0.0.2", elapsed=9.0)
         dead = self.proxy("10.0.0.1", alive=False, status=0, elapsed=0.1)
         self.assertEqual(self.route(dead, good)[0], "10.0.0.2:8080")
+
+
+class TestTheKeyButtonsKeepTheirSize(unittest.TestCase):
+    """Три кнопки под ключами не должны раздуваться.
+
+    Кнопки в строке лежали с `flex:1` — по трети ширины на каждую. Пока
+    их было две, самая длинная подпись помещалась в строку; третья
+    кнопка урезала долю, подпись переносилась, а `align-items:stretch`
+    вытягивал под неё и соседние. Три кнопки высотой в две строки —
+    ровно то, чего не бывает больше нигде на странице.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        page = (Path(__file__).resolve().parent.parent
+                / "webapp" / "static" / "index.html")
+        cls.html = page.read_text(encoding="utf-8")
+        start = cls.html.index('id="llmEstimate"')
+        cls.row = cls.html[cls.html.rindex("<div", 0, start):
+                           cls.html.index("</div>", start)]
+
+    def test_the_buttons_are_sized_by_their_words(self):
+        """Доля строки на кнопку — это и есть перенос подписи."""
+        self.assertNotIn("flex:1", self.row)
+
+    def test_all_three_are_still_there(self):
+        for one in ("llmEstimate", "llmCheckAll", "llmCheck"):
+            self.assertIn(f'id="{one}"', self.row)
+
+    def test_a_narrow_card_wraps_the_row_instead_of_squeezing_it(self):
+        """Не хватило места — кнопка уходит на вторую строку целой, а не
+        сжимается до переноса подписи."""
+        self.assertIn("flex-wrap:wrap", self.row)
