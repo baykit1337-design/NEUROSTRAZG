@@ -1781,8 +1781,8 @@
     </div>
   </div>
 
-  <div class="card" id="rnPatternCard" hidden>
-    <label for="rnPattern">Своё регулярное выражение для имени</label>
+  <div class="card folded" data-fold id="rnPatternCard" hidden>
+    <label class="foldhead" for="rnPattern">Своё регулярное выражение для имени</label>
     <input id="rnPattern" type="text" spellcheck="false" autocomplete="off"
            placeholder="оставьте пустым — сработает разбор по умолчанию">
     <p class="hint">Группы:
@@ -1798,8 +1798,8 @@
     <label>Формат имени</label>
     <div class="checks">
       <label class="chk"><input type="checkbox" id="rnNum" checked> номер главы</label>
-      <label class="chk"><input type="checkbox" id="rnPart" checked> номер части</label>
-      <label class="chk"><input type="checkbox" id="rnTitle" checked> название</label>
+      <label class="chk"><input type="checkbox" id="rnPart"> номер части</label>
+      <label class="chk"><input type="checkbox" id="rnTitle"> название</label>
     </div>
     <div class="row" style="margin-top:12px">
       <div style="flex:1">
@@ -1838,7 +1838,7 @@
          вовсе, и сервер брал умолчание: заголовок дописывался в файл
          всегда, выключить его было нечем. -->
     <label class="chk" style="margin-top:14px">
-      <input type="checkbox" id="rnHeadings" checked> добавлять название главы перед текстом
+      <input type="checkbox" id="rnHeadings"> добавлять название главы перед текстом
       <i class="hint-icon" data-tip="Название берётся из заголовка главы. Если оно уже есть в самом тексте, снимите галку — иначе оно окажется в файле дважды.">?</i></label>
 
     <div style="margin-top:14px">
@@ -1852,8 +1852,8 @@
     <p class="hint">действуют на отмеченные главы и используют галочки выше</p>
   </div>
 
-  <div class="card" id="rnListCard" hidden>
-    <label>Главы <span class="hint hint-inline" id="rnSelected"></span></label>
+  <div class="card folded" data-fold id="rnListCard" hidden>
+    <label class="foldhead">Главы <span class="hint hint-inline" id="rnSelected"></span></label>
     <div class="row" style="margin-bottom:8px">
       <button class="ghost" id="rnAll" style="padding:5px 12px;font-size:12px">Выбрать все</button>
       <button class="ghost" id="rnNone" style="padding:5px 12px;font-size:12px">Снять</button>
@@ -1862,8 +1862,8 @@
   </div>
 
   <!-- Объём глав — тот же блок, что в «Разбить» и «Форматировать». -->
-  <div class="card" id="rnVolCard">
-    <label>Объём глав</label>
+  <div class="card folded" data-fold id="rnVolCard">
+    <label class="foldhead">Объём глав</label>
     <p class="hint">Какие главы выделяются на фоне остальных. Мерка —
        медиана самой книги, а не круглое число знаков.</p>
     <div class="row" style="margin-top:12px">
@@ -1873,21 +1873,26 @@
     <div class="table" id="rnVolTable" hidden style="margin-top:10px;max-height:360px"></div>
   </div>
 
-  <div class="card" id="rnPreviewCard" hidden>
-    <label>Предпросмотр — строки можно править вручную</label>
+  <div class="card folded" data-fold id="rnPreviewCard" hidden>
+    <label class="foldhead">Предпросмотр — строки можно править вручную</label>
     <div class="table" id="rnPreview"></div>
   </div>
 
+  <!-- Куда сохранять — как в «Разбить»: просто папка. Имя ей сочинять
+       незачем, человек уже выбрал, куда положить. Оригиналы не трогаются
+       в любом случае: переименование пишет новые файлы, а не правит
+       старые. -->
   <div class="card" id="rnPlace" hidden>
-    <label>Куда сохранить (новая папка, оригиналы не трогаем)</label>
+    <label>Куда сохранить (оригиналы не трогаем)</label>
     <div class="row">
       <input id="rnBase" type="text" placeholder="Папка назначения" autocomplete="off">
       <button class="ghost browse" data-target="rnBase" data-kind="folder">Обзор…</button>
     </div>
-    <div style="margin-top:10px">
-      <label for="rnOut">Имя новой папки</label>
-      <input id="rnOut" type="text" placeholder="Готово" autocomplete="off">
-    </div>
+    <details id="rnOwnFolder" style="margin-top:10px">
+      <summary class="hint">создать внутри отдельную папку</summary>
+      <input id="rnOut" type="text" placeholder="Готово" autocomplete="off"
+             style="margin-top:8px">
+    </details>
     <div style="margin-top:14px">
       <label>Формат</label>
       <!-- Кнопки строит скрипт по ответу сервера: список форматов один на
@@ -1987,8 +1992,8 @@
   </div>
 
   <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
-  <div class="card" id="mgStyle" hidden>
-    <label>Оформление документа</label>
+  <div class="card folded" data-fold id="mgStyle" hidden>
+    <label class="foldhead">Оформление документа</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:2">
         <label>шрифт</label>
@@ -2018,8 +2023,8 @@
   </div>
 
   <!-- Обработка текста — одна на обе вкладки, как и код за ней. -->
-  <div class="card" id="mgPrep" hidden>
-    <label>Обработка текста</label>
+  <div class="card folded" data-fold id="mgPrep" hidden>
+    <label class="foldhead">Обработка текста</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:1">
         <label>выравнивание</label>
@@ -2116,13 +2121,13 @@
     </div>
 
     <label class="chk" style="margin-top:14px">
-      <input type="checkbox" id="cvHeadings" checked> добавлять название главы перед текстом
+      <input type="checkbox" id="cvHeadings"> добавлять название главы перед текстом
       <i class="hint-icon" data-tip="Если название уже есть в самом тексте, снимите галку — иначе оно окажется в файле дважды.">?</i></label>
   </div>
 
   <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
-  <div class="card" id="cvStyle" hidden>
-    <label>Оформление документа</label>
+  <div class="card folded" data-fold id="cvStyle" hidden>
+    <label class="foldhead">Оформление документа</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:1">
         <label>шрифт</label>
@@ -2151,8 +2156,8 @@
       <i class="hint-icon" data-tip="Работает, если в файле не одна глава: каждая начнётся с новой страницы.">?</i></label>
   </div>
 
-  <div class="card" id="cvPrep" hidden>
-    <label>Обработка текста</label>
+  <div class="card folded" data-fold id="cvPrep" hidden>
+    <label class="foldhead">Обработка текста</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:1">
         <label>выравнивание</label>
@@ -2214,9 +2219,50 @@
      уже готовом, когда переводчик оставил их английскими. -->
 <section id="tab-format" hidden>
 
-  <!-- Общее для обеих работ: как называть главы. -->
-  <div class="card" id="fmStyle">
-    <label>Как назвать главы</label>
+  <!-- Работа первая: много файлов → одна книга. -->
+  <div class="card lit">
+    <label>Собрать книгу из глав<span class="formats" data-formats="readable"></span></label>
+    <p class="hint">Главы читаются из файлов, название и номер берутся из
+       их имён. На выходе — один .md с размеченными заголовками.</p>
+    <div class="row" style="margin-top:10px">
+      <input id="fmPath" class="pickpath" data-list="fmList" type="text"
+             placeholder="Путь к файлу или папке" autocomplete="off">
+      <button class="ghost pickany" data-list="fmList">Выбрать…</button>
+    </div>
+    <div class="row" id="fmListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="fmCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="fmList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="fmList"></div>
+    <p class="hint" id="fmScanned">Файлы читаются сразу после выбора.</p>
+    <p class="hint warn" id="fmSkipped" hidden></p>
+    <div class="table" id="fmPreview" hidden style="margin-top:10px"></div>
+
+    <div class="row" style="margin-top:14px">
+      <input id="fmBase" type="text" placeholder="Папка назначения" autocomplete="off">
+      <button class="ghost browse" data-target="fmBase" data-kind="folder">Обзор…</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="fmName">имя файла</label>
+      <input id="fmName" type="text" placeholder="книга" autocomplete="off">
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="fmCollect" class="primary" style="flex:1">Собрать книгу</button>
+    </div>
+    <p class="hint">Как будут выглядеть заголовки — в карточке ниже.</p>
+  </div>
+
+  <!-- Как выглядит заголовок. Карточка висела в самом верху вкладки, до
+       обеих работ, и было непонятно, к чему она вообще относится. Стоит
+       она теперь между работами, которыми и правит, — и говорит об этом
+       прямо. Копий у неё быть не может: поля одни, и разъехались бы они
+       на первой же правке. -->
+  <div class="card folded" data-fold id="fmStyle">
+    <label class="foldhead">Как выглядит заголовок в .md</label>
+    <p class="hint"><b>Действует на обе работы</b>: и на сборку книги
+       выше, и на заголовки в готовой книге ниже. На сам перевод не
+       влияет — переводится только название главы.</p>
     <p class="hint">Номер главы берётся из её заголовка и не меняется:
        модели его не отдаём вовсе, чтобы она не могла его поправить.
        Меняется только слово перед номером и знак после него.</p>
@@ -2253,39 +2299,6 @@
     <p class="hint" id="fmSample"></p>
   </div>
 
-  <!-- Работа первая: много файлов → одна книга. -->
-  <div class="card lit">
-    <label>Собрать книгу из глав<span class="formats" data-formats="readable"></span></label>
-    <p class="hint">Главы читаются из файлов, название и номер берутся из
-       их имён. На выходе — один .md с размеченными заголовками.</p>
-    <div class="row" style="margin-top:10px">
-      <input id="fmPath" class="pickpath" data-list="fmList" type="text"
-             placeholder="Путь к файлу или папке" autocomplete="off">
-      <button class="ghost pickany" data-list="fmList">Выбрать…</button>
-    </div>
-    <div class="row" id="fmListBar" style="margin-top:8px;align-items:center" hidden>
-      <span class="hint" id="fmCount" style="flex:1"></span>
-      <button class="ghost clearlist" data-list="fmList"
-              style="padding:5px 12px;font-size:12px">Очистить список</button>
-    </div>
-    <div class="chosen" id="fmList"></div>
-    <p class="hint" id="fmScanned">Файлы читаются сразу после выбора.</p>
-    <p class="hint warn" id="fmSkipped" hidden></p>
-    <div class="table" id="fmPreview" hidden style="margin-top:10px"></div>
-
-    <div class="row" style="margin-top:14px">
-      <input id="fmBase" type="text" placeholder="Папка назначения" autocomplete="off">
-      <button class="ghost browse" data-target="fmBase" data-kind="folder">Обзор…</button>
-    </div>
-    <div style="margin-top:10px">
-      <label for="fmName">имя файла</label>
-      <input id="fmName" type="text" placeholder="книга" autocomplete="off">
-    </div>
-    <div class="row" style="margin-top:16px">
-      <button id="fmCollect" class="primary" style="flex:1">Собрать книгу</button>
-    </div>
-  </div>
-
   <!-- Работа вторая: переписать заголовки в готовой книге. -->
   <div class="card">
     <label>Заголовки в готовой книге</label>
@@ -2293,7 +2306,8 @@
        платность, том и весь текст книги остаются как были — до пробела.
        Исходник не переписывается: файл выходит новый. То же самое, что
        «Переименовать» делает с именами файлов, — но внутри одного .md,
-       который поедет на сайт.</p>
+       который поедет на сайт. Вид самого заголовка — в карточке
+       «Как выглядит заголовок в .md» выше.</p>
     <div class="row" style="margin-top:10px">
       <input id="fmBookPath" class="pickpath" data-list="fmBookList" type="text"
              placeholder="Путь к .md книги" autocomplete="off">

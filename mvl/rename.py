@@ -390,6 +390,19 @@ def find_collisions(rows: list[PlanRow], suffix: str = "txt") -> list[str]:
     return clashes
 
 
+def planned_names(rows: list[PlanRow], fmt: str = "txt") -> list[str]:
+    """Имена файлов, которые ляжет план, — до записи.
+
+    Нужны там, где пишут прямо в выбранную папку: по ним решается, какие
+    файлы уйдут в корзину перед тем, как их затрут. Считаются здесь же,
+    где и пишутся: «посчитали одно, записали другое» оставило бы человека
+    без копии как раз того файла, который пропал.
+    """
+    suffix = str(fmt or "txt").lstrip(".").lower()
+    return [f"{safe_filename(row.new_name) or f'{index:04d}'}.{suffix}"
+            for index, row in enumerate(rows, 1)]
+
+
 def apply_plan(
     rows: list[PlanRow],
     output_dir: Path,
@@ -421,12 +434,15 @@ def apply_plan(
     prep = prep or PrepOptions()
     output_dir.mkdir(parents=True, exist_ok=True)
     report = RenameReport(output_dir=str(output_dir), total=len(rows))
+    # Те же имена, что показывает предпросмотр и по которым делается
+    # копия в корзину: считает их один `planned_names` на всех.
+    names = planned_names(rows, suffix)
 
     for index, row in enumerate(rows, 1):
         if cancel is not None and cancel.is_set():
             raise Cancelled()
 
-        name = f"{safe_filename(row.new_name) or f'{index:04d}'}.{suffix}"
+        name = names[index - 1]
         try:
             target = output_dir / name
             # Тяжёлый файл до сих пор не читан — вот теперь он и нужен.

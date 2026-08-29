@@ -1091,5 +1091,112 @@ class TestNoSyntaxWarning(unittest.TestCase):
         self.assertEqual(found.title, "Название")
 
 
+class TestTabsOpenReadyToWork(UiBase):
+    """Умолчания и свёрнутые карточки на всех вкладках.
+
+    Каждая вкладка открывалась требуя настройки: снять галочки, выбрать
+    формат, придумать имя папке. Вокруг главного лежали карточки, в
+    которые обычно не заглядывают, и на своей же вкладке было непонятно,
+    куда нажимать.
+    """
+
+    def card(self, name):
+        start = self.page.index(f'id="{name}"')
+        return self.page[self.page.rindex("<div", 0, start):
+                         self.page.index(">", start) + 1]
+
+    def box(self, name):
+        start = self.page.index(f'id="{name}"')
+        return self.page[self.page.rindex("<input", 0, start):
+                         self.page.index(">", start) + 1]
+
+    def test_the_side_cards_are_folded_on_every_tab(self):
+        """Оформление и обработка текста — не работа вкладки, а её
+        настройки."""
+        for name in ("mgStyle", "mgPrep",          # объединить
+                     "cvStyle", "cvPrep",          # конвертировать
+                     "spStyle", "spPrep",          # разбить
+                     "rnPatternCard", "rnListCard",  # переименовать
+                     "rnPreviewCard", "rnVolCard"):
+            with self.subTest(name):
+                self.assertIn("folded", self.card(name))
+                self.assertIn("data-fold", self.card(name))
+
+    def test_the_chapter_name_is_not_repeated_inside_the_text(self):
+        """Название уже стоит в имени файла. Галка стояла сама, и в
+        каждой главе название оказывалось дважды."""
+        for name in ("cvHeadings", "rnHeadings", "spHeadings"):
+            with self.subTest(name):
+                self.assertNotIn("checked", self.box(name))
+
+    def test_renaming_ticks_only_the_chapter_number(self):
+        """«Глава 99» — и всё. Остальное человек поставит сам."""
+        self.assertIn("checked", self.box("rnNum"))
+        for name in ("rnPart", "rnTitle"):
+            with self.subTest(name):
+                self.assertNotIn("checked", self.box(name))
+
+    def test_the_part_number_switches_itself_on_when_chapters_are_divided(self):
+        """Без него части главы получают одно имя, и запись встаёт на
+        совпадении имён."""
+        start = self.tabs.index("function rnApplySplit")
+        body = self.tabs[start:self.tabs.index("\n}", start)]
+        self.assertIn("rnPart", body)
+
+    def body(self, name):
+        """Тело функции — до следующей на верхнем уровне."""
+        start = self.tabs.index(name)
+        rest = self.tabs.find("\n}\n", start)
+        return self.tabs[start:rest if rest > 0 else len(self.tabs)]
+
+    def test_the_output_format_follows_the_source_everywhere(self):
+        """Вопрос «какой формат у исходника» на всех вкладках один, и
+        отвечает на него одна функция: три ответа разошлись бы."""
+        self.assertIn("function guessFormat", self.tabs)
+        for name in ("async function spScan", "async function mgScan",
+                     "async function rnScan"):
+            with self.subTest(name):
+                self.assertIn("uessFormat", self.body(name))
+
+    def test_where_to_save_needs_no_invented_folder_name(self):
+        """Человек уже выбрал, куда положить. Имя папки — по желанию."""
+        for name in ("spOwnFolder", "rnOwnFolder"):
+            with self.subTest(name):
+                self.assertIn(f'id="{name}"', self.page)
+
+
+class TestTheHeadingStyleIsAttachedToItsWork(UiBase):
+    """«Как выглядит заголовок» висело в самом верху «Форматировать», до
+    обеих работ, и было непонятно, к чему оно вообще относится."""
+
+    def order(self):
+        """Заголовки карточек вкладки — сверху вниз."""
+        start = self.page.index('id="tab-format"')
+        end = self.page.index("</section>", start)
+        return re.findall(r'<label[^>]*>([^<]+)', self.page[start:end])
+
+    def test_it_stands_between_the_two_works_it_governs(self):
+        names = self.order()
+        collect = next(i for i, one in enumerate(names)
+                       if "Собрать книгу из глав" in one)
+        style = next(i for i, one in enumerate(names)
+                     if "Как выглядит заголовок" in one)
+        retitle = next(i for i, one in enumerate(names)
+                       if "Заголовки в готовой книге" in one)
+        self.assertLess(collect, style)
+        self.assertLess(style, retitle)
+
+    def test_it_says_out_loud_what_it_governs(self):
+        """Вопрос «а это к чему?» должен закрываться на самой карточке."""
+        start = self.page.index('id="fmStyle"')
+        card = self.page[start:self.page.index("</div>\n\n", start)]
+        self.assertIn("обе работы", card)
+
+    def test_there_is_still_only_one_of_it(self):
+        """Копия разъехалась бы с оригиналом на первой же правке."""
+        self.assertEqual(self.page.count('id="fmPrefix"'), 1)
+        self.assertEqual(self.page.count('id="fmStyle"'), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

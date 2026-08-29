@@ -569,7 +569,15 @@ async function rnScan(){
         + 'Файлы переименуются наравне с остальными; снимите галочку, если лишние.'
       : 'Все имена разобраны.';
     ['rnPatternCard','rnFormat','rnListCard','rnPlace'].forEach(id => { $(id).hidden = false; });
-    if(!$('rnOut').value) $('rnOut').value = 'Готово';
+    // Формат на выходе — как у исходника, один раз на выбранную папку.
+    // Имя папки само не подставляется: по умолчанию файлы ложатся прямо
+    // в выбранную, и подставленное имя означало бы обратное.
+    const paths = (rnChapters || []).map(c => c.path).join('|');
+    if(paths !== rnState.forPaths){
+      rnState.forPaths = paths;
+      guessFormat(rnChapters.map(c => c.path), 'rnFormats', rnState,
+                  () => {});
+    }
 
     // Список рисуется без пересборки предпросмотра: собирать его дважды
     // подряд значит послать два запроса и отдать экран тому, который
@@ -746,6 +754,10 @@ function rnApplySplit(parts){
     if(parts > 1) rnSplits[path] = parts;
     else delete rnSplits[path];
   }
+  // Части без своего номера получают одно имя на всех, и запись встанет
+  // на совпадении имён. Галочка снята по умолчанию нарочно, но делят
+  // главы — значит, номер части нужен.
+  if(parts > 1) $('rnPart').checked = true;
   rnRenderList();
   rnUpdateExample();
   rnBuildPreview();
@@ -831,7 +843,8 @@ const rnPartMenu = makeDropdown($('rnPartStyle'),
 $('rnPattern').addEventListener('keydown', e => { if(e.key === 'Enter') rnScan(); });
 //: Формат на выходе у «Переименовать». Хранится так же, как у остальных
 //: вкладок, чтобы кнопки строились общей функцией.
-const rnState = {format: '.txt'};
+//: `forPaths` — для какой папки формат уже подобран по исходнику.
+const rnState = {format: '.txt', forPaths: ''};
 const rnPartsMenu = makeDropdown($('rnParts'));
 $('rnPartsOk').onclick = () => {
   $('rnDialog').hidden = true;
@@ -977,14 +990,22 @@ function spUpdateFinal(){
  * это руками каждый раз — работа на пустом месте. Подбирается один раз
  * на выбранный файл: дальше человек волен выбрать любой другой формат,
  * и своё нажатие важнее нашей догадки.
+ *
+ * Одна на все вкладки: вопрос «какой формат у исходника» везде один и
+ * тот же, и три ответа на него однажды разошлись бы.
  */
-function spGuessFormat(files){
+function guessFormat(files, rowId, state, onChange){
   const first = (files || [])[0] || '';
   const match = /\.[^./\\]+$/.exec(first);
   const suffix = match ? match[0].toLowerCase() : '';
   if(!suffix || !(FORMATS.writable || []).includes(suffix)) return;
-  spState.format = suffix;
-  buildFormats('spFormats', spState, spUpdateFinal);
+  state.format = suffix;
+  buildFormats(rowId, state, onChange);
+  onChange();
+}
+
+function spGuessFormat(files){
+  guessFormat(files, 'spFormats', spState, spUpdateFinal);
 }
 
 /** «1 файл .epub → разбить → 5 файлов .docx». */
@@ -1270,7 +1291,9 @@ async function spStart(){
 
 /* --------------------------------------------------------- Объединить */
 
-const mgState = {format: '.txt', job: null, menus: {}, scan: null};
+const mgState = {format: '.txt', job: null, menus: {}, scan: null,
+                 //: для каких путей формат уже подобран по исходнику
+                 forPaths: ''};
 
 function mgUpdateFinal(){
   const base = $('mgBase').value.trim(), name = $('mgName').value.trim();
@@ -1307,6 +1330,13 @@ async function mgScan(){
       order: mgState.menus.order ? mgState.menus.order.value : 'number',
     });
     mgState.scan = data;
+    // Формат на выходе — как у исходника, один раз на выбранное. Тот же
+    // порядок, что в «Разбить»: своё нажатие важнее нашей догадки.
+    const paths = targets.join('|');
+    if(paths !== mgState.forPaths){
+      mgState.forPaths = paths;
+      guessFormat(data.files, 'mgFormats', mgState, mgUpdateFinal);
+    }
     updateListBar('mgList', data.file_count);
     // 4.2: разбор по форматам. Порядок глав от формата не зависит —
     // главы сортируются по номеру, чем бы ни был файл.

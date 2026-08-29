@@ -1673,9 +1673,7 @@ def api_rename_apply():
         return jsonify(error=str(exc)), 400
 
     if not base:
-        return jsonify(error="Выберите папку, где создать каталог"), 400
-    if not out_name:
-        return jsonify(error="Введите имя новой папки"), 400
+        return jsonify(error="Выберите папку, куда сохранить главы"), 400
     # Список форматов один на все вкладки и берётся из `core/formats.py`.
     if f".{fmt}" not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {fmt}"), 400
@@ -1693,8 +1691,13 @@ def api_rename_apply():
         if index < len(rows) and str(name).strip():
             rows[index].new_name = str(name).strip()
 
+    # Без имени пишем прямо в выбранную папку, и тогда в корзину уходит
+    # не вся она, а только те файлы, которые сейчас затрут: выбрать могут
+    # папку с чужим добром.
     try:
-        output_dir = _prepare(base, out_name, "rename")
+        output_dir = _prepare(
+            base, out_name, "rename",
+            only=None if out_name else rename.planned_names(rows, fmt))
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 

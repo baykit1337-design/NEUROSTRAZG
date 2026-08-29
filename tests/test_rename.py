@@ -598,6 +598,27 @@ class TestRenameWebApi(RenameFolderTest):
         res = self.app.post("/api/rename/apply", json={"folder_in": str(self.folder)})
         self.assertEqual(res.status_code, 400)
 
+    def test_apply_without_a_folder_name_writes_into_the_chosen_folder(self):
+        """Сочинять папке имя незачем: человек уже выбрал, куда положить.
+
+        Раньше пустое имя было отказом «введите имя новой папки».
+        """
+        from webapp.app import JOBS
+
+        where = self.tmp / "куда"
+        where.mkdir()
+        (where / "чужое.txt").write_text("не наше", encoding="utf-8")
+
+        res = self.app.post("/api/rename/apply", json={
+            "folder_in": str(self.folder), "base": str(where), "folder_out": "",
+        })
+        self.assertEqual(res.status_code, 200)
+        JOBS[res.get_json()["job"]["id"]].thread.join(timeout=60)
+
+        self.assertTrue(list(where.glob("*.txt")))
+        # Чужое в выбранной папке не трогаем и в корзину её не уносим.
+        self.assertTrue((where / "чужое.txt").is_file())
+
     def test_apply_rejects_bad_start_number(self):
         res = self.app.post("/api/rename/apply", json={
             "folder_in": str(self.folder), "base": str(self.tmp), "folder_out": "x",
