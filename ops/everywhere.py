@@ -9,11 +9,18 @@
 узнанная больше чем в одном рейтинге, становится одной строкой с местом
 на каждом сайте.
 
-Сводятся они по названию: общего кода у сайтов нет и быть не может.
-Значит, склеиваются прежде всего соседи по языку — китайские рейтинги
-между собой, английские между собой, — и это честный предел способа, а
-не недоделка. Одинаковое название при разных авторах — не одна книга, и
-такие строки нарочно остаются порознь.
+Сводятся они по названию: общего кода у сайтов нет и быть не может. У
+Цидяня с Фанкью названия китайские, у MVLEMPYR с Webnovel английские, и
+по сырым строкам они не сойдутся никогда.
+
+Поэтому в дело идёт перевод, который программа и так делает кнопкой
+«Перевести всё»: у переведённой книги ключом становится русское
+название, и китайская строка встречается с английской. Без перевода
+склеиваются только соседи по языку — и доска об этом говорит прямо, а не
+показывает пустоту.
+
+Одинаковое название при разных авторах — не одна книга, и такие строки
+нарочно остаются порознь.
 """
 
 from __future__ import annotations
@@ -93,11 +100,38 @@ class Board:
         """Сколько книг нашлось больше чем на одном сайте."""
         return sum(1 for row in self.rows if row.sites > 1)
 
+    @property
+    def untranslated(self) -> int:
+        """Сколько книг во всех срезах остались без русского названия."""
+        return sum(int(one.get("untranslated") or 0) for one in self.taken)
+
+    def advice(self) -> str:
+        """Почему склеилось так мало. Пустая доска без причины — повод
+        решить, что она сломана."""
+        if self.shared:
+            return ""
+        if not self.rows:
+            return ("Срезов пока нет. Снимите рейтинг хотя бы на двух "
+                    "сайтах — сравнивать нужно с чем-то.")
+        sites = {one["site"] for one in self.taken}
+        if len(sites) < 2:
+            return ("Срез снят только с одного сайта, а книга узнаётся "
+                    "по совпадению с соседним. Снимите рейтинг ещё где-нибудь.")
+        if self.untranslated:
+            return (f"Ни одна книга не совпала. У {self.untranslated} из них "
+                    "нет русского названия, а китайская строка сходится с "
+                    "английской только через перевод — нажмите «Перевести "
+                    "всё» на каждом рейтинге и соберите доску заново.")
+        return ("Ни одна книга не совпала: у этих рейтингов просто нет "
+                "общих книг.")
+
     def as_dict(self) -> dict:
         return {
             "rows": [r.as_dict() for r in self.rows[:MAX_ROWS]],
             "total": len(self.rows),
             "shared": self.shared,
+            "untranslated": self.untranslated,
+            "advice": self.advice(),
             "taken": self.taken,
             "more": max(0, len(self.rows) - MAX_ROWS),
         }
@@ -141,7 +175,19 @@ def _same_book(row, other) -> bool:
     return not (here and there) or here == there
 
 
-def board(snapshots=None, names=None, boards=None, categories=None) -> Board:
+def key_of(entry, translated=None) -> str:
+    """По чему книга узнаётся на другом сайте.
+
+    Русское название, если оно есть: китайская строка и английская
+    сходятся только через него. Нет перевода — остаётся своё название, и
+    тогда книга склеится разве что с соседом по языку.
+    """
+    ru = str((translated or {}).get(str(entry.book_id or "")) or "").strip()
+    return normalize(ru) or normalize(entry.name)
+
+
+def board(snapshots=None, names=None, boards=None, categories=None,
+          translated=None) -> Board:
     """Сводит срезы в одну доску.
 
     Подписи сайтов, досок и разделов приходят снаружи: их знает тот, кто
@@ -158,7 +204,15 @@ def board(snapshots=None, names=None, boards=None, categories=None) -> Board:
 
     for snapshot in snapshots:
         titles = boards.get(snapshot.site) or {}
+        # Сколько книг этого среза узнаются по-русски. Без перевода
+        # китайская строка не встретится с английской, и «ничего не
+        # склеилось» надо объяснить, а не показать пустотой.
+        known = sum(1 for entry in snapshot.rows
+                    if str((translated or {}).get(str(entry.book_id or ""))
+                           or "").strip())
         result.taken.append({
+            "translated": known,
+            "untranslated": max(0, len(snapshot.rows) - known),
             "site": snapshot.site,
             "site_name": names.get(snapshot.site, snapshot.site or "Фанкью"),
             "board": snapshot.board,
@@ -171,7 +225,7 @@ def board(snapshots=None, names=None, boards=None, categories=None) -> Board:
             "rows": len(snapshot.rows),
         })
         for entry in snapshot.rows:
-            key = normalize(entry.name)
+            key = key_of(entry, translated)
             if not key:
                 # Название не расшифровалось. Склеивать такие строки не по
                 # чему, и валить их в одну кучу — худшее, что можно

@@ -163,5 +163,73 @@ class TestOrder(Base):
         self.assertEqual(board.as_dict()["total"], 0)
 
 
+class TestGluingAcrossLanguages(Base):
+    """Китайская строка и английская сходятся только через перевод.
+
+    У Цидяня с Фанкью названия китайские, у MVLEMPYR с Webnovel
+    английские. По сырым строкам они не совпадут никогда, и доска
+    выглядела сломанной, хотя работала как написано.
+    """
+
+    def test_two_names_in_different_languages_glue_by_the_translation(self):
+        self.snap("", "hot", "2026-08-01", [(1, "斗破苍穹", "")])
+        self.snap("mvl", "week", "2026-08-01", [(3, "Battle Through the Heavens", "")])
+
+        board = everywhere.board(names=NAMES, translated={
+            "1": "Расколотая битвой синева",
+            "3": "Расколотая битвой синева",
+        })
+        self.assertEqual(board.shared, 1)
+
+    def test_without_the_translation_they_stay_apart(self):
+        """Так и было: не поломка, а предел способа."""
+        self.snap("", "hot", "2026-08-01", [(1, "斗破苍穹", "")])
+        self.snap("mvl", "week", "2026-08-01", [(3, "Battle Through the Heavens", "")])
+        self.assertEqual(self.board().shared, 0)
+
+    def test_a_book_without_a_translation_keeps_its_own_name(self):
+        """Перевода нет — склеится хотя бы с соседом по языку."""
+        self.snap("", "hot", "2026-08-01", [(1, "Shadow Slave", "")])
+        self.snap("mvl", "week", "2026-08-01", [(3, "Shadow Slave", "")])
+        self.assertEqual(everywhere.board(names=NAMES, translated={}).shared, 1)
+
+    def test_the_key_prefers_the_translation(self):
+        from net.sources.rank import RankRow
+
+        row = RankRow(place=1, book_id="7", name="斗破苍穹")
+        self.assertEqual(everywhere.key_of(row, {"7": "Синева"}), "синева")
+        self.assertEqual(everywhere.key_of(row, {}), "斗破苍穹")
+
+
+class TestTheBoardExplainsItself(Base):
+    """Пустая доска без причины читается как поломка."""
+
+    def test_it_says_when_the_translation_is_what_is_missing(self):
+        self.snap("", "hot", "2026-08-01", [(1, "斗破苍穹", "")])
+        self.snap("mvl", "week", "2026-08-01", [(3, "Battle Through", "")])
+        said = self.board().advice()
+
+        self.assertIn("нет русского названия", said)
+        self.assertIn("Перевести всё", said)
+
+    def test_it_says_when_only_one_site_was_taken(self):
+        self.snap("", "hot", "2026-08-01", [(1, "Одна", "")])
+        self.assertIn("одного сайта", self.board().advice())
+
+    def test_it_says_nothing_when_something_did_glue(self):
+        """Совет нужен, только когда пусто: иначе он просто шум."""
+        self.snap("", "hot", "2026-08-01", [(1, "Общая", "")])
+        self.snap("mvl", "week", "2026-08-01", [(3, "Общая", "")])
+        self.assertEqual(self.board().advice(), "")
+
+    def test_each_snapshot_says_how_many_of_its_books_are_translated(self):
+        """По этому числу и видно, где нажать «Перевести всё»."""
+        self.snap("", "hot", "2026-08-01", [(1, "斗破苍穹", ""), (2, "诡秘", "")])
+        board = everywhere.board(names=NAMES, translated={"1": "Синева"})
+
+        self.assertEqual(board.taken[0]["translated"], 1)
+        self.assertEqual(board.taken[0]["untranslated"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

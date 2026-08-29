@@ -2402,10 +2402,29 @@
 
     <div class="row" style="margin-top:12px">
       <button id="llmEstimate" class="ghost" style="flex:1">Оценить расход</button>
+      <!-- Проверка одного ключа отвечает на вопрос «какая модель», а
+           проверка всех — на вопрос «сколько живых». Вопросы разные, и
+           кнопки разные. -->
+      <button id="llmCheckAll" class="ghost" style="flex:1">Проверить все
+        ключи</button>
       <button id="llmCheck" class="primary" style="flex:1">Проверить и выбрать
         модель</button>
     </div>
     <p class="hint" id="llmEstimateNote"></p>
+
+    <!-- Сколько ключей живо, сколько исчерпано. Полсотни ключей — это
+         полсотни запросов, поэтому с прогрессом и остановкой. -->
+    <div id="llmAllBox" hidden style="margin-top:12px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="llmAllStatus"></span></div>
+      <div class="bar"><i id="llmAllFill"></i></div>
+      <div class="stats"><span class="timers" id="llmAllTimers"></span></div>
+      <div class="row" style="margin-top:10px">
+        <button id="llmAllStop" class="ghost" hidden>Остановить</button>
+      </div>
+      <div class="table" id="llmAllRows" hidden
+           style="margin-top:10px;max-height:360px"></div>
+    </div>
 
     <!-- Тот же журнал, что и под прогресс-баром разбора: проверка ключа
          идёт до всякого прогресс-бара, а вопросы к ней те же — каким
@@ -4733,13 +4752,32 @@ function libCard(book){
     chip.onclick = () => libMark(book, item.key, !on);
     chips.append(chip);
   }
+  // Свой тег снимается нажатием: метки из закрытого списка выше
+  // переключаются, а эти человек завёл сам, и убирать их надо там же,
+  // где видно.
   for(const tag of book.tags || []){
-    const chip = document.createElement('span');
-    chip.className = 'lbchip tag';
-    chip.textContent = tag;
+    const chip = document.createElement('button');
+    chip.className = 'lbchip tag on';
+    chip.textContent = tag + ' ×';
+    chip.title = 'убрать тег';
+    chip.onclick = () => libTags(book,
+      (book.tags || []).filter(one => one !== tag));
     chips.append(chip);
   }
   side.append(chips);
+
+  // Поле для своих тегов. Раньше их было видно и нельзя было поставить:
+  // паспорт их печатал, карточка рисовала, а записать не мог никто.
+  const tags = document.createElement('input');
+  tags.className = 'lb-note';
+  tags.type = 'text';
+  tags.placeholder = 'теги через запятую: попаданец, культивация, гарем';
+  tags.onchange = () => {
+    const added = tags.value;
+    tags.value = '';
+    libTags(book, [...(book.tags || []), ...added.split(',')]);
+  };
+  side.append(tags);
 
   const note = document.createElement('input');
   note.className = 'lb-note';
@@ -4814,6 +4852,16 @@ function libCard(book){
   deeds.append(drop);
   card.append(deeds);
   return card;
+}
+
+/** Свои теги книги. Чистит и режет их сервер: правило «повтор не в
+ *  счёт, регистр не в счёт» должно быть одно, а не два. */
+async function libTags(book, tags){
+  try{
+    const data = await call('/api/library/tags', {key: book.key, tags});
+    Object.assign(book, data.book || {});
+    libShow();
+  }catch(err){ showError(err.message); }
 }
 
 async function libMark(book, name, on){

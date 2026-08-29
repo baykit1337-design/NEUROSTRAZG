@@ -484,6 +484,136 @@ class TestOneKeyStore(unittest.TestCase):
         self.assertIs(web.keystore, keys_mod.store)
 
 
+class TestCheckingEveryKey(KeysBase):
+    """Обход всех ключей: сколько живых, сколько исчерпано.
+
+    Проверка одного ключа отвечает на вопрос «какая модель». Вставив
+    полсотни ключей, человек получал отказ по первому и не знал, сколько
+    из остальных рабочих, — а ключи кончаются по одному за день.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.web = web
+        self.answers = {}
+
+        class FakeClient:
+            def __init__(inner, key):
+                inner.key = key
+
+            def models(inner):
+                beda = self.answers.get(inner.key)
+                if beda:
+                    raise beda
+                return []
+
+            def close(inner):
+                pass
+
+        was = web._llm_client
+        web._llm_client = lambda payload=None, log_to=None, only="": \
+            FakeClient(only)
+        self.addCleanup(setattr, web, "_llm_client", was)
+
+        held = web.keystore
+        web.keystore = self.store
+        self.addCleanup(setattr, web, "keystore", held)
+
+    def run_job(self):
+        from webapp.app import JOBS
+
+        said = self.app.post("/api/llm/keys/checkall", json={}).get_json()
+        job = JOBS[said["job"]["id"]]
+        job.thread.join(timeout=30)
+        return job
+
+    def test_every_key_is_asked_not_just_the_first(self):
+        """Ради этого всё и затевалось."""
+        self.store.add("aaa\nbbb\nccc")
+        job = self.run_job()
+        self.assertEqual(job.report["checked"], 3)
+
+    def test_a_spent_key_is_told_apart_from_a_bad_one(self):
+        """Исчерпанный завтра оживёт сам, негодный не оживёт никогда."""
+        from llm.client import BadKey, LlmError
+
+        self.store.add("живой\nисчерпанный\nплохой")
+        self.answers = {
+            "исчерпанный": LlmError("Resource exhausted: quota"),
+            "плохой": BadKey("API key not valid"),
+        }
+        job = self.run_job()
+
+        self.assertEqual(job.report["live"], 1)
+        self.assertEqual(job.report["spent"], 1)
+        self.assertEqual(job.report["bad"], 1)
+
+    def test_the_counts_reach_the_summary(self):
+        """«10 зелёных и 40 красных» — то, ради чего смотрят."""
+        from llm.client import LlmError
+
+        self.store.add("один\nдва")
+        self.answers = {"два": LlmError("quota exceeded")}
+        job = self.run_job()
+
+        self.assertIn("Живых: 1", job.progress["message"])
+        self.assertIn("квота кончилась: 1", job.progress["message"])
+
+    def test_the_verdict_lands_in_the_store(self):
+        """Иначе счётчик в шапке остаётся прежним, и «сколько живых»
+        видно только в самой проверке."""
+        from llm.client import LlmError
+
+        self.store.add("один\nдва")
+        self.answers = {"два": LlmError("resource_exhausted")}
+        self.run_job()
+
+        by_state = {k.key: k.state for k in self.store.all()}
+        self.assertEqual(by_state["один"], keys_mod.ACTIVE)
+        self.assertEqual(by_state["два"], keys_mod.EXHAUSTED)
+
+    def test_a_key_that_woke_up_is_marked_active_again(self):
+        """Ключ пометили исчерпанным вчера, сегодня квота вернулась."""
+        self.store.add("один")
+        self.store.exhaust(self.store.all()[0])
+        self.assertEqual(self.store.all()[0].state, keys_mod.EXHAUSTED)
+
+        self.run_job()
+        self.assertEqual(self.store.all()[0].state, keys_mod.ACTIVE)
+
+    def test_one_dead_key_does_not_stop_the_walk(self):
+        self.store.add("один\nдва\nтри")
+        self.answers = {"два": RuntimeError("что-то совсем неожиданное")}
+        job = self.run_job()
+
+        self.assertIsNone(job.error)
+        self.assertEqual(job.report["checked"], 3)
+
+    def test_the_key_itself_never_leaves(self):
+        """Наружу ключ уходит только сокращённым, целиком — никогда."""
+        self.store.add("совершенно-секретный-ключ")
+        job = self.run_job()
+        self.assertNotIn("совершенно-секретный-ключ",
+                         str(job.report["rows"]))
+
+    def test_without_keys_it_says_so(self):
+        answer = self.app.post("/api/llm/keys/checkall", json={})
+        self.assertEqual(answer.status_code, 400)
+        self.assertTrue(answer.get_json()["need_keys"])
+
+    def test_every_state_has_a_name_for_the_page(self):
+        self.store.add("один")
+        job = self.run_job()
+        for row in job.report["rows"]:
+            with self.subTest(row["state"]):
+                self.assertIn(row["state"], self.web.KEY_STATES)
+                self.assertTrue(row["state_name"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

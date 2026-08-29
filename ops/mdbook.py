@@ -122,27 +122,32 @@ def parse_head(line: str) -> Head | None:
                 opening=opening, closing=closing)
 
 
+def _slot(value: str) -> str:
+    """Поле заголовка: с ведущим пробелом, если в нём что-то есть."""
+    return f" {value}" if value else ""
+
+
 def make_head(title: str, order: str = "", paid: str = "",
               volume: str = "") -> Head:
     """Заголовок с нуля.
 
-    Пустые поля с конца не пишем вовсе: лишний разделитель сайт прочитает
-    как «том без имени». А вот пропуск в середине оставляем — том без
-    платности перед ним съедет на чужое поле.
+    Все три поля пишутся всегда, даже пустые:
+
+        # [Глава 31 :|: :|: 1 :|: ]
+
+    Сначала пустые поля с конца здесь опускались — и это была выдумка.
+    Так пишет сам загрузчик, и так выглядит книга, которую он отдаёт
+    обратно; строка с одним разделителем вместо трёх — уже другая
+    строка. Пустой том на конце оставляет пробел перед скобкой: у
+    загрузчика он там и стоит.
     """
     title = str(title or "").replace(MARK, " ").strip()
-    order, paid, volume = (str(x or "") for x in (order, paid, volume))
-
-    rest: list[str] = []
-    if volume.strip():
-        rest = [order, paid or " ", volume]
-    elif paid.strip():
-        rest = [order, paid]
-    elif order.strip():
-        rest = [order]
+    order, paid, volume = (str(x or "").strip() for x in (order, paid, volume))
 
     return Head(title=title,
-                tail="".join(f" {MARK} {piece}" for piece in rest))
+                tail=f" {MARK}{_slot(order)}"
+                     f" {MARK}{_slot(paid)}"
+                     f" {MARK}{_slot(volume) or ' '}")
 
 
 def read_book(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:

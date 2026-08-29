@@ -95,12 +95,25 @@ class TestNothingButTheTitleChanges(unittest.TestCase):
 
 class TestWritingAHeaderFromScratch(unittest.TestCase):
 
-    def test_a_bare_title_needs_no_separators(self):
-        self.assertEqual(mdbook.make_head("Пролог").line(), "# [Пролог]")
+    def test_every_header_carries_all_three_fields(self):
+        """Так пишет сам загрузчик, и так выглядит книга, которую он
+        отдаёт обратно. Сначала пустые поля с конца здесь опускались —
+        это была выдумка, а строка с одним разделителем вместо трёх для
+        сайта уже другая строка."""
+        self.assertEqual(mdbook.make_head("Пролог").line(),
+                         "# [Пролог :|: :|: :|: ]")
 
-    def test_the_order_alone_takes_one_field(self):
+    def test_the_usual_header_looks_exactly_like_the_loaders_own(self):
+        """Образец из отчёта: платность стоит, порядок и том пусты."""
+        self.assertEqual(mdbook.make_head("Глава 31", paid="1").line(),
+                         "# [Глава 31 :|: :|: 1 :|: ]")
+        self.assertEqual(
+            mdbook.make_head("Глава 1 — Правила ассасина", paid="1").line(),
+            "# [Глава 1 — Правила ассасина :|: :|: 1 :|: ]")
+
+    def test_the_order_keeps_its_own_slot(self):
         self.assertEqual(mdbook.make_head("Глава 1", order="1").line(),
-                         "# [Глава 1 :|: 1]")
+                         "# [Глава 1 :|: 1 :|: :|: ]")
 
     def test_a_volume_forces_the_price_field(self):
         """Иначе сайт прочитает том как платность."""
@@ -108,9 +121,13 @@ class TestWritingAHeaderFromScratch(unittest.TestCase):
         self.assertEqual(line.count(mdbook.MARK), 3)
 
     def test_the_separator_cannot_get_into_a_title(self):
-        """`:|:` внутри названия развалил бы разбор на сайте."""
-        line = mdbook.make_head(f"До {mdbook.MARK} после").line()
-        self.assertEqual(line.count(mdbook.MARK), 0)
+        """`:|:` внутри названия развалил бы разбор на сайте: сайт
+        прочитал бы вторую половину названия как номер."""
+        head = mdbook.make_head(f"До {mdbook.MARK} после")
+        self.assertNotIn(mdbook.MARK, head.title)
+        # Разделителей ровно три — те, что отделяют поля, и ни одного
+        # лишнего из названия.
+        self.assertEqual(head.line().count(mdbook.MARK), 3)
 
     def test_what_was_written_is_read_back_the_same(self):
         head = mdbook.make_head("Глава 7", order="7", paid="1", volume="Том 1")

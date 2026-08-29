@@ -42,7 +42,8 @@ from ops import titles as titles_op  # noqa: E402
 from ops import merge as merge_op  # noqa: E402
 from ops import names as names_op  # noqa: E402
 from ops import convert as convert_op  # noqa: E402
-from llm.client import BadKey, LlmClient, LlmError, NoKeysLeft, mask, short  # noqa: E402
+from llm.client import (  # noqa: E402
+    BadKey, LlmClient, LlmError, NoKeysLeft, looks_exhausted, mask, short)
 from llm import keys as keys_mod  # noqa: E402
 from llm.keys import store as keystore  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
@@ -737,6 +738,22 @@ def api_library_check():
         books=[_book_out(b) for b in library_op.all_books()],
         state=library_op.state(),
     )
+
+
+@app.post("/api/library/tags")
+def api_library_tags():
+    """Свои теги книги.
+
+    Поле для них было с самого начала — его печатал паспорт и рисовала
+    карточка, — а записать в него не мог никто: ни кнопки, ни маршрута.
+    Теги были видны и недоступны.
+    """
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    book = library_op.set_tags(key, payload.get("tags"))
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    return jsonify(book=_book_out(book))
 
 
 @app.post("/api/library/forget")
@@ -1668,7 +1685,8 @@ def api_rename_apply():
 # ------------------------------------------------------ модель и ключ
 
 
-def _llm_client(payload: dict | None = None, log_to=None) -> LlmClient:
+def _llm_client(payload: dict | None = None, log_to=None,
+                only: str = "") -> LlmClient:
     """Единственный способ завести клиента модели (1.3 ТЗ).
 
     Хранилище ключей одно на всё приложение, и подставляется оно здесь.
@@ -1682,14 +1700,20 @@ def _llm_client(payload: dict | None = None, log_to=None) -> LlmClient:
     payload = payload or {}
     with POOL_LOCK:
         pool = POOL
+
     # В поле ключа может лежать вставка списком — оно для того и
     # многострочное. Взять её целиком за один ключ значит отправить
     # пятьдесят строк в поле `key`: Google отвечает «ключа нет вовсе», а
     # человек видит отказ ключа, которого не вставлял.
-    typed = keys_mod.first_key(payload.get("key"))
+    #
+    # `only` — тот же случай, только ключ пришёл не из поля, а из
+    # обхода списка: проверять надо именно его. Без этого обход на
+    # первом же исчерпанном молча уехал бы на следующий, и один ключ
+    # проверился бы полсотни раз.
+    typed = only or keys_mod.first_key(payload.get("key"))
     return LlmClient(key=typed, pool=pool,
-                     # Введённый вручную ключ проверяется как есть: он ещё
-                     # не сохранён, и ротации для него нет.
+                     # Названный ключ проверяется как есть: он либо ещё
+                     # не сохранён, либо его и просили, — ротации нет.
                      keys=None if typed else keystore,
                      on_event=(lambda text: log_to.add(text, "key")) if log_to else None)
 
@@ -1811,6 +1835,89 @@ def api_llm_check():
                        log=trace.lines()), 502
     finally:
         client.close()
+
+
+#: Что стало с ключом на проверке. Список закрытый: интерфейс берёт
+#: подписи отсюда, а не держит их вторым экземпляром.
+KEY_STATES = {
+    "live": "работает",
+    "spent": "квота кончилась",
+    "bad": "отклонён",
+    "mute": "не достучались",
+}
+
+
+@app.post("/api/llm/keys/checkall")
+def api_llm_keys_checkall():
+    """Обойти все ключи и сказать, какие живы, а какие исчерпаны.
+
+    Раньше проверка брала первый ключ и на нём заканчивалась: вставив
+    полсотни, человек получал отказ по одному и не знал, сколько из
+    остальных рабочих. Ключи кончаются за день по одному, и вопрос
+    «сколько зелёных» — единственный, который тут задают.
+
+    Задачей, а не сразу ответом: полсотни ключей — полсотни запросов.
+    """
+    keys = keystore.all()
+    if not keys:
+        return jsonify(error="Ключей в списке нет — добавьте хотя бы один",
+                       need_keys=True), 400
+
+    with POOL_LOCK:
+        pool = POOL
+
+    job = Job(id=uuid.uuid4().hex[:12], kind="keys",
+              meta={"total": len(keys)})
+    job.progress = {"stage": "keys", "done": 0, "total": len(keys),
+                    "message": f"Ключей проверить: {len(keys)}"}
+
+    def work(job: Job):
+        rows, counts = [], dict.fromkeys(KEY_STATES, 0)
+        for index, key in enumerate(keys, 1):
+            if job.cancel.is_set():
+                break
+            client = _llm_client(only=key.key)
+            state, why = "live", ""
+            try:
+                client.models()
+            except BadKey as exc:
+                state, why = "bad", str(exc)
+            except LlmError as exc:
+                state = "spent" if looks_exhausted(exc) else "mute"
+                why = str(exc)
+            except Exception as exc:  # noqa: BLE001 — отчёт важнее падения
+                state, why = "mute", f"{type(exc).__name__}: {exc}"
+            finally:
+                client.close()
+
+            # Итог проверки пишем в хранилище: иначе счётчик в шапке
+            # остаётся прежним, и «10 зелёных» видно только тут.
+            if state == "live":
+                keystore.update(keys_mod.key_id(key.key),
+                                state=keys_mod.ACTIVE, exhausted_at="",
+                                reset_at="")
+            elif state == "spent":
+                keystore.exhaust(key)
+
+            counts[state] += 1
+            rows.append({"id": keys_mod.key_id(key.key),
+                         "label": key.name or short(key.key),
+                         "state": state, "state_name": KEY_STATES[state],
+                         "why": scrub(why)})
+            job.progress.update(done=index, message=f"Ключ {index} из {len(keys)}",
+                                **counts)
+
+        job.report = {"rows": rows, "checked": len(rows), **counts,
+                      "states": [{"key": k, "name": v}
+                                 for k, v in KEY_STATES.items()]}
+        job.progress.update(
+            stage="done",
+            message=(f"Живых: {counts['live']} · квота кончилась: "
+                     f"{counts['spent']} · отклонено: {counts['bad']}"
+                     + (f" · не достучались: {counts['mute']}"
+                        if counts["mute"] else "")))
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 @app.post("/api/llm/save")
@@ -2113,10 +2220,13 @@ def api_format_options():
     Держать их вторым экземпляром в разметке нельзя — при расхождении
     книга уедет туда с чужой ценой.
     """
+    # «Платная» стоит первой, потому что она и стоит в заголовках почти
+    # всегда: список выбирает первый пункт по умолчанию, и с «как в
+    # форме» во главе книга уезжала с пустой платностью.
     return jsonify(
-        payment=[{"key": mdbook.PAYMENT["form"], "name": "как в форме"},
+        payment=[{"key": mdbook.PAYMENT["paid"], "name": "платная"},
                  {"key": mdbook.PAYMENT["free"], "name": "бесплатная"},
-                 {"key": mdbook.PAYMENT["paid"], "name": "платная"}],
+                 {"key": mdbook.PAYMENT["form"], "name": "как в форме"}],
         separators=[{"key": s, "name": f"«{s}»"} for s in mdbook.SEPARATORS],
         default_separator=mdbook.DEFAULT_SEPARATOR,
         prefix=naming.DEFAULT_PREFIX,
@@ -3165,8 +3275,12 @@ def api_rank_everywhere():
     for site in RANK_SITES.values():
         cats.update(site.get("channels") or {})
 
+    # Переводы названий — то, чем китайская строка сходится с
+    # английской. Они уже накоплены кнопкой «Перевести всё», и брать их
+    # больше неоткуда.
     return jsonify(**everywhere_op.board(
-        names=names, boards=boards, categories=cats).as_dict())
+        names=names, boards=boards, categories=cats,
+        translated=titles_op.known()).as_dict())
 
 
 @app.get("/api/rank/state")

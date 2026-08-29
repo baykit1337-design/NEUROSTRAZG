@@ -333,6 +333,52 @@ def set_note(key: str, text: str) -> Book | None:
         return book
 
 
+#: Больше этого числа тегов у книги не держим: тег — способ найти, а не
+#: пересказать содержание. Двадцать меток не сужают поиск ни на сколько.
+MAX_TAGS = 20
+
+
+def split_tags(text) -> list[str]:
+    """Строка или список — в чистый список тегов.
+
+    Теги пишут через запятую в одну строку, а приходить они могут и
+    списком. Повторы убираем, порядок сохраняем: человек их сам так
+    расставил.
+    """
+    if isinstance(text, str):
+        pieces = text.replace(";", ",").split(",")
+    else:
+        pieces = [str(one) for one in (text or [])]
+
+    found, seen = [], set()
+    for piece in pieces:
+        tag = " ".join(str(piece).split()).strip()
+        # Сравниваем без регистра, а храним как написали: «Культивация»
+        # и «культивация» — один тег, но выглядеть он должен по-людски.
+        low = tag.casefold()
+        if not tag or low in seen:
+            continue
+        seen.add(low)
+        found.append(tag)
+    return found[:MAX_TAGS]
+
+
+def set_tags(key: str, tags) -> Book | None:
+    """Свои теги книги. Пустой список — стирание, и оно должно доходить.
+
+    Отдельной функцией по той же причине, что и заметка: `remember` не
+    затирает заполненное пустым, и снять последний тег было бы нечем.
+    """
+    with _LOCK:
+        books = _load()
+        book = books.get(str(key or ""))
+        if book is None:
+            return None
+        book.tags = split_tags(tags)
+        _save(books)
+        return book
+
+
 def forget(key: str) -> bool:
     """Убрать книгу из библиотеки. Файлы на диске не трогаются."""
     with _LOCK:

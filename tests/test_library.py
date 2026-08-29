@@ -650,3 +650,53 @@ class TestTheLibraryTab(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOwnTags(Base):
+    """Свои теги: «где та про попаданца в культивацию».
+
+    Поле для них было с самого начала — паспорт их печатал, карточка
+    рисовала, — а записать в него не мог никто: ни кнопки, ни маршрута.
+    Теги были видны и недоступны.
+    """
+
+    def test_a_tag_can_be_put_on_a_book(self):
+        library.remember("к1", name="Книга")
+        book = library.set_tags("к1", "попаданец, культивация")
+        self.assertEqual(book.tags, ["попаданец", "культивация"])
+
+    def test_tags_survive_a_reread(self):
+        library.remember("к1", name="Книга")
+        library.set_tags("к1", "гарем")
+        self.assertEqual(library.get("к1").tags, ["гарем"])
+
+    def test_the_same_tag_twice_is_one_tag(self):
+        """Регистр не в счёт, а написание сохраняем: «Культивация» и
+        «культивация» — один тег, но выглядеть он должен по-людски."""
+        self.assertEqual(
+            library.split_tags("Культивация, культивация, КУЛЬТИВАЦИЯ"),
+            ["Культивация"])
+
+    def test_a_list_works_as_well_as_a_line(self):
+        self.assertEqual(library.split_tags(["один", " два "]),
+                         ["один", "два"])
+
+    def test_empty_pieces_are_dropped(self):
+        self.assertEqual(library.split_tags("один,,  ,два,"), ["один", "два"])
+
+    def test_clearing_the_tags_reaches_the_book(self):
+        """`remember` пустым не затирает — иначе снять последний тег было
+        бы нечем."""
+        library.remember("к1", name="Книга")
+        library.set_tags("к1", "гарем")
+        library.set_tags("к1", "")
+        self.assertEqual(library.get("к1").tags, [])
+
+    def test_a_book_that_is_not_there_says_so(self):
+        self.assertIsNone(library.set_tags("нет такой", "тег"))
+
+    def test_there_is_a_limit(self):
+        """Тег — способ найти, а не пересказать содержание."""
+        many = ",".join(f"тег{n}" for n in range(library.MAX_TAGS + 10))
+        self.assertEqual(len(library.split_tags(many)), library.MAX_TAGS)
+

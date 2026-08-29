@@ -2626,6 +2626,78 @@ async function llmEstimate(){
   finally{ $('llmEstimate').disabled = false; }
 }
 
+/* ------------------------------------------ сколько ключей ещё живы
+ *
+ * Проверка одного ключа отвечает на вопрос «какая модель», и на полусотне
+ * вставленных ключей она бесполезна: отказал первый — и всё, а сколько из
+ * остальных рабочих, неизвестно. Ключи кончаются по одному за день, и
+ * вопрос тут ровно один — сколько зелёных.
+ *
+ * Подписи состояний приходят с сервера вместе с отчётом: список закрытый
+ * и живёт в `KEY_STATES`.
+ */
+
+let llmAllJob = null;
+
+async function llmCheckAll(){
+  showError('');
+  $('llmCheckAll').disabled = true;
+  $('llmAllBox').hidden = false;
+  $('llmAllRows').hidden = true;
+  try{
+    const {job} = await call('/api/llm/keys/checkall', {});
+    llmAllJob = job.id;
+    $('llmAllStop').hidden = false;
+    drawResult(job.progress || {}, 'llmAllFill', 'llmAllStatus');
+
+    pollJob(job.id,
+      job => drawResult(job.progress || {}, 'llmAllFill', 'llmAllStatus'),
+      job => {
+        llmAllJob = null;
+        $('llmAllStop').hidden = true;
+        $('llmCheckAll').disabled = false;
+        if(job.error){ showError(job.error, $('llmAllBox')); return; }
+        llmDrawAll(job.report || {});
+        // Счётчик живых в шапке считает сервер по хранилищу — после
+        // проверки он там другой.
+        llmKeysState();
+      });
+  }catch(err){
+    showError(err.message, $('llmCheckAll'));
+    $('llmCheckAll').disabled = false;
+  }
+}
+
+function llmDrawAll(report){
+  const table = $('llmAllRows');
+  table.innerHTML = '';
+  for(const row of report.rows || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.label;
+
+    const tag = document.createElement('span');
+    // Живой — обычной меткой, всё остальное — предупреждением: разница
+    // между «работает» и «не работает» должна ловиться взглядом.
+    tag.className = row.state === 'live' ? 'tag' : 'tag warn';
+    tag.textContent = row.state_name;
+
+    const why = document.createElement('span');
+    why.className = 'num';
+    why.textContent = row.why ? row.why.slice(0, 70) : '';
+    why.title = row.why || '';
+
+    line.append(name, tag, why);
+    table.append(line);
+  }
+  table.hidden = !(report.rows || []).length;
+}
+
+$('llmCheckAll').onclick = llmCheckAll;
+$('llmAllStop').onclick = () => stopJob(llmAllJob);
 $('llmCheck').onclick = llmCheck;
 $('llmSave').onclick = llmSave;
 $('llmAdd').onclick = llmAdd;
@@ -6415,10 +6487,13 @@ async function evLoad(){
     const data = await call('/api/rank/everywhere');
     evRows = data.rows || [];
 
-    $('evNote').textContent = data.total
+    // Пустая доска без причины читается как поломка. Причину знает
+    // сервер: он же считает, скольким книгам не хватает перевода.
+    $('evNote').textContent = (data.total
       ? `Книг: ${data.total}, из них на нескольких сайтах: ${data.shared}.`
         + (data.more ? ` Показаны первые ${data.total - data.more}.` : '')
-      : 'Срезов ещё нет. Снимите хотя бы один рейтинг кнопкой «Обновить срез».';
+      : 'Срезов ещё нет. Снимите хотя бы один рейтинг кнопкой «Обновить срез».')
+      + (data.advice ? ' ' + data.advice : '');
 
     // Из чего собрана доска: срез месячной давности — не «читают
     // сейчас», и не сказать об этом значило бы соврать датой.

@@ -197,6 +197,17 @@ class Model:
                 "flash": self.flash, "input_limit": self.input_limit}
 
 
+def looks_exhausted(text) -> bool:
+    """Похож ли отказ на кончившуюся квоту, а не на негодный ключ.
+
+    Разница для человека главная: исчерпанный ключ завтра оживёт сам, а
+    негодный не оживёт никогда. Признаки те же, что и у разбора ответа
+    (`_is_quota`) — второй их список однажды разошёлся бы с первым.
+    """
+    low = str(text or "").lower()
+    return any(marker in low for marker in QUOTA_MARKERS)
+
+
 def cheapest(models: list[Model]) -> Model | None:
     """Самая дешёвая пригодная модель.
 
