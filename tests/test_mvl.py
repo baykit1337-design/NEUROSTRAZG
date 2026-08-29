@@ -266,6 +266,20 @@ class TestNames(unittest.TestCase):
     def test_sanitize_keeps_cyrillic(self):
         self.assertEqual(sanitize_filename("Глава 1: Начало"), "Глава 1_ Начало")
 
+    def test_output_dir_without_a_name_is_the_chosen_folder(self):
+        """Скачиванию своя папка на книгу нужна — их там десятки, — а
+        разбирающему один файл сочинять ей имя незачем: он уже выбрал,
+        куда положить. Пустое имя раньше давало папку «novel»."""
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(prepare_output_dir(tmp, ""), Path(tmp).resolve())
+            self.assertEqual(prepare_output_dir(tmp, "   "), Path(tmp).resolve())
+
+    def test_a_named_folder_is_still_made_inside(self):
+        with TemporaryDirectory() as tmp:
+            made = prepare_output_dir(tmp, "Книга")
+            self.assertEqual(made, Path(tmp).resolve() / "Книга")
+            self.assertTrue(made.is_dir())
+
     def test_chapter_filename_zero_padded(self):
         self.assertEqual(chapter_filename(7, "Start"), "0007 - Start.txt")
         self.assertEqual(chapter_filename(1234, "X"), "1234 - X.txt")

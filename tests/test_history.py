@@ -95,6 +95,30 @@ class TestBackup(HistoryTestCase):
     def test_missing_folder_is_not_an_error(self):
         self.assertEqual(history.backup(self.tmp / "нет-такой"), "")
 
+    def test_only_the_named_files_are_copied(self):
+        """Пишущий прямо в выбранную папку не должен утаскивать в корзину
+        всё, что там лежало: выбрать могут рабочий стол."""
+        book = self.folder("книга", {1: ["Было так."], 2: ["И так."]})
+        (book / "чужое.txt").write_text("не наше", encoding="utf-8")
+
+        path = history.backup_files([book / "Глава 1.txt"], "замена")
+        self.assertTrue(path)
+        self.assertEqual(sorted(p.name for p in Path(path).iterdir()),
+                         ["Глава 1.txt"])
+
+    def test_files_that_are_not_there_yet_are_skipped(self):
+        """Затереть можно только то, что уже лежит."""
+        book = self.folder("книга", {1: ["Было так."]})
+        path = history.backup_files(
+            [book / "Глава 1.txt", book / "Глава 2.txt"], "замена")
+        self.assertEqual([p.name for p in Path(path).iterdir()],
+                         ["Глава 1.txt"])
+
+    def test_nothing_to_replace_makes_no_copy(self):
+        """Пустая копия в корзине — мусор, за которым потом лезть."""
+        book = self.folder("книга", {1: ["Было так."]})
+        self.assertEqual(history.backup_files([book / "Глава 9.txt"]), "")
+
     def test_old_backups_are_removed(self):
         """Папка с копиями книги на пятьсот глав быстро съест диск."""
         book = self.folder("книга", {1: ["Текст."]})

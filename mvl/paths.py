@@ -44,13 +44,18 @@ def prepare_output_dir(base: str | os.PathLike, folder_name: str) -> Path:
     """Создаёт папку {base}/{folder_name} и возвращает путь.
 
     Существующая папка используется как есть — на неё опирается докачка.
+
+    Без имени пишем прямо в выбранную папку. Скачиванию своя папка на
+    книгу нужна — их там десятки, — а тому, кто разбивает один файл,
+    сочинять ей имя незачем: он уже выбрал, куда положить.
     """
     base_path = expand(base)
     if base_path.exists() and not base_path.is_dir():
         raise NotADirectoryError(f"Не папка: {base_path}")
 
-    safe_name = sanitize_filename(folder_name, fallback="novel")
-    target = base_path / safe_name
+    name = str(folder_name or "").strip()
+    target = base_path / sanitize_filename(name, fallback="novel") if name \
+        else base_path
     target.mkdir(parents=True, exist_ok=True)
 
     probe = target / ".write-test"

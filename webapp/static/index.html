@@ -100,6 +100,35 @@
   }
   .card[hidden]{display:none}
 
+  /* Сворачивающиеся карточки.
+     ------------------------------------------------------------------
+     Всё, что не основная работа вкладки, по умолчанию сложено: настройки
+     оформления, обработка текста, объём глав, предпросмотр. Обычно там
+     ничего не трогают, а глаз они забирают наравне с главным, и человек
+     на своей же вкладке теряется, куда нажимать.
+
+     Прячем правилом, а не переносом разметки: карточку достаточно
+     пометить `data-fold`, а её заголовок — классом `foldhead`. Ни один
+     `id` не переезжает, ни один обработчик не переписывается — свёрнутая
+     карточка отличается от развёрнутой ровно одним классом. */
+  .card[data-fold] > .foldhead{
+    cursor:pointer;
+    user-select:none;
+    margin-bottom:0;
+    display:flex;align-items:center;gap:8px;
+  }
+  .card[data-fold] > .foldhead::before{
+    content:'';
+    width:0;height:0;
+    border-left:5px solid transparent;
+    border-right:5px solid transparent;
+    border-top:6px solid var(--neon);
+    transition:transform .18s ease;
+  }
+  .card.folded > .foldhead::before{transform:rotate(-90deg)}
+  .card[data-fold]:not(.folded) > .foldhead{margin-bottom:8px}
+  .card.folded > *:not(.foldhead){display:none}
+
   /* Атрибут `hidden` прячет через `display:none` из браузерного набора
      правил, а он слабее любого нашего `display`. Поэтому `.row[hidden]`
      и `.schema[hidden]` оставались на экране: в «Разбить» и
@@ -1183,8 +1212,8 @@
   <div class="card err" id="error" hidden></div>
 
 <!-- ============== Очистка шапок: один блок на три вкладки ============== -->
-<div class="card" id="hdCard" hidden>
-  <label>Мусорная шапка в начале файлов</label>
+<div class="card folded" data-fold id="hdCard" hidden>
+  <label class="foldhead">Мусорная шапка в начале файлов</label>
   <p class="hint" id="hdIntro"></p>
   <div class="table" id="hdList"></div>
 
@@ -1533,12 +1562,18 @@
          здесь, не должна отличаться от неё же, переименованной там. -->
     <div style="margin-top:16px">
       <label>Имя файла</label>
+      <!-- По умолчанию отмечен только номер главы: обычная разбивка даёт
+           «Глава 99» и больше ничего. Остальное — по желанию, а не
+           обязанность снимать четыре галочки перед каждым разбиением.
+           «Номер части» включается сам, когда главы делят: без него все
+           части главы получат одно имя. -->
       <div class="checks">
-        <label class="chk"><input type="checkbox" id="spSeq" checked> порядковый номер
+        <label class="chk"><input type="checkbox" id="spSeq"> порядковый номер
           <i class="hint-icon" data-tip="«0001 - » в начале имени. Держит файлы в правильном порядке в любом проводнике.">?</i></label>
         <label class="chk"><input type="checkbox" id="spNum" checked> номер главы</label>
-        <label class="chk"><input type="checkbox" id="spPartNum" checked> номер части</label>
-        <label class="chk"><input type="checkbox" id="spTitleOn" checked> название</label>
+        <label class="chk"><input type="checkbox" id="spPartNum"> номер части
+          <i class="hint-icon" data-tip="Включается сам, когда вы делите главы на части: иначе части получат одно имя на всех.">?</i></label>
+        <label class="chk"><input type="checkbox" id="spTitleOn"> название</label>
       </div>
       <div class="row" style="margin-top:10px">
         <div style="flex:1">
@@ -1566,8 +1601,10 @@
       </div>
     </div>
 
+    <!-- Снята по умолчанию: название главы уже стоит в имени файла, и
+         дублировать его первой строкой текста обычно не нужно. -->
     <label class="chk" style="margin-top:14px">
-      <input type="checkbox" id="spHeadings" checked> добавлять название главы перед текстом
+      <input type="checkbox" id="spHeadings"> добавлять название главы перед текстом
       <i class="hint-icon" data-tip="Название берётся из заголовка главы.">?</i></label>
   </div>
 
@@ -1576,8 +1613,8 @@
        вдвое больше файлов, чем глав, и узнать об этом можно было только
        по готовой папке. Теперь деление задаётся главам поимённо, а
        увидеть его можно до записи. -->
-  <div class="card" id="spChaptersCard" hidden>
-    <label>Главы <span class="hint hint-inline" id="spPicked"></span></label>
+  <div class="card folded" data-fold id="spChaptersCard" hidden>
+    <label class="foldhead">Главы <span class="hint hint-inline" id="spPicked"></span></label>
     <div class="row" style="margin-bottom:8px;flex-wrap:wrap">
       <button class="ghost" id="spAll" style="padding:5px 12px;font-size:12px">Выбрать все</button>
       <button class="ghost" id="spNone" style="padding:5px 12px;font-size:12px">Снять</button>
@@ -1605,16 +1642,16 @@
   <!-- Что ляжет на диск. Имена считает сервер тем же кодом, что и пишет:
        разойдись они, предпросмотр показывал бы одно, а в папке лежало бы
        другое. -->
-  <div class="card" id="spPreviewCard" hidden>
-    <label>Предпросмотр <span class="hint hint-inline" id="spPreviewNote"></span></label>
+  <div class="card folded" data-fold id="spPreviewCard" hidden>
+    <label class="foldhead">Предпросмотр <span class="hint hint-inline" id="spPreviewNote"></span></label>
     <div class="table" id="spPreview" style="max-height:420px"></div>
   </div>
 
   <!-- Объём глав. Тот же вопрос стоит на «Переименовать» и
        «Форматировать», и считает его один и тот же `ops/stats`: объём
        главы не должен зависеть от того, из какой вкладки смотрят. -->
-  <div class="card" id="spVolCard">
-    <label>Объём глав</label>
+  <div class="card folded" data-fold id="spVolCard">
+    <label class="foldhead">Объём глав</label>
     <p class="hint">Какие главы выделяются на фоне остальных. Мерка —
        медиана самой книги, а не круглое число знаков: у одной книги
        обычная глава на две тысячи знаков, у другой на десять.</p>
@@ -1626,8 +1663,8 @@
   </div>
 
   <!-- Оформление .docx: показывается, только когда выбран этот формат. -->
-  <div class="card" id="spStyle" hidden>
-    <label>Оформление документа</label>
+  <div class="card folded" data-fold id="spStyle" hidden>
+    <label class="foldhead">Оформление документа</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:2">
         <label>шрифт</label>
@@ -1657,8 +1694,8 @@
   </div>
 
   <!-- Обработка текста — одна на обе вкладки, как и код за ней. -->
-  <div class="card" id="spPrep" hidden>
-    <label>Обработка текста</label>
+  <div class="card folded" data-fold id="spPrep" hidden>
+    <label class="foldhead">Обработка текста</label>
     <div class="row" style="margin-top:10px">
       <div style="flex:1">
         <label>выравнивание</label>
@@ -1679,21 +1716,34 @@
       <i class="hint-icon" data-tip="Игровые уведомления в фигурных и квадратных скобках. Они часть текста, удалять их нельзя.">?</i></label>
   </div>
 
-  <!-- Куда сохранять -->
+  <!-- Куда сохранять. Просто папка: сочинять ей имя незачем — человек
+       уже выбрал, куда положить, а понадобится новая, он создаст её
+       прямо в окне выбора. -->
   <div class="card" id="spPlace" hidden>
-    <label>Где создать папку</label>
+    <label>Куда сохранить главы</label>
     <div class="row">
       <input id="spBase" type="text" placeholder="Папка назначения" autocomplete="off">
       <button class="ghost browse" data-target="spBase" data-kind="folder">Обзор…</button>
     </div>
-    <div style="margin-top:10px">
-      <label for="spFolder">имя папки</label>
-      <input id="spFolder" type="text" placeholder="Название книги" autocomplete="off">
-    </div>
+    <!-- Своя папка на книгу — по желанию, а не по обязанности. Пустое
+         поле значит «прямо сюда». -->
+    <details id="spOwnFolder" style="margin-top:10px">
+      <summary class="hint">создать внутри отдельную папку</summary>
+      <input id="spFolder" type="text" placeholder="Название книги"
+             autocomplete="off" style="margin-top:8px">
+    </details>
 
-    <div class="row" style="margin-top:18px">
-      <button id="spStart" class="primary" style="flex:1">Разбить</button>
+    <!-- Две кнопки рядом, потому что и решений тут два. «Разбить» —
+         обычное: файл на главы, и всё. «Разделить» — редкое: когда главу
+         надо порезать на части. Раньше второе жило кнопками в чужой
+         карточке выше, и найти их, не зная, что они там есть, было
+         нельзя. -->
+    <div class="row" style="margin-top:18px;flex-wrap:wrap">
+      <button id="spStart" class="primary">Разбить</button>
+      <button id="spDivide" class="ghost">Разделить…</button>
     </div>
+    <p class="hint">«Разбить» — файл на главы, как есть. «Разделить» —
+       если главы нужно ещё и порезать на части.</p>
     <p class="hint" id="spFinal"></p>
   </div>
 

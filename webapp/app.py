@@ -280,15 +280,22 @@ def _progress(job: Job, unit: str) -> Progress:
     return Progress(on_progress, job.cancel)
 
 
-def _prepare(base: str, folder: str, operation: str) -> Path:
+def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
     """Папка для результата, с копией прежнего содержимого в корзину.
 
     Существующая папка используется как есть — на это опирается докачка,
     — поэтому перезапись возможна. Если в папке уже что-то лежит, старая
     версия сперва уходит в корзину: иначе восстанавливать будет нечего.
+
+    `only` — имена файлов, которые операция собирается записать. С ними в
+    корзину уходят они одни, а не вся папка: пишущий прямо в выбранную
+    папку не должен утаскивать в корзину всё, что там лежало.
     """
     output_dir = prepare_output_dir(base, folder)
-    saved = history_op.backup(output_dir, operation)
+    saved = (history_op.backup_files((output_dir / name for name in only),
+                                     operation)
+             if only is not None
+             else history_op.backup(output_dir, operation))
     if saved:
         log.info("Прежнее содержимое %s скопировано в %s", output_dir, saved)
     BACKUPS[str(output_dir)] = saved
@@ -1470,6 +1477,36 @@ def api_split_names():
         fmt=_name_format(payload), seq=bool(payload.get("seq", True))))
 
 
+@app.post("/api/split/volume")
+def api_split_volume():
+    """Объём глав внутри книги, а не объём выбранных файлов.
+
+    Общая проверка объёма считает главой файл: она сделана для папки, где
+    файл на главу и лежит. Здесь книга ещё не разбита и лежит одним
+    файлом, и та же проверка честно отвечала «глав: 1, их слишком мало» —
+    отвечая при этом не на тот вопрос. Главы берутся оттуда же, откуда их
+    возьмёт и само разбиение.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файл книги или папку"), 400
+
+    report = OpReport()
+    try:
+        _, chapters = split_op.gather(targets, _pattern(payload),
+                                      _parts(payload), report)
+    except HeadingsNotFound as exc:
+        return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    return jsonify(**stats_op.measure(
+        stats_op.rows_of(chapters),
+        unreadable=[failure.as_text() for failure in report.failures],
+    ).as_dict())
+
+
 @app.post("/api/split/start")
 def api_split_start():
     payload = request.json or {}
@@ -1485,23 +1522,32 @@ def api_split_start():
     if not targets:
         return jsonify(error="Выберите файл книги или папку"), 400
     if not base:
-        return jsonify(error="Выберите папку, где создать каталог"), 400
-    if not folder:
-        return jsonify(error="Введите имя папки"), 400
+        return jsonify(error="Выберите папку, куда сохранить главы"), 400
     if out_format not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {out_format}"), 400
 
-    # Читаем до создания папки, чтобы не плодить пустые каталоги.
+    # Читаем до создания папки, чтобы не плодить пустые каталоги. Имена
+    # считаем теми же правилами, по которым будем писать: по ним решается,
+    # что уйдёт в корзину, и «посчитали одно, записали другое» оставило бы
+    # человека без копии как раз того файла, который затёрли.
     try:
         info = split_op.look(targets, _pattern(payload), _parts(payload),
-                             pieces=_pieces(payload))
+                             pieces=_pieces(payload),
+                             fmt=_name_format(payload),
+                             seq=bool(payload.get("seq", True)))
     except HeadingsNotFound as exc:
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
+    # Пишем прямо в выбранную папку, если своего имени ей не дали. Тогда
+    # и в корзину уходит не вся она, а только те файлы, которые сейчас
+    # будут перезаписаны: выбрать могут папку с чужим добром.
     try:
-        output_dir = _prepare(base, folder, "split")
+        output_dir = _prepare(
+            base, folder, "split",
+            only=None if folder
+            else [f"{name}{out_format}" for name in info["names"]])
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 

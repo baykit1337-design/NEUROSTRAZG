@@ -313,10 +313,26 @@ class TestSplitWebApi(SplitTestCase):
         data = self.app.get("/api/browse", query_string={"path": str(self.tmp)}).get_json()
         self.assertEqual(data["files"], [])
 
-    def test_start_requires_folder(self):
+    def test_start_without_a_folder_name_writes_into_the_chosen_folder(self):
+        """Сочинять папке имя незачем: человек уже выбрал, куда положить.
+
+        Раньше пустое имя было отказом, и разбить файл «просто сюда» было
+        нельзя — приходилось выдумывать название на каждый разбор.
+        """
         res = self.app.post(
             "/api/split/start",
             json={"path": str(self.epub), "base": str(self.tmp), "folder": ""},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["job"]["output_dir"],
+                         str(self.tmp.resolve()))
+
+    def test_start_still_requires_somewhere_to_put_them(self):
+        """Папку не выбрали вовсе — это по-прежнему отказ, а не запись
+        неизвестно куда."""
+        res = self.app.post(
+            "/api/split/start",
+            json={"path": str(self.epub), "base": "", "folder": ""},
         )
         self.assertEqual(res.status_code, 400)
 
@@ -522,3 +538,169 @@ class TestSplitOverHttp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestVolumeCountsChaptersNotFiles(SplitTestCase):
+    """«Проверить объём» на неразбитой книге.
+
+    Общая проверка считает главой файл — она сделана для папки, где файл
+    на главу и лежит. Здесь книга ещё одним файлом, и та же проверка
+    честно отвечала «глав: 1, их слишком мало, чтобы говорить, какая
+    выделяется», отвечая при этом не на тот вопрос.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+
+    def test_it_sees_the_chapters_inside_the_book(self):
+        book = make_txt(self.tmp / "целиком.txt", count=8)
+        got = self.app.post("/api/split/volume",
+                            json={"targets": [str(book)]}).get_json()
+        self.assertGreaterEqual(got["chapters"], 8)
+
+    def test_it_counts_exactly_what_the_split_will_make(self):
+        """Проверка объёма и разбиение должны видеть одну и ту же книгу:
+        разойдись они, и «выделяется третья» указывало бы не на ту."""
+        book = make_txt(self.tmp / "целиком.txt", count=8)
+        scan = self.app.post("/api/split/scan",
+                             json={"targets": [str(book)]}).get_json()
+        volume = self.app.post("/api/split/volume",
+                               json={"targets": [str(book)]}).get_json()
+        self.assertEqual(volume["chapters"], scan["found"])
+
+    def test_the_old_check_still_sees_one_file(self):
+        """Не поломка соседней проверки, а разные вопросы: там объём
+        выбранных файлов, здесь — глав внутри книги."""
+        book = make_txt(self.tmp / "целиком.txt", count=8)
+        got = self.app.post("/api/stats",
+                            json={"targets": [str(book)]}).get_json()
+        self.assertEqual(got["chapters"], 1)
+
+    def test_enough_chapters_means_it_can_actually_answer(self):
+        """Ради этого ответа кнопку и жмут."""
+        book = make_txt(self.tmp / "целиком.txt", count=8)
+        got = self.app.post("/api/split/volume",
+                            json={"targets": [str(book)]}).get_json()
+        self.assertTrue(got["standout"]["enough"])
+
+    def test_a_book_without_headings_asks_for_a_pattern(self):
+        """Наугад не режем — и не считаем наугад тоже."""
+        flat = self.tmp / "ровный.txt"
+        flat.write_text("Ни одного заголовка.\n", encoding="utf-8")
+        res = self.app.post("/api/split/volume", json={"targets": [str(flat)]})
+        self.assertEqual(res.status_code, 422)
+        self.assertTrue(res.get_json()["need_pattern"])
+
+
+class TestTheTabOpensReadyToWork(unittest.TestCase):
+    """Умолчания вкладки «Разбить».
+
+    Разбивают книгу обычно одинаково: файл на главы, имена «Глава 99»,
+    формат тот же, что у исходника. Всё это стояло иначе, и на каждый
+    разбор приходилось снимать четыре галочки и выбирать формат заново.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parent.parent
+        cls.html = (root / "webapp" / "static" / "index.html").read_text(
+            encoding="utf-8")
+        cls.js = (root / "webapp" / "static" / "tabs.js").read_text(
+            encoding="utf-8")
+        start = cls.html.index('id="tab-split"')
+        cls.tab = cls.html[start:cls.html.index('id="tab-rename"')]
+
+    def box(self, name):
+        """Как в разметке записан этот флажок."""
+        start = self.tab.index(f'id="{name}"')
+        return self.tab[self.tab.rindex("<input", 0, start):
+                        self.tab.index(">", start) + 1]
+
+    def test_only_the_chapter_number_is_ticked(self):
+        """«Глава 99» — и всё. Остальное человек поставит сам, если надо."""
+        self.assertIn("checked", self.box("spNum"))
+        for other in ("spSeq", "spPartNum", "spTitleOn"):
+            self.assertNotIn("checked", self.box(other), other)
+
+    def test_the_chapter_name_is_not_repeated_inside_the_text(self):
+        """Название уже стоит в имени файла."""
+        self.assertNotIn("checked", self.box("spHeadings"))
+
+    def test_the_part_number_switches_itself_on_when_chapters_are_divided(self):
+        """Без него все части главы получат одно имя, и запись разойдётся
+        с предпросмотром приписками «(2)»."""
+        start = self.js.index("function spApplyParts")
+        body = self.js[start:self.js.index("\nfunction ", start + 1)]
+        self.assertIn("spPartNum", body)
+
+    def test_every_chapter_is_ticked_once_the_book_is_read(self):
+        """Выбрали файл — значит, нужны все главы из него, а не часть."""
+        start = self.js.index("async function spScan")
+        body = self.js[start:self.js.index("window.spScan", start)]
+        self.assertIn("spState.chosen.add(chapter.index)", body)
+
+    def test_the_output_format_follows_the_source(self):
+        """Разбивают вордовский файл — нужны вордовские главы."""
+        self.assertIn("function spGuessFormat", self.js)
+        start = self.js.index("async function spScan")
+        self.assertIn("spGuessFormat",
+                      self.js[start:self.js.index("window.spScan", start)])
+
+    def test_the_preview_follows_the_chosen_format(self):
+        """Предпросмотр обещал .txt, а на диск ложился .docx: он
+        перерисовывался только при чтении с диска."""
+        start = self.js.index("function spUpdateFinal")
+        body = self.js[start:self.js.index("\n}", start)]
+        self.assertIn("spDrawPreview", body)
+
+
+class TestTheTabHidesWhatIsNotAsked(unittest.TestCase):
+    """Свёрнутые карточки.
+
+    Всё, что не основная работа вкладки, забирало глаз наравне с главным,
+    и человек терялся на своей же вкладке.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parent.parent
+        cls.html = (root / "webapp" / "static" / "index.html").read_text(
+            encoding="utf-8")
+        cls.js = (root / "webapp" / "static" / "tabs.js").read_text(
+            encoding="utf-8")
+
+    def card(self, name):
+        start = self.html.index(f'id="{name}"')
+        return self.html[self.html.rindex("<div", 0, start):
+                         self.html.index(">", start) + 1]
+
+    def test_the_side_cards_start_folded(self):
+        for name in ("spVolCard", "spStyle", "spPrep", "spPreviewCard",
+                     "spChaptersCard", "hdCard"):
+            with self.subTest(name):
+                self.assertIn("folded", self.card(name))
+                self.assertIn("data-fold", self.card(name))
+
+    def test_the_main_ones_are_not_folded(self):
+        """Формат и место сохранения — это и есть работа вкладки."""
+        for name in ("spOpts", "spPlace"):
+            with self.subTest(name):
+                self.assertNotIn("folded", self.card(name))
+
+    def test_a_folded_card_only_shows_its_heading(self):
+        self.assertIn(".card.folded > *:not(.foldhead){display:none}",
+                      self.html.replace("\n", ""))
+
+    def test_the_heading_opens_it(self):
+        self.assertIn("foldhead", self.js)
+        self.assertIn("classList.toggle('folded')", self.js)
+
+    def test_divide_opens_what_divides(self):
+        """Кнопки деления жили в чужой карточке выше, и найти их, не зная
+        о них, было нельзя."""
+        self.assertIn('id="spDivide"', self.html)
+        self.assertIn("unfold('spChaptersCard')", self.js)

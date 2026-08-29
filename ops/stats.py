@@ -203,14 +203,22 @@ def measure(rows, unreadable=None) -> Report:
     return result
 
 
+def rows_of(chapters):
+    """Главы → четвёрки для `measure`.
+
+    Главы приходят двумя путями: файл на главу и одна книга, разрезанная
+    по заголовкам. Считаться они должны одинаково, поэтому перевод в
+    четвёрки живёт здесь, а не у каждого зовущего свой.
+    """
+    return [(chapter.label or "", chapter.title, chapter.paragraphs,
+             chapter.source) for chapter in chapters]
+
+
 def collect(targets, progress: Progress | None = None) -> Report:
     """Считает статистику по выбранным главам."""
     report = OpReport()
     files = collect_files(targets)
     chapters = read_all(files, report, progress)
 
-    return measure(
-        ((chapter.label or "", chapter.title, chapter.paragraphs, chapter.source)
-         for chapter in chapters),
-        unreadable=[f.as_text() for f in report.failures],
-    )
+    return measure(rows_of(chapters),
+                   unreadable=[f.as_text() for f in report.failures])

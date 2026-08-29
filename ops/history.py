@@ -182,6 +182,35 @@ def backup(folder: Path, operation: str = "") -> str:
     return str(target)
 
 
+def backup_files(paths, operation: str = "") -> str:
+    """Копирует в корзину только названные файлы.
+
+    Нужно там, где пишут прямо в выбранную человеком папку. Копировать её
+    целиком нельзя: выбрать могут рабочий стол, и полгигабайта чужих
+    файлов уедут в корзину ради двадцати новых. Пропасть же может только
+    то, что будет перезаписано, — его и бережём.
+    """
+    found = [Path(one) for one in paths if Path(one).is_file()]
+    if not found:
+        return ""
+
+    stamp = datetime.now().strftime(STAMP)
+    name = f"{stamp}_{operation}".strip("_") or stamp
+    target = BACKUP_DIR / name
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        for one in found:
+            shutil.copy2(one, target / one.name)
+    except OSError as exc:
+        log.warning("Не удалось скопировать файлы из %s: %s",
+                    found[0].parent, exc)
+        return ""
+
+    trim()
+    return str(target)
+
+
 def backup_file(path: Path, operation: str = "") -> str:
     """Копирует один файл в корзину.
 

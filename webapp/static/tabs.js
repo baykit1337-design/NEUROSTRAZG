@@ -918,6 +918,32 @@ function showFailures(tableId, failures){
   table.hidden = false;
 }
 
+/* ------------------------------------------------ сворачивание карточек
+ *
+ * Всё, что не основная работа вкладки, лежит сложенным: настройки
+ * оформления, обработка текста, объём глав, предпросмотр. Обычно там
+ * ничего не трогают, а глаз они забирают наравне с главным.
+ *
+ * Карточке достаточно `data-fold`, а её заголовку — класса `foldhead`:
+ * свёрнутая от развёрнутой отличается ровно одним классом, и ни один
+ * `id` при этом никуда не переезжает.
+ */
+
+document.addEventListener('click', event => {
+  const head = event.target.closest('.foldhead');
+  if(!head) return;
+  const card = head.closest('[data-fold]');
+  if(card) card.classList.toggle('folded');
+});
+
+/** Развернуть карточку и подвести к ней взгляд. */
+function unfold(id){
+  const card = $(id);
+  if(!card) return;
+  card.classList.remove('folded');
+  card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
 /** Оформление и обработка нужны не всякому формату — прячем лишнее. */
 function toggleOptions(p, format){
   $(p + 'Style').hidden = format !== '.docx';
@@ -928,14 +954,37 @@ function toggleOptions(p, format){
 
 const spState = {format: '.txt', job: null, menus: {}, scan: null,
                  //: главам поимённо — на сколько частей резать
-                 pieces: {}, chosen: new Set()};
+                 pieces: {}, chosen: new Set(),
+                 //: для каких путей формат уже подобран по исходнику
+                 forPaths: ''};
 
 function spUpdateFinal(){
   const base = $('spBase').value.trim(), name = $('spFolder').value.trim();
-  $('spFinal').textContent = base && name
-    ? `Главы лягут в: ${base}/${name}  (${spState.format})` : '';
+  // Имя папки — по желанию. Нет его — главы лягут прямо в выбранную.
+  $('spFinal').textContent = base
+    ? `Главы лягут в: ${base}${name ? '/' + name : ''}  (${spState.format})` : '';
   toggleOptions('sp', spState.format);
   spDrawSchema();
+  // Расширение в предпросмотре — то же, что выбрано кнопкой. Раньше
+  // предпросмотр перерисовывался только при чтении с диска, и после
+  // смены формата обещал .txt, а на диск ложился .docx.
+  spDrawPreview();
+}
+
+/** Формат на выходе — как у исходника.
+ *
+ * Разбивают вордовский файл, чтобы получить вордовские главы; ставить
+ * это руками каждый раз — работа на пустом месте. Подбирается один раз
+ * на выбранный файл: дальше человек волен выбрать любой другой формат,
+ * и своё нажатие важнее нашей догадки.
+ */
+function spGuessFormat(files){
+  const first = (files || [])[0] || '';
+  const match = /\.[^./\\]+$/.exec(first);
+  const suffix = match ? match[0].toLowerCase() : '';
+  if(!suffix || !(FORMATS.writable || []).includes(suffix)) return;
+  spState.format = suffix;
+  buildFormats('spFormats', spState, spUpdateFinal);
 }
 
 /** «1 файл .epub → разбить → 5 файлов .docx». */
@@ -989,6 +1038,16 @@ async function spScan(){
       seq: $('spSeq').checked,
     });
     spState.scan = data;
+    // Выбран другой файл — формат подбирается заново по нему. Тот же
+    // файл перечитывают с шаблоном заголовка, и сбрасывать выбранное
+    // руками на этом шаге было бы отменой чужого решения.
+    const paths = targets.join('|');
+    if(paths !== spState.forPaths){
+      spState.forPaths = paths;
+      spGuessFormat(data.files);
+    }
+    // Выбрали файл — значит, нужны все главы из него, а не часть.
+    for(const chapter of data.chapters || []) spState.chosen.add(chapter.index);
     updateListBar('spList', data.file_count);
     $('spScanned').textContent =
       `Файлов: ${data.file_count}, глав: ${data.found}` +
@@ -999,10 +1058,8 @@ async function spScan(){
     $('spPatternCard').hidden = true;
     spDrawChapters();
     spDrawPreview();
-    if(!$('spFolder').value && targets.length === 1){
-      const name = targets[0].split(/[/\\]/).pop() || '';
-      $('spFolder').value = name.replace(/\.[^.]+$/, '');
-    }
+    // Имя папки само не подставляется: по умолчанию главы ложатся прямо
+    // в выбранную папку, и подставленное имя означало бы обратное.
     spUpdateFinal();
     // Находка есть — предлагаем очистку сами, не дожидаясь кнопки.
     hdOffer('spList');
@@ -1144,6 +1201,10 @@ function spApplyParts(count){
     if(count > 1) spState.pieces[String(index)] = count;
     else delete spState.pieces[String(index)];
   }
+  // Части без своего номера получают одно имя на всех, и запись
+  // расходится с предпросмотром приписками «(2)». Галочка снята по
+  // умолчанию нарочно, но делят главы — значит, номер части нужен.
+  if(count > 1) $('spPartNum').checked = true;
   spRefresh();
 }
 
@@ -1868,8 +1929,11 @@ function volumeShow(prefix, data){
   table.hidden = !(out.chapters || []).length;
 }
 
+// На этой вкладке книга ещё не разбита: главы у неё внутри файла, а не
+// по файлам. Общая проверка объёма насчитала бы «глав: 1».
 $('spVolLook').onclick = () =>
-  volumeLook('sp', '/api/stats', {targets: CHOSEN.spList || []});
+  volumeLook('sp', '/api/split/volume', {targets: CHOSEN.spList || [],
+                                         pattern: $('spPattern').value.trim()});
 $('rnVolLook').onclick = () =>
   volumeLook('rn', '/api/stats', {targets: [$('rnIn').value.trim()]});
 $('fmVolLook').onclick = () =>
@@ -1888,6 +1952,11 @@ for(const id of ['spNum', 'spPartNum', 'spTitleOn', 'spSeq']){
   $(id).addEventListener('change', () => spRefresh());
 }
 $('spPrefix').addEventListener('input', spRefreshSoon);
+
+// «Разделить» — не отдельное действие, а разворот того, чем делят.
+// Записывает всё равно «Разбить»: два способа сохранить одно и то же
+// сбивали бы с толку сильнее, чем спрятанные кнопки.
+$('spDivide').onclick = () => unfold('spChaptersCard');
 
 $('spAll').onclick = () => spPickAll(true);
 $('spNone').onclick = () => spPickAll(false);
