@@ -318,10 +318,15 @@ class TestSplitWebApi(SplitTestCase):
 
         Раньше пустое имя было отказом, и разбить файл «просто сюда» было
         нельзя — приходилось выдумывать название на каждый разбор.
+
+        `confirm` здесь потому, что в этой папке уже лежат книги-заготовки:
+        писать в занятую папку программа спрашивает отдельно, и это
+        проверяется своими тестами ниже.
         """
         res = self.app.post(
             "/api/split/start",
-            json={"path": str(self.epub), "base": str(self.tmp), "folder": ""},
+            json={"path": str(self.epub), "base": str(self.tmp), "folder": "",
+                  "confirm": True},
         )
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["job"]["output_dir"],
@@ -594,6 +599,60 @@ class TestVolumeCountsChaptersNotFiles(SplitTestCase):
         res = self.app.post("/api/split/volume", json={"targets": [str(flat)]})
         self.assertEqual(res.status_code, 422)
         self.assertTrue(res.get_json()["need_pattern"])
+
+
+class TestItAsksBeforeMixingWithSomeoneElsesFiles(SplitTestCase):
+    """Раньше операции писали в свою подпапку, и спрашивать было не о чем.
+
+    Теперь «Разбить» кладёт файлы прямо в выбранную — и выбрать могут
+    папку с чужим добром. Молча смешать своё с чужим хуже, чем спросить
+    один раз.
+
+    Спрашивает сервер, а не страница: обойти вопрос, нажав кнопку на
+    вкладке, которую забыли поправить, быть не должно.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+
+    def body(self, where, folder=""):
+        return {"path": str(self.epub), "base": str(where), "folder": folder,
+                "format": ".txt"}
+
+    def busy(self):
+        where = self.tmp / "занятая"
+        where.mkdir()
+        (where / "чужое.txt").write_text("не наше", encoding="utf-8")
+        return where
+
+    def test_a_folder_with_files_in_it_is_a_question_not_a_refusal(self):
+        res = self.app.post("/api/split/start", json=self.body(self.busy()))
+        self.assertEqual(res.status_code, 409)
+        got = res.get_json()
+        self.assertTrue(got["need_confirm"])
+        self.assertEqual(got["busy_files"], 1)
+
+    def test_the_second_try_goes_through(self):
+        """Спрашиваем ровно один раз."""
+        res = self.app.post("/api/split/start",
+                            json={**self.body(self.busy()), "confirm": True})
+        self.assertEqual(res.status_code, 200)
+
+    def test_an_empty_folder_is_not_worth_a_question(self):
+        empty = self.tmp / "пустая"
+        empty.mkdir()
+        res = self.app.post("/api/split/start", json=self.body(empty))
+        self.assertEqual(res.status_code, 200)
+
+    def test_a_folder_of_our_own_is_not_worth_a_question(self):
+        """Своя подпапка — наша, и смешивать там не с чем."""
+        res = self.app.post("/api/split/start",
+                            json=self.body(self.busy(), folder="своя"))
+        self.assertEqual(res.status_code, 200)
 
 
 class TestTheTabOpensReadyToWork(unittest.TestCase):

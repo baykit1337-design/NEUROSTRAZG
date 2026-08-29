@@ -79,6 +79,12 @@ class Record:
     failed: int = 0
     backup: str = ""
     note: str = ""
+    #: Какие файлы операция создала в `output`. Нужны, чтобы «вернуть как
+    #: было» умело не только вернуть заменённое, но и убрать добавленное:
+    #: копия хранит лишь то, что перезаписали, а разбиение в пустую папку
+    #: не перезаписывает ничего — и возвращать по одной копии было бы
+    #: нечего.
+    wrote: list = field(default_factory=list)
 
     @property
     def when(self) -> str:
@@ -93,8 +99,25 @@ class Record:
             "stamp": self.stamp, "when": self.when, "operation": self.operation,
             "source": self.source, "output": self.output, "files": self.files,
             "failed": self.failed, "backup": self.backup, "note": self.note,
+            "wrote": list(self.wrote),
             "restorable": bool(self.backup) and Path(self.backup).is_dir(),
+            "undoable": self.undoable,
         }
+
+    @property
+    def undoable(self) -> bool:
+        """Есть ли что откатывать.
+
+        Двумя способами сразу: вернуть заменённое из копии и убрать
+        добавленное. Одной копии мало — в пустую папку операция ничего не
+        перезаписывает, и копии не будет вовсе.
+        """
+        if not self.output or not Path(self.output).is_dir():
+            return False
+        if self.backup and Path(self.backup).is_dir():
+            return True
+        return any((Path(self.output) / Path(name).name).is_file()
+                   for name in self.wrote)
 
     @classmethod
     def from_dict(cls, data: dict) -> Record:
@@ -107,6 +130,9 @@ class Record:
             failed=int(data.get("failed") or 0),
             backup=str(data.get("backup") or ""),
             note=str(data.get("note") or ""),
+            # Записи, сделанные до появления поля, его не имеют — и это
+            # не поломка журнала, а обычная прежняя строка.
+            wrote=[str(one) for one in (data.get("wrote") or [])],
         )
 
 
@@ -138,12 +164,13 @@ def records(limit: int = 100) -> list[Record]:
 
 
 def add(operation: str, source: str = "", output: str = "", files: int = 0,
-        failed: int = 0, backup: str = "", note: str = "") -> Record:
+        failed: int = 0, backup: str = "", note: str = "", wrote=()) -> Record:
     """Дописывает строку в журнал."""
     record = Record(
         stamp=datetime.now().strftime(STAMP), operation=operation,
         source=str(source), output=str(output), files=files, failed=failed,
         backup=str(backup), note=note,
+        wrote=[str(one) for one in wrote],
     )
     found = _load()
     found.append(record)
@@ -291,6 +318,50 @@ def restore(backup_path: Path, target: Path) -> int:
     return count
 
 
+def last_undo() -> Record | None:
+    """Последняя операция, которую есть чем откатить.
+
+    Откатывать нечего у тех, чьи файлы уже унесли или удалили руками.
+    Такие записи пропускаем: «вернуть как было» должно либо работать,
+    либо не предлагаться.
+    """
+    for record in records():
+        if record.undoable:
+            return record
+    return None
+
+
+def undo(record: Record) -> int:
+    """Возвращает папку к тому, что было до операции.
+
+    Двумя шагами, и оба нужны. Копия хранит только **заменённые** файлы:
+    операция, разложившая книгу по пустой папке, не перезаписала ничего,
+    и одной копией её было бы не откатить — папка так и осталась бы с
+    новыми файлами. Поэтому сперва убираем добавленное, потом возвращаем
+    заменённое.
+
+    Убираем строго то, что записали сами, и только по имени: имя из
+    журнала может оказаться путём, а удалять по чужому пути — последнее
+    дело. Всё убранное перед этим уходит в корзину: возвращение должно
+    быть так же обратимо, как и то, от чего оно спасает.
+    """
+    where = Path(record.output)
+    if not where.is_dir():
+        raise RestoreError(f"Папка не найдена: {where}")
+
+    ours = [where / Path(name).name for name in record.wrote]
+    doomed = [one for one in ours if one.is_file()]
+    if doomed:
+        backup_files(doomed, "перед-возвратом")
+    for one in doomed:
+        one.unlink(missing_ok=True)
+
+    back = 0
+    if record.backup and Path(record.backup).is_dir():
+        back = restore(Path(record.backup), where)
+    return back + len(doomed)
+
+
 def state() -> dict:
     """Что лежит в журнале и в корзине — для интерфейса."""
     return {
@@ -302,4 +373,8 @@ def state() -> dict:
         ],
         "keep": KEEP_BACKUPS,
         "dir": str(DATA_DIR),
+        # Что откатится по «вернуть как было». Считается здесь, а не в
+        # интерфейсе: правило «копия есть и папка на месте» должно быть
+        # одно, а не своё у каждой кнопки.
+        "undo": (found.as_dict() if (found := last_undo()) else None),
     }

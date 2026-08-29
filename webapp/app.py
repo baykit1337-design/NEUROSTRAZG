@@ -311,6 +311,32 @@ def _progress(job: Job, unit: str) -> Progress:
     return Progress(on_progress, job.cancel)
 
 
+def _busy(base: str, folder: str, payload: dict):
+    """Ответ «в папке уже что-то лежит», если это стоит подтвердить.
+
+    Раньше операции писали в свою подпапку, и спрашивать было не о чем.
+    Теперь «Разбить» и «Переименовать» кладут файлы прямо в выбранную —
+    и выбрать могут папку с чужим добром. Молча смешать своё с чужим
+    хуже, чем спросить один раз.
+
+    Спрашиваем ровно один раз: со второго захода приходит `confirm`.
+    Пустая папка и своя подпапка вопросов не вызывают вовсе.
+    """
+    if folder or payload.get("confirm"):
+        return None
+    where = Path(base).expanduser()
+    if not where.is_dir():
+        return None
+    found = sum(1 for one in where.iterdir() if one.is_file())
+    if not found:
+        return None
+    return jsonify(
+        error=f"В папке уже лежит файлов: {found}. Новые добавятся к ним, "
+              "а совпавшие по имени будут заменены — прежние уйдут в "
+              "корзину. Сохранять сюда?",
+        need_confirm=True, busy_files=found), 409
+
+
 def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
     """Папка для результата, с копией прежнего содержимого в корзину.
 
@@ -330,11 +356,18 @@ def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
     if saved:
         log.info("Прежнее содержимое %s скопировано в %s", output_dir, saved)
     BACKUPS[str(output_dir)] = saved
+    # Что операция собирается записать — «вернуть как было» этим и
+    # убирает добавленное. Одной копии мало: в пустую папку операция
+    # ничего не перезаписывает, копии не будет, а файлы появятся.
+    WROTE[str(output_dir)] = list(only or ())
     return output_dir
 
 
 #: Куда легла копия перед перезаписью — чтобы записать это в журнал.
 BACKUPS: dict[str, str] = {}
+
+#: Что операция записала. Ключ тот же, что у `BACKUPS`.
+WROTE: dict[str, list[str]] = {}
 
 
 def _finish(job: Job, report, verb: str) -> None:
@@ -360,6 +393,7 @@ def _finish(job: Job, report, verb: str) -> None:
         files=report.written,
         failed=report.failed,
         backup=BACKUPS.pop(job.output_dir, ""),
+        wrote=WROTE.pop(job.output_dir, ()),
     )
 
 
@@ -1556,6 +1590,8 @@ def api_split_start():
         return jsonify(error="Выберите папку, куда сохранить главы"), 400
     if out_format not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {out_format}"), 400
+    if (ask := _busy(base, folder, payload)) is not None:
+        return ask
 
     # Читаем до создания папки, чтобы не плодить пустые каталоги. Имена
     # считаем теми же правилами, по которым будем писать: по ним решается,
@@ -1708,6 +1744,8 @@ def api_rename_apply():
     # Список форматов один на все вкладки и берётся из `core/formats.py`.
     if f".{fmt}" not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {fmt}"), 400
+    if (ask := _busy(base, out_name, payload)) is not None:
+        return ask
 
     try:
         _, rows = _plan_from_payload(payload)
@@ -4106,6 +4144,27 @@ def api_history_restore():
     except history_op.RestoreError as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(restored=count, **history_op.state())
+
+
+@app.post("/api/history/undo")
+def api_history_undo():
+    """Вернуть как было — последнюю операцию, у которой есть копия.
+
+    То же самое, что «Восстановить» в журнале, но без похода туда:
+    страховка, о которой узнаёшь, только специально полезши на четвёртую
+    вкладку, спасает не тогда, когда нужна.
+    """
+    found = history_op.last_undo()
+    if found is None:
+        return jsonify(error="Возвращать нечего: последняя операция не "
+                             "оставила ни добавленных файлов, ни копии — "
+                             "или папку уже унесли."), 400
+    try:
+        count = history_op.undo(found)
+    except history_op.RestoreError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(restored=count, undone=found.as_dict(),
+                   **history_op.state())
 
 
 @app.post("/api/diff")

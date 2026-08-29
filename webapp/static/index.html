@@ -2976,9 +2976,15 @@
     <label>Журнал операций и корзина</label>
     <p class="hint" id="hsNote">Перед перезаписью старая версия папки
        копируется в корзину. Хранятся последние копии, старые удаляются сами.</p>
-    <div class="row" style="margin-top:10px">
-      <button id="hsLoad" class="ghost" style="flex:1">Показать</button>
+    <!-- «Вернуть как было» — та же корзина, но без похода в список.
+         Страховка, о которой узнаёшь, только специально полезши сюда и
+         нажав «Показать», спасает не тогда, когда нужна. Ctrl+Z делает
+         то же самое с любой вкладки. -->
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <button id="hsUndo" class="ghost" hidden>Вернуть как было</button>
+      <button id="hsLoad" class="ghost">Показать журнал</button>
     </div>
+    <p class="hint" id="hsUndoNote"></p>
     <div class="table" id="hsRecords" style="margin-top:10px"></div>
   </div>
 
@@ -3769,6 +3775,10 @@ async function call(url, body){
     err.log = data.log;
     // На каком шаге встало — если сервер это знает.
     err.step = data.step;
+    // «В папке уже что-то лежит» — не отказ, а вопрос: сервер ждёт
+    // подтверждения и говорит, сколько там файлов.
+    err.needConfirm = !!data.need_confirm;
+    err.busyFiles = data.busy_files || 0;
     throw err;
   }
   return data;

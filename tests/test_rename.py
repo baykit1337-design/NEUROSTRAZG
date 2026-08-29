@@ -609,8 +609,11 @@ class TestRenameWebApi(RenameFolderTest):
         where.mkdir()
         (where / "чужое.txt").write_text("не наше", encoding="utf-8")
 
+        # `confirm` здесь по делу: чужой файл в папке мы положили нарочно,
+        # а писать в занятую папку программа спрашивает отдельно.
         res = self.app.post("/api/rename/apply", json={
             "folder_in": str(self.folder), "base": str(where), "folder_out": "",
+            "confirm": True,
         })
         self.assertEqual(res.status_code, 200)
         JOBS[res.get_json()["job"]["id"]].thread.join(timeout=60)

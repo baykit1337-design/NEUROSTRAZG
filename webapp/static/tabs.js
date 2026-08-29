@@ -781,13 +781,16 @@ async function rnApply(){
   showError('');
   $('rnApply').disabled = true;
   try{
-    const {job} = await call('/api/rename/apply', {
+    const started = await askThenCall('/api/rename/apply', {
       ...rnPayload(),
       base: $('rnBase').value.trim(),
       folder_out: $('rnOut').value.trim(),
       out_format: rnState.format.replace('.', ''),
       names: rnRows.map(r => r.new_name),
     });
+    // Пусто — человек отказался сохранять в занятую папку.
+    if(!started) return;
+    const job = started.job;
     rnJob = job.id;
     ownJob('rename', job.id);
     $('rnProgress').hidden = false;
@@ -1248,12 +1251,28 @@ function spPickAll(on){
   spDrawChapters();
 }
 
+/** Спрашивает разрешение, если сервер попросил, и повторяет запрос.
+ *
+ * Проверку делает сервер, а не страница: «в папке уже что-то лежит» —
+ * вопрос о диске, и обойти его, нажав кнопку на вкладке, которую я забыл
+ * поправить, быть не должно.
+ */
+async function askThenCall(url, body){
+  try{
+    return await call(url, body);
+  }catch(err){
+    if(!err.needConfirm) throw err;
+    if(!confirm(err.message)) return null;
+    return await call(url, {...body, confirm: true});
+  }
+}
+
 async function spStart(){
   showError('');
   $('spStart').disabled = true;
   $('spErrors').hidden = true;
   try{
-    const {job} = await call('/api/split/start', {
+    const started = await askThenCall('/api/split/start', {
       targets: CHOSEN.spList || [],
       base: $('spBase').value.trim(),
       folder: $('spFolder').value.trim(),
@@ -1267,6 +1286,9 @@ async function spStart(){
       style: styleOf('sp', spState.menus),
       prep: prepOf('sp', spState.menus),
     });
+    // Пусто — человек отказался сохранять в занятую папку.
+    if(!started) return;
+    const job = started.job;
     spState.job = job.id;
     ownJob('split', job.id);
     $('spProgress').hidden = false;
@@ -4189,6 +4211,73 @@ async function hsRestore(record, button){
 
 $('dfStart').onclick = dfStart;
 $('hsLoad').onclick = hsLoad;
+
+/* ------------------------------------------- вернуть как было
+ *
+ * Копия перед перезаписью делалась всегда, а достать её можно было
+ * только так: четвёртая вкладка, «Показать», найти строку, нажать
+ * «Восстановить». Страховка, о которой узнаёшь, только специально полезши
+ * за ней, спасает не тогда, когда нужна.
+ *
+ * Теперь то же самое — одной кнопкой и по Ctrl+Z с любой вкладки. Само
+ * возвращение обратимо: перед ним текущее состояние тоже уходит в
+ * корзину.
+ */
+
+//: Что откатится. Пусто — откатывать нечего, и кнопки не видно.
+let undoWhat = null;
+
+function undoShow(state){
+  undoWhat = (state || {}).undo || null;
+  $('hsUndo').hidden = !undoWhat;
+  $('hsUndoNote').textContent = undoWhat
+    ? `Ctrl+Z вернёт папку «${undoWhat.output}» к тому, что было `
+      + `до операции «${undoWhat.operation}» от ${undoWhat.when}.`
+    : '';
+}
+
+async function undoLook(){
+  try{
+    undoShow(await call('/api/history/state'));
+  }catch(err){
+    // Нет журнала — просто нечего предлагать.
+    undoShow(null);
+  }
+}
+
+async function undoDo(){
+  if(!undoWhat){
+    showError('Возвращать нечего: копии последней операции нет');
+    return;
+  }
+  if(!confirm(`Вернуть папку «${undoWhat.output}» к тому, что было до `
+              + `операции «${undoWhat.operation}» от ${undoWhat.when}?\n\n`
+              + 'Нынешнее содержимое тоже уйдёт в корзину — этот шаг '
+              + 'обратим.')) return;
+  try{
+    const got = await call('/api/history/undo', {});
+    toast(`Возвращено файлов: ${got.restored}.`);
+    undoShow(got);
+  }catch(err){
+    showError(err.message, $('hsUndo'));
+  }
+}
+
+$('hsUndo').onclick = undoDo;
+
+// Ctrl+Z с любой вкладки — но не поверх набора текста: там своя отмена,
+// и отнимать её у полей ввода нельзя.
+document.addEventListener('keydown', event => {
+  if(!(event.ctrlKey || event.metaKey) || event.code !== 'KeyZ') return;
+  if(event.shiftKey || event.altKey) return;
+  const spot = document.activeElement;
+  if(spot && (spot.tagName === 'INPUT' || spot.tagName === 'TEXTAREA'
+              || spot.isContentEditable)) return;
+  event.preventDefault();
+  undoDo();
+});
+
+undoLook();
 
 /* ------------------------------------------- обновление программы
  *

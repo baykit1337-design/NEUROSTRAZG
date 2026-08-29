@@ -259,5 +259,104 @@ class TestDiff(HistoryTestCase):
         self.assertIn("Первый абзац.", removed)
 
 
+class TestUndoPutsItBack(HistoryTestCase):
+    """«Вернуть как было» — одной кнопкой и по Ctrl+Z.
+
+    Копия перед перезаписью делалась и раньше, но достать её можно было
+    только через журнал: страховка, о которой узнаёшь, специально полезши
+    за ней, спасает не тогда, когда нужна.
+    """
+
+    def test_it_takes_away_what_the_operation_added(self):
+        """Главная работа. Копия хранит только заменённое, а операция,
+        разложившая книгу по пустой папке, не заменила ничего — одной
+        копией её было бы не откатить вовсе.
+        """
+        book = self.tmp / "книга"
+        book.mkdir()
+        for number in (1, 2, 3):
+            (book / f"Глава {number}.txt").write_text("текст", encoding="utf-8")
+
+        record = history.add(operation="split", output=str(book),
+                             wrote=["Глава 1.txt", "Глава 2.txt", "Глава 3.txt"])
+        self.assertEqual(history.undo(record), 3)
+        self.assertEqual(list(book.glob("*.txt")), [])
+
+    def test_it_does_not_touch_what_it_did_not_write(self):
+        """Писали прямо в выбранную папку — там могло лежать чужое."""
+        book = self.tmp / "книга"
+        book.mkdir()
+        (book / "Глава 1.txt").write_text("наше", encoding="utf-8")
+        (book / "чужое.txt").write_text("не наше", encoding="utf-8")
+
+        record = history.add(operation="split", output=str(book),
+                             wrote=["Глава 1.txt"])
+        history.undo(record)
+
+        self.assertFalse((book / "Глава 1.txt").exists())
+        self.assertEqual((book / "чужое.txt").read_text(encoding="utf-8"),
+                         "не наше")
+
+    def test_a_name_that_is_a_path_is_taken_by_its_name_only(self):
+        """Удалять по пути из журнала — последнее дело: путь может вести
+        куда угодно."""
+        book = self.tmp / "книга"
+        book.mkdir()
+        (book / "Глава 1.txt").write_text("наше", encoding="utf-8")
+        beyond = self.tmp / "постороннее.txt"
+        beyond.write_text("не трогать", encoding="utf-8")
+
+        record = history.add(operation="split", output=str(book),
+                             wrote=["../постороннее.txt"])
+        history.undo(record)
+        self.assertTrue(beyond.is_file())
+
+    def test_what_was_replaced_comes_back(self):
+        book = self.folder("книга", {1: ["Первая версия."]})
+        saved = history.backup(book, "проба")
+        formats.write(book / "Глава 1.txt",
+                      [Chapter(number=1, title="Глава 1",
+                               paragraphs=["Вторая версия."])],
+                      headings=True)
+
+        record = history.add(operation="rename", output=str(book), backup=saved)
+        history.undo(record)
+        self.assertIn("Первая версия",
+                      (book / "Глава 1.txt").read_text(encoding="utf-8"))
+
+    def test_the_undo_is_itself_reversible(self):
+        """Нажатое по ошибке «вернуть» должно быть так же обратимо, как и
+        то, от чего оно спасает."""
+        book = self.tmp / "книга"
+        book.mkdir()
+        (book / "Глава 1.txt").write_text("наше", encoding="utf-8")
+
+        was = len(history.backups())
+        history.undo(history.add(operation="split", output=str(book),
+                                 wrote=["Глава 1.txt"]))
+        self.assertGreater(len(history.backups()), was)
+
+    def test_an_operation_with_nothing_left_is_not_offered(self):
+        """Папку могли унести или почистить руками."""
+        history.add(operation="split", output=str(self.tmp / "нет-такой"),
+                    wrote=["Глава 1.txt"])
+        self.assertIsNone(history.last_undo())
+
+    def test_the_freshest_undoable_one_is_taken(self):
+        book = self.tmp / "книга"
+        book.mkdir()
+        (book / "Глава 1.txt").write_text("наше", encoding="utf-8")
+
+        history.add(operation="старая", output=str(self.tmp / "нет-такой"),
+                    wrote=["Глава 9.txt"])
+        history.add(operation="свежая", output=str(book), wrote=["Глава 1.txt"])
+        self.assertEqual(history.last_undo().operation, "свежая")
+
+    def test_an_old_record_without_the_field_still_loads(self):
+        """Журнал, записанный прежней версией программы, поля не имеет."""
+        got = history.Record.from_dict({"operation": "split"})
+        self.assertEqual(got.wrote, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
