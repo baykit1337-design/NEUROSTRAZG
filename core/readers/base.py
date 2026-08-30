@@ -27,10 +27,24 @@ class Reader:
     #: Первый абзац длиннее этого заголовком не считаем.
     heading_limit = 120
 
+    def title_of(self, path: Path) -> str:
+        """Название главы, записанное в самом файле. Пусто — такого нет.
+
+        У плоских форматов его и не бывает: там заголовок — первый абзац.
+        А у разметки бывает, и тогда имя файла — плохая замена.
+        """
+        return ""
+
     def read(self, path: Path) -> list[Chapter]:
         """Главы из файла. По умолчанию — одна глава на файл."""
-        paragraphs = self.paragraphs(path)
-        title, paragraphs = self.take_heading(paragraphs, path)
+        found = self.paragraphs(path)
+        title, paragraphs = self.take_heading(found, path)
+        # Название из разметки сильнее имени файла, но слабее заголовка,
+        # стоящего в самом тексте: тот человек видит глазами. Заголовок
+        # из текста узнаётся по тому, что его оттуда забрали, — сравнивать
+        # с именем файла нельзя, они часто совпадают.
+        if len(paragraphs) == len(found):
+            title = self.title_of(path) or title
         name = parse(title)
         if name.number is None:
             name = parse(path.stem)

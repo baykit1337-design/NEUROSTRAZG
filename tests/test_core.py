@@ -247,6 +247,49 @@ class TestReaders(FormatTestCase):
         )
         self.assertEqual(self.read("a.html")[0].paragraphs, PARAGRAPHS)
 
+    def test_html_keeps_text_that_is_not_wrapped_in_a_tag(self):
+        """Так пишет переводчик EPUB: часть строк в `<p>`, часть — просто
+        в теле. Выборка по тегам такие строки молча теряла, и глава
+        приезжала с дырой посередине."""
+        (self.tmp / "b.html").write_text(
+            "<html><body>"
+            "<p>Первый абзац.</p>\n"
+            "Строка сама по себе, без обёртки.\n"
+            "<p>Третий абзац.</p>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.read("b.html")[0].paragraphs,
+            ["Первый абзац.", "Строка сама по себе, без обёртки.",
+             "Третий абзац."])
+
+    def test_html_keeps_the_order_of_the_file(self):
+        """Порядок абзацев — порядок чтения, а не порядок тегов."""
+        (self.tmp / "c.html").write_text(
+            "<html><body><p>раз</p><div><p>два</p></div><p>три</p>"
+            "</body></html>", encoding="utf-8")
+        self.assertEqual(self.read("c.html")[0].paragraphs,
+                         ["раз", "два", "три"])
+
+    def test_html_title_beats_the_file_name(self):
+        """У переводчика имя файла — `ch0001_translated_gemini`, а
+        название главы лежит в `<title>`."""
+        (self.tmp / "ch0001_translated_gemini.html").write_text(
+            "<html><head><title>Глава 1. Паучиха</title></head>"
+            "<body><p>Текст главы.</p></body></html>", encoding="utf-8")
+        got = self.read("ch0001_translated_gemini.html")[0]
+        self.assertEqual(got.title, "Глава 1. Паучиха")
+
+    def test_a_heading_in_the_text_still_wins(self):
+        """Заголовок, стоящий в самом тексте, человек видит глазами —
+        он и должен победить."""
+        (self.tmp / "Глава 7.html").write_text(
+            "<html><head><title>чужое имя</title></head>"
+            "<body><p>Глава 7</p><p>Текст.</p></body></html>",
+            encoding="utf-8")
+        self.assertEqual(self.read("Глава 7.html")[0].title, "Глава 7")
+
     def test_unknown_format_refused(self):
         (self.tmp / "a.pdf").write_bytes(b"%PDF-1.4")
         with self.assertRaises(ReadError):
