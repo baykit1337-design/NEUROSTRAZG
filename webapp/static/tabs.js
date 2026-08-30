@@ -6275,6 +6275,10 @@ async function rkState(){
 }
 
 async function rkLoadCategories(fetchFromSite){
+  // Разделы с сайта — такой же поход в сеть, как и сам срез. Из памяти
+  // они приходят мгновенно, и полоса там была бы миганием на ровном
+  // месте, поэтому показываем её только когда идём наружу.
+  if(fetchFromSite) rkWaiting(true);
   try{
     const data = await call('/api/rank/categories'
                             + (fetchFromSite ? '?fetch=1' : ''));
@@ -6309,7 +6313,11 @@ async function rkLoadCategories(fetchFromSite){
     }
     rkFillCategories();
     rkApplySite();
-  }catch(err){ showError(err.message); }
+  }catch(err){
+    showError(err.message);
+  }finally{
+    if(fetchFromSite) rkWaiting(false);
+  }
 }
 
 function rkFillCategories(){
@@ -6322,9 +6330,21 @@ function rkFillCategories(){
   rkCatMenu = makeDropdown(box, () => rkState());
 }
 
+/** Полоса ожидания на время запроса к сайту.
+ *
+ * Процентов у неё нет и быть не может: рейтинг приходит одной страницей
+ * за один запрос — считать нечего, а рисовать выдуманное число хуже, чем
+ * не рисовать никакого. Отвечает она на другой вопрос, тот, который в
+ * это время и возникает: работает оно или подвисло.
+ */
+function rkWaiting(on){
+  $('rkBar').hidden = !on;
+}
+
 async function rkRefresh(){
   showError('');
   $('rkRefresh').disabled = true;
+  rkWaiting(true);
   $('rkNote').innerHTML = '<span class="spin"></span>Запрашиваем рейтинг…';
   try{
     const data = await call('/api/rank/refresh', rkWhere());
@@ -6334,6 +6354,7 @@ async function rkRefresh(){
     $('rkNote').textContent = '';
     rkDiagnose(err.details);
   }finally{
+    rkWaiting(false);
     $('rkRefresh').disabled = false;
   }
 }

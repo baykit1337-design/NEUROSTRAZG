@@ -1328,5 +1328,52 @@ class TestShortcutsAndNotice(UiBase):
         self.assertIn("jobDone(job)", self.body("function pollJob"))
 
 
+class TestTheRatingShowsItIsWorking(UiBase):
+    """Пока рейтинг идёт с сайта, было видно только «Запрашиваем…».
+
+    Полоса отвечает на вопрос, который в это время и возникает:
+    работает оно или подвисло.
+    """
+
+    def body(self, name):
+        start = self.tabs.index(name)
+        rest = self.tabs.find("\n}\n", start)
+        return self.tabs[start:rest if rest > 0 else len(self.tabs)]
+
+    def test_there_is_a_bar_and_it_starts_hidden(self):
+        self.assertIn('id="rkBar"', self.page)
+        start = self.page.index('id="rkBar"')
+        self.assertIn("hidden", self.page[start:self.page.index(">", start)])
+
+    def test_it_promises_no_percentage(self):
+        """Процентов взять неоткуда: рейтинг приходит одной страницей за
+        один запрос, делить нечего. Нарисованное число было бы враньём."""
+        self.assertIn(".bar.waiting", self.page)
+        # У полосы ожидания ширина своя и постоянная — она не притворяется
+        # долей сделанного.
+        rule = self.page[self.page.index(".bar.waiting > i{"):]
+        self.assertIn("width:35%", rule[:rule.index("}")])
+
+    def test_it_is_shown_while_the_site_is_asked(self):
+        self.assertIn("rkWaiting(true)", self.body("async function rkRefresh"))
+
+    def test_it_goes_away_even_when_the_site_refuses(self):
+        """Полоса, застрявшая после отказа, выглядит как вечная загрузка."""
+        body = self.body("async function rkRefresh")
+        self.assertIn("finally", body)
+        self.assertIn("rkWaiting(false)", body[body.index("finally"):])
+
+    def test_reading_from_memory_does_not_flash_it(self):
+        """Разделы из памяти приходят мгновенно — полоса там была бы
+        миганием на ровном месте."""
+        body = self.body("async function rkLoadCategories")
+        self.assertIn("if(fetchFromSite) rkWaiting(true)", body)
+
+    def test_it_respects_the_wish_for_less_movement(self):
+        rule = self.page[self.page.index(".bar.waiting"):]
+        self.assertIn("prefers-reduced-motion: no-preference",
+                      rule[:rule.index("@keyframes bar-wait")])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
