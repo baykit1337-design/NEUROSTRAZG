@@ -4351,10 +4351,18 @@ let undoWhat = null;
 
 function undoShow(state){
   undoWhat = (state || {}).undo || null;
+  // Сколько шагов назад ещё осталось. Одна кнопка без счётчика читается
+  // как единственная попытка, и после первого возврата человек не знает,
+  // можно ли нажать ещё.
+  const left = ((state || {}).undo_left) || 0;
   $('hsUndo').hidden = !undoWhat;
   $('hsUndoNote').textContent = undoWhat
     ? `Ctrl+Z вернёт папку «${undoWhat.output}» к тому, что было `
       + `до операции «${undoWhat.operation}» от ${undoWhat.when}.`
+      + (left > 1
+         ? ` Дальше назад — ещё ${left - 1} `
+           + `${plural(left - 1, 'шаг', 'шага', 'шагов')}.`
+         : '')
     : '';
 }
 

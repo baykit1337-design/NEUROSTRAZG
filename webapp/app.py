@@ -190,6 +190,18 @@ class Job:
     finished: float = 0.0
     #: Построчный журнал работы — заводится там, где он нужен (7.7).
     log: object = None
+    #: Куда легла копия прежнего содержимого папки и что задача пишет.
+    #: Хранится здесь, а не в общем словаре: две задачи в одну папку
+    #: затирали бы записи друг друга, а упавшая — оставляла бы свою
+    #: навсегда.
+    backup: str = ""
+    wrote: list = field(default_factory=list)
+
+    def keep(self, made: "Made") -> Path:
+        """Запомнить, откуда возвращать, и отдать папку результата."""
+        self.backup = made.backup
+        self.wrote = list(made.wrote)
+        return made.dir
 
     @property
     def elapsed(self) -> float:
@@ -450,7 +462,18 @@ def _weigh(size: int) -> str:
     return f"{size} Б"
 
 
-def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
+@dataclass
+class Made:
+    """Готовая папка и след, по которому её вернут как было."""
+
+    dir: Path
+    #: Куда легла копия прежнего содержимого. Пусто — копии нет.
+    backup: str = ""
+    #: Что операция собирается записать.
+    wrote: list = field(default_factory=list)
+
+
+def _prepare(base: str, folder: str, operation: str, only=None) -> Made:
     """Папка для результата, с копией прежнего содержимого в корзину.
 
     Существующая папка используется как есть — на это опирается докачка,
@@ -460,6 +483,12 @@ def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
     `only` — имена файлов, которые операция собирается записать. С ними в
     корзину уходят они одни, а не вся папка: пишущий прямо в выбранную
     папку не должен утаскивать в корзину всё, что там лежало.
+
+    Куда легла копия, запоминает сама задача. Раньше это лежало в общем
+    словаре с ключом-папкой, и две задачи в одну папку затирали запись
+    друг друга: «вернуть как было» возвращало чужое. А задача, упавшая
+    до итога, оставляла запись навсегда — следующая операция в ту же
+    папку наследовала чужую копию.
     """
     output_dir = prepare_output_dir(base, folder)
     saved = (history_op.backup_files((output_dir / name for name in only),
@@ -468,19 +497,10 @@ def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
              else history_op.backup(output_dir, operation))
     if saved:
         log.info("Прежнее содержимое %s скопировано в %s", output_dir, saved)
-    BACKUPS[str(output_dir)] = saved
     # Что операция собирается записать — «вернуть как было» этим и
     # убирает добавленное. Одной копии мало: в пустую папку операция
     # ничего не перезаписывает, копии не будет, а файлы появятся.
-    WROTE[str(output_dir)] = list(only or ())
-    return output_dir
-
-
-#: Куда легла копия перед перезаписью — чтобы записать это в журнал.
-BACKUPS: dict[str, str] = {}
-
-#: Что операция записала. Ключ тот же, что у `BACKUPS`.
-WROTE: dict[str, list[str]] = {}
+    return Made(dir=output_dir, backup=saved, wrote=list(only or ()))
 
 
 def _finish(job: Job, report, verb: str) -> None:
@@ -505,8 +525,8 @@ def _finish(job: Job, report, verb: str) -> None:
         output=job.output_dir,
         files=report.written,
         failed=report.failed,
-        backup=BACKUPS.pop(job.output_dir, ""),
-        wrote=WROTE.pop(job.output_dir, ()),
+        backup=job.backup,
+        wrote=tuple(job.wrote),
     )
 
 
@@ -1196,7 +1216,8 @@ def api_downloads_start():
                 if novel is None:
                     raise HttpError(f"{direct}{tried}") from direct
 
-            output_dir = _prepare(item.base, item.folder, "download")
+            output_dir = job.keep(_prepare(item.base, item.folder,
+                                           "download"))
             # «С какой главы» считается сейчас, а не при постановке в
             # очередь: за ночь вышло бы ещё три главы, а очередь качала
             # бы вчерашний остаток.
@@ -1416,7 +1437,8 @@ def api_start():
     origin = payload.get("origin") or {}
 
     try:
-        output_dir = _prepare(base, folder, "download")
+        made = _prepare(base, folder, "download")
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -1460,6 +1482,8 @@ def api_start():
 
     # Журнал прогона: раздача прокси по потокам и смена адреса с причиной.
     job.log = joblog.JobLog()
+
+    job.keep(made)
 
     def work(job: Job):
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
@@ -1727,10 +1751,11 @@ def api_split_start():
     # и в корзину уходит не вся она, а только те файлы, которые сейчас
     # будут перезаписаны: выбрать могут папку с чужим добром.
     try:
-        output_dir = _prepare(
+        made = _prepare(
             base, folder, "split",
             only=None if folder
             else [f"{name}{out_format}" for name in info["names"]])
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -1743,6 +1768,8 @@ def api_split_start():
     )
     job.progress = {"stage": "split", "message": f"Пишем {total} глав…",
                     "done": 0, "total": total, "written": 0, "failed": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         _finish(job, split_op.run(
@@ -1882,9 +1909,10 @@ def api_rename_apply():
     # не вся она, а только те файлы, которые сейчас затрут: выбрать могут
     # папку с чужим добром.
     try:
-        output_dir = _prepare(
+        made = _prepare(
             base, out_name, "rename",
             only=None if out_name else rename.planned_names(rows, fmt))
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -1897,6 +1925,8 @@ def api_rename_apply():
     )
     job.progress = {"stage": "rename", "message": f"Пишем {len(rows)} файлов…",
                     "done": 0, "total": len(rows), "written": 0, "failed": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         report = rename.apply_plan(
@@ -2229,7 +2259,8 @@ def api_headers_clean():
         return jsonify(error="Отметьте, что убрать"), 400
 
     try:
-        output_dir = _prepare(base, folder, "headers")
+        made = _prepare(base, folder, "headers")
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -2241,6 +2272,8 @@ def api_headers_clean():
     )
     job.progress = {"stage": "headers", "message": "Чистим шапки…",
                     "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         _finish(job, headers_op.run(
@@ -4181,7 +4214,8 @@ def api_replace_start():
         rules = _rules(payload)
         if not rules:
             return jsonify(error="Нечего заменять: правило пустое"), 400
-        output_dir = _prepare(base, folder, "replace")
+        made = _prepare(base, folder, "replace")
+        output_dir = made.dir
     except replace_op.ReplaceError as exc:
         return jsonify(error=str(exc)), 400
     except (OSError, ValueError) as exc:
@@ -4199,6 +4233,8 @@ def api_replace_start():
     )
     job.progress = {"stage": "replace", "message": "Заменяем…",
                     "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         _finish(job, replace_op.run(
@@ -4439,7 +4475,8 @@ def api_signature_start():
         return jsonify(error="Шаблоны пусты: нечего добавлять"), 400
 
     try:
-        output_dir = _prepare(base, folder, "signature")
+        made = _prepare(base, folder, "signature")
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -4451,6 +4488,8 @@ def api_signature_start():
     )
     job.progress = {"stage": "signature", "message": "Дописываем…",
                     "done": 0, "total": 0, "written": 0, "failed": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         _finish(job, signature_op.run(
@@ -4626,15 +4665,19 @@ def _step_targets(step, previous: str) -> list[str]:
     return [previous]
 
 
-def _step_output(step, kind: str) -> Path:
+def _step_output(step, kind: str, job: "Job | None" = None) -> Path:
     base = (step.params.get("base") or "").strip()
     folder = (step.params.get("folder") or "").strip()
     if not base or not folder:
         raise ValueError("Укажите, куда сохранить результат шага")
-    return _prepare(base, folder, kind)
+    made = _prepare(base, folder, kind)
+    # След оставляет последний записавший шаг — вернуть как было можно
+    # ровно то, что цепочка сделала последним.
+    return job.keep(made) if job is not None else made.dir
 
 
-def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
+def _run_step(step, previous: str, cancel: threading.Event,
+              job: "Job | None" = None) -> tuple[str, str]:
     """Выполняет один шаг очереди. Возвращает (итог, папка результата).
 
     Шаги делают ровно то же, что кнопки на вкладках, — те же функции из
@@ -4646,7 +4689,7 @@ def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
     progress = Progress(cancel=cancel)
 
     if kind == "split":
-        out = _step_output(step, kind)
+        out = _step_output(step, kind, job)
         report = split_op.run(
             targets, out, out_format=_out_format(params),
             parts=_parts(params), pattern=_pattern(params),
@@ -4670,7 +4713,7 @@ def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
         return f"Собрано {report.written} глав в {out.name}", str(out)
 
     if kind == "rename":
-        out = _step_output(step, kind)
+        out = _step_output(step, kind, job)
         chapters = rename.scan(targets[0], _pattern(params))
         rows = rename.make_plan(
             chapters, rename.NameFormat.from_dict(params.get("format")))
@@ -4680,7 +4723,7 @@ def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
         return f"Переименовано {report.written} из {report.total}", str(out)
 
     if kind == "clean":
-        out = _step_output(step, kind)
+        out = _step_output(step, kind, job)
         kinds = params.get("kinds")
         kinds = list(cleanup.ALL_KINDS) if kinds is None else kinds
         cleanup._validate(kinds)
@@ -4692,7 +4735,7 @@ def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
         return f"Исправлено {fixed} мест в {written} файлах", str(out)
 
     if kind == "replace":
-        out = _step_output(step, kind)
+        out = _step_output(step, kind, job)
         rules = params.get("rules") or []
         report = replace_op.run(
             targets, out, rules, out_format=(params.get("format") or ""),
@@ -4700,7 +4743,7 @@ def _run_step(step, previous: str, cancel: threading.Event) -> tuple[str, str]:
         return f"Записано {report.written} из {report.total}", str(out)
 
     if kind == "signature":
-        out = _step_output(step, kind)
+        out = _step_output(step, kind, job)
         report = signature_op.run(
             targets, out, signature_op.Template.from_dict(params.get("template")),
             prep=PrepOptions.from_dict(params.get("prep")),
@@ -4795,7 +4838,8 @@ def api_queue_start():
         chain = {"previous": (payload.get("start_from") or "").strip()}
 
         def perform(step):
-            message, output = _run_step(step, chain["previous"], job.cancel)
+            message, output = _run_step(step, chain["previous"],
+                                         job.cancel, job)
             chain["previous"] = output or chain["previous"]
             job.output_dir = chain["previous"]
             return message
@@ -4949,7 +4993,8 @@ def api_clean_start():
         return jsonify(error=str(exc)), 400
 
     try:
-        output_dir = _prepare(base, folder, "clean")
+        made = _prepare(base, folder, "clean")
+        output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
 
@@ -4960,6 +5005,8 @@ def api_clean_start():
         output_dir=str(output_dir),
     )
     job.progress = {"stage": "clean", "message": "Чистим…", "done": 0, "total": 0}
+
+    job.keep(made)
 
     def work(job: Job):
         # Несколько целей чистим по очереди в одну папку.

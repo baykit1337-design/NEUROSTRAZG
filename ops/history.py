@@ -85,6 +85,9 @@ class Record:
     #: не перезаписывает ничего — и возвращать по одной копии было бы
     #: нечего.
     wrote: list = field(default_factory=list)
+    #: Эту операцию уже вернули. Иначе «вернуть как было» второй раз
+    #: брало бы ту же запись, и шаг назад упирался бы в один и тот же.
+    undone: bool = False
 
     @property
     def when(self) -> str:
@@ -100,6 +103,7 @@ class Record:
             "source": self.source, "output": self.output, "files": self.files,
             "failed": self.failed, "backup": self.backup, "note": self.note,
             "wrote": list(self.wrote),
+            "undone": self.undone,
             "restorable": bool(self.backup) and Path(self.backup).is_dir(),
             "undoable": self.undoable,
         }
@@ -133,6 +137,7 @@ class Record:
             # Записи, сделанные до появления поля, его не имеют — и это
             # не поломка журнала, а обычная прежняя строка.
             wrote=[str(one) for one in (data.get("wrote") or [])],
+            undone=bool(data.get("undone")),
         )
 
 
@@ -326,9 +331,37 @@ def last_undo() -> Record | None:
     либо не предлагаться.
     """
     for record in records():
-        if record.undoable:
+        if record.undoable and not record.undone:
             return record
     return None
+
+
+def steps_back() -> int:
+    """Сколько шагов назад ещё можно сделать.
+
+    Чтобы «вернуть как было» не выглядело последней возможностью: видно,
+    что за ним стоит ещё пять операций.
+    """
+    return sum(1 for record in records()
+               if record.undoable and not record.undone)
+
+
+def mark_undone(record: Record) -> None:
+    """Пометить операцию возвращённой.
+
+    Без пометки второе нажатие взяло бы ту же самую запись: она осталась
+    бы и в журнале, и откатываемой. Шаг назад стоял бы на месте.
+    """
+    found = _load()
+    for one in found:
+        if (one.stamp == record.stamp and one.output == record.output
+                and one.operation == record.operation):
+            one.undone = True
+    record.undone = True
+    try:
+        _save(found)
+    except OSError as exc:
+        log.warning("Не удалось отметить возврат в журнале: %s", exc)
 
 
 def undo(record: Record) -> int:
@@ -359,6 +392,7 @@ def undo(record: Record) -> int:
     back = 0
     if record.backup and Path(record.backup).is_dir():
         back = restore(Path(record.backup), where)
+    mark_undone(record)
     return back + len(doomed)
 
 
@@ -377,4 +411,7 @@ def state() -> dict:
         # интерфейсе: правило «копия есть и папка на месте» должно быть
         # одно, а не своё у каждой кнопки.
         "undo": (found.as_dict() if (found := last_undo()) else None),
+        # Сколько шагов назад ещё осталось: одна кнопка без счётчика
+        # выглядит как единственная попытка.
+        "undo_left": steps_back(),
     }

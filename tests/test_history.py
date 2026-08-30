@@ -358,5 +358,82 @@ class TestUndoPutsItBack(HistoryTestCase):
         self.assertEqual(got.wrote, [])
 
 
+class TestStepByStepBack(HistoryTestCase):
+    """Шагов назад столько же, сколько операций.
+
+    Одного шага мало: человек замечает неладное не на первой операции, а
+    на третьей. Раньше второе нажатие брало ту же самую запись — откат
+    стоял на месте.
+    """
+
+    def two_operations(self):
+        book = self.tmp / "книга"
+        book.mkdir()
+        (book / "Глава 1.txt").write_text("первая", encoding="utf-8")
+        first = history.add(operation="первая", output=str(book),
+                            wrote=["Глава 1.txt"])
+        (book / "Глава 2.txt").write_text("вторая", encoding="utf-8")
+        second = history.add(operation="вторая", output=str(book),
+                             wrote=["Глава 2.txt"])
+        return book, first, second
+
+    def test_the_second_press_takes_the_operation_before(self):
+        book, _, _ = self.two_operations()
+
+        history.undo(history.last_undo())
+        self.assertEqual(history.last_undo().operation, "первая")
+
+        history.undo(history.last_undo())
+        self.assertIsNone(history.last_undo())
+        self.assertEqual(sorted(p.name for p in book.glob("*.txt")), [])
+
+    def test_a_returned_operation_is_not_offered_again(self):
+        self.two_operations()
+        history.undo(history.last_undo())
+        self.assertNotEqual(history.last_undo().operation, "вторая")
+
+    def test_an_operation_with_a_copy_does_not_loop_on_itself(self):
+        """Тот самый случай, где шаг назад стоял на месте.
+
+        Копия при перезаписи остаётся на диске и после возврата, поэтому
+        запись оставалась откатываемой — и второе нажатие брало её же.
+        """
+        book = self.folder("книга", {1: ["Первая версия."]})
+        older = history.add(operation="старая", output=str(book),
+                            wrote=["Глава 1.txt"])
+        self.assertTrue(older.undoable)
+
+        saved = history.backup(book, "проба")
+        formats.write(book / "Глава 1.txt",
+                      [Chapter(number=1, title="Глава 1",
+                               paragraphs=["Вторая версия."])],
+                      headings=True)
+        history.add(operation="перезапись", output=str(book), backup=saved)
+
+        history.undo(history.last_undo())
+        self.assertEqual(history.last_undo().operation, "старая")
+
+    def test_the_mark_survives_a_reread_of_the_journal(self):
+        """Пометка живёт в файле, а не в памяти: программу закрывают."""
+        self.two_operations()
+        history.undo(history.last_undo())
+        self.assertTrue(
+            [r for r in history.records() if r.operation == "вторая"][0].undone)
+
+    def test_how_many_steps_are_left_is_counted(self):
+        self.two_operations()
+        self.assertEqual(history.steps_back(), 2)
+        history.undo(history.last_undo())
+        self.assertEqual(history.steps_back(), 1)
+
+    def test_the_count_reaches_the_interface(self):
+        self.two_operations()
+        self.assertEqual(history.state()["undo_left"], 2)
+
+    def test_an_old_record_is_not_considered_returned(self):
+        """У записей прежней версии поля нет — они не «уже возвращены»."""
+        self.assertFalse(history.Record.from_dict({"operation": "split"}).undone)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
