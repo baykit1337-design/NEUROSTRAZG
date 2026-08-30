@@ -1,0 +1,54 @@
+/* Свет бежит по краю активной вкладки.
+ *
+ * Вкладок двенадцать, и подсветка активной у них одна на всех — рамка да
+ * свечение. В покое этого хватает, но когда взгляд возвращается к экрану
+ * после другого окна, найти текущую вкладку приходится заново. Бегущая
+ * искра отвечает на этот вопрос без чтения: она одна на всей строке.
+ *
+ * Кольцо, а не заливка: рисуем градиент по всей кнопке и вырезаем из него
+ * середину маской. Без маски — если браузер её не знает — остаётся мягкий
+ * ореол по краю: не то, что задумано, но и не поломка.
+ *
+ * Угол крутится через собственное свойство: обычный `conic-gradient` в
+ * ключевых кадрах не оживает, браузеру надо сказать, что это угол.
+ */
+
+@property --fx-edge-angle{
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-tab-edge .tabs button.on{position:relative}
+
+  .fx-tab-edge .tabs button.on::after{
+    content:"";
+    position:absolute;
+    inset:-2px;
+    border-radius:inherit;
+    /* Толщина светящейся нити: её же вырезает маска. */
+    padding:1px;
+    background:conic-gradient(from var(--fx-edge-angle),
+      transparent 0turn,
+      transparent .58turn,
+      rgba(176,108,255,.85) .70turn,
+      #e9d5ff .76turn,
+      rgba(176,108,255,.85) .82turn,
+      transparent .94turn,
+      transparent 1turn);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,
+                 linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;
+    mask:linear-gradient(#000 0 0) content-box,
+         linear-gradient(#000 0 0);
+    mask-composite:exclude;
+    animation:fx-tab-edge-run 3.2s linear infinite;
+    pointer-events:none;
+  }
+}
+
+@keyframes fx-tab-edge-run{
+  from{--fx-edge-angle:0deg}
+  to  {--fx-edge-angle:360deg}
+}

@@ -822,5 +822,192 @@ class TestNeonStart(Base):
 
 
 
+class TestSevenMore(Base):
+    """Семь эффектов, выбранных из тридцати предложенных.
+
+    Общая часть — та же, что и у всех: свой файл, своя галочка, снятая
+    галочка возвращает интерфейс как был. Здесь проверяется то, что у
+    каждого своё.
+    """
+
+    NEW = ("tab-edge", "work-pulse", "bar-wave", "flip-count",
+           "favicon-progress", "title-blink", "key-spark")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tabs = (STATIC / "tabs.js").read_text(encoding="utf-8")
+        cls.signal = (JS / "tabsignal.js").read_text(encoding="utf-8")
+        cls.back = (JS / "feedback.js").read_text(encoding="utf-8")
+
+    def test_all_seven_have_a_switch(self):
+        for key in self.NEW:
+            self.assertIn(f"key: '{key}'", self.settings, key)
+
+    def test_the_tabs_know_nothing_about_them(self):
+        """Эффект, до которого дотянулась вкладка, снимается уже не
+        галочкой."""
+        for key in self.NEW:
+            self.assertNotIn("fx-" + key, self.tabs, key)
+
+
+class TestTabEdge(Base):
+    """Свет по краю активной вкладки."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "tab-edge.css").read_text(encoding="utf-8")
+
+    def test_only_the_active_tab(self):
+        """На всех сразу это была бы гирлянда, а не указатель."""
+        self.assertIn(".tabs button.on::after", self.css)
+
+    def test_it_is_a_ring_not_a_fill(self):
+        """Без выреза середины заливка легла бы поверх подписи."""
+        self.assertIn("mask-composite:exclude", self.css.replace(" ", ""))
+
+    def test_the_angle_is_a_registered_property(self):
+        """Обычный conic-gradient в кадрах не оживает: браузеру надо
+        сказать, что это угол."""
+        self.assertIn("@property --fx-edge-angle", self.css)
+        self.assertIn('syntax: "<angle>"', self.css)
+
+    def test_it_does_not_catch_clicks(self):
+        self.assertIn("pointer-events:none", self.css.replace(" ", ""))
+
+
+class TestWorkPulse(Base):
+    """Дыхание кнопки, пока идёт её работа."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "work-pulse.css").read_text(encoding="utf-8")
+
+    def test_it_is_found_by_the_markup_not_by_a_list_of_buttons(self):
+        """Список кнопок устарел бы на первой же новой вкладке."""
+        self.assertIn(":has(.bar > i.active)", self.css)
+        self.assertIn("button.primary:disabled", self.css)
+
+    def test_only_the_open_tab(self):
+        """Скрытые вкладки тоже держат свои полосы."""
+        self.assertIn("section:not([hidden])", self.css)
+
+
+class TestBarWave(Base):
+    """Течение в полосе."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "bar-wave.css").read_text(encoding="utf-8")
+
+    def test_only_while_the_work_goes_on(self):
+        """На готовой полосе рябь означала бы работу, которой нет."""
+        self.assertIn(".bar > i.active", self.css)
+
+    def test_the_fill_is_taken_from_the_shared_variable(self):
+        """Своя копия палитры разошлась бы с основной на первой правке."""
+        self.assertIn("var(--bar-fill)", self.css)
+        self.assertIn("--bar-fill:", self.html)
+
+
+class TestFlipCount(Base):
+    """Табло вместо цифр."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "flip-count.css").read_text(encoding="utf-8")
+        cls.back = (JS / "feedback.js").read_text(encoding="utf-8")
+
+    def test_it_beats_the_rolling_counter(self):
+        """Вместе цифра сперва доезжала бы, а потом переворачивалась."""
+        self.assertIn("fxOn('flip-count')", self.back)
+        where = self.back.index("fxOn('flip-count')")
+        self.assertLess(where, self.back.index("fxOn('counter')"))
+
+    def test_the_text_changes_between_the_halves(self):
+        """Раньше — смена видна, позже — створка вернётся пустой."""
+        self.assertIn("fx-flip-out", self.back)
+        self.assertIn("fx-flip-in", self.back)
+
+    def test_both_halves_are_described(self):
+        self.assertIn("@keyframes fx-flip-away", self.css)
+        self.assertIn("@keyframes fx-flip-back", self.css)
+
+    def test_it_is_off_by_default(self):
+        """Прокрутка стоит с самого начала; две привычки сразу менять
+        человеку не за что."""
+        block = self.settings[self.settings.index("key: 'flip-count'"):]
+        self.assertIn("on: false", block[:block.index("},")])
+
+
+class TestTabSignals(Base):
+    """Иконка вкладки и её заголовок — то, что видно из другого окна."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.js = (JS / "tabsignal.js").read_text(encoding="utf-8")
+
+    def test_the_icon_shows_the_work_that_is_closest_to_the_end(self):
+        """Работ может идти несколько, иконка одна."""
+        self.assertIn("Math.max", self.js)
+        self.assertIn(".bar > i.active", self.js)
+
+    def test_the_original_icon_comes_back(self):
+        """Иначе кольцо осталось бы висеть после конца работы."""
+        self.assertIn("fxIconWas", self.js)
+
+    def test_the_title_blinks_only_when_the_tab_is_away(self):
+        """Мигать на глазах у человека незачем — он и так смотрит.
+
+        Смотрим в саму проверку начала, а не по всему файлу: `hidden`
+        упоминается и в снятии мигания, и тест проходил бы, даже если
+        начало перестало его спрашивать.
+        """
+        start = self.js[self.js.index("function fxBlinkStart"):]
+        start = start[:start.index("\n}")]
+        self.assertIn("document.hidden", start)
+
+    def test_coming_back_stops_the_blinking(self):
+        self.assertIn("visibilitychange", self.js)
+
+    def test_the_title_is_restored_exactly(self):
+        self.assertIn("fxTitleWas", self.js)
+        self.assertIn("document.title = fxTitleWas", self.js)
+
+    def test_blinking_ends_by_itself(self):
+        """Человек мог уйти на час: вечное мигание — уже требование."""
+        self.assertIn("FX_BLINK_TIMES", self.js)
+
+
+class TestKeySpark(Base):
+    """Искра, когда ключ отдал свою квоту."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "key-spark.css").read_text(encoding="utf-8")
+        cls.back = (JS / "feedback.js").read_text(encoding="utf-8")
+
+    def test_it_watches_the_counter_that_is_shown(self):
+        self.assertIn(".fmkeys b.spent", self.back)
+
+    def test_only_when_the_number_grows(self):
+        """Список перечитывают и после сброса квоты — вспыхивать на
+        возврате в строй незачем."""
+        self.assertIn("now <= was", self.back)
+
+    def test_the_spark_flies_away_and_disappears(self):
+        self.assertIn("@keyframes fx-key-fly", self.css)
+        self.assertIn("opacity:0", self.css.replace(" ", ""))
+
+    def test_it_does_not_catch_clicks(self):
+        self.assertIn("pointer-events:none", self.css.replace(" ", ""))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

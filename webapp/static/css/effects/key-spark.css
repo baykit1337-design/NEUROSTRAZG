@@ -1,0 +1,42 @@
+/* Искра, когда ключ исчерпан.
+ *
+ * Счётчик ключей стоит рядом с прогрессом и меняется молча: «живых 41»
+ * превращается в «живых 40», и заметить это можно только специально
+ * следя. А момент важный — на нём заканчивается бесплатная квота, и
+ * именно по этим цифрам человек решает, хватит ли ключей на пакет.
+ *
+ * Вспышка одна и короткая: ключи гаснут пачками, и мигать на каждый —
+ * значит превратить счётчик в гирлянду.
+ */
+
+.fx-key-spark .fmkeys b.spent{position:relative}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-key-spark .fmkeys b.spent.fx-spark{animation:fx-key-burn .5s ease-out 1}
+
+  .fx-key-spark .fmkeys b.spent.fx-spark::after{
+    content:"";
+    position:absolute;
+    left:50%;
+    top:50%;
+    width:6px;
+    height:6px;
+    margin:-3px 0 0 -3px;
+    border-radius:50%;
+    background:#ffd7a8;
+    box-shadow:0 0 8px 2px rgba(255,145,90,.9);
+    animation:fx-key-fly .5s ease-out 1 forwards;
+    pointer-events:none;
+  }
+}
+
+@keyframes fx-key-burn{
+  0%  {color:inherit; text-shadow:none}
+  30% {color:#ffb27a; text-shadow:0 0 12px rgba(255,145,90,.9)}
+  100%{color:inherit; text-shadow:none}
+}
+
+@keyframes fx-key-fly{
+  0%  {opacity:1; transform:translate(0,0) scale(1)}
+  100%{opacity:0; transform:translate(10px,-14px) scale(.4)}
+}

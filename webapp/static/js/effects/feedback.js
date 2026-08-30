@@ -24,6 +24,13 @@ function fxRoll(node, to){
   const from = Number(node.dataset.fxValue || 0);
   node.dataset.fxValue = String(to);
 
+  // Табло сильнее прокрутки: они работают с одними и теми же числами, и
+  // вместе цифра сперва доезжала бы, а потом ещё и переворачивалась.
+  if(fxOn('flip-count') && from !== to){
+    fxFlip(node, to);
+    return;
+  }
+
   if(!fxOn('counter') || from === to || Math.abs(to - from) < 2){
     node.textContent = String(to);
     return;
@@ -47,6 +54,60 @@ function fxRoll(node, to){
     }
   }
   node._fxTimer = requestAnimationFrame(step);
+}
+
+/** Переворачивает число, как створку на вокзальном табло.
+ *
+ *  Текст подменяется между половинками переворота: в первой створка
+ *  уходит ребром, во второй возвращается уже с новым числом. Подмени мы
+ *  раньше — смена была бы видна, позже — створка вернулась бы пустой.
+ */
+function fxFlip(node, to){
+  if(node._fxFlipTimer) clearTimeout(node._fxFlipTimer);
+  node._fxRolling = true;
+
+  node.classList.remove('fx-flip-in');
+  node.classList.add('fx-flip-out');
+  node._fxFlipTimer = setTimeout(() => {
+    node.textContent = String(to);
+    node.classList.remove('fx-flip-out');
+    node.classList.add('fx-flip-in');
+    node._fxFlipTimer = setTimeout(() => {
+      node.classList.remove('fx-flip-in');
+      node._fxRolling = false;
+    }, 180);
+  }, 130);
+}
+
+/* ------------------------------------------------ искра у ключей */
+
+/** Ключ исчерпан — короткая вспышка у счётчика.
+ *
+ *  Счётчик меняется молча, а момент важный: на нём кончается бесплатная
+ *  квота. Следим за тем же числом, что и показываем, — за счётчиком
+ *  исчерпанных: он растёт, значит ключ только что сгорел.
+ */
+function fxWatchKeys(){
+  const observer = new MutationObserver(() => {
+    if(!fxOn('key-spark')) return;
+    for(const node of document.querySelectorAll('.fmkeys b.spent')){
+      const shown = node.textContent.trim();
+      if(!/^\d+$/.test(shown)) continue;
+      const now = Number(shown);
+      const was = Number(node.dataset.fxSpent);
+      node.dataset.fxSpent = String(now);
+      // Только рост: список ключей перечитывают и после сброса квоты,
+      // и вспыхивать на возврате в строй незачем.
+      if(!Number.isFinite(was) || now <= was) continue;
+
+      node.classList.remove('fx-spark');
+      void node.offsetWidth;
+      node.classList.add('fx-spark');
+      setTimeout(() => node.classList.remove('fx-spark'), 600);
+    }
+  });
+  observer.observe(document.body, {subtree: true, childList: true,
+                                   characterData: true});
 }
 
 /** Следит за числами в блоках статистики и прокручивает их. */
@@ -115,4 +176,5 @@ function fxSkeleton(id, rows){
 document.addEventListener('DOMContentLoaded', () => {
   fxWatchNumbers();
   fxWatchDone();
+  fxWatchKeys();
 });

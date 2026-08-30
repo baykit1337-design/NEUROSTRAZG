@@ -1,0 +1,35 @@
+/* Числа перещёлкиваются, как на вокзальном табло.
+ *
+ * Родня «счётчикам с прокруткой», но противоположность им по смыслу.
+ * Прокрутка показывает путь от старого числа к новому — она хороша, когда
+ * число ползёт: «скачано 140, 141, 142». Табло показывает сам факт
+ * смены — оно хорошо, когда число прыгает разом: «глав 300».
+ *
+ * Работают они с одними и теми же числами, поэтому одновременно не
+ * включаются: при обеих галочках побеждает табло. Иначе цифра сначала
+ * доезжала бы, а потом ещё и переворачивалась.
+ *
+ * Половинки переворота — два кадра одной анимации, а не две: между ними
+ * скрипт подменяет текст, и разрыв тут был бы виден.
+ */
+
+.fx-flip-count .stats b{
+  display:inline-block;
+  transform-origin:50% 50%;
+  backface-visibility:hidden;
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-flip-count .stats b.fx-flip-out{animation:fx-flip-away .13s ease-in both}
+  .fx-flip-count .stats b.fx-flip-in{animation:fx-flip-back .17s ease-out both}
+}
+
+@keyframes fx-flip-away{
+  from{transform:rotateX(0deg);   opacity:1}
+  to  {transform:rotateX(-90deg); opacity:.15}
+}
+
+@keyframes fx-flip-back{
+  from{transform:rotateX(90deg); opacity:.15}
+  to  {transform:rotateX(0deg);  opacity:1}
+}

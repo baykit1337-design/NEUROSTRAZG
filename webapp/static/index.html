@@ -35,6 +35,9 @@
     --text:#f3f1f8;
     --muted:#8f8aa3;
     --neon:#b06cff;
+    /* Заливка полосы вынесена в переменную: её же берёт эффект «волна»,
+       и без общего имени два места разошлись бы на первой же правке. */
+    --bar-fill:linear-gradient(90deg,#3b1d78 0%,#6d28d9 45%,#a855f7 75%,#d8b4fe 100%);
     --neon-dim:#7a3fd0;
     --radius:18px;
   }
@@ -651,7 +654,7 @@
     height:100%;
     width:0;
     border-radius:999px;
-    background:linear-gradient(90deg,#3b1d78 0%,#6d28d9 45%,#a855f7 75%,#d8b4fe 100%);
+    background:var(--bar-fill);
     box-shadow:0 0 10px rgba(140,84,255,.7), 0 0 20px rgba(140,84,255,.35);
     transition:width .3s ease;
     position:relative;
@@ -5537,10 +5540,16 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/card-open.css">
 <link rel="stylesheet" href="/static/css/effects/find-hit.css">
 <link rel="stylesheet" href="/static/css/effects/error-shake.css">
+<link rel="stylesheet" href="/static/css/effects/tab-edge.css">
+<link rel="stylesheet" href="/static/css/effects/work-pulse.css">
+<link rel="stylesheet" href="/static/css/effects/bar-wave.css">
+<link rel="stylesheet" href="/static/css/effects/flip-count.css">
+<link rel="stylesheet" href="/static/css/effects/key-spark.css">
 <link rel="stylesheet" href="/static/css/effects/neon-start.css">
 <script src="/static/tabs.js"></script>
 <script src="/static/js/effects/settings.js"></script>
 <script src="/static/js/effects/feedback.js"></script>
+<script src="/static/js/effects/tabsignal.js"></script>
 <script src="/static/js/effects/pointer.js"></script>
 <script src="/static/js/effects/stars.js"></script>
 <script src="/static/js/effects/rain.js"></script>
