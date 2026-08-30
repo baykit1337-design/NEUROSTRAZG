@@ -4940,6 +4940,44 @@ def api_update_apply():
     return jsonify(job=start_job(job, work).snapshot())
 
 
+@app.get("/api/titles/spellings")
+def api_spellings_show():
+    """Словарь имён: как писать их по-русски."""
+    table = titles_op.spellings()
+    return jsonify(
+        pairs=[{"from": key, "to": value} for key, value in table.items()],
+        total=len(table),
+        text="\n".join(f"{key} = {value}" for key, value in table.items()))
+
+
+@app.post("/api/titles/spellings")
+def api_spellings_save():
+    """Принимает словарь в любом виде, какой прислали.
+
+    Разбирает его `ops/glossary` — тот же, что уже принимает глоссарий от
+    переводчика: `=`, стрелка, CSV, JSON. Своего разбора здесь нет
+    намеренно, иначе два понимания одного файла разъехались бы.
+    """
+    payload = request.json or {}
+    if payload.get("clear"):
+        titles_op.forget_spellings()
+        return jsonify(total=0, added=0, pairs=[], text="")
+
+    pairs = glossary_op.parse(str(payload.get("text") or ""))
+    if not pairs:
+        return jsonify(error="Не нашлось ни одной пары «имя = перевод». "
+                             "Годятся строки «Li Xiao = Ли Сяо», стрелка, "
+                             "CSV и JSON."), 400
+
+    if payload.get("replace"):
+        titles_op.forget_spellings()
+    table = titles_op.remember_spellings(pairs)
+    return jsonify(
+        total=len(table), added=len(pairs),
+        pairs=[{"from": key, "to": value} for key, value in table.items()],
+        text="\n".join(f"{key} = {value}" for key, value in table.items()))
+
+
 @app.post("/api/report")
 def api_report():
     """Готовый отчёт о проблеме: версия, система, хвост журнала.

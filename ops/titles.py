@@ -117,7 +117,7 @@ HEADINGS_PROMPT = """Ниже названия глав книги, по одн�
 Это названия глав художественной книги: переводи по смыслу, коротко, как
 принято называть главы. Слово «глава» и номер главы в перевод НЕ
 добавляй — они подставляются отдельно.
-
+{hint}
 {lines}"""
 
 TITLES = Kind(prompt=PROMPT, size=BATCH, word="Названия")
@@ -128,6 +128,19 @@ HEADINGS = Kind(prompt=HEADINGS_PROMPT, size=BATCH, word="Заголовки")
 #: Переводы названий глав. Отдельно от рейтинга: там ключ — код книги на
 #: сайте, а здесь само название, потому что никакого кода у главы нет.
 HEADINGS_FILE = DATA_DIR / "headings.json"
+
+#: Словарь имён собственных: как писать по-русски. Заголовки идут пачками
+#: по двадцать пять, каждая пачка — свой запрос, и модель не помнит, как
+#: назвала героя в прошлой. Отсюда «Ли Сяо» в одной главе и «Ли Сяон» в
+#: соседней. Словарь даётся модели вместе с пачкой.
+NAMES_FILE = DATA_DIR / "names.json"
+
+#: Сколько пар давать модели за раз. Словарь бывает на сотни имён, а в
+#: пачке двадцать пять коротких заголовков: отправлять весь список к
+#: каждой — платить за него сотню раз. Берём только те, что в этой пачке
+#: и встречаются, а этот предел — страховка от книги, где в заголовках
+#: одни имена.
+NAMES_IN_PROMPT = 40
 
 
 @dataclass(frozen=True)
@@ -299,8 +312,14 @@ def _ask(client, batch: list, model: str, kind: Kind = TITLES) -> dict:
 
     lines = kind.joiner.join(f"{i}. {line.text}"
                              for i, line in enumerate(batch, 1))
+    # Словарь имён — только у заголовков и только по тем именам, что в
+    # этой пачке встречаются. Остальным видам он не нужен: у прочих
+    # запросов в шаблоне и места для него нет, а лишний довод `format`
+    # молча пропускает.
+    hint = hint_for([line.text for line in batch]) if kind is HEADINGS else ""
     for attempt in range(1, TRIES + 1):
-        answer = client.generate(kind.prompt.format(lines=lines), model=model)
+        answer = client.generate(kind.prompt.format(lines=lines, hint=hint),
+                                 model=model)
         found = _read(answer, batch)
         if found:
             got = {batch[index - 1].book_id: text
@@ -378,6 +397,69 @@ def forget_headings() -> None:
         _write(HEADINGS_FILE, {})
 
 
+# ------------------------------------------- словарь имён собственных
+
+
+def spellings() -> dict:
+    """Как писать имена: оригинал → русское написание.
+
+    Не `names`: так зовётся список заголовков в самом переводе, и одно
+    имя на две разные вещи однажды выстрелит.
+    """
+    with _LOCK:
+        return dict(_load(NAMES_FILE))
+
+
+def remember_spellings(pairs) -> dict:
+    """Дописывает пары в словарь.
+
+    Принимает и готовый словарь, и список пар — глоссарий от переводчика
+    приходит парами, а разбирает их `ops/glossary`, который умеет и
+    `=`, и стрелку, и CSV, и JSON.
+    """
+    rows = pairs.items() if isinstance(pairs, dict) else (pairs or ())
+    with _LOCK:
+        data = _load(NAMES_FILE)
+        for key, value in rows:
+            key, value = str(key or "").strip(), str(value or "").strip()
+            if key and value:
+                data[key] = value
+        _write(NAMES_FILE, data)
+        return dict(data)
+
+
+def forget_spellings() -> None:
+    with _LOCK:
+        _write(NAMES_FILE, {})
+
+
+def hint_for(texts, table: dict | None = None) -> str:
+    """Кусок запроса со словарём — только по тем именам, что здесь есть.
+
+    Словарь бывает на сотни имён, а в пачке двадцать пять коротких
+    заголовков. Отправлять весь список к каждой пачке — платить за него
+    сотню раз, а квота у ключей суточная.
+
+    Имя ищется в тексте как есть, без учёта регистра: заголовки приходят
+    и «LI XIAO», и «Li Xiao».
+    """
+    table = spellings() if table is None else table
+    if not table:
+        return ""
+
+    where = "\n".join(str(one or "") for one in texts).lower()
+    found = [(key, value) for key, value in table.items()
+             if str(key).lower() in where]
+    if not found:
+        return ""
+
+    found.sort(key=lambda pair: len(pair[0]), reverse=True)
+    rows = "\n".join(f"{key} = {value}"
+                     for key, value in found[:NAMES_IN_PROMPT])
+    return ("\nИмена собственные пиши строго так — это уже принятые в этой\n"
+            "книге написания, менять их нельзя:\n" + rows + "\n")
+
+
 def translate_headings(names, client, model: str = "",
                        force: bool = False, on_step=None) -> dict:
     """Переводит названия глав пачками. Кэш — по самому названию.
@@ -392,9 +474,16 @@ def translate_headings(names, client, model: str = "",
     names = [str(x or "").strip() for x in (names or [])]
     have = headings()
 
+    # Заголовок, целиком совпавший со словарной статьёй, не спрашиваем
+    # вовсе: написание уже принято человеком, и переспрашивать модель —
+    # платить за ответ, который мы и так знаем, да ещё рискуя получить
+    # другой. Квота у ключей суточная, и это не мелочь.
+    table = spellings()
+    straight = {name: table[name] for name in names if name in table}
+
     todo, seen = [], set()
     for name in names:
-        if not name or name in seen:
+        if not name or name in seen or name in straight:
             continue
         if force or name not in have:
             seen.add(name)
@@ -409,12 +498,20 @@ def translate_headings(names, client, model: str = "",
     if added:
         have = remember_headings(added)
 
-    ready = {name: have.get(name, "") for name in names if name}
+    # Словарное написание важнее и кэша, и свежего ответа модели: его
+    # выбрал человек, и переубеждать его нам нечем.
+    ready = {name: straight.get(name) or have.get(name, "")
+             for name in names if name}
     missing = [line.text for line in todo if not ready.get(line.book_id)]
     return {"names": ready,
             "translated": len(added), "broken": len(missing),
             "missing": missing[:10],
-            "cached": len(set(names)) - len(added) - len(missing)}
+            # Взятое из словаря — не перевод и не кэш: за него не платили
+            # вовсе, и складывать его с кэшем значило бы прятать, сколько
+            # словарь сберёг.
+            "from_glossary": len(straight),
+            "cached": len(set(names)) - len(added) - len(missing)
+                      - len(straight)}
 
 
 def translate_all_abstracts(texts: dict, client, model: str = "",

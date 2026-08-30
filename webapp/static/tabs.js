@@ -7155,3 +7155,59 @@ for(const field of keepFields()){
 }
 
 keepLoad();
+
+
+/* ============ Словарь имён собственных ============
+ *
+ * Заголовки идут к модели пачками по двадцать пять, каждая пачка — свой
+ * запрос, и модель не помнит, как назвала героя в прошлой: отсюда «Ли
+ * Сяо» в одной главе и «Ли Сяон» в соседней.
+ *
+ * Разбирает присланное сервер — тем же кодом, что принимает глоссарий от
+ * переводчика. Своего понимания формата здесь нет намеренно: два
+ * понимания одного файла однажды разъедутся.
+ */
+
+function gnShow(data){
+  $('gnText').value = data.text || '';
+  $('gnNote').textContent = data.total
+    ? `В словаре имён: ${data.total}.`
+    : 'Словарь пуст — имена переводятся как выйдет.';
+}
+
+async function gnLoad(){
+  try{
+    gnShow(await call('/api/titles/spellings'));
+  }catch(err){ showError(err.message, $('gnNote')); }
+}
+
+async function gnSave(){
+  showError('');
+  $('gnSave').disabled = true;
+  try{
+    // `replace` нарочно: поле показывает словарь целиком, и человек
+    // правит его как текст. Дописывать к нему же значило бы, что
+    // удалённая строка возвращается сама.
+    const got = await call('/api/titles/spellings',
+                           {text: $('gnText').value, replace: true});
+    gnShow(got);
+    toast(`Словарь сохранён: имён ${got.total}.`);
+  }catch(err){
+    showError(err.message, $('gnNote'));
+  }finally{
+    $('gnSave').disabled = false;
+  }
+}
+
+async function gnClear(){
+  if(!confirm('Очистить словарь имён? Имена снова будут переводиться '
+              + 'как выйдет.')) return;
+  try{
+    gnShow(await call('/api/titles/spellings', {clear: true}));
+  }catch(err){ showError(err.message, $('gnNote')); }
+}
+
+$('gnSave').onclick = gnSave;
+$('gnLoad').onclick = gnLoad;
+$('gnClear').onclick = gnClear;
+gnLoad();

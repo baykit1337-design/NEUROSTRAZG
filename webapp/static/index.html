@@ -2328,6 +2328,31 @@
     <p class="hint" id="fmSample"></p>
   </div>
 
+  <!-- Словарь имён собственных. Заголовки идут к модели пачками по
+       двадцать пять, каждая пачка — свой запрос, и модель не помнит, как
+       назвала героя в прошлой: отсюда «Ли Сяо» в одной главе и «Ли Сяон»
+       в соседней. Словарь уходит к модели вместе с пачкой — и только
+       теми именами, что в этой пачке встречаются. -->
+  <div class="card folded" data-fold id="gnCard">
+    <label class="foldhead">Словарь имён собственных</label>
+    <p class="hint">Как писать имена по-русски. Заголовок, целиком
+       совпавший со словарной статьёй, к модели вообще не поедет —
+       написание уже выбрано вами, и переспрашивать незачем.</p>
+    <p class="hint" id="gnNote"></p>
+    <div style="margin-top:10px">
+      <label for="gnText">пары «оригинал = перевод», по одной в строке</label>
+      <textarea id="gnText" rows="8" spellcheck="false"
+                placeholder="Li Xiao = Ли Сяо&#10;Yun Che = Юнь Че"></textarea>
+      <p class="hint">Годятся и стрелка, и двоеточие, и CSV, и JSON —
+         разбирает их тот же код, что принимает глоссарий от переводчика.</p>
+    </div>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap">
+      <button id="gnSave" class="primary">Сохранить</button>
+      <button id="gnLoad" class="ghost">Показать сохранённое</button>
+      <button id="gnClear" class="ghost">Очистить словарь</button>
+    </div>
+  </div>
+
   <!-- Работа вторая: переписать заголовки в готовой книге. -->
   <div class="card">
     <label>Заголовки в готовой книге</label>
