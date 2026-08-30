@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Any
 
+from core import traffic
+
 
 BASE = "https://chap.heliosarchive.online"
 API = f"{BASE}/wp-json/wp/v2"
@@ -401,6 +403,9 @@ class Client:
                 )
                 status = resp.status_code
                 network_failure = False
+                # Трафик считаем до разбора кода: байты потрачены и на
+                # отказ, и на заглушку, а пакет у человека один.
+                traffic.note(len(getattr(resp, "content", b"") or b""))
 
                 # Успех — весь второй десяток, а не одна двухсотка.
                 #

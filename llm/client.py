@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field
 
 from config import settings
+from core import traffic
 
 log = logging.getLogger(__name__)
 
@@ -405,6 +406,8 @@ class LlmClient:
             response = self._post(http, url, params, payload)
 
         status = getattr(response, "status_code", 200)
+        # Перевод — тоже трафик, и на лимитном пакете он заметен.
+        traffic.note(len(getattr(response, "content", b"") or b""))
         body = _json(response)
         if status == 400 and _is_key_error(body):
             raise BadKey("Ключ недействителен — проверьте его в настройках.")

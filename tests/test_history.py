@@ -358,6 +358,60 @@ class TestUndoPutsItBack(HistoryTestCase):
         self.assertEqual(got.wrote, [])
 
 
+class TestTheBinIsWeighed(HistoryTestCase):
+    """Счёт по штукам от диска не спасает.
+
+    Десять копий одной правки — это ничто, а десять копий книги на
+    пятьсот глав — гигабайты, о которых человек узнаёт от диска, а не от
+    программы.
+    """
+
+    def fat(self, name, size):
+        """Копия в корзине заданного веса."""
+        folder = self.tmp / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "глава.txt").write_bytes(b"x" * size)
+        return history.backup(folder, name)
+
+    def test_a_folder_is_weighed_with_everything_inside(self):
+        folder = self.tmp / "книга"
+        (folder / "часть").mkdir(parents=True)
+        (folder / "часть" / "1.txt").write_bytes(b"x" * 100)
+        (folder / "2.txt").write_bytes(b"x" * 50)
+        self.assertEqual(history.weigh(folder), 150)
+
+    def test_missing_folder_weighs_nothing(self):
+        self.assertEqual(history.weigh(self.tmp / "нет-такой"), 0)
+
+    def test_the_weight_reaches_the_interface(self):
+        self.fat("книга", 2048)
+        state = history.state()
+        self.assertEqual(state["bytes"], 2048)
+        self.assertEqual(state["backups"][0]["bytes"], 2048)
+
+    def test_copies_over_the_cap_are_removed_oldest_first(self):
+        for name in ("одна", "две", "три"):
+            self.fat(name, 1000)
+        self.assertEqual(len(history.backups()), 3)
+
+        history.trim(keep=history.KEEP_BACKUPS, cap=2500)
+        left = [p.name for p in history.backups()]
+        self.assertEqual(len(left), 2)
+        self.assertTrue(any("три" in name for name in left))
+
+    def test_the_freshest_copy_survives_any_cap(self):
+        """Свежая копия — это и есть «вернуть как было»."""
+        self.fat("одна", 5000)
+        history.trim(keep=history.KEEP_BACKUPS, cap=1)
+        self.assertEqual(len(history.backups()), 1)
+
+    def test_a_light_bin_is_left_alone(self):
+        for name in ("одна", "две"):
+            self.fat(name, 10)
+        history.trim(keep=history.KEEP_BACKUPS, cap=1000)
+        self.assertEqual(len(history.backups()), 2)
+
+
 class TestStepByStepBack(HistoryTestCase):
     """Шагов назад столько же, сколько операций.
 

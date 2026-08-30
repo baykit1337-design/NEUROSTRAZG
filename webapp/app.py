@@ -24,7 +24,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import formats, naming, platform  # noqa: E402
+from core import formats, naming, platform, traffic  # noqa: E402
 from core.headings import HeadingsNotFound  # noqa: E402
 from core.readers.base import ReadError  # noqa: E402
 from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
@@ -4366,6 +4366,17 @@ def api_checkup_start():
 # ------------------------------- журнал, корзина и сравнение версий
 
 
+@app.get("/api/traffic")
+def api_traffic():
+    """Сколько скачано за запуск и за месяц.
+
+    При платном пакете это первое, что хочется видеть. Счёт ведётся в
+    самом низу, в клиенте: через него проходят и главы, и рейтинги, и
+    перевод, и обновление.
+    """
+    return jsonify(**traffic.totals())
+
+
 @app.get("/api/history/state")
 def api_history_state():
     """Что делалось и что можно вернуть."""
@@ -5284,6 +5295,8 @@ def main() -> None:
     written = logbook.start()
     if written:
         print(f"  Журнал: {written}")
+    # Счётчик трафика: месячный итог должен пережить закрытие окна.
+    traffic.setup(history_op.DATA_DIR / "traffic.json")
 
     try:
         pool = load_pool(args.proxies)

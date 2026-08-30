@@ -35,11 +35,16 @@ class TestStatusBarIsGone(Base):
         app = (ROOT / "webapp" / "app.py").read_text(encoding="utf-8")
         self.assertNotIn('"/api/status"', app)
 
-    def test_traffic_counter_removed_with_it(self):
-        """Скорость больше нигде не показывается — счётчику незачем жить."""
+    def test_the_speed_counter_stayed_removed(self):
+        """Скорость больше нигде не показывается — замерять её незачем.
+
+        Счёт скачанного при этом вернулся, но считает он другое и для
+        другого: не мегабайты в секунду для полосы внизу, а объём за
+        месяц для человека с платным пакетом. Живёт он в `core`.
+        """
         self.assertFalse((ROOT / "net" / "traffic.py").exists())
-        client = (ROOT / "mvl" / "client.py").read_text(encoding="utf-8")
-        self.assertNotIn("traffic", client)
+        for name in ("speed", "Скорость", "МБ/с"):
+            self.assertNotIn(name, self.js, name)
 
     def test_page_bottom_padding_back_to_normal(self):
         block = self.html[self.html.index("  body{"):]

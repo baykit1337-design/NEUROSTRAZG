@@ -300,6 +300,25 @@ function plural(count, one, few, many){
   return many;
 }
 
+/** Размер по-человечески: «412 МБ», а не «432013312».
+ *
+ * Тот же счёт, что и на сервере: килобайты и байты целыми, мегабайты и
+ * гигабайты — с десятой долей. Иначе «0 МБ» стояло бы у всего, что
+ * меньше половины мегабайта.
+ */
+function weigh(size){
+  let step = Number(size) || 0;
+  for(const name of ['Б', 'КБ', 'МБ', 'ГБ']){
+    if(step < 1024 || name === 'ГБ'){
+      return (name === 'Б' || name === 'КБ')
+        ? `${Math.round(step)} ${name}`
+        : `${step.toFixed(1)} ${name}`;
+    }
+    step /= 1024;
+  }
+  return `${size} Б`;
+}
+
 /** Расширения выбранного, по убыванию частоты: «.txt», «.txt и .docx». */
 /** Разбор выбора по форматам: «.docx — 200, .txt — 100, .fb2 — 12».
  *
@@ -4267,9 +4286,14 @@ async function hsLoad(){
 }
 
 function hsRender(data){
+  // Вес корзины виден рядом со счётом копий: десять копий одной правки —
+  // это ничто, а десять копий книги на пятьсот глав — гигабайты, о
+  // которых иначе узнаёшь от диска.
   $('hsNote').textContent =
     `Записей: ${data.records.length}. Копий в корзине: ${data.backups.length} `
-    + `(хранится последних ${data.keep}). Папка: ${data.dir}`;
+    + `(хранится последних ${data.keep}), вес ${weigh(data.bytes)} `
+    + `из ${weigh(data.cap)}. Папка данных: ${data.dir}, `
+    + `${weigh(data.data_bytes)}`;
 
   const table = $('hsRecords');
   table.innerHTML = '';
@@ -4614,6 +4638,33 @@ $('dgOpen').onclick = async () => {
   }catch(err){ showError(err.message); }
 };
 
+
+/* ------------------------------------------------- счётчик трафика
+ *
+ * При платном пакете это первое, что хочется видеть. Считает сервер — в
+ * одном месте, через которое проходят и главы, и рейтинги, и перевод.
+ */
+
+async function trLoad(){
+  try{
+    const got = await call('/api/traffic');
+    $('trSession').textContent = weigh(got.session);
+    $('trMonth').textContent = weigh(got.month);
+    $('trMonthName').textContent = got.month_name || 'месяц';
+    // Без файла месячный итог живёт только в памяти — врать не надо.
+    $('trMonth').title = got.kept
+      ? 'Считается с первого числа этого месяца.'
+      : 'Месячный итог не сохраняется: программа запущена без папки данных.';
+  }catch(err){
+    $('trSession').textContent = $('trMonth').textContent = '—';
+  }
+}
+
+$('trAgain').onclick = trLoad;
+// Обновляем при заходе на вкладку: цифра, показанная час назад, врёт.
+document.querySelector('.tabs button[data-tab="tools"]')
+  ?.addEventListener('click', trLoad);
+trLoad();
 
 /* ============== Статистика книги, шапка и подпись ============== */
 

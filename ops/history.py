@@ -60,6 +60,11 @@ BACKUP_DIR = DATA_DIR / "backup"
 #: с копиями книги на пятьсот глав быстро съест диск.
 KEEP_BACKUPS = 10
 
+#: И сколько они могут весить вместе. Счёт по штукам от диска не спасает:
+#: десять копий книги на пятьсот глав — это гигабайты, о которых человек
+#: узнаёт от диска, а не от программы.
+MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024
+
 #: Сколько записей журнала хранить.
 KEEP_RECORDS = 500
 
@@ -277,13 +282,46 @@ def backups() -> list[Path]:
                   key=lambda p: p.name, reverse=True)
 
 
-def trim(keep: int = KEEP_BACKUPS) -> int:
-    """Удаляет старые копии. Папка с копиями книги растёт быстро."""
+def weigh(path) -> int:
+    """Сколько весит папка со всем, что в ней лежит."""
+    total = 0
+    for one in Path(path).rglob("*"):
+        try:
+            if one.is_file():
+                total += one.stat().st_size
+        except OSError as exc:
+            log.debug("Не взвесить %s: %s", one, exc)
+    return total
+
+
+def trim(keep: int = KEEP_BACKUPS, cap: int = MAX_BACKUP_BYTES) -> int:
+    """Удаляет старые копии: сперва лишние по счёту, потом по весу.
+
+    Одного счёта мало. Десять копий книги на пятьсот глав — это гигабайты
+    на диске, где у человека может не быть и одного; а десять копий одной
+    правки — это ничто. Решает вес, счёт остаётся верхней границей.
+    """
     removed = 0
     for path in backups()[keep:]:
         try:
             shutil.rmtree(path)
             removed += 1
+        except OSError as exc:
+            log.warning("Не удалось удалить копию %s: %s", path, exc)
+
+    if cap <= 0:
+        return removed
+    left = [(path, weigh(path)) for path in backups()]
+    total = sum(size for _, size in left)
+    # Самую свежую не трогаем никогда: она и есть «вернуть как было».
+    for path, size in reversed(left[1:]):
+        if total <= cap:
+            break
+        try:
+            shutil.rmtree(path)
+            total -= size
+            removed += 1
+            log.info("Копия %s удалена: корзина переросла %s байт", path, cap)
         except OSError as exc:
             log.warning("Не удалось удалить копию %s: %s", path, exc)
     return removed
@@ -398,14 +436,19 @@ def undo(record: Record) -> int:
 
 def state() -> dict:
     """Что лежит в журнале и в корзине — для интерфейса."""
+    kept = [{"path": str(p), "name": p.name,
+             "files": sum(1 for f in p.rglob("*") if f.is_file()),
+             "bytes": weigh(p)}
+            for p in backups()]
     return {
         "records": [r.as_dict() for r in records()],
-        "backups": [
-            {"path": str(p), "name": p.name,
-             "files": sum(1 for f in p.rglob("*") if f.is_file())}
-            for p in backups()
-        ],
+        "backups": kept,
         "keep": KEEP_BACKUPS,
+        # Вес корзины и всей папки данных. При лимитном диске это важнее,
+        # чем число копий: копия книги на пятьсот глав весит полгигабайта.
+        "bytes": sum(one["bytes"] for one in kept),
+        "cap": MAX_BACKUP_BYTES,
+        "data_bytes": weigh(DATA_DIR),
         "dir": str(DATA_DIR),
         # Что откатится по «вернуть как было». Считается здесь, а не в
         # интерфейсе: правило «копия есть и папка на месте» должно быть
