@@ -382,13 +382,24 @@ def _progress(job: Job, unit: str) -> Progress:
     return Progress(on_progress, job.cancel)
 
 
-def _busy(base: str, folder: str, payload: dict):
+#: Сколько имён показывать в вопросе. Список на пятьсот строк в окошке
+#: подтверждения — это не «видно», а «нечитаемо».
+CLASH_SHOW = 8
+
+
+def _busy(base: str, folder: str, payload: dict, planned=None):
     """Ответ «в папке уже что-то лежит», если это стоит подтвердить.
 
     Раньше операции писали в свою подпапку, и спрашивать было не о чем.
     Теперь «Разбить» и «Переименовать» кладут файлы прямо в выбранную —
     и выбрать могут папку с чужим добром. Молча смешать своё с чужим
     хуже, чем спросить один раз.
+
+    `planned` — имена файлов, которые операция собирается записать. С
+    ними вопрос перестаёт быть общим: видно, сколько файлов появится
+    впервые, какие именно будут перезаписаны, и не окажется ли, что не
+    перезапишется ни один. «В папке 300 файлов» на этот вопрос не
+    отвечает, а решение принимают по нему.
 
     Спрашиваем ровно один раз: со второго захода приходит `confirm`.
     Пустая папка и своя подпапка вопросов не вызывают вовсе.
@@ -401,11 +412,30 @@ def _busy(base: str, folder: str, payload: dict):
     found = sum(1 for one in where.iterdir() if one.is_file())
     if not found:
         return None
+
+    names = [Path(str(one)).name for one in (planned or ())]
+    if not names:
+        return jsonify(
+            error=f"В папке уже лежит файлов: {found}. Новые добавятся к "
+                  "ним, а совпавшие по имени будут заменены — прежние "
+                  "уйдут в корзину. Сохранять сюда?",
+            need_confirm=True, busy_files=found), 409
+
+    clash = [name for name in names if (where / name).is_file()]
+    shown = ", ".join(clash[:CLASH_SHOW])
+    if len(clash) > CLASH_SHOW:
+        shown += f" и ещё {len(clash) - CLASH_SHOW}"
+    if clash:
+        what = (f"Из них будут перезаписаны: {len(clash)} — {shown}. "
+                "Прежние уйдут в корзину. ")
+    else:
+        what = "Ни один из них не будет перезаписан. "
     return jsonify(
-        error=f"В папке уже лежит файлов: {found}. Новые добавятся к ним, "
-              "а совпавшие по имени будут заменены — прежние уйдут в "
-              "корзину. Сохранять сюда?",
-        need_confirm=True, busy_files=found), 409
+        error=(f"В папке уже лежит файлов: {found}. {what}"
+               f"Появится новых: {len(names) - len(clash)}. Сохранять сюда?"),
+        need_confirm=True, busy_files=found,
+        overwrite=clash[:CLASH_SHOW], overwrite_total=len(clash),
+        appear=len(names) - len(clash)), 409
 
 
 def _room(base: str, targets) -> None:
@@ -1728,8 +1758,6 @@ def api_split_start():
         return jsonify(error="Выберите папку, куда сохранить главы"), 400
     if out_format not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {out_format}"), 400
-    if (ask := _busy(base, folder, payload)) is not None:
-        return ask
     if (tight := _room(base, targets)) is not None:
         return tight
 
@@ -1746,6 +1774,14 @@ def api_split_start():
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
+
+    # Вопрос о чужой папке задаём после разбора: только теперь известно,
+    # какие файлы появятся и какие из них лягут поверх существующих.
+    # Читать книгу ради этого не жалко — её всё равно читают следующей
+    # строкой, а решение принимают по этому ответу.
+    planned = [f"{name}{out_format}" for name in info["names"]]
+    if (ask := _busy(base, folder, payload, planned)) is not None:
+        return ask
 
     # Пишем прямо в выбранную папку, если своего имени ей не дали. Тогда
     # и в корзину уходит не вся она, а только те файлы, которые сейчас
@@ -1887,8 +1923,6 @@ def api_rename_apply():
     # Список форматов один на все вкладки и берётся из `core/formats.py`.
     if f".{fmt}" not in formats.WRITABLE:
         return jsonify(error=f"Неизвестный формат: {fmt}"), 400
-    if (ask := _busy(base, out_name, payload)) is not None:
-        return ask
     if (tight := _room(base, [payload.get("folder_in") or ""])) is not None:
         return tight
 
@@ -1904,6 +1938,11 @@ def api_rename_apply():
     for index, name in enumerate(payload.get("names") or []):
         if index < len(rows) and str(name).strip():
             rows[index].new_name = str(name).strip()
+
+    # Спрашиваем, зная имена: видно, что именно ляжет поверх чужого.
+    if (ask := _busy(base, out_name, payload,
+                     rename.planned_names(rows, fmt))) is not None:
+        return ask
 
     # Без имени пишем прямо в выбранную папку, и тогда в корзину уходит
     # не вся она, а только те файлы, которые сейчас затрут: выбрать могут

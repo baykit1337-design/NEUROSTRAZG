@@ -3633,17 +3633,47 @@ function errSpot(near){
   return box;
 }
 
+/** Кнопка «Отчёт о проблеме» прямо в сообщении об ошибке.
+ *
+ *  Когда что-то сломалось, человек находится на той вкладке, где
+ *  сломалось, а отчёт лежит в «Инструментах» — за двумя переходами и
+ *  свёрнутой карточкой. Страховка, до которой надо ещё дойти, спасает не
+ *  тогда, когда нужна. Кнопка уводит туда и сразу заполняет поле «что
+ *  делали»: названием нажатой кнопки и текстом ошибки.
+ */
+function errReport(msg){
+  const button = document.createElement('button');
+  button.className = 'ghost';
+  button.type = 'button';
+  button.textContent = 'Отчёт о проблеме';
+  button.style.cssText = 'margin-top:8px;padding:3px 10px;font-size:11px';
+  const pressed = freshPress();
+  const did = pressed ? pressed.textContent.trim() : '';
+  button.onclick = () => {
+    goTab('tools');
+    if(typeof unfold === 'function') unfold('dgCard');
+    const what = $('dgWhat');
+    if(what){
+      what.value = (did ? `нажал «${did}» — ` : '') + msg;
+    }
+    if(typeof dgMake === 'function') dgMake();
+  };
+  return button;
+}
+
 function showError(msg, near){
   // Прошлое сообщение снимаем всегда: два одновременно только путают.
   if(ERR_SPOT){ ERR_SPOT.hidden = true; ERR_SPOT.textContent = ''; }
   ERR_SPOT = null;
   const top = $('error');
   top.hidden = true;
+  top.textContent = '';
   if(!msg) return;
 
   const box = errSpot(near || freshPress()) || top;
   box.hidden = false;
   box.textContent = msg;
+  box.append(document.createElement('br'), errReport(msg));
   if(box === top) return;
   ERR_SPOT = box;
   box.scrollIntoView({behavior: 'smooth', block: 'nearest'});

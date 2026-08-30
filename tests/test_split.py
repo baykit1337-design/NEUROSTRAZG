@@ -663,6 +663,37 @@ class TestItAsksBeforeMixingWithSomeoneElsesFiles(SplitTestCase):
         res = self.app.post("/api/split/start", json=self.body(empty))
         self.assertEqual(res.status_code, 200)
 
+    def test_the_question_says_which_files_will_be_overwritten(self):
+        """«В папке 300 файлов» не отвечает на вопрос, который решают.
+
+        Решают по тому, ляжет ли новое поверх нужного, — значит, имена и
+        надо назвать.
+        """
+        where = self.busy()
+        from ops import split as split_op
+        first = split_op.look([str(self.epub)], None, None)["names"][0]
+        (where / f"{first}.txt").write_text("прежнее", encoding="utf-8")
+
+        got = self.app.post("/api/split/start",
+                            json=self.body(where)).get_json()
+        self.assertIn(first, got["error"])
+        self.assertEqual(got["overwrite_total"], 1)
+        self.assertEqual(got["appear"], 2)
+
+    def test_when_nothing_gets_overwritten_it_says_so(self):
+        """Чужие файлы в папке — ещё не повод пугать: они могут остаться
+        нетронутыми, и это надо сказать прямо."""
+        got = self.app.post("/api/split/start",
+                            json=self.body(self.busy())).get_json()
+        self.assertIn("Ни один из них не будет перезаписан", got["error"])
+        self.assertEqual(got["overwrite_total"], 0)
+        self.assertEqual(got["appear"], 3)
+
+    def test_a_long_list_of_names_is_cut_short(self):
+        """Пятьсот имён в окошке подтверждения — это не «видно»."""
+        from webapp import app as web
+        self.assertLessEqual(web.CLASH_SHOW, 20)
+
     def test_a_folder_of_our_own_is_not_worth_a_question(self):
         """Своя подпапка — наша, и смешивать там не с чем."""
         res = self.app.post("/api/split/start",
