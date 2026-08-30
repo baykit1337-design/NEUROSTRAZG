@@ -164,7 +164,7 @@ class TestFinishedJobsAreForgotten(unittest.TestCase):
         self.add("старая", time.monotonic() - self.web.JOB_TTL - 10)
         self.add("свежая", time.monotonic())
         with self.web.JOBS_LOCK:
-            self.web._forget_old()
+            self.web.forget_old()
 
         self.assertNotIn("старая", self.web.JOBS)
         self.assertIn("свежая", self.web.JOBS)
@@ -175,7 +175,7 @@ class TestFinishedJobsAreForgotten(unittest.TestCase):
 
         self.add("идёт")
         with self.web.JOBS_LOCK:
-            self.web._forget_old()
+            self.web.forget_old()
         self.assertIn("идёт", self.web.JOBS)
 
     def test_beyond_the_limit_the_oldest_go_first(self):
@@ -185,7 +185,7 @@ class TestFinishedJobsAreForgotten(unittest.TestCase):
         for number in range(self.web.KEEP_JOBS + 5):
             self.add(f"№{number}", now - (self.web.KEEP_JOBS + 5 - number))
         with self.web.JOBS_LOCK:
-            self.web._forget_old()
+            self.web.forget_old()
 
         self.assertEqual(len(self.web.JOBS), self.web.KEEP_JOBS)
         self.assertNotIn("№0", self.web.JOBS)
@@ -197,7 +197,7 @@ class TestFinishedJobsAreForgotten(unittest.TestCase):
 
         self.add("только что", time.monotonic())
         with self.web.JOBS_LOCK:
-            self.web._forget_old()
+            self.web.forget_old()
         self.assertIn("только что", self.web.JOBS)
 
 

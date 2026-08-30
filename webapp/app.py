@@ -95,6 +95,12 @@ from mvl.proxies import (  # noqa: E402
     PROXY_FILE, ProxyPool, scrub, working_proxies)
 from mvl.word import Style  # noqa: E402
 from config import settings  # noqa: E402
+# Машинка фоновых задач переехала в свой файл: `app.py` дорос до
+# пяти с половиной тысяч строк, и резать его начали отсюда.
+from webapp.jobs import (  # noqa: E402
+    JOB_TTL, JOBS, JOBS_LOCK, KEEP_JOBS, Job, Made, forget_old,
+    progress_of as _progress, start_job)
+from webapp.tools_routes import tools as tools_routes  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +116,9 @@ CHECK_CHAPTERS = 6
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
+# Маршруты «Инструментов» живут отдельным файлом — первая вкладка,
+# вынесенная из этого. Дальше по одной за раз.
+app.register_blueprint(tools_routes)
 
 #: Имена, под которыми к нам можно обращаться.
 #:
@@ -168,124 +177,6 @@ def _only_ours():
         return jsonify(error="Запрос пришёл со стороннего сайта и отклонён."), 403
     return None
 
-
-@dataclass
-class Job:
-    """Фоновая задача: скачивание книги или разбивка на главы."""
-
-    id: str
-    kind: str = "download"  # download | split | rename | word | check
-    meta: dict = field(default_factory=dict)
-    output_dir: str = ""
-    progress: dict = field(default_factory=dict)
-    report: dict | None = None
-    error: str | None = None
-    cancel: threading.Event = field(default_factory=threading.Event)
-    #: Пауза: поднят — работа стоит на ближайшей границе главы и ждёт.
-    #: Отмена сильнее паузы, иначе из паузы было бы не выйти.
-    paused: threading.Event = field(default_factory=threading.Event)
-    thread: threading.Thread | None = None
-    #: Когда началась и когда закончилась. Время меряет сервер, а не
-    #: страница: перезагрузка вкладки не должна сбрасывать секундомер.
-    started: float = field(default_factory=time.monotonic)
-    finished: float = 0.0
-    #: Построчный журнал работы — заводится там, где он нужен (7.7).
-    log: object = None
-    #: Куда легла копия прежнего содержимого папки и что задача пишет.
-    #: Хранится здесь, а не в общем словаре: две задачи в одну папку
-    #: затирали бы записи друг друга, а упавшая — оставляла бы свою
-    #: навсегда.
-    backup: str = ""
-    wrote: list = field(default_factory=list)
-
-    def keep(self, made: "Made") -> Path:
-        """Запомнить, откуда возвращать, и отдать папку результата."""
-        self.backup = made.backup
-        self.wrote = list(made.wrote)
-        return made.dir
-
-    @property
-    def elapsed(self) -> float:
-        return (self.finished or time.monotonic()) - self.started
-
-    @property
-    def running(self) -> bool:
-        return not self.finished
-
-    def snapshot(self) -> dict:
-        return {
-            "id": self.id,
-            "kind": self.kind,
-            "meta": self.meta,
-            "output_dir": self.output_dir,
-            "progress": self.progress,
-            "report": self.report,
-            "error": self.error,
-            "cancelled": self.cancel.is_set(),
-            "paused": self.paused.is_set(),
-            "elapsed": round(self.elapsed, 1),
-            "running": self.running,
-        }
-
-
-def start_job(job: Job, work) -> Job:
-    """Запускает работу в фоне, ошибки складывает в саму задачу."""
-
-    def runner():
-        try:
-            work(job)
-        except OpCancelled:
-            # Отмена в проекте одна на всех — см. `ops/base.py`. Раньше
-            # классов было три, остановку ловил не тот `except`, и она
-            # показывалась ошибкой.
-            job.progress["stage"] = "cancelled"
-            job.progress["message"] = "Остановлено. Что успело — сохранено."
-        except Exception as exc:  # noqa: BLE001 — показываем пользователю любую поломку
-            log.exception("Задача %s упала", job.id)
-            job.error = scrub(f"{type(exc).__name__}: {exc}")
-            job.progress["stage"] = "error"
-            job.progress["message"] = job.error
-        finally:
-            job.finished = time.monotonic()
-
-    job.thread = threading.Thread(target=runner, daemon=True)
-    with JOBS_LOCK:
-        _forget_old()
-        JOBS[job.id] = job
-    job.thread.start()
-    return job
-
-
-JOBS: dict[str, Job] = {}
-JOBS_LOCK = threading.Lock()
-
-#: Сколько доигравших задач держать и как долго. Задача хранит свой отчёт
-#: целиком — со списком ошибок по каждому файлу, — и за день работы на
-#: сотнях книг это растёт без предела: до сих пор из `JOBS` не удалялось
-#: ничего и никогда.
-#:
-#: Час и сорок штук — с большим запасом: интерфейсу задача нужна ровно до
-#: того мига, когда он дорисует её итог.
-KEEP_JOBS = 40
-JOB_TTL = 3600.0
-
-
-def _forget_old() -> None:
-    """Убирает доигравшие задачи. Звать под `JOBS_LOCK`.
-
-    Работающие не трогаем ни при каких условиях: у задачи, которую сейчас
-    показывают, отнимать себя нельзя. Отбор по `finished` это и
-    обеспечивает — у работающей его нет вовсе.
-    """
-    now = time.monotonic()
-    done = sorted((job.finished, key) for key, job in JOBS.items()
-                  if job.finished)
-
-    stale = {key for when, key in done if now - when > JOB_TTL}
-    # Сверх меры — тоже вон, начиная с самых старых.
-    stale.update(key for _, key in done[:max(0, len(done) - KEEP_JOBS)])
-    for key in stale:
-        JOBS.pop(key, None)
 
 #: Текущий пул прокси. Список меняется часто, поэтому перезагружается по
 #: кнопке — перезапуск программы для этого не нужен.
@@ -372,15 +263,6 @@ def _name_format(payload: dict):
     """
     data = payload.get("name_format")
     return naming.NameFormat.from_dict(data) if isinstance(data, dict) else None
-
-
-def _progress(job: Job, unit: str) -> Progress:
-    """Единый прогресс операции: колбэк и флаг отмены задачи."""
-    def on_progress(done: int, total: int, message: str = "") -> None:
-        job.progress.update(done=done, total=total,
-                            message=message or f"{unit} {done} из {total}")
-
-    return Progress(on_progress, job.cancel)
 
 
 #: Сколько имён показывать в вопросе. Список на пятьсот строк в окошке
@@ -491,17 +373,6 @@ def _weigh(size: int) -> str:
                 else f"{step:.1f} {name}"
         step /= 1024
     return f"{size} Б"
-
-
-@dataclass
-class Made:
-    """Готовая папка и след, по которому её вернут как было."""
-
-    dir: Path
-    #: Куда легла копия прежнего содержимого. Пусто — копии нет.
-    backup: str = ""
-    #: Что операция собирается записать.
-    wrote: list = field(default_factory=list)
 
 
 def _prepare(base: str, folder: str, operation: str, only=None) -> Made:
@@ -4470,59 +4341,6 @@ def api_checkup_start():
 # ------------------------------- журнал, корзина и сравнение версий
 
 
-@app.get("/api/traffic")
-def api_traffic():
-    """Сколько скачано за запуск и за месяц.
-
-    При платном пакете это первое, что хочется видеть. Счёт ведётся в
-    самом низу, в клиенте: через него проходят и главы, и рейтинги, и
-    перевод, и обновление.
-    """
-    return jsonify(**traffic.totals())
-
-
-@app.get("/api/history/state")
-def api_history_state():
-    """Что делалось и что можно вернуть."""
-    return jsonify(**history_op.state())
-
-
-@app.post("/api/history/restore")
-def api_history_restore():
-    """Возвращает файлы из копии на место."""
-    payload = request.json or {}
-    backup = (payload.get("backup") or "").strip()
-    target = (payload.get("target") or "").strip()
-    if not backup or not target:
-        return jsonify(error="Нужны и копия, и папка, куда возвращать"), 400
-    try:
-        count = history_op.restore(Path(backup), Path(target))
-    except history_op.RestoreError as exc:
-        return jsonify(error=str(exc)), 400
-    return jsonify(restored=count, **history_op.state())
-
-
-@app.post("/api/history/undo")
-def api_history_undo():
-    """Вернуть как было — последнюю операцию, у которой есть копия.
-
-    То же самое, что «Восстановить» в журнале, но без похода туда:
-    страховка, о которой узнаёшь, только специально полезши на четвёртую
-    вкладку, спасает не тогда, когда нужна.
-    """
-    found = history_op.last_undo()
-    if found is None:
-        return jsonify(error="Возвращать нечего: последняя операция не "
-                             "оставила ни добавленных файлов, ни копии — "
-                             "или папку уже унесли."), 400
-    try:
-        count = history_op.undo(found)
-    except history_op.RestoreError as exc:
-        return jsonify(error=str(exc)), 400
-    return jsonify(restored=count, undone=found.as_dict(),
-                   **history_op.state())
-
-
 @app.post("/api/diff")
 def api_diff():
     """Что изменилось: до операции и после."""
@@ -5188,103 +5006,6 @@ def api_open():
     return jsonify(opened=str(opened))
 
 
-@app.get("/api/update/look")
-def api_update_look():
-    """Вышло ли новое. Один запрос примерно на триста байт.
-
-    Проверка отделена от загрузки нарочно: трафик у человека может быть
-    на счету, и решать, тратить ли его на сами файлы, должен он — увидев
-    сперва, сколько их и насколько они изменились.
-    """
-    client = Client()
-    try:
-        return jsonify(**update_op.look(client).as_dict())
-    except HttpError as exc:
-        return jsonify(error=f"GitHub ответил {exc.status}. "
-                             "Проверьте адрес репозитория в настройках."), 400
-    except (OSError, ValueError) as exc:
-        return jsonify(error=f"Не удалось спросить об обновлении: {exc}"), 400
-    finally:
-        client.close()
-
-
-@app.post("/api/update/apply")
-def api_update_apply():
-    """Забирает изменившиеся файлы. Только по нажатию, не сама."""
-    client = Client()
-    try:
-        plan = update_op.look(client)
-    except (HttpError, OSError, ValueError) as exc:
-        client.close()
-        return jsonify(error=f"Не удалось получить список изменений: {exc}"), 400
-
-    if plan.trouble:
-        client.close()
-        return jsonify(error=plan.trouble), 400
-    if plan.fresh or not plan.changes:
-        client.close()
-        return jsonify(error="Обновлять нечего: стоит последняя версия"), 400
-
-    total = len(plan.changes)
-    job = Job(id=uuid.uuid4().hex[:12], kind="update",
-              meta={"files": total, "revision": plan.there})
-    job.progress = {"stage": "update", "message": f"Забираем {total} файлов…",
-                    "done": 0, "total": total}
-
-    def work(job: Job):
-        try:
-            done = update_op.apply(client, plan, _progress(job, "Файл"))
-        finally:
-            client.close()
-        job.report = done.as_dict()
-        if done.rolled_back:
-            # Обновление, после которого программа не запускается, хуже
-            # отсутствия обновления. Прежние файлы уже вернулись на место.
-            job.progress.update(
-                stage="done", done=total, total=total,
-                message=("Обновление отменено: с новыми файлами программа "
-                         f"не запускается ({done.rolled_back}). Прежняя "
-                         "версия возвращена на место."))
-            return
-        job.progress.update(
-            stage="done", done=total, total=total,
-            message=(f"Готово. Обновлено {done.written}"
-                     + (f", удалено {done.removed}" if done.removed else "")
-                     + (f", не вышло {len(done.failures)}"
-                        if done.failures else "")
-                     + ". Перезапустите программу."
-                     + (" Изменился список зависимостей — выполните "
-                        "pip install -r requirements.txt."
-                        if done.needs_install else "")))
-
-    return jsonify(job=start_job(job, work).snapshot())
-
-
-@app.post("/api/update/undo")
-def api_update_undo():
-    """Вернуться к версии, которая стояла до обновления.
-
-    При медленном канале это единственный быстрый выход из неудачного
-    обновления: качать заново нечего, прежние файлы лежат в корзине.
-    """
-    saved = update_op.last_backup()
-    if not saved:
-        return jsonify(error="Возвращаться некуда: копии перед обновлением "
-                             "нет — либо обновления не было, либо копию уже "
-                             "вытеснили из корзины."), 400
-    count = update_op.undo(saved)
-    if not count:
-        return jsonify(error=f"Из копии {saved} ничего не вернулось"), 400
-    # Версию забываем: на диске лежит прежняя, и следующая проверка
-    # должна снова предложить обновиться.
-    update_op.remember("")
-    history_op.add("возврат обновления", source=saved,
-                   output=str(update_op.ROOT), files=count)
-    return jsonify(restored=count, backup=saved,
-                   message=(f"Возвращено файлов: {count}. "
-                            "Перезапустите программу."))
-
-
 @app.get("/api/titles/spellings")
 def api_spellings_show():
     """Словарь имён: как писать их по-русски."""
@@ -5323,24 +5044,6 @@ def api_spellings_save():
         text="\n".join(f"{key} = {value}" for key, value in table.items()))
 
 
-@app.post("/api/report")
-def api_report():
-    """Готовый отчёт о проблеме: версия, система, хвост журнала.
-
-    Одна кнопка вместо переписки «пришлите строку из консоли» — тем
-    более что консоли у человека может не быть вовсе: на Windows окно
-    закрывается вместе с программой.
-
-    Ключи и пароли вычищаются здесь, а не «не попадают в журнал сами»:
-    отчёт уходит наружу, и полагаться на «сами» тут нельзя.
-    """
-    payload = request.json or {}
-    return jsonify(
-        text=logbook.report(str(payload.get("what") or "")),
-        folder=str(logbook.LOG_DIR),
-        file=str(logbook.LOG_FILE),
-        kept=logbook.LOG_FILE.is_file(),
-    )
 
 
 @app.get("/api/check/<job_id>/report")

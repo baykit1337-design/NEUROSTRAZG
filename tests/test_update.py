@@ -264,10 +264,13 @@ class TestOverHttp(Base):
     def setUp(self):
         super().setUp()
         from webapp import app as web
+        from webapp import tools_routes
 
         web.app.config["TESTING"] = True
         self.app = web.app.test_client()
-        self.web = web
+        # Маршруты обновления живут в своём файле — подменять клиента
+        # надо там, где он берётся, а не там, где висит приложение.
+        self.web = tools_routes
 
     def test_there_is_nothing_to_update_is_a_plain_answer(self):
         """Не поломка, а «всё уже стоит»."""
