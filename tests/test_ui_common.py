@@ -1271,5 +1271,62 @@ class TestTheProgramRemembersWhereYouSave(UiBase):
         self.assertIn("new Event('change')", body)
 
 
+class TestShortcutsAndNotice(UiBase):
+    """Горячих клавиш на всю программу было две, а долгую работу
+    приходилось сторожить глазами."""
+
+    def body(self, name):
+        start = self.tabs.index(name)
+        rest = self.tabs.find("\n}\n", start)
+        return self.tabs[start:rest if rest > 0 else len(self.tabs)]
+
+    def test_keys_are_read_by_code_not_by_letter(self):
+        """На кириллице Ctrl+O — это Ctrl+Щ, и по букве он не поймается."""
+        self.assertIn("event.code === 'KeyO'", self.tabs)
+        self.assertIn("event.code === 'KeyZ'", self.tabs)
+
+    def test_the_button_is_found_on_the_tab_not_by_a_table(self):
+        """Таблица «вкладка → кнопка» устаревает молча, стоит
+        переименовать один `id`."""
+        self.assertIn("function tabNow", self.tabs)
+        self.assertIn("button.primary", self.body("function tabPress")
+                      + self.tabs[self.tabs.index("event.code === 'Enter'"):
+                                  self.tabs.index("event.code === 'Enter'") + 400])
+
+    def test_a_button_behind_a_closed_window_is_not_pressed(self):
+        """На «Разбить» первой в разметке идёт `primary` из закрытого окна
+        «Разделить», и Ctrl+Enter нажимал бы её вместо «Разбить». Свой
+        `hidden` этого не ловит — спрятан родитель."""
+        self.assertIn("function onScreen", self.tabs)
+        self.assertIn("offsetParent", self.body("function onScreen"))
+        self.assertIn("onScreen", self.body("function tabPress"))
+
+    def test_undo_does_not_steal_undo_from_text_fields(self):
+        """Там своя отмена, и отнимать её у набора текста нельзя."""
+        self.assertIn("function typing", self.tabs)
+        self.assertIn("if(typing()) return;", self.tabs)
+
+    def test_finishing_is_told_only_when_nobody_is_looking(self):
+        """Сообщать о готовом тому, кто смотрит на прогресс, — шум."""
+        self.assertIn("if(!document.hidden) return;", self.body("function jobDone"))
+
+    def test_the_tab_title_says_it_without_asking_permission(self):
+        """Заголовок виден всегда и ничего не спрашивает; настоящее
+        уведомление — только если человек его разрешил."""
+        self.assertIn("function titleSay", self.tabs)
+        body = self.body("function jobDone")
+        self.assertIn("titleSay", body)
+        self.assertIn("Notification.permission", body)
+
+    def test_the_title_comes_back_when_looked_at(self):
+        self.assertIn("visibilitychange", self.tabs)
+        self.assertIn("TITLE_WAS", self.tabs)
+
+    def test_every_job_gets_it_not_just_one_tab(self):
+        """Опрос задач общий — там и место, иначе половина вкладок
+        промолчала бы."""
+        self.assertIn("jobDone(job)", self.body("function pollJob"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

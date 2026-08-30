@@ -448,6 +448,61 @@ function cancelTab(tab){
 let LAST_JOB = null;
 
 /** Опрашивает задачу до конца. onDone получает готовый job. */
+/* --------------------------------------- оповещение об окончании
+ *
+ * Скачивание на пятьсот глав идёт полчаса, и всё это время приходилось
+ * смотреть в окно: уйдёшь — не узнаешь, что готово.
+ *
+ * Первым делом — заголовок вкладки браузера. Он виден всегда, ничего не
+ * спрашивает и работает везде. Настоящее уведомление системы просим
+ * только если человек его разрешил, и просим разрешения не при загрузке
+ * страницы, а когда оно впервые понадобится: окно с вопросом на пустом
+ * месте раздражает сильнее, чем польза от него.
+ */
+
+//: Каким заголовок был до того, как мы его тронули.
+const TITLE_WAS = document.title;
+let titleTimer = null;
+
+function titleSay(text){
+  clearInterval(titleTimer);
+  if(!text){
+    document.title = TITLE_WAS;
+    return;
+  }
+  // Помигаем, пока на вкладку не посмотрят: неподвижная строка в ряду
+  // из десяти вкладок теряется.
+  let on = false;
+  document.title = text;
+  titleTimer = setInterval(() => {
+    on = !on;
+    document.title = on ? TITLE_WAS : text;
+  }, 1200);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden) titleSay('');
+});
+
+/** Говорит, что работа кончилась, — если на неё сейчас не смотрят. */
+function jobDone(job){
+  if(!document.hidden) return;
+  const beda = job.error || (job.progress || {}).stage === 'error';
+  const text = beda ? '✕ Не вышло — NEUROSTRAZH'
+                    : '✓ Готово — NEUROSTRAZH';
+  titleSay(text);
+  try{
+    if(!('Notification' in window)) return;
+    if(Notification.permission === 'granted'){
+      new Notification(text, {body: (job.progress || {}).message || ''});
+    }else if(Notification.permission === 'default'){
+      Notification.requestPermission();
+    }
+  }catch(err){
+    // Уведомления запрещены настройками — заголовок уже сказал своё.
+  }
+}
+
 function pollJob(jobId, draw, onDone){
   const timer = setInterval(async () => {
     try{
@@ -456,6 +511,7 @@ function pollJob(jobId, draw, onDone){
       if(!draw(job)){
         clearInterval(timer);
         onDone(job);
+        jobDone(job);
       }
     }catch(err){
       clearInterval(timer);
@@ -4265,16 +4321,76 @@ async function undoDo(){
 
 $('hsUndo').onclick = undoDo;
 
-// Ctrl+Z с любой вкладки — но не поверх набора текста: там своя отмена,
-// и отнимать её у полей ввода нельзя.
-document.addEventListener('keydown', event => {
-  if(!(event.ctrlKey || event.metaKey) || event.code !== 'KeyZ') return;
-  if(event.shiftKey || event.altKey) return;
+/* --------------------------------------------- горячие клавиши
+ *
+ * На всю программу их было две: Escape и Ctrl+V. Добавляем ровно то, что
+ * делают чаще всего, — выбрать файл и запустить.
+ *
+ * Кнопку ищем на самой вкладке, а не по таблице «вкладка → кнопка»:
+ * такая таблица устаревает молча, стоит переименовать один `id`. Главное
+ * действие вкладки — её единственная `primary`, выбор файла — кнопка
+ * выбора; так оно и размечено везде.
+ *
+ * Клавиши узнаём по `code`, а не по букве: на кириллице Ctrl+O — это
+ * Ctrl+Щ, и по `key` он бы не поймался.
+ */
+
+function tabNow(){
+  return [...document.querySelectorAll('section[id^="tab-"]')]
+    .find(one => !one.hidden) || null;
+}
+
+function typing(){
   const spot = document.activeElement;
-  if(spot && (spot.tagName === 'INPUT' || spot.tagName === 'TEXTAREA'
-              || spot.isContentEditable)) return;
-  event.preventDefault();
-  undoDo();
+  return !!spot && (spot.tagName === 'INPUT' || spot.tagName === 'TEXTAREA'
+                    || spot.isContentEditable);
+}
+
+/** Видно ли элемент по-настоящему.
+ *
+ * Проверять свой `hidden` мало: кнопка бывает открытой, а спрятан её
+ * родитель. Так и вышло — на «Разбить» первой в разметке идёт `primary`
+ * из закрытого окна «Разделить», и Ctrl+Enter нажимал бы её вместо
+ * «Разбить». `offsetParent` пуст у всего, что не на экране.
+ */
+function onScreen(node){
+  return !!node && !node.hidden && node.offsetParent !== null;
+}
+
+/** Нажимает кнопку вкладки, если она есть, видна и доступна. */
+function tabPress(selector){
+  const where = tabNow();
+  if(!where) return false;
+  const button = [...where.querySelectorAll(selector)]
+    .find(one => onScreen(one) && !one.disabled);
+  if(!button) return false;
+  button.click();
+  return true;
+}
+
+document.addEventListener('keydown', event => {
+  if(!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
+
+  // Ctrl+Z — вернуть как было. Не поверх набора текста: там своя отмена,
+  // и отнимать её у полей ввода нельзя.
+  if(event.code === 'KeyZ'){
+    if(typing()) return;
+    event.preventDefault();
+    undoDo();
+    return;
+  }
+
+  // Ctrl+O — выбрать файл или папку на этой вкладке.
+  if(event.code === 'KeyO'){
+    if(tabPress('.pickany, .browse')) event.preventDefault();
+    return;
+  }
+
+  // Ctrl+Enter — запустить. Работает и из поля ввода: там это привычный
+  // способ отправить набранное, а не отмена чего-либо.
+  if(event.code === 'Enter' || event.code === 'NumpadEnter'){
+    if(tabPress('button.primary:not([hidden])')) event.preventDefault();
+  }
 });
 
 undoLook();

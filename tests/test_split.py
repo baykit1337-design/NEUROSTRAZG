@@ -655,6 +655,83 @@ class TestItAsksBeforeMixingWithSomeoneElsesFiles(SplitTestCase):
         self.assertEqual(res.status_code, 200)
 
 
+class TestItChecksThereIsRoomOnTheDisk(SplitTestCase):
+    """Место не проверялось ничем.
+
+    Диск кончался посреди книги, и узнавалось это по ошибке записи на
+    середине — с половиной глав в папке и без объяснения.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.web = web
+
+    def body(self):
+        where = self.tmp / "куда"
+        where.mkdir(exist_ok=True)
+        return {"targets": [str(self.txt)], "base": str(where), "folder": "",
+                "format": ".txt", "confirm": True}
+
+    def free(self, size):
+        """Подменяет свободное место: настоящий диск для этого не годится."""
+        real = self.web.shutil.disk_usage
+        self.web.shutil.disk_usage = lambda path: type(
+            "Usage", (), {"free": size, "total": size, "used": 0})()
+        self.addCleanup(setattr, self.web.shutil, "disk_usage", real)
+
+    def test_it_refuses_when_the_book_will_not_fit(self):
+        self.free(5)
+        res = self.app.post("/api/split/start", json=self.body())
+        self.assertEqual(res.status_code, 507)
+        self.assertIn("свободно", res.get_json()["error"])
+
+    def test_the_message_says_both_numbers(self):
+        """«Не хватает места» без чисел — повод гадать, сколько чистить."""
+        self.free(5)
+        said = self.app.post("/api/split/start", json=self.body()).get_json()
+        self.assertIn("Б", said["error"])
+        self.assertRegex(said["error"], r"\d")
+
+    def wait(self, res):
+        """Дожидается фоновой записи.
+
+        Иначе временную папку уносит из-под ещё пишущего потока, и
+        падает уборка, а не проверка.
+        """
+        from webapp.app import JOBS
+
+        JOBS[res.get_json()["job"]["id"]].thread.join(timeout=60)
+
+    def test_enough_room_asks_nothing(self):
+        self.free(10 * 1024 * 1024)
+        res = self.app.post("/api/split/start", json=self.body())
+        self.assertEqual(res.status_code, 200)
+        self.wait(res)
+
+    def test_it_stays_quiet_when_it_cannot_tell(self):
+        """Пугать «возможно, не хватит» там, где всё поместится, хуже,
+        чем не пугать вовсе."""
+        real = self.web.shutil.disk_usage
+
+        def broken(path):
+            raise OSError("диск не отвечает")
+
+        self.web.shutil.disk_usage = broken
+        self.addCleanup(setattr, self.web.shutil, "disk_usage", real)
+        res = self.app.post("/api/split/start", json=self.body())
+        self.assertEqual(res.status_code, 200)
+        self.wait(res)
+
+    def test_sizes_are_written_for_people(self):
+        self.assertEqual(self.web._weigh(512), "512 Б")
+        self.assertIn("МБ", self.web._weigh(5_000_000))
+        self.assertIn("ГБ", self.web._weigh(3_000_000_000))
+
+
 class TestTheTabOpensReadyToWork(unittest.TestCase):
     """Умолчания вкладки «Разбить».
 

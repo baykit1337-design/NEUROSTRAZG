@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -335,6 +336,60 @@ def _busy(base: str, folder: str, payload: dict):
               "а совпавшие по имени будут заменены — прежние уйдут в "
               "корзину. Сохранять сюда?",
         need_confirm=True, busy_files=found), 409
+
+
+def _room(base: str, targets) -> None:
+    """Отказ, если на диске заведомо не хватит места.
+
+    Точно предсказать размер выхода нельзя: `.docx` тяжелее исходного
+    текста, `.txt` легче, а сколько именно — зависит от книги. Поэтому
+    правило нарочно грубое и с одной стороны: свободного меньше, чем весит
+    сам исходник, — значит, копия книги точно не поместится. Такое стоит
+    сказать до записи, а не показать обрывом на середине.
+
+    Сомнительные случаи пропускаем молча: пугать «возможно, не хватит»
+    там, где всё поместится, хуже, чем не пугать вовсе.
+    """
+    where = Path(base).expanduser()
+    while not where.exists() and where != where.parent:
+        where = where.parent
+
+    need = 0
+    for one in targets or ():
+        path = Path(str(one)).expanduser()
+        try:
+            if path.is_file():
+                need += path.stat().st_size
+            elif path.is_dir():
+                need += sum(f.stat().st_size for f in path.rglob("*")
+                            if f.is_file())
+        except OSError:
+            # Не смогли посмотреть — значит, и запрещать не за что.
+            return None
+
+    if not need:
+        return None
+    try:
+        free = shutil.disk_usage(where).free
+    except OSError:
+        return None
+    if free >= need:
+        return None
+    return jsonify(
+        error=f"На диске свободно {_weigh(free)}, а книга весит "
+              f"{_weigh(need)}. Запись оборвётся на середине — освободите "
+              "место или выберите другой диск."), 507
+
+
+def _weigh(size: int) -> str:
+    """Размер по-человечески: «412 МБ», а не «432013312»."""
+    step = float(size)
+    for name in ("Б", "КБ", "МБ", "ГБ"):
+        if step < 1024 or name == "ГБ":
+            return f"{step:.0f} {name}" if name in ("Б", "КБ") \
+                else f"{step:.1f} {name}"
+        step /= 1024
+    return f"{size} Б"
 
 
 def _prepare(base: str, folder: str, operation: str, only=None) -> Path:
@@ -1592,6 +1647,8 @@ def api_split_start():
         return jsonify(error=f"Неизвестный формат: {out_format}"), 400
     if (ask := _busy(base, folder, payload)) is not None:
         return ask
+    if (tight := _room(base, targets)) is not None:
+        return tight
 
     # Читаем до создания папки, чтобы не плодить пустые каталоги. Имена
     # считаем теми же правилами, по которым будем писать: по ним решается,
@@ -1746,6 +1803,8 @@ def api_rename_apply():
         return jsonify(error=f"Неизвестный формат: {fmt}"), 400
     if (ask := _busy(base, out_name, payload)) is not None:
         return ask
+    if (tight := _room(base, [payload.get("folder_in") or ""])) is not None:
+        return tight
 
     try:
         _, rows = _plan_from_payload(payload)
