@@ -38,12 +38,11 @@ def api_translator_path():
     """
     payload = request.json or {}
     path = str(payload.get("path") or "").strip()
-    if path and not translator_op.looks_right(path):
-        return jsonify(
-            error=f"В этой папке нет {translator_op.MARK.as_posix()}. "
-                  "Нужна та, из которой вы запускаете переводчик, — где "
-                  "лежат `run.bat` и `main.py`.",
-            **translator_op.state(path)), 400
+    # Объяснение берём то же, что и при запуске: два разных совета на
+    # одну беду — верный способ отправить человека не туда.
+    why = translator_op.trouble_with(path) if path else ""
+    if why:
+        return jsonify(error=why, **translator_op.state(path)), 400
 
     settings.translator.path = path
     try:

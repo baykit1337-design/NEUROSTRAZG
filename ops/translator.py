@@ -40,9 +40,15 @@ from config import settings
 
 log = logging.getLogger(__name__)
 
-#: По этому файлу папка опознаётся как переводчик. Проверять само имя
-#: папки бессмысленно: её называют как угодно.
+#: По этому файлу папка опознаётся как переводчик, годный для разговора.
+#: Проверять само имя папки бессмысленно: её называют как угодно.
 MARK = Path("gemini_translator") / "cli.py"
+
+#: А по этим — что папка та самая, просто версия старая. Разница важная:
+#: «вы принесли не ту папку» и «папка верная, но в этой версии нет CLI» —
+#: это две совершенно разные беды с разным лечением, а одинаковый отказ
+#: отправлял человека искать то, что у него и так лежит перед глазами.
+OLD_MARKS = (Path("main.py"), Path("gemini_translator") / "__init__.py")
 
 #: Где переводчик держит своё окружение. Так его создаёт `run.bat`.
 VENV = (
@@ -67,8 +73,17 @@ def where() -> str:
 
 
 def looks_right(path) -> bool:
-    """Похожа ли папка на переводчик."""
+    """Годится ли папка для разговора: есть ли в ней CLI."""
     return bool(path) and (Path(str(path)).expanduser() / MARK).is_file()
+
+
+def looks_old(path) -> bool:
+    """Та ли это папка, но без CLI — то есть версия старше него."""
+    if not path:
+        return False
+    root = Path(str(path)).expanduser()
+    return (all((root / one).exists() for one in OLD_MARKS)
+            and not (root / MARK).is_file())
 
 
 def python_for(path) -> str:
@@ -91,19 +106,38 @@ def python_for(path) -> str:
     return "python"
 
 
-def _explain(path) -> None:
-    """Отказ словами, а не пустотой. Кидает, если говорить не с чем."""
+def trouble_with(path) -> str:
+    """Почему с этой папкой не поговорить. Пусто — можно.
+
+    Объяснение одно на всех: и проверка при выборе папки, и сам запуск
+    должны говорить человеку одно и то же. Разойдись они — и совет
+    зависел бы от того, какой кнопкой человек до него добрался.
+    """
     if not path:
-        raise TranslatorError(
-            "Не указано, где стоит переводчик. Укажите папку, в которой "
-            "лежит его `run.bat` — ту же, из которой вы его запускаете.")
+        return ("Не указано, где стоит переводчик. Укажите папку, в "
+                "которой лежит его `run.bat` — ту же, из которой вы его "
+                "запускаете.")
     root = Path(str(path)).expanduser()
     if not root.is_dir():
-        raise TranslatorError(f"Папки нет: {root}")
+        return f"Папки нет: {root}"
+    if looks_old(root):
+        return ("Папка та, но версия переводчика старая: в ней нет "
+                f"{MARK.as_posix()}. Работа без окна появилась у него "
+                "позже. Обновите переводчик до свежей версии — ключи, "
+                "промпты и настройки при этом не пострадают: они лежат "
+                "отдельно, в домашней папке ~/.epub_translator.")
     if not looks_right(root):
-        raise TranslatorError(
-            f"В папке {root} нет файла {MARK.as_posix()} — это не папка "
-            "переводчика. Нужна та, где лежат `run.bat` и `main.py`.")
+        return (f"В папке {root} нет ни {MARK.as_posix()}, ни `main.py` — "
+                "это не папка переводчика. Нужна та, из которой вы его "
+                "запускаете.")
+    return ""
+
+
+def _explain(path) -> None:
+    """Отказ словами, а не пустотой. Кидает, если говорить не с чем."""
+    why = trouble_with(path)
+    if why:
+        raise TranslatorError(why)
 
 
 def run(command: str, args=(), path: str = "", timeout: int | None = None) -> dict:
@@ -201,10 +235,14 @@ def state(path: str = "") -> dict:
     return {
         "path": path,
         "found": looks_right(path),
+        # Отдельно, чтобы страница могла сказать не «не та папка», а
+        # «папка та, версия старая» — это разные советы человеку.
+        "old": looks_old(path),
         "python": python_for(path) if path else "",
         "own_python": sys.executable,
     }
 
 
-__all__ = ["MARK", "QUICK_TIMEOUT", "TranslatorError", "looks_right",
+__all__ = ["MARK", "OLD_MARKS", "QUICK_TIMEOUT", "TranslatorError",
+           "looks_old", "looks_right", "trouble_with",
            "python_for", "run", "short", "state", "status", "where"]

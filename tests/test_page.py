@@ -219,7 +219,7 @@ class TestWhatTheToolsTabShows(PageTestCase):
 
         box = self.page.locator(".err:not([hidden])").first
         self.assertTrue(box.count())
-        self.assertIn("run.bat", box.inner_text())
+        self.assertIn("cli.py", box.inner_text())
         self.quiet()
 
     def test_the_update_card_offers_one_button(self):

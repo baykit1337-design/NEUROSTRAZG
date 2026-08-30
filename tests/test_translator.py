@@ -129,7 +129,34 @@ class TestWhenItGoesWrong(Base):
         (self.tmp / "чужая").mkdir()
         said = self.why(self.tmp / "чужая")
         self.assertIn("gemini_translator/cli.py", said)
-        self.assertIn("run.bat", said)
+        self.assertIn("не папка переводчика", said)
+
+    def test_an_old_version_is_not_called_a_wrong_folder(self):
+        """Та же беда с другим лечением.
+
+        У переводчика работа без окна появилась не сразу: в копиях
+        постарше `cli.py` нет вовсе, хотя `main.py` и `run.bat` на месте.
+        Отказ «это не папка переводчика» отправлял человека искать то,
+        что у него и так лежит перед глазами.
+        """
+        home = self.tmp / "старая"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "__init__.py").write_text(
+            "", encoding="utf-8")
+        (home / "main.py").write_text("", encoding="utf-8")
+        (home / "run.bat").write_text("", encoding="utf-8")
+
+        said = self.why(home)
+        self.assertIn("версия переводчика старая", said)
+        self.assertIn("Обновите", said)
+        # И сразу успокаиваем про то, что обычно и держит от обновления.
+        self.assertIn(".epub_translator", said)
+        self.assertTrue(translator.looks_old(home))
+
+    def test_a_fresh_version_is_not_called_old(self):
+        home = fake_translator(self.tmp)
+        (home / "main.py").write_text("", encoding="utf-8")
+        self.assertFalse(translator.looks_old(home))
 
     def test_not_json_is_shown_as_it_came(self):
         """Молчаливое «что-то пошло не так» здесь бесполезно."""
@@ -178,7 +205,19 @@ class TestOverHttp(Base):
         res = self.app.post("/api/translator/path",
                             json={"path": str(self.tmp / "чужая")})
         self.assertEqual(res.status_code, 400)
-        self.assertIn("run.bat", res.get_json()["error"])
+        self.assertIn("cli.py", res.get_json()["error"])
+
+    def test_an_old_version_is_told_apart_over_http_too(self):
+        home = self.tmp / "старая"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "__init__.py").write_text(
+            "", encoding="utf-8")
+        (home / "main.py").write_text("", encoding="utf-8")
+
+        got = self.app.post("/api/translator/path",
+                            json={"path": str(home)}).get_json()
+        self.assertTrue(got["old"])
+        self.assertIn("старая", got["error"])
 
     def test_a_right_folder_is_remembered(self):
         home = fake_translator(self.tmp)
