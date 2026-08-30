@@ -1,0 +1,210 @@
+"""Связь с переводчиком EPUB — чужой программой, стоящей рядом.
+
+Перевод книг делает `translatorFork_MOD` — настольное приложение на PyQt6.
+Встраивать его в NEUROSTRAZH нельзя и не нужно: PyQt6 там импортируют две
+сотни файлов из четырёхсот шестидесяти, логика перевода живёт в сигналах и
+диалогах, а вытащить из этого движок значит переписать чужую программу и
+сопровождать свою копию вечно.
+
+Зато у неё есть готовый вход для таких, как мы. В её собственной
+документации раздел называется «CLI для автоматизации агентами»: команды
+запускаются без окна, ответ печатается JSON-ом в stdout, а логи уходят в
+stderr, чтобы разбор не спотыкался.
+
+Поэтому здесь — не перевод, а разговор. Мы запускаем чужую программу
+отдельным процессом и читаем её ответ, ровно как `mvl/nativedialog.py`
+запускает окно выбора файлов.
+
+Что из этого следует и что важно помнить:
+
+- переводчик остаётся отдельной программой. Мы храним только путь к нему;
+  обновляется он сам по себе, и на наш репозиторий его гигабайт не влияет;
+- глоссарий, карта перевода и переведённые главы лежат в папке проекта
+  переводчика — там же, где их оставляет его собственное окно. Своего
+  хранилища у нас нет вовсе;
+- промпты, ключи и настройки лежат в его домашней папке
+  (`~/.epub_translator`). Мы их не читаем и не пишем: что человек настроил
+  в родном окне, то и применится.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from config import settings
+
+log = logging.getLogger(__name__)
+
+#: По этому файлу папка опознаётся как переводчик. Проверять само имя
+#: папки бессмысленно: её называют как угодно.
+MARK = Path("gemini_translator") / "cli.py"
+
+#: Где переводчик держит своё окружение. Так его создаёт `run.bat`.
+VENV = (
+    Path(".venv") / "Scripts" / "python.exe",   # Windows
+    Path(".venv") / "bin" / "python",           # Linux и macOS
+    Path("venv") / "Scripts" / "python.exe",
+    Path("venv") / "bin" / "python",
+)
+
+#: Сколько ждать быстрых команд. Перевод сюда не относится — у него свой
+#: срок, измеряемый часами.
+QUICK_TIMEOUT = 120
+
+
+class TranslatorError(Exception):
+    """С переводчиком не поговорили. Причина — в сообщении."""
+
+
+def where() -> str:
+    """Путь к переводчику из настроек. Пусто — не указан."""
+    return str(getattr(settings.translator, "path", "") or "").strip()
+
+
+def looks_right(path) -> bool:
+    """Похожа ли папка на переводчик."""
+    return bool(path) and (Path(str(path)).expanduser() / MARK).is_file()
+
+
+def python_for(path) -> str:
+    """Каким Python его запускать.
+
+    Сперва — окружение рядом с самим переводчиком: там стоят PyQt6 и
+    остальные его зависимости, а в нашем окружении их нет и быть не
+    должно. Не нашлось — берём то, что назвали в настройках, а в
+    последнюю очередь `python` из PATH.
+    """
+    root = Path(str(path)).expanduser()
+    for one in VENV:
+        found = root / one
+        if found.is_file():
+            return str(found)
+
+    named = str(getattr(settings.translator, "python", "") or "").strip()
+    if named:
+        return named
+    return "python"
+
+
+def _explain(path) -> None:
+    """Отказ словами, а не пустотой. Кидает, если говорить не с чем."""
+    if not path:
+        raise TranslatorError(
+            "Не указано, где стоит переводчик. Укажите папку, в которой "
+            "лежит его `run.bat` — ту же, из которой вы его запускаете.")
+    root = Path(str(path)).expanduser()
+    if not root.is_dir():
+        raise TranslatorError(f"Папки нет: {root}")
+    if not looks_right(root):
+        raise TranslatorError(
+            f"В папке {root} нет файла {MARK.as_posix()} — это не папка "
+            "переводчика. Нужна та, где лежат `run.bat` и `main.py`.")
+
+
+def run(command: str, args=(), path: str = "", timeout: int | None = None) -> dict:
+    """Одна команда переводчика. Возвращает разобранный ответ.
+
+    Ответ приходит JSON-ом в stdout, а логи — в stderr, поэтому читаем
+    только первый. Если в stdout оказалось не JSON, показываем начало
+    ответа как есть: молчаливое «что-то пошло не так» здесь бесполезно.
+    """
+    path = str(path or where()).strip()
+    _explain(path)
+    root = Path(path).expanduser()
+
+    line = [python_for(root), "-m", "gemini_translator.cli", str(command),
+            *[str(one) for one in args]]
+    # Окно не открывается, но Qt всё равно поднимается — просим его
+    # обойтись без экрана. Сам переводчик делает так же.
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen",
+           "PYTHONIOENCODING": "utf-8"}
+
+    log.info("Переводчик: %s", " ".join(line[1:]))
+    try:
+        said = subprocess.run(
+            line, cwd=str(root), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", env=env,
+            timeout=timeout or QUICK_TIMEOUT)
+    except FileNotFoundError as exc:
+        raise TranslatorError(
+            f"Не запустился Python переводчика ({python_for(root)}): {exc}. "
+            "Запустите переводчик его собственным `run.bat` — он создаст "
+            "себе окружение.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TranslatorError(
+            f"Переводчик не ответил за {timeout or QUICK_TIMEOUT} секунд") from exc
+
+    body = (said.stdout or "").strip()
+    if not body:
+        tail = (said.stderr or "").strip().splitlines()
+        why = tail[-1] if tail else f"код возврата {said.returncode}"
+        raise TranslatorError(f"Переводчик ничего не ответил: {why}")
+
+    try:
+        found = json.loads(body)
+    except ValueError as exc:
+        raise TranslatorError(
+            f"Ответ переводчика — не JSON: {body[:200]}") from exc
+    if not isinstance(found, dict):
+        raise TranslatorError(f"Ответ переводчика непонятен: {body[:200]}")
+    return found
+
+
+def status(path: str = "") -> dict:
+    """Что там вообще есть: провайдеры, ключи, модели, проекты.
+
+    Самая дешёвая команда из всех — в сеть не ходит. Ею и проверяется,
+    что связка вообще живая.
+    """
+    said = run("status", path=path)
+    if not said.get("ok", True):
+        raise TranslatorError(str(said.get("error") or "переводчик отказал"))
+    return said
+
+
+def short(said: dict) -> dict:
+    """Ответ `status` в том виде, в каком его показывают человеку.
+
+    Читаем бережно: это чужой формат, и он может поменяться. Чего не
+    нашли — не показываем, но и не падаем.
+    """
+    rows = []
+    for one in said.get("providers") or []:
+        if not isinstance(one, dict):
+            continue
+        rows.append({
+            "id": str(one.get("id") or one.get("provider") or ""),
+            "name": str(one.get("name") or one.get("title") or ""),
+            "keys": int(one.get("keys") or one.get("key_count") or 0),
+            "models": int(one.get("models") or one.get("model_count") or 0),
+        })
+
+    saved = said.get("settings") if isinstance(said.get("settings"), dict) else {}
+    return {
+        "providers": rows,
+        "keys": sum(one["keys"] for one in rows),
+        "provider": str(saved.get("provider") or said.get("provider") or ""),
+        "model": str(saved.get("model") or said.get("model") or ""),
+        "projects": len(said.get("projects") or said.get("history") or []),
+        "version": str(said.get("version") or ""),
+    }
+
+
+def state(path: str = "") -> dict:
+    """Что показывать в карточке до всякой проверки."""
+    path = str(path or where()).strip()
+    return {
+        "path": path,
+        "found": looks_right(path),
+        "python": python_for(path) if path else "",
+        "own_python": sys.executable,
+    }
+
+
+__all__ = ["MARK", "QUICK_TIMEOUT", "TranslatorError", "looks_right",
+           "python_for", "run", "short", "state", "status", "where"]

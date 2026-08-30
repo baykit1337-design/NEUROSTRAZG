@@ -85,9 +85,22 @@ class PageTestCase(unittest.TestCase):
         self.addCleanup(self.page.close)
         self.trouble: list[str] = []
         self.page.on("pageerror", lambda err: self.trouble.append(str(err)))
-        self.page.on("console", lambda msg: self.trouble.append(msg.text)
-                     if msg.type == "error" else None)
+        self.page.on("console", self.heard)
         self.page.goto(self.home, wait_until="networkidle")
+
+    def heard(self, msg):
+        """Ошибка в консоли — но не всякая красная строка ею является.
+
+        Отказ нашего же маршрута (400 на заведомо неверный путь) браузер
+        пишет как «Failed to load resource». Это ожидаемый ответ, а не
+        поломка страницы: считать его ошибкой значит запретить себе
+        проверять отказы.
+        """
+        if msg.type != "error":
+            return
+        if msg.text.startswith("Failed to load resource"):
+            return
+        self.trouble.append(msg.text)
 
     def quiet(self):
         """Ни одной ошибки в консоли — иначе видно, какая именно."""
@@ -191,6 +204,23 @@ class TestWhatTheToolsTabShows(PageTestCase):
         said = self.page.locator("#hsNote").inner_text()
         self.assertIn("вес", said)
         self.assertRegex(said, r"\d+(\.\d+)? (Б|КБ|МБ|ГБ)")
+
+    def test_the_translator_card_says_where_it_is_not(self):
+        """Карточка связи с переводчиком — и молчащая консоль при отказе.
+
+        Именно на этом споткнулись: поле пути получило класс `pickpath`,
+        а тот — про список выбранных файлов и требует своего контейнера.
+        Ошибка вылезала только при нажатии, и до этой проверки её ловить
+        было нечем.
+        """
+        self.page.fill("#tlPath", "/tmp")
+        self.page.click("#tlCheck")
+        self.page.wait_for_timeout(1500)
+
+        box = self.page.locator(".err:not([hidden])").first
+        self.assertTrue(box.count())
+        self.assertIn("run.bat", box.inner_text())
+        self.quiet()
 
     def test_the_update_card_offers_one_button(self):
         """Одна кнопка на всё: две заставляли человека делать работу

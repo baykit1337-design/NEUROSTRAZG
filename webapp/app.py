@@ -101,6 +101,8 @@ from webapp.jobs import (  # noqa: E402
     JOB_TTL, JOBS, JOBS_LOCK, KEEP_JOBS, Job, Made, forget_old,
     progress_of as _progress, start_job)
 from webapp.tools_routes import tools as tools_routes  # noqa: E402
+from webapp.translator_routes import (  # noqa: E402
+    translator as translator_routes)
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +121,7 @@ app = Flask(__name__, static_folder=str(STATIC_DIR))
 # Маршруты «Инструментов» живут отдельным файлом — первая вкладка,
 # вынесенная из этого. Дальше по одной за раз.
 app.register_blueprint(tools_routes)
+app.register_blueprint(translator_routes)
 
 #: Имена, под которыми к нам можно обращаться.
 #:

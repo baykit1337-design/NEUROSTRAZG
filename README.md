@@ -1213,6 +1213,7 @@ ops/                  операции = то, что делают вкладк�
 webapp/app.py         ТОЛЬКО маршруты
 webapp/jobs.py        фоновая задача: запуск, прогресс, уборка
 webapp/tools_routes.py  маршруты «Инструментов» отдельным Blueprint
+webapp/translator_routes.py  связь с переводчиком EPUB
 webapp/static/
 ├── index.html        разметка и базовые стили — не трогать эффектами
 ├── tabs.js           логика вкладок

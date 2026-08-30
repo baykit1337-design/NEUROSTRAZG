@@ -3120,6 +3120,31 @@
               style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px"></textarea>
   </div>
 
+  <!-- Связь с переводчиком EPUB. Он остаётся отдельной программой: у
+       него своё окружение на гигабайт (PyQt6, playwright, звук), своя
+       папка проекта с глоссарием и главами, свои промпты и ключи в
+       ~/.epub_translator. Мы храним только путь и зовём его команды —
+       так же, как зовём окно выбора файлов. -->
+  <div class="card" id="tlCard">
+    <label>Переводчик EPUB</label>
+    <p class="hint">Отдельная программа, стоящая рядом. Глоссарий, главы и
+       промпты остаются у неё: мы помним только, где она лежит.</p>
+    <div class="row" style="margin-top:10px">
+      <!-- Обычное поле пути, а не `pickpath`: тот класс — про список
+           выбранных файлов и требует своего контейнера, а здесь одна
+           папка, как «куда сохранить» на других вкладках. -->
+      <input id="tlPath" type="text"
+             placeholder="Папка переводчика — та, где лежит run.bat"
+             autocomplete="off">
+      <button class="ghost browse" data-target="tlPath" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <button id="tlCheck" class="ghost">Проверить связь</button>
+    </div>
+    <p class="hint" id="tlNote"></p>
+    <div class="table" id="tlList" hidden style="margin-top:10px;max-height:220px"></div>
+  </div>
+
   <!-- Счётчик трафика. При платном пакете это первое, что хочется
        видеть, а узнать было неоткуда: главы, рейтинги, обложки, перевод
        и обновления уходили в один общий поток, о котором никто не

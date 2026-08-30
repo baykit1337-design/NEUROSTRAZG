@@ -139,6 +139,22 @@ class Llm:
 
 
 @dataclass
+class Translator:
+    """Где стоит переводчик EPUB — чужая программа, живущая рядом.
+
+    Хранится только путь. Сам переводчик в наш репозиторий не входит,
+    обновляется отдельно и своим порядком: его гигабайт — это его
+    окружение (PyQt6, playwright, звук), а не программа.
+    """
+
+    #: Папка, из которой запускают переводчик, — та, где лежит `run.bat`.
+    path: str = ""
+    #: Чем запускать, если своё окружение (`.venv`) рядом не нашлось.
+    #: Пусто — берём `python` из PATH.
+    python: str = ""
+
+
+@dataclass
 class Update:
     """Откуда программа обновляет саму себя.
 
@@ -166,6 +182,7 @@ class Config:
     output: Output = field(default_factory=Output)
     llm: Llm = field(default_factory=Llm)
     update: Update = field(default_factory=Update)
+    translator: Translator = field(default_factory=Translator)
     #: Метод многопоточности, сработавший в прошлый раз, — пробуем первым.
     last_download_method: str = ""
 

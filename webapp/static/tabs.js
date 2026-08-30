@@ -4706,6 +4706,98 @@ $('dgOpen').onclick = async () => {
 };
 
 
+/* ------------------------------------------- переводчик EPUB (связь)
+ *
+ * Переводчик — отдельная программа, стоящая рядом. Мы храним только путь
+ * к ней и зовём её команды. Своего глоссария, промптов и ключей у нас
+ * нет: всё это остаётся у неё, в папке проекта и в её домашней папке.
+ *
+ * Здесь пока только проверка связи. Пока она не ответит, строить перевод
+ * бессмысленно — окажется, что говорить не с кем.
+ */
+
+function tlShow(data){
+  data = data || {};
+  const path = data.path || '';
+  if(path && !$('tlPath').value) $('tlPath').value = path;
+
+  const rows = data.providers || [];
+  const table = $('tlList');
+  table.innerHTML = '';
+  for(const one of rows){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = one.name || one.id;
+    const keys = document.createElement('span');
+    keys.className = 'num';
+    keys.textContent = `${one.keys} ${plural(one.keys, 'ключ', 'ключа', 'ключей')}`;
+    const models = document.createElement('span');
+    models.className = 'num';
+    models.textContent = one.models
+      ? `${one.models} ${plural(one.models, 'модель', 'модели', 'моделей')}`
+      : '—';
+    row.append(name, keys, models);
+    table.append(row);
+  }
+  table.hidden = !rows.length;
+}
+
+async function tlLoad(){
+  try{
+    tlShow(await call('/api/translator/state'));
+  }catch(err){
+    // Настройка — удобство. Не прочиталась — остальное работает.
+    $('tlNote').textContent = '';
+  }
+}
+
+async function tlSave(){
+  const path = $('tlPath').value.trim();
+  try{
+    const got = await call('/api/translator/path', {path});
+    tlShow(got);
+    $('tlNote').textContent = path
+      ? 'Папка запомнена. Нажмите «Проверить связь».'
+      : 'Путь очищен.';
+    return true;
+  }catch(err){
+    showError(err.message, $('tlNote'));
+    $('tlNote').textContent = '';
+    return false;
+  }
+}
+
+async function tlCheck(){
+  showError('');
+  const button = $('tlCheck');
+  button.disabled = true;
+  // Путь сперва запоминаем: проверять одно, а хранить другое — верный
+  // способ получить «работало вчера».
+  if(!(await tlSave())){ button.disabled = false; return; }
+
+  $('tlNote').innerHTML = '<span class=\"spin\"></span>Спрашиваем переводчик…';
+  try{
+    const got = await call('/api/translator/check', {path: $('tlPath').value.trim()});
+    tlShow(got);
+    const bits = [`Связь есть. Ключей: ${got.keys}`];
+    if(got.provider) bits.push(`сервис: ${got.provider}`);
+    if(got.model) bits.push(`модель: ${got.model}`);
+    if(got.projects) bits.push(`проектов в истории: ${got.projects}`);
+    $('tlNote').textContent = bits.join(', ') + '.';
+  }catch(err){
+    showError(err.message, $('tlNote'));
+    $('tlNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
+$('tlCheck').onclick = tlCheck;
+$('tlPath').onchange = tlSave;
+tlLoad();
+
 /* ------------------------------------------------- счётчик трафика
  *
  * При платном пакете это первое, что хочется видеть. Считает сервер — в
