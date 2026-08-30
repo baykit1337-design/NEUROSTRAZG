@@ -3064,16 +3064,19 @@
     <label>Обновление программы</label>
     <p class="hint" id="upWhere"></p>
     <div class="row" style="margin-top:10px;flex-wrap:wrap">
-      <button id="upLook" class="ghost">Проверить обновления</button>
-      <button id="upApply" class="primary" hidden>Обновить</button>
+      <!-- Одна кнопка на всё: посмотреть, спросить и забрать. Две
+           («проверить», потом «обновить») заставляли человека делать
+           работу программы, а трафик бережёт не вторая кнопка, а вопрос
+           с весом, который она задаёт перед загрузкой. -->
+      <button id="upGo" class="primary">Обновить программу</button>
       <!-- Единственный быстрый выход из неудачного обновления, когда
            канал медленный: качать заново нечего, прежние файлы лежат в
            корзине. -->
       <button id="upBack" class="ghost" hidden>Вернуть прошлую версию</button>
     </div>
-    <p class="hint" id="upNote">Проверка спрашивает у GitHub один адрес —
-       это около трёхсот байт. Сами файлы качаются только по кнопке
-       «Обновить», и до неё видно, сколько их.</p>
+    <p class="hint" id="upNote">Посмотрит, что изменилось, покажет вес и
+       спросит, прежде чем качать. Сама ничего не качает и не запускается
+       по расписанию.</p>
     <div class="table" id="upFiles" hidden style="margin-top:10px;max-height:260px"></div>
 
     <div id="upProgress" hidden style="margin-top:12px">

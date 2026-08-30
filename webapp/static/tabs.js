@@ -4521,61 +4521,76 @@ function upDrawFiles(plan){
       : one.status === 'added' ? 'новый' : 'изменён';
     const size = document.createElement('span');
     size.className = 'num';
-    size.textContent = one.gone ? '—' : `${one.lines} стр.`;
+    // Вес честнее строк, но знает его только сверка по содержимому.
+    size.textContent = one.gone ? '—'
+      : one.size ? weigh(one.size) : `${one.lines} стр.`;
     row.append(name, tag, size);
     table.append(row);
   }
   table.hidden = !(plan.changes || []).length;
 }
 
-async function upLook(){
+/** Одна кнопка: посмотреть, спросить и забрать.
+ *
+ *  Двух кнопок быть не должно. «Проверить», а потом «Обновить» — это
+ *  работа программы, переложенная на человека: он и так нажал
+ *  «обновить», значит хочет обновиться. Трафик бережёт не вторая
+ *  кнопка, а вопрос с весом перед загрузкой — его и задаём.
+ */
+async function upGo(){
   showError('');
-  const button = $('upLook');
+  const button = $('upGo');
   button.disabled = true;
-  $('upNote').innerHTML = '<span class="spin"></span>Спрашиваем…';
+  $('upErrors').hidden = true;
+  $('upNews').hidden = true;
+  $('upNote').innerHTML = '<span class="spin"></span>Смотрим, что изменилось…';
+
+  let plan;
   try{
-    const plan = await call('/api/update/look');
-    upPlan = plan;
-    $('upWhere').textContent = `Источник: ${plan.where}`;
-    upDrawFiles(plan);
-    $('upApply').hidden = plan.fresh || !plan.files || !!plan.trouble;
-    if(plan.trouble){
-      $('upNote').textContent = plan.trouble;
-    }else if(plan.fresh){
-      $('upNote').textContent = 'Стоит последняя версия.';
-    }else{
-      $('upNote').textContent =
-        `Изменилось файлов: ${plan.files}, строк: ${plan.lines}. `
-        + 'Точный вес станет известен при загрузке — сравнение его не '
-        + 'сообщает. Старые файлы уйдут в корзину.'
-        // Обновление приносит файлы, но не библиотеки: о новой
-        // зависимости человек должен узнать до, а не при падении.
-        + (plan.needs_install
-           ? ' Изменился список зависимостей — после обновления '
-             + 'выполните: pip install -r requirements.txt'
-           : '');
-    }
+    plan = await call('/api/update/look');
   }catch(err){
     showError(err.message, $('upNote'));
     $('upNote').textContent = '';
-  }finally{
     button.disabled = false;
+    return;
   }
-}
 
-async function upApply(){
-  showError('');
-  $('upApply').disabled = true;
-  $('upErrors').hidden = true;
+  upPlan = plan;
+  $('upWhere').textContent = `Источник: ${plan.where}`;
+  upDrawFiles(plan);
+
+  if(plan.trouble || plan.fresh || !plan.files){
+    $('upNote').textContent = plan.trouble
+      || (plan.fresh ? 'Стоит последняя версия.'
+                     : 'Обновлять нечего: расхождений с репозиторием нет.');
+    button.disabled = false;
+    return;
+  }
+
+  // Вес известен точно только при сверке по содержимому; сравнение
+  // коммитов его не сообщает, и выдавать строки за байты нельзя.
+  const weight = plan.size ? weigh(plan.size)
+                           : `${plan.lines} строк(и) правок`;
+  const also = plan.needs_install
+    ? '\n\nИзменился список зависимостей — после обновления понадобится: '
+      + 'pip install -r requirements.txt'
+    : '';
+  $('upNote').textContent = `Изменилось файлов: ${plan.files}, ${weight}.`;
+  if(!confirm(`Скачать ${plan.files} файл(ов), ${weight}?\n\n`
+              + 'Прежние уйдут в корзину, вернуть их можно кнопкой.' + also)){
+    $('upNote').textContent += ' Не качаем.';
+    button.disabled = false;
+    return;
+  }
+
   try{
     const {job} = await call('/api/update/apply', {});
     $('upProgress').hidden = false;
     pollJob(job.id,
       job => drawResult(job.progress || {}, 'upFill', 'upStatus', 'upPct'),
       job => {
-        $('upApply').disabled = false;
+        button.disabled = false;
         if(job.error){ showError(job.error, $('upNote')); return; }
-        $('upApply').hidden = true;
         $('upFiles').hidden = true;
         showFailures('upErrors', (job.report?.failures || []).map(
           one => ({file: one, step: 'обновление', error: ''})));
@@ -4586,13 +4601,13 @@ async function upApply(){
           $('upNote').textContent =
             'Обновление отменено: с новыми файлами программа не '
             + `запускается (${done.rolled_back}). Прежняя версия на месте.`;
-          $('upApply').hidden = false;
           return;
         }
         upNews(done.news || []);
         $('upBack').hidden = !done.backup;
         $('upNote').textContent =
-          'Обновлено. Изменения вступят в силу после перезапуска программы.'
+          `Обновлено, ${weigh(done.bytes || 0)}. Изменения вступят в силу `
+          + 'после перезапуска программы.'
           + (done.needs_install
              ? ' Изменился список зависимостей — выполните: '
                + 'pip install -r requirements.txt'
@@ -4600,7 +4615,7 @@ async function upApply(){
       });
   }catch(err){
     showError(err.message, $('upNote'));
-    $('upApply').disabled = false;
+    button.disabled = false;
   }
 }
 
@@ -4634,8 +4649,7 @@ async function upBack(){
   }
 }
 
-$('upLook').onclick = upLook;
-$('upApply').onclick = upApply;
+$('upGo').onclick = upGo;
 $('upBack').onclick = upBack;
 
 /* ------------------------------------------- отчёт о проблеме

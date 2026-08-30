@@ -19,10 +19,12 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mvl.client import HttpError  # noqa: E402
 from ops import update  # noqa: E402
 
 OLD = "a" * 40
 NEW = "b" * 40
+OWNER, REPO = "baykit1337-design", "mvlparser"
 
 
 class FakeAnswer:
@@ -37,16 +39,31 @@ class FakeAnswer:
 class FakeHub:
     """Отвечает как GitHub и считает, о чём его спросили."""
 
-    def __init__(self, head=NEW, files=None, blobs=None):
+    def __init__(self, head=NEW, files=None, blobs=None, tree=None,
+                 branches=None, default_branch="main"):
         self.head = head
         self.files = files if files is not None else []
         self.blobs = blobs or {}
+        #: путь → (хеш, вес). Нужен сверке по содержимому.
+        self.tree = tree
+        #: Какие ветки вообще есть. `None` — любая.
+        self.branches = branches
+        self.default_branch = default_branch
         self.asked: list[str] = []
 
     def get(self, url, params=None, headers=None):
         self.asked.append(url)
         if "/git/ref/heads/" in url:
+            branch = url.rsplit("/", 1)[-1]
+            if self.branches is not None and branch not in self.branches:
+                raise HttpError(f"HTTP 404 {url}", status=404)
             return FakeAnswer({"object": {"sha": self.head}})
+        if "/git/trees/" in url:
+            return FakeAnswer({"tree": [
+                {"path": path, "type": "blob", "sha": sha, "size": size}
+                for path, (sha, size) in (self.tree or {}).items()]})
+        if url.endswith(f"/repos/{OWNER}/{REPO}"):
+            return FakeAnswer({"default_branch": self.default_branch})
         if "/compare/" in url:
             return FakeAnswer({"files": self.files})
         name = url.rsplit("/", 1)[-1]
@@ -105,18 +122,22 @@ class TestWhatItRefusesToTouch(unittest.TestCase):
 
 
 class TestTheCheckIsCheap(Base):
-    def test_the_first_run_just_remembers_where_we_are(self):
-        """Качать весь репозиторий ради сверки — ровно тот трафик,
-        который мы и бережём."""
-        hub = FakeHub()
+    def test_the_first_run_compares_by_content(self):
+        """Раньше первый запуск просто записывал чужой коммит как свой и
+        отвечал «стоит последняя версия» — обновиться было нельзя ни разу.
+
+        Теперь свой коммит неизвестен ⇒ сверяемся по файлам. Это один
+        запрос за деревом репозитория, а не весь репозиторий.
+        """
+        hub = FakeHub(tree={"README.md": ("0" * 40, 3)})
         seen = update.look(hub)
 
-        self.assertTrue(seen.fresh)
-        self.assertEqual(update.current(), NEW)
-        # Сравнения не было: спрашивали только адрес ветки.
+        self.assertTrue(seen.by_content)
         self.assertFalse([one for one in hub.asked if "/compare/" in one])
+        self.assertTrue([one for one in hub.asked if "/git/trees/" in one])
 
     def test_nothing_new_costs_one_question(self):
+        """Знаем свой коммит и он последний — дальше спрашивать нечего."""
         update.remember(NEW)
         hub = FakeHub(head=NEW)
         seen = update.look(hub)
@@ -150,23 +171,34 @@ class TestTheCheckIsCheap(Base):
         seen = update.look(hub)
         self.assertEqual([one.path for one in seen.changes], ["ops/split.py"])
 
-    def test_a_whole_new_copy_is_refused_out_loud(self):
-        """Молча перекачать всё по дорогому трафику — худшее решение."""
+    def test_a_suspiciously_long_list_is_checked_by_content(self):
+        """Столько файлов сразу — скорее всего, сравнили не с тем.
+
+        Раньше на этом месте стоял отказ «скачайте копию целиком». Он был
+        честен, но бесполезен: человек оставался с той же задачей и без
+        средств. Сверка по содержимому отвечает точно и стоит один
+        запрос.
+        """
         update.remember(OLD)
         hub = FakeHub(files=[change(f"файл{n}.py")
-                             for n in range(update.TOO_MANY + 1)])
+                             for n in range(update.TOO_MANY + 1)],
+                      tree={"README.md": ("0" * 40, 3)})
         seen = update.look(hub)
 
-        self.assertTrue(seen.trouble)
-        self.assertIn("целиком", seen.trouble)
+        self.assertFalse(seen.trouble)
+        self.assertTrue(seen.by_content)
 
-    def test_a_vanished_commit_is_explained_not_hidden(self):
-        """После переписанной истории нашего коммита в репозитории нет."""
+    def test_a_vanished_commit_is_not_a_dead_end(self):
+        """После переписанной истории нашего коммита в репозитории нет —
+        и это тоже повод свериться по файлам, а не разводить руками."""
         update.remember(OLD)
-        hub = FakeHub(files=None)
+        hub = FakeHub(tree={"README.md": ("0" * 40, 3)})
+        # Сравнение не отвечает списком файлов — коммита нет.
         hub.files = None
         seen = update.look(hub)
-        self.assertIn("больше нет", seen.trouble)
+
+        self.assertFalse(seen.trouble)
+        self.assertTrue(seen.by_content)
 
 
 class TestTheDownload(Base):
@@ -461,6 +493,148 @@ class TestNewDependencies(Base):
         update.remember(OLD)
         done = update.apply(hub, update.look(hub), check=False)
         self.assertTrue(done.as_dict()["needs_install"])
+
+
+def git_sha(body: bytes) -> str:
+    """Хеш так, как его считает git, — с ним и сверяется дерево."""
+    import hashlib
+
+    return hashlib.sha1(b"blob %d\0" % len(body) + body).hexdigest()
+
+
+class TestTheFirstUpdateEverWorks(Base):
+    """Раньше кнопка была бесполезна ровно один раз — первый.
+
+    Программа не знала своего коммита, первая же проверка записывала
+    чужой как свой и отвечала «стоит последняя версия», хотя на диске
+    лежали старые файлы. Обновиться ею было нельзя ни разу.
+    """
+
+    def setUp(self):
+        super().setUp()
+        (update.ROOT / "ops").mkdir()
+        (update.ROOT / "ops" / "split.py").write_text("старое",
+                                                      encoding="utf-8")
+
+    def hub(self, **files):
+        """Дерево репозитория из «путь → содержимое»."""
+        tree = {path: (git_sha(body.encode("utf-8")), len(body.encode("utf-8")))
+                for path, body in files.items()}
+        return FakeHub(tree=tree,
+                       blobs={p: b.encode("utf-8") for p, b in files.items()})
+
+    def test_a_changed_file_is_found_without_knowing_the_commit(self):
+        plan = update.look(self.hub(**{"ops/split.py": "новое"}))
+        self.assertTrue(plan.by_content)
+        self.assertEqual([one.path for one in plan.changes], ["ops/split.py"])
+        self.assertFalse(plan.fresh)
+
+    def test_an_identical_file_is_left_alone(self):
+        """Сверка по содержимому — не «скачать всё заново»."""
+        plan = update.look(self.hub(**{"ops/split.py": "старое"}))
+        self.assertEqual(plan.changes, [])
+
+    def test_a_file_we_do_not_have_is_new(self):
+        plan = update.look(self.hub(**{"ops/split.py": "старое",
+                                       "ops/новое.py": "тело"}))
+        self.assertEqual([one.status for one in plan.changes], ["added"])
+
+    def test_the_weight_is_known_exactly(self):
+        """Вес — то, ради чего человек и смотрит: трафик платный."""
+        plan = update.look(self.hub(**{"ops/split.py": "новое подлиннее"}))
+        self.assertEqual(plan.size, len("новое подлиннее".encode("utf-8")))
+
+    def test_it_does_not_offer_to_delete_what_is_not_in_the_repository(self):
+        """Рядом с программой могут лежать и свои файлы."""
+        (update.ROOT / "моё.txt").write_text("не трогать", encoding="utf-8")
+        plan = update.look(self.hub(**{"ops/split.py": "старое"}))
+        self.assertEqual([one.path for one in plan.changes if one.gone], [])
+
+    def test_settings_are_still_never_touched(self):
+        (update.ROOT / "config.json").write_text("{}", encoding="utf-8")
+        plan = update.look(self.hub(**{"config.json": "чужое",
+                                       "ops/split.py": "старое"}))
+        self.assertEqual(plan.changes, [])
+
+    def test_the_files_actually_arrive(self):
+        hub = self.hub(**{"ops/split.py": "новое"})
+        update.apply(hub, update.look(hub), check=False)
+        self.assertEqual(
+            (update.ROOT / "ops" / "split.py").read_text(encoding="utf-8"),
+            "новое")
+
+    def test_a_lost_commit_is_not_a_dead_end_any_more(self):
+        """История переписана — раньше это отправляло качать всё руками."""
+        update.remember(OLD)
+        hub = self.hub(**{"ops/split.py": "новое"})
+        hub.files = None  # сравнение коммитов не отвечает списком файлов
+        plan = update.look(hub)
+        self.assertTrue(plan.by_content)
+        self.assertEqual([one.path for one in plan.changes], ["ops/split.py"])
+
+
+class TestTheBranchIsFoundByItself(Base):
+    """Настройка может звать ветку, которой в репозитории нет.
+
+    Раньше это заканчивалось «GitHub ответил 404» и требованием лезть в
+    файл настроек. Чинится одним дешёвым вопросом.
+    """
+
+    def test_the_branch_from_the_settings_costs_one_question(self):
+        hub = FakeHub(branches={"main"})
+        self.assertEqual(update._head(hub), (NEW, "main"))
+        self.assertEqual(len(hub.asked), 1)
+
+    def test_a_missing_branch_falls_back_to_the_main_one(self):
+        hub = FakeHub(branches={"работа"}, default_branch="работа")
+        self.assertEqual(update._head(hub), (NEW, "работа"))
+        self.assertTrue([one for one in hub.asked
+                         if one.endswith(f"/repos/{OWNER}/{REPO}")])
+
+    def test_the_answer_names_the_branch_it_really_took(self):
+        """Показать настроечную ветку, когда качали из другой, — соврать."""
+        (update.ROOT / "ops").mkdir()
+        hub = FakeHub(branches={"работа"}, default_branch="работа",
+                      tree={"README.md": ("0" * 40, 3)})
+        self.assertIn("@работа", update.look(hub).as_dict()["where"])
+
+    def test_the_check_still_works_with_a_wrong_branch_in_the_settings(self):
+        (update.ROOT / "ops").mkdir()
+        (update.ROOT / "ops" / "split.py").write_text("старое",
+                                                      encoding="utf-8")
+        body = "новое".encode("utf-8")
+        hub = FakeHub(branches={"работа"}, default_branch="работа",
+                      tree={"ops/split.py": (git_sha(body), len(body))})
+        plan = update.look(hub)
+        self.assertEqual([one.path for one in plan.changes], ["ops/split.py"])
+
+
+class TestTheHashIsTheSameOneGitUses(unittest.TestCase):
+    """Сверка держится на том, что наш хеш совпадает с чужим."""
+
+    def test_it_matches_git(self):
+        import subprocess
+
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "проба.txt"
+            path.write_text("содержимое\n", encoding="utf-8")
+            try:
+                said = subprocess.run(["git", "hash-object", str(path)],
+                                      capture_output=True, text=True,
+                                      timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                self.skipTest("git недоступен")
+            if said.returncode != 0:
+                self.skipTest("git не посчитал хеш")
+            self.assertEqual(update.blob_sha(path), said.stdout.strip())
+
+    def test_an_empty_file_has_the_known_hash(self):
+        """Пустой файл в git всегда e69de29 — проверка без самого git."""
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "пусто.txt"
+            path.write_bytes(b"")
+            self.assertTrue(
+                update.blob_sha(path).startswith("e69de29bb2d1d6434b8b29ae"))
 
 
 if __name__ == "__main__":

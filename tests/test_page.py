@@ -192,8 +192,12 @@ class TestWhatTheToolsTabShows(PageTestCase):
         self.assertIn("вес", said)
         self.assertRegex(said, r"\d+(\.\d+)? (Б|КБ|МБ|ГБ)")
 
-    def test_the_update_card_offers_a_check(self):
-        self.assertTrue(self.page.locator("#upLook").is_visible())
+    def test_the_update_card_offers_one_button(self):
+        """Одна кнопка на всё: две заставляли человека делать работу
+        программы."""
+        self.assertTrue(self.page.locator("#upGo").is_visible())
+        self.assertEqual(self.page.locator("#upLook").count(), 0)
+        self.assertEqual(self.page.locator("#upApply").count(), 0)
 
 
 if __name__ == "__main__":

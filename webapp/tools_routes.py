@@ -19,6 +19,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from config import settings
 from core import traffic
 from mvl.client import Client, HttpError
 from ops import history as history_op
@@ -96,8 +97,10 @@ def api_update_look():
     try:
         return jsonify(**update_op.look(client).as_dict())
     except HttpError as exc:
-        return jsonify(error=f"GitHub ответил {exc.status}. "
-                             "Проверьте адрес репозитория в настройках."), 400
+        where = f"{settings.update.owner}/{settings.update.repo}"
+        return jsonify(error=f"GitHub ответил {exc.status} на запрос о "
+                             f"{where}. Проверьте, что репозиторий существует "
+                             "и открыт."), 400
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось спросить об обновлении: {exc}"), 400
     finally:
