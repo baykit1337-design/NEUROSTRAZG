@@ -285,7 +285,8 @@ class LlmClient:
         self._say(f"ключ «{spent.name or mask(spent.key)}» исчерпан")
         try:
             self.key = self._pick()
-        except Exception:  # noqa: BLE001 — NoKeysLeft разбирает вызывающий
+        except Exception as exc:  # noqa: BLE001 — NoKeysLeft разбирает вызывающий
+            log.warning("Переключиться не на что: %s", exc)
             self.current = None
             return False
         self._say(f"переключаюсь на «{self.current.name or mask(self.key)}»")
@@ -529,8 +530,8 @@ class LlmClient:
             for client in self._clients.values():
                 try:
                     client.close()
-                except Exception:  # noqa: BLE001 — закрытие не должно ронять прогон
-                    pass
+                except Exception as exc:  # noqa: BLE001 — закрытие не должно ронять прогон
+                    log.debug("Клиент не закрылся: %s", exc)
             self._clients.clear()
 
 
@@ -540,7 +541,8 @@ class LlmClient:
 def _json(response) -> dict:
     try:
         body = response.json()
-    except Exception:  # noqa: BLE001 — тело может быть не JSON вовсе
+    except Exception as exc:  # noqa: BLE001 — тело может быть не JSON вовсе
+        log.debug("Ответ модели — не JSON: %s", exc)
         return {}
     return body if isinstance(body, dict) else {}
 

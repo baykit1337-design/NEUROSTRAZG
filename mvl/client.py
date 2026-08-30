@@ -485,8 +485,8 @@ class Client:
             for session in self._sessions:
                 try:
                     session.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 — закрытие не ронять прогон
+                    log.debug("Сессия не закрылась: %s", exc)
             self._sessions.clear()
             self._shared = None
 

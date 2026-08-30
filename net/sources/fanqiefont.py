@@ -286,7 +286,9 @@ def _shapes_of_font(font, private: dict, numpy) -> dict:
 
     try:
         glyphs = font.getGlyphSet()
-    except Exception:  # noqa: BLE001 — шрифт без контуров бывает
+    except Exception as exc:  # noqa: BLE001 — шрифт без контуров бывает
+        log.warning("В шрифте Фанкью нет контуров (%s) — сверка по "
+                    "начертанию не выйдет", exc)
         return {}
 
     from fontTools.pens.basePen import BasePen
@@ -330,7 +332,8 @@ def _shapes_of_font(font, private: dict, numpy) -> dict:
             glyphs[name].draw(pen)
             pen._closePath()
             shapes[code] = numpy.array(picture, dtype=bool)
-        except Exception:  # noqa: BLE001 — один глиф не повод бросать все
+        except Exception as exc:  # noqa: BLE001 — один глиф не повод бросать все
+            log.debug("Глиф %s не отрисовался: %s", code, exc)
             continue
     return shapes
 
@@ -341,7 +344,8 @@ def _shapes_of_reference(path, numpy) -> dict:
 
     try:
         face = ImageFont.truetype(str(path), int(SHAPE_SIZE * 0.86))
-    except Exception:  # noqa: BLE001 — эталон может не читаться
+    except Exception as exc:  # noqa: BLE001 — эталон может не читаться
+        log.warning("Эталонный шрифт %s не читается: %s", path, exc)
         return {}
 
     shapes = {}
@@ -350,7 +354,8 @@ def _shapes_of_reference(path, numpy) -> dict:
         try:
             ImageDraw.Draw(picture).text((SHAPE_SIZE // 2, SHAPE_SIZE // 2),
                                          sign, font=face, fill=1, anchor="mm")
-        except Exception:  # noqa: BLE001 — знака может не быть в шрифте
+        except Exception as exc:  # noqa: BLE001 — знака может не быть в шрифте
+            log.debug("Знак %s не отрисовался эталоном: %s", sign, exc)
             continue
         shapes[sign] = numpy.array(picture, dtype=bool)
     return shapes

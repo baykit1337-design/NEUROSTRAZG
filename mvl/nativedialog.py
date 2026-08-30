@@ -15,8 +15,11 @@ Tk запускается **отдельным процессом**, а не п�
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
+
+log = logging.getLogger(__name__)
 
 #: Диалог ждёт человека, поэтому запас большой; нужен только чтобы забытое
 #: окно не держало процесс вечно.
@@ -159,7 +162,8 @@ def available() -> bool:
     """Есть ли вообще графическая оболочка — для подсказки в интерфейсе."""
     try:
         import tkinter  # noqa: F401
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — оболочки может не быть вовсе
+        log.info("Окно выбора файлов недоступно: %s", exc)
         return False
     try:
         result = subprocess.run(

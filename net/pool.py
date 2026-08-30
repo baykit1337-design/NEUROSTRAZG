@@ -213,8 +213,8 @@ class Fetcher:
         if old is not None:
             try:
                 old.close()
-            except Exception:  # noqa: BLE001 — закрытие не должно ломать прогон
-                pass
+            except Exception as exc:  # noqa: BLE001 — закрытие не должно ломать прогон
+                log.debug("Клиент не закрылся: %s", exc)
             with self._lock:
                 self._clients = [c for c in self._clients if c is not old]
 
@@ -233,8 +233,8 @@ class Fetcher:
             for client in self._clients:
                 try:
                     client.close()
-                except Exception:  # noqa: BLE001 — закрытие не должно ломать прогон
-                    pass
+                except Exception as exc:  # noqa: BLE001 — закрытие не должно ломать прогон
+                    log.debug("Клиент не закрылся: %s", exc)
             self._clients.clear()
 
 

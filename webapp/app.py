@@ -15,6 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import (Flask, Response, jsonify, request, send_file,
                    send_from_directory)
@@ -108,6 +109,63 @@ CHECK_CHAPTERS = 6
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app = Flask(__name__, static_folder=str(STATIC_DIR))
+
+#: Имена, под которыми к нам можно обращаться.
+#:
+#: «Слушаем только 127.0.0.1» защищает от соседа по сети, но не от
+#: браузера. Любая открытая вкладка может отправить сюда запрос — а
+#: здесь пишут и удаляют файлы на диске. Хуже того, сайт, чей домен
+#: указывает на 127.0.0.1 (подмена DNS), для браузера становится тем же
+#: источником, и тогда ему видны и ответы: список папок, журнал, ключи.
+HOME_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: Кого пускаем на самом деле. Пустое множество — проверка снята: так
+#: бывает, когда человек сознательно выставил сервер наружу.
+ALLOWED_NAMES: set[str] = set(HOME_NAMES)
+
+
+def _bare(value: str) -> str:
+    """Имя без порта: `[::1]:8765` → `::1`, `localhost:8765` → `localhost`."""
+    name = (value or "").strip().lower()
+    if name.startswith("["):
+        return name[1:].split("]", 1)[0]
+    # У голого IPv6 двоеточий много, и последнее — не порт.
+    return name.rsplit(":", 1)[0] if name.count(":") == 1 else name
+
+
+def open_to(host: str) -> None:
+    """Настроить проверку под то, на каком адресе сервер сел.
+
+    Вышли за пределы своей машины — проверять имя нечего: наружу ходят
+    по адресу сети, и он у каждого свой. Но молчать об этом нельзя.
+    """
+    if _bare(host) in HOME_NAMES:
+        return
+    ALLOWED_NAMES.clear()
+    log.warning("Сервер открыт наружу (%s) — проверка имени снята", host)
+
+
+@app.before_request
+def _only_ours():
+    """Пускать только свою страницу.
+
+    Два заголовка: `Host` — каким именем нас позвали, `Origin` — чья
+    страница зовёт. Первый ловит подмену DNS, второй — запрос со
+    стороннего сайта. Ни тот, ни другой браузер подделать странице не
+    даёт, поэтому проверки достаточно.
+    """
+    if not ALLOWED_NAMES:
+        return None
+    called = request.headers.get("Host", "")
+    if _bare(called) not in ALLOWED_NAMES:
+        log.warning("Запрос под чужим именем: %s", called)
+        return jsonify(error="Запрос пришёл под чужим именем. Программа "
+                             "открывается по адресу http://127.0.0.1"), 403
+    origin = request.headers.get("Origin") or ""
+    if origin and _bare(urlsplit(origin).netloc) not in ALLOWED_NAMES:
+        log.warning("Запрос со стороннего сайта: %s", origin)
+        return jsonify(error="Запрос пришёл со стороннего сайта и отклонён."), 403
+    return None
 
 
 @dataclass
@@ -1294,7 +1352,8 @@ def _reached(output_dir) -> int:
     try:
         state = downloader_mod.State(
             Path(output_dir) / downloader_mod.STATE_FILE)
-    except Exception:  # noqa: BLE001 — библиотека не повод ронять прогон
+    except Exception as exc:  # noqa: BLE001 — библиотека не повод ронять прогон
+        log.warning("Не прочитать состояние книги в %s: %s", output_dir, exc)
         return 0
     numbers = [int(n) for n in (state.data.get("downloaded") or {})
                if str(n).isdigit()]
@@ -2492,7 +2551,8 @@ def _keys_left() -> dict:
         said = keystore.state()
         return {"active": said["active"], "exhausted": said["exhausted"],
                 "total": said["total"]}
-    except Exception:  # noqa: BLE001 — счётчик не повод ронять перевод
+    except Exception as exc:  # noqa: BLE001 — счётчик не повод ронять перевод
+        log.warning("Счётчик ключей не сложился: %s", exc)
         return {"active": 0, "exhausted": 0, "total": 0}
 
 
@@ -5183,6 +5243,11 @@ def main() -> None:
         print(f"  Список прокси: {args.proxies}, адресов — {len(pool)}")
     except (OSError, ValueError) as exc:
         print(f"  Прокси не загружены ({scrub(str(exc))}). Укажите файл в интерфейсе.")
+
+    open_to(args.host)
+    if not ALLOWED_NAMES:
+        print("  ВНИМАНИЕ: сервер доступен из сети. Он даёт доступ к файлам "
+              "на диске — не оставляйте его открытым.")
 
     url = f"http://{args.host}:{args.port}"
     print(f"\n  NEUROSTRAZH → {url}\n  Ctrl+C чтобы остановить\n")

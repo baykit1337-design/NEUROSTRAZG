@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from core.text import PrepOptions, prepare, to_text
 
 from . import history
 from .base import collect_files, read_all
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -129,7 +132,8 @@ def _findings(source: str, paragraphs: list[str], kinds=None) -> list[dict]:
         from mvl import textcheck
 
         report = textcheck.check(Path(source), kinds=kinds)
-    except Exception:  # noqa: BLE001 — проверка не должна мешать чтению
+    except Exception as exc:  # noqa: BLE001 — проверка не должна мешать чтению
+        log.warning("Проверка главы %s не прошла: %s", source, exc)
         return []
 
     shown = {p.strip() for p in paragraphs}

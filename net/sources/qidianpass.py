@@ -53,10 +53,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import random
 import time
 from urllib.parse import urlsplit
+
+log = logging.getLogger(__name__)
 
 #: Имя куки. Одно на весь сайт.
 COOKIE = "w_tsfp"
@@ -102,7 +105,8 @@ def unpack(token: str) -> dict:
     try:
         plain = cipher(base64.b64decode(str(token or "")))
         found = json.loads(plain.decode("utf-8", "replace"))
-    except Exception:  # noqa: BLE001 — чужая кука может быть любой
+    except Exception as exc:  # noqa: BLE001 — чужая кука может быть любой
+        log.debug("Пропуск не разобрался: %s", exc)
         return {}
     return found if isinstance(found, dict) else {}
 

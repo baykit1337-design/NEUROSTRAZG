@@ -243,7 +243,9 @@ def _shapes_of_font(font, hidden: dict, numpy) -> dict:
 
     try:
         glyphs = font.getGlyphSet()
-    except Exception:  # noqa: BLE001 — шрифт без контуров бывает
+    except Exception as exc:  # noqa: BLE001 — шрифт без контуров бывает
+        log.warning("В шрифте Цидяня нет контуров (%s) — сверка по "
+                    "начертанию не выйдет", exc)
         return {}
 
     upem = font["head"].unitsPerEm if "head" in font else 1000
@@ -314,7 +316,8 @@ def _shapes_of_font(font, hidden: dict, numpy) -> dict:
             trimmed = _trim(board, numpy)
             if trimmed is not None:
                 shapes[code] = trimmed
-        except Exception:  # noqa: BLE001 — один глиф не повод бросать все
+        except Exception as exc:  # noqa: BLE001 — один глиф не повод бросать все
+            log.debug("Глиф %s не отрисовался: %s", code, exc)
             continue
     return shapes
 
@@ -325,7 +328,8 @@ def _shapes_of_reference(path, numpy) -> dict:
 
     try:
         face = ImageFont.truetype(str(path), int(SHAPE_H * 0.8))
-    except Exception:  # noqa: BLE001 — шрифт может не читаться
+    except Exception as exc:  # noqa: BLE001 — шрифт может не читаться
+        log.warning("Эталонный шрифт %s не читается: %s", path, exc)
         return {}
 
     shapes = {}
@@ -334,7 +338,8 @@ def _shapes_of_reference(path, numpy) -> dict:
         try:
             ImageDraw.Draw(picture).text((SHAPE_H, SHAPE_H), digit,
                                          font=face, fill=1, anchor="mm")
-        except Exception:  # noqa: BLE001 — знака может не быть
+        except Exception as exc:  # noqa: BLE001 — знака может не быть
+            log.debug("Цифра %s не отрисовалась эталоном: %s", digit, exc)
             continue
         trimmed = _trim(numpy.array(picture, dtype=bool), numpy)
         if trimmed is not None:

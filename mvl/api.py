@@ -372,7 +372,8 @@ def _soup(html: str):
 
     try:
         return BeautifulSoup(html, "lxml")
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — lxml необязателен
+        log.debug("lxml не подошёл (%s) — разбираем встроенным", exc)
         return BeautifulSoup(html, "html.parser")
 
 

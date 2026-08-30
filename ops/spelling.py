@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,8 @@ from pathlib import Path
 from core.models import OpReport
 
 from .base import Progress, collect_files, read_all
+
+log = logging.getLogger(__name__)
 
 #: Слово: только буквы и внутренние дефис с апострофом. Цифры и знаки
 #: отсекаются здесь, а не проверками словаря.
@@ -161,7 +164,8 @@ def registry_words(root) -> set[str]:
         from ops.analyze import load_registry
 
         registry = load_registry(Path(str(root)).expanduser())
-    except Exception:  # noqa: BLE001 — без реестра проверка просто строже
+    except Exception as exc:  # noqa: BLE001 — без реестра проверка просто строже
+        log.info("Реестр имён не открылся (%s) — имена пойдут в опечатки", exc)
         return set()
 
     found: set[str] = set()
@@ -206,7 +210,8 @@ class _Dictionary:
             from spellchecker import SpellChecker
 
             self._speller = SpellChecker(language="ru")
-        except Exception:  # noqa: BLE001 — без подсказок проверка работает
+        except Exception as exc:  # noqa: BLE001 — без подсказок проверка работает
+            log.info("Подсказок «чем заменить» не будет: %s", exc)
             self._speller = None
 
     def knows(self, word: str) -> bool:
@@ -228,7 +233,8 @@ class _Dictionary:
             return []
         try:
             options = self._speller.candidates(word.lower()) or set()
-        except Exception:  # noqa: BLE001 — подсказка не обязательна
+        except Exception as exc:  # noqa: BLE001 — подсказка не обязательна
+            log.debug("Подсказка для «%s» не сложилась: %s", word, exc)
             return []
         return [w for w in sorted(options)[:SUGGESTIONS] if w != word.lower()]
 
