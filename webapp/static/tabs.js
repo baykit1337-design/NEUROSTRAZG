@@ -1917,6 +1917,71 @@ async function fmCollect(){
   finally{ $('fmCollect').disabled = false; }
 }
 
+/** «До и после» — каким станет каждый заголовок.
+ *
+ * К модели не ходит ни разу: «оставить» и «убрать» считаются точно, а
+ * для перевода показывается то, что уже есть в словаре имён и в кэше.
+ * Остальное честно помечено «переведётся» — и сразу видно, за сколько
+ * строк придётся платить.
+ */
+async function fmBefore(){
+  showError('');
+  const button = $('fmBefore');
+  button.disabled = true;
+  $('fmBeforeNote').innerHTML = '<span class="spin"></span>Считаем…';
+  try{
+    const got = await call('/api/format/retitle/preview', {
+      targets: CHOSEN.fmBookList || [],
+      names: fmNamesWay(),
+      renumber: Number($('fmRenumber').value) || 0,
+      ...fmStylePayload(),
+    });
+
+    const table = $('fmBeforeRows');
+    table.innerHTML = '';
+    for(const row of got.rows || []){
+      const line = document.createElement('div');
+      line.className = 'tr';
+      const was = document.createElement('span');
+      was.className = 'grow';
+      was.textContent = row.before;
+      was.title = row.before;
+      const now = document.createElement('span');
+      now.className = 'grow';
+      now.textContent = row.after;
+      now.title = row.after;
+      line.append(was, now);
+      if(row.later){
+        const tag = document.createElement('span');
+        tag.className = 'tag warn';
+        tag.textContent = 'переведётся';
+        line.append(tag);
+      }
+      table.append(line);
+    }
+    if(got.more){
+      const rest = document.createElement('div');
+      rest.className = 'tr';
+      const text = document.createElement('span');
+      text.className = 'grow';
+      text.textContent = `…и ещё ${got.more}`;
+      rest.append(text);
+      table.append(rest);
+    }
+    table.hidden = !(got.rows || []).length;
+
+    $('fmBeforeNote').textContent = got.waiting
+      ? `Глав: ${got.total}. Готово без запроса: ${got.ready}, `
+        + `переведётся: ${got.waiting}.`
+      : `Глав: ${got.total}. Всё считается без запроса к модели.`;
+  }catch(err){
+    showError(err.message, $('fmBefore'));
+    $('fmBeforeNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
 async function fmRetitle(){
   showError('');
   $('fmRetitle').disabled = true;
@@ -3627,6 +3692,7 @@ $('fmList').dataset.onchange = 'fmScan';
 $('fmBookList').dataset.onchange = 'fmBookScan';
 $('fmCollect').onclick = fmCollect;
 $('fmRetitle').onclick = fmRetitle;
+$('fmBefore').onclick = fmBefore;
 $('fmJunkLook').onclick = fmJunkLook;
 $('fmJunkClean').onclick = fmJunkClean;
 $('fmStop').onclick = () => cancelTab('format');

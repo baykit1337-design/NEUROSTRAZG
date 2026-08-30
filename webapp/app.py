@@ -2528,6 +2528,60 @@ def api_format_book():
                    sample=[head.line() for head, _ in chapters[:5]])
 
 
+def _retitled(way: str, number, name: str, known: dict, style):
+    """Каким станет заголовок. Одна на запись и на предпросмотр.
+
+    Держать это двумя копиями нельзя: предпросмотр «до и после» затем и
+    нужен, чтобы показать будущий файл, — а разойдись он с записью,
+    показывал бы не его.
+    """
+    if way == "keep":
+        ready = name
+    elif way == "drop":
+        # Убрать название можно только там, где остаётся номер: у пролога
+        # его нет, и «Глава» вместо «Пролога» — неправда.
+        ready = "" if number is not None else name
+    else:
+        # Не перевелось — оставляем как было. Пустой заголовок хуже
+        # непереведённого: главу в книге станет не найти.
+        ready = known.get(name) or name
+    title = style.build(number, ready) if number is not None else ready
+    return ready, title
+
+
+def _fresh_head(head, title: str, order):
+    """Готовый заголовок главы. Одна на запись и на предпросмотр.
+
+    Без своего порядка хвост строки сохраняется **дословно**: лишний или
+    потерянный пробел в платности меняет для сайта смысл, а правим мы
+    только название. Порядок попросили — строку приходится собрать
+    заново, и тогда поля берутся из разобранных.
+    """
+    if order:
+        return mdbook.make_head(title, str(order), head.paid, head.volume)
+    return head.with_title(title)
+
+
+def _numbered(chapters, renumber: int):
+    """Пары «номер, название» с перенумерацией, если её просили.
+
+    Пролог и послесловие номера не имели. Выдать им номер значило бы
+    сделать из «Пролога» «Главу 3».
+    """
+    taken = [mdbook.split_title(head.title) for head, _ in chapters]
+    if not renumber:
+        return taken
+
+    fresh, at = [], renumber
+    for number, name in taken:
+        if number is None:
+            fresh.append((None, name))
+            continue
+        fresh.append((at, name))
+        at += 1
+    return fresh
+
+
 def _md_pairs(chapters) -> list:
     """Главы книги парами «заголовок, абзацы» — как их видит `ops/junk`."""
     return [(head.title, mdbook.paragraphs_of(lines)) for head, lines in chapters]
@@ -2590,6 +2644,61 @@ def api_format_junk_clean():
                    source=str(path))
 
 
+#: Сколько строк «до и после» показывать. Книга бывает на полторы тысячи
+#: глав, а решение по такому предпросмотру принимают по первым двум
+#: десяткам: дальше повторяется то же самое.
+RETITLE_SHOW = 60
+
+
+@app.post("/api/format/retitle/preview")
+def api_format_retitle_preview():
+    """Как заголовки будут выглядеть — до того, как за это заплатят.
+
+    К модели не ходим ни разу. Для «оставить» и «убрать» ответ точный: он
+    и не требует перевода. Для «перевести» показываем то, что уже есть в
+    словаре имён и в кэше, а остальное честно помечаем «переведётся» — и
+    сразу видно, за сколько строк придётся платить.
+
+    Считает всё та же пара функций, что и запись: разойдись они, и
+    предпросмотр показывал бы не тот файл, который получится.
+    """
+    payload = request.json or {}
+    way = str(payload.get("names") or "translate").strip()
+    if way not in NAME_WAYS:
+        return jsonify(error=f"Неизвестно, что делать с названиями: {way}"), 400
+
+    try:
+        path, _, chapters = _read_md(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    style = _title_style(payload)
+    taken = _numbered(chapters, _whole(payload, "renumber"))
+    # Что уже известно без единого запроса: словарь имён важнее кэша —
+    # написание из него выбрал человек.
+    known = {**titles_op.headings(), **titles_op.spellings()}
+
+    # Порядок считаем так же, как считает запись: с числа «порядок с» и
+    # дальше подряд. Ноль — строку не пересобираем вовсе.
+    first = _whole(payload, "first")
+    rows, waiting, order = [], 0, first
+    for (head, _), (number, name) in zip(chapters, taken):
+        _, title = _retitled(way, number, name, known, style)
+        # «Переведётся» — только там, где перевод и нужен, и ещё не готов.
+        later = bool(way == "translate" and name and name not in known)
+        waiting += later
+        rows.append({"before": head.line(),
+                     "after": _fresh_head(head, title, order).line(),
+                     "later": later})
+        if order:
+            order += 1
+
+    return jsonify(path=str(path), total=len(rows), waiting=waiting,
+                   ready=len(rows) - waiting, way=way,
+                   rows=rows[:RETITLE_SHOW],
+                   more=max(0, len(rows) - RETITLE_SHOW))
+
+
 @app.post("/api/format/retitle")
 def api_format_retitle():
     """Переписать заголовки готовой книги, не трогая всё остальное.
@@ -2637,21 +2746,11 @@ def api_format_retitle():
     def work(job: Job):
         # Просим только имена: номер главы у нас уже есть, и отдавать его
         # модели значило бы позволить ей его поправить.
-        taken = [mdbook.split_title(head.title) for head, _ in chapters]
         # Номера подряд, если попросили. Считаем до перевода: он про
-        # имена, а номер к нему отношения не имеет.
-        if renumber:
-            fresh, at = [], renumber
-            for number, name in taken:
-                # Пролог и послесловие номера не имели. Выдать им номер
-                # значило бы сделать из «Пролога» «Главу 3» — а вместе с
-                # «убрать названия» от него не осталось бы и имени.
-                if number is None:
-                    fresh.append((None, name))
-                    continue
-                fresh.append((at, name))
-                at += 1
-            taken = fresh
+        # имена, а номер к нему отношения не имеет. Считает их та же
+        # `_numbered`, что и предпросмотр, — иначе он показывал бы не то,
+        # что запишется.
+        taken = _numbered(chapters, renumber)
         wanted = [name for _, name in taken if name]
 
         done: dict = {}
@@ -2677,21 +2776,8 @@ def api_format_retitle():
         names = done.get("names") or {}
         out, order = [], first
         for (head, body), (number, name) in zip(chapters, taken):
-            if way == "keep":
-                ready = name
-            elif way == "drop":
-                # Убрать название можно только там, где остаётся номер:
-                # у пролога его нет, и «Глава» вместо «Пролога» — неправда.
-                ready = "" if number is not None else name
-            else:
-                # Не перевелось — оставляем как было. Пустой заголовок хуже
-                # непереведённого: главу в книге станет не найти.
-                ready = names.get(name) or name
-            title = style.build(number, ready) if number is not None else ready
-            fresh = head.with_title(title)
-            if order:
-                fresh = mdbook.make_head(title, str(order), head.paid,
-                                         head.volume)
+            ready, title = _retitled(way, number, name, names, style)
+            fresh = _fresh_head(head, title, order)
             pieces = mdbook.cut_into_parts(fresh, body, parts, style,
                                            number, ready)
             out.extend(pieces)

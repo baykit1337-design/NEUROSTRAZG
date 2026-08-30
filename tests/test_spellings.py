@@ -218,5 +218,123 @@ class TestOverHttp(Base):
         self.assertEqual(got["total"], 0)
 
 
+class TestBeforeAndAfter(Base):
+    """«До и после» в «Форматировать».
+
+    Находки было видно, а как будет выглядеть результат целиком — нет.
+    Главное здесь не то, что предпросмотр рисуется, а то, что он
+    показывает **тот самый** файл: считает его та же пара функций, что и
+    запись.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.web = web
+
+        self.book = Path(self._dir.name) / "книга.md"
+        self.book.write_text("\n\n".join([
+            "# [Chapter 1 — Li Xiao returns :|: :|: 1 :|: ]", "Текст первой.",
+            "# [Chapter 2 — Trade at dawn :|: :|: 1 :|: ]", "Текст второй.",
+            "# [Пролог :|: :|: 1 :|: ]", "Текст пролога.",
+            # Хвост нарочно неканонический: лишние пробелы в порядке.
+            # На каноническом дословное сохранение неотличимо от
+            # пересборки, и проверка не проверяла бы ничего.
+            "# [Chapter 3 — Dusk :|:  7  :|: 1 :|: том 2]", "Текст третьей.",
+        ]), encoding="utf-8")
+
+    def look(self, **more):
+        return self.app.post("/api/format/retitle/preview",
+                             json={"path": str(self.book), **more}).get_json()
+
+    def test_keeping_names_costs_no_request(self):
+        """Ответ точный: перевод тут и не нужен."""
+        got = self.look(names="keep")
+        self.assertEqual(got["waiting"], 0)
+        self.assertEqual(got["total"], 4)
+
+    def test_dropping_a_name_leaves_the_number(self):
+        got = self.look(names="drop")
+        self.assertIn("Глава 1", got["rows"][0]["after"])
+        self.assertNotIn("Li Xiao", got["rows"][0]["after"])
+
+    def test_a_prologue_keeps_its_name_when_names_are_dropped(self):
+        """У пролога номера нет, и «Глава» вместо «Пролога» — неправда."""
+        got = self.look(names="drop")
+        self.assertIn("Пролог", got["rows"][2]["after"])
+
+    def test_what_the_glossary_knows_is_shown_ready(self):
+        titles.remember_spellings({"Li Xiao returns": "Ли Сяо вернулся"})
+        got = self.look(names="translate")
+
+        self.assertIn("Ли Сяо вернулся", got["rows"][0]["after"])
+        self.assertFalse(got["rows"][0]["later"])
+
+    def test_the_rest_is_marked_as_going_to_the_model(self):
+        """Сразу видно, за сколько строк придётся платить."""
+        titles.remember_spellings({"Li Xiao returns": "Ли Сяо вернулся"})
+        got = self.look(names="translate")
+
+        self.assertTrue(got["rows"][1]["later"])
+        self.assertEqual(got["waiting"], 3)
+        self.assertEqual(got["ready"], 1)
+
+    def test_the_preview_asks_the_model_nothing(self):
+        """Предпросмотр, который тратит квоту, — не предпросмотр."""
+        held = self.web._llm_client
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("предпросмотр ходил к модели")
+
+        self.web._llm_client = forbidden
+        self.addCleanup(setattr, self.web, "_llm_client", held)
+        self.assertEqual(self.look(names="translate")["total"], 4)
+
+    def test_the_untouched_tail_stays_letter_for_letter(self):
+        """Лишний или потерянный пробел в полях меняет для сайта смысл, а
+        правим мы только название.
+
+        Проверяется на заголовке с неканоническим хвостом: на обычном
+        дословное сохранение неотличимо от пересборки.
+        """
+        got = self.look(names="keep")
+        self.assertIn(":|:  7  :|:", got["rows"][3]["after"])
+
+    def test_asking_for_an_order_rebuilds_the_line_on_purpose(self):
+        """Свой порядок иначе некуда поставить — тут пересборка законна."""
+        got = self.look(names="keep", first=5)
+        self.assertIn(":|: 5 :|:", got["rows"][0]["after"])
+        self.assertIn(":|: 8 :|:", got["rows"][3]["after"])
+
+    def test_it_shows_the_same_heading_the_writing_makes(self):
+        """Разойдись предпросмотр с записью — он показывал бы не тот
+        файл. Поэтому обе стороны считает одна пара функций."""
+        from ops import mdbook
+
+        style = self.web._title_style({})
+        head = mdbook.parse_head("# [Chapter 1 — Li Xiao returns :|: :|: 1 :|: ]")
+        number, name = mdbook.split_title(head.title)
+
+        _, title = self.web._retitled("keep", number, name, {}, style)
+        made = self.web._fresh_head(head, title, 0).line()
+
+        self.assertEqual(self.look(names="keep")["rows"][0]["after"], made)
+
+    def test_a_long_book_is_cut_but_says_so(self):
+        """Решение принимают по первым двум десяткам, дальше повторяется
+        то же самое."""
+        rows = []
+        for number in range(1, self.web.RETITLE_SHOW + 11):  # noqa: E501
+            rows += [f"# [Chapter {number} :|: :|: 1 :|: ]", f"Текст {number}."]
+        self.book.write_text("\n\n".join(rows), encoding="utf-8")
+
+        got = self.look(names="keep")
+        self.assertEqual(len(got["rows"]), self.web.RETITLE_SHOW)
+        self.assertEqual(got["more"], 10)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

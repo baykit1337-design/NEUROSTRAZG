@@ -2335,9 +2335,12 @@
        теми именами, что в этой пачке встречаются. -->
   <div class="card folded" data-fold id="gnCard">
     <label class="foldhead">Словарь имён собственных</label>
-    <p class="hint">Как писать имена по-русски. Заголовок, целиком
-       совпавший со словарной статьёй, к модели вообще не поедет —
-       написание уже выбрано вами, и переспрашивать незачем.</p>
+    <p class="hint">Как писать имена по-русски. Словарь уходит к модели
+       вместе с пачкой заголовков — и только теми именами, что в этой
+       пачке встречаются.</p>
+    <p class="hint">Сверяется <b>название главы без номера</b>: у главы
+       «Chapter 7 — Li Xiao returns» это «Li Xiao returns». Совпало
+       целиком — к модели она не поедет вовсе, написание уже выбрано вами.</p>
     <p class="hint" id="gnNote"></p>
     <div style="margin-top:10px">
       <label for="gnText">пары «оригинал = перевод», по одной в строке</label>
@@ -2406,9 +2409,17 @@
       <label for="fmOutName">имя файла</label>
       <input id="fmOutName" type="text" placeholder="книга-ru" autocomplete="off">
     </div>
-    <div class="row" style="margin-top:16px">
-      <button id="fmRetitle" class="primary" style="flex:1">Переписать заголовки</button>
+    <!-- «До и после» — до того, как за это заплатят. К модели не ходит
+         ни разу: «оставить» и «убрать» считаются точно, а для перевода
+         показывается то, что уже есть в словаре и кэше, остальное честно
+         помечается «переведётся». -->
+    <div class="row" style="margin-top:16px;flex-wrap:wrap">
+      <button id="fmRetitle" class="primary">Переписать заголовки</button>
+      <button id="fmBefore" class="ghost">Показать до и после</button>
     </div>
+    <p class="hint" id="fmBeforeNote"></p>
+    <div class="table" id="fmBeforeRows" hidden
+         style="margin-top:10px;max-height:420px"></div>
   </div>
 
   <!-- Мусор в главах. Слив кладёт в каждую главу название книги и второй
