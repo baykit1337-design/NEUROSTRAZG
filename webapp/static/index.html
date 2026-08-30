@@ -3053,6 +3053,10 @@
     <div class="row" style="margin-top:10px;flex-wrap:wrap">
       <button id="upLook" class="ghost">Проверить обновления</button>
       <button id="upApply" class="primary" hidden>Обновить</button>
+      <!-- Единственный быстрый выход из неудачного обновления, когда
+           канал медленный: качать заново нечего, прежние файлы лежат в
+           корзине. -->
+      <button id="upBack" class="ghost" hidden>Вернуть прошлую версию</button>
     </div>
     <p class="hint" id="upNote">Проверка спрашивает у GitHub один адрес —
        это около трёхсот байт. Сами файлы качаются только по кнопке
@@ -3066,6 +3070,13 @@
       <div class="stats"><span id="upPct"></span></div>
     </div>
     <div class="table" id="upErrors" hidden style="margin-top:10px"></div>
+    <!-- Что нового: заголовки, появившиеся в истории изменений. Весь
+         CHANGELOG показывать бессмысленно — там полторы тысячи строк, —
+         а «обновлено 12 файлов» не говорит ничего. -->
+    <div id="upNews" hidden style="margin-top:12px">
+      <label>Что нового</label>
+      <ul id="upNewsList" class="hint" style="margin:6px 0 0 18px"></ul>
+    </div>
   </div>
 
   <!-- Отчёт о проблеме. Раньше журнал уходил только в консоль, а окно на

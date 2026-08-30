@@ -287,6 +287,31 @@ def clear(only_done: bool = False) -> int:
         return len(rows) - len(left)
 
 
+def recover() -> list[Item]:
+    """Расчистить строки, оборванные закрытием программы.
+
+    «Качается» пишется на диск, чтобы очередь пережила закрытие окна. Но
+    если программу закрыли посреди книги, эта надпись остаётся навсегда:
+    очередь показывает работу, которой нет, и до следующего запуска
+    человек не знает, качалась книга или нет.
+
+    Звать один раз при старте, а не при каждом чтении: во время прогона
+    «качается» — это правда.
+    """
+    with _LOCK:
+        rows = _load()
+        stuck = [one for one in rows if one.state == RUNNING]
+        for one in stuck:
+            one.state = WAITING
+            one.message = ("Прервано: программу закрыли во время "
+                           "скачивания. Скачанное осталось на месте.")
+        if stuck:
+            log.info("Очередь книг: %s строк освобождено после обрыва",
+                     len(stuck))
+            _save(rows)
+        return rows
+
+
 def reset() -> list[Item]:
     """Приготовить очередь к новому запуску, не трогая ждущих ссылку."""
     with _LOCK:
@@ -373,4 +398,5 @@ def _keep(rows: list[Item]) -> None:
 
 __all__ = ["DONE", "FAILED", "Item", "KEEP", "NEEDS_LINK", "QUEUE_FILE",
            "RUNNING", "SKIPPED", "WAITING", "add", "all_items", "clear",
-           "get", "move", "remove", "reset", "run", "state", "update"]
+           "get", "move", "recover", "remove", "reset", "run", "state",
+           "update"]

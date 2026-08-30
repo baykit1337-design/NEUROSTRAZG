@@ -291,5 +291,174 @@ class TestOverHttp(Base):
         self.assertIn("@", got["where"])
 
 
+class TestTheCopyCanBePutBack(Base):
+    """Копия перед обновлением должна помнить, откуда каждый файл.
+
+    Плоская копия по именам теряла бы `ops/base.py` под `core/base.py` — и
+    вернуть её на место было бы нечем.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from ops import history
+        self.history = history
+        self._bak = (history.DATA_DIR, history.HISTORY_FILE, history.BACKUP_DIR)
+        history.DATA_DIR = self.tmp / "data"
+        history.HISTORY_FILE = history.DATA_DIR / "history.json"
+        history.BACKUP_DIR = history.DATA_DIR / "backup"
+        self.addCleanup(self._back)
+
+        for name in ("ops/base.py", "core/base.py"):
+            path = update.ROOT / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"старый {name}", encoding="utf-8")
+
+    def _back(self):
+        (self.history.DATA_DIR, self.history.HISTORY_FILE,
+         self.history.BACKUP_DIR) = self._bak
+
+    def plan(self):
+        hub = FakeHub(files=[change("ops/base.py"), change("core/base.py")],
+                      blobs={"ops/base.py": b"new ops",
+                             "core/base.py": b"new core"})
+        update.remember(OLD)
+        return hub, update.look(hub)
+
+    def test_two_files_with_one_name_both_survive_in_the_copy(self):
+        hub, plan = self.plan()
+        done = update.apply(hub, plan)
+        kept = Path(done.backup)
+        self.assertEqual((kept / "ops" / "base.py").read_text(encoding="utf-8"),
+                         "старый ops/base.py")
+        self.assertEqual((kept / "core" / "base.py").read_text(encoding="utf-8"),
+                         "старый core/base.py")
+
+    def test_going_back_puts_every_file_where_it_was(self):
+        hub, plan = self.plan()
+        done = update.apply(hub, plan)
+        self.assertEqual(
+            (update.ROOT / "ops" / "base.py").read_bytes(), b"new ops")
+
+        self.assertEqual(update.undo(done.backup), 2)
+        self.assertEqual(
+            (update.ROOT / "ops" / "base.py").read_text(encoding="utf-8"),
+            "старый ops/base.py")
+        self.assertEqual(
+            (update.ROOT / "core" / "base.py").read_text(encoding="utf-8"),
+            "старый core/base.py")
+
+    def test_the_copy_is_findable_afterwards(self):
+        hub, plan = self.plan()
+        update.apply(hub, plan)
+        self.assertTrue(update.last_backup())
+
+
+class TestAnUpdateThatDoesNotStart(Base):
+    """Обновление, после которого программа не запускается, хуже
+    отсутствия обновления."""
+
+    def setUp(self):
+        super().setUp()
+        from ops import history
+        self.history = history
+        self._bak = (history.DATA_DIR, history.HISTORY_FILE, history.BACKUP_DIR)
+        history.DATA_DIR = self.tmp / "data"
+        history.HISTORY_FILE = history.DATA_DIR / "history.json"
+        history.BACKUP_DIR = history.DATA_DIR / "backup"
+        self.addCleanup(self._back)
+
+        path = update.ROOT / "ops" / "split.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("рабочий", encoding="utf-8")
+
+    def _back(self):
+        (self.history.DATA_DIR, self.history.HISTORY_FILE,
+         self.history.BACKUP_DIR) = self._bak
+
+    def broken(self):
+        """Пробный запуск, который говорит, что программа сломана."""
+        held = update.works
+        update.works = lambda: "ImportError: нет такого модуля"
+        self.addCleanup(setattr, update, "works", held)
+
+    def test_the_old_files_come_back(self):
+        self.broken()
+        hub = FakeHub(files=[change("ops/split.py")],
+                      blobs={"ops/split.py": b"broken"})
+        update.remember(OLD)
+        done = update.apply(hub, update.look(hub))
+
+        self.assertTrue(done.rolled_back)
+        self.assertEqual(
+            (update.ROOT / "ops" / "split.py").read_text(encoding="utf-8"),
+            "рабочий")
+
+    def test_the_version_is_not_remembered_after_a_rollback(self):
+        """Иначе следующая проверка сказала бы «стоит последняя»."""
+        self.broken()
+        hub = FakeHub(files=[change("ops/split.py")])
+        update.remember(OLD)
+        update.apply(hub, update.look(hub))
+        self.assertEqual(update.current(), OLD)
+
+    def test_a_working_update_stays(self):
+        hub = FakeHub(files=[change("ops/split.py")],
+                      blobs={"ops/split.py": "хороший".encode("utf-8")})
+        update.remember(OLD)
+        done = update.apply(hub, update.look(hub))
+        self.assertFalse(done.rolled_back)
+        self.assertEqual(
+            (update.ROOT / "ops" / "split.py").read_text(encoding="utf-8"),
+            "хороший")
+
+    def test_the_check_is_skipped_where_there_is_no_program(self):
+        """Свой пустой корень — проверять нечего, но и мешать нельзя."""
+        self.assertEqual(update.works(), "")
+
+
+class TestWhatIsNew(Base):
+    """«Обновлено 12 файлов» не говорит ничего, а весь CHANGELOG — это
+    полторы тысячи строк."""
+
+    def test_only_the_new_headings_are_taken(self):
+        was = "# История\n\n### Первое\n текст\n"
+        now = "# История\n\n### Второе\n текст\n### Первое\n текст\n"
+        self.assertEqual(update.news_of(was, now), ["Второе"])
+
+    def test_nothing_new_is_an_empty_list(self):
+        same = "### Одно\n"
+        self.assertEqual(update.news_of(same, same), [])
+
+    def test_the_update_reports_what_appeared(self):
+        (update.ROOT / update.CHANGELOG).write_text("### Старое\n",
+                                                    encoding="utf-8")
+        hub = FakeHub(files=[change(update.CHANGELOG)],
+                      blobs={update.CHANGELOG:
+                             "### Новое\n### Старое\n".encode("utf-8")})
+        update.remember(OLD)
+        done = update.apply(hub, update.look(hub), check=False)
+        self.assertEqual(done.news, ["Новое"])
+
+
+class TestNewDependencies(Base):
+    """Обновление приносит файлы, но не библиотеки."""
+
+    def test_a_changed_requirements_is_noticed(self):
+        hub = FakeHub(files=[change("requirements.txt"), change("ops/split.py")])
+        update.remember(OLD)
+        self.assertTrue(update.look(hub).needs_install)
+
+    def test_an_ordinary_update_says_nothing_about_it(self):
+        hub = FakeHub(files=[change("ops/split.py")])
+        update.remember(OLD)
+        self.assertFalse(update.look(hub).needs_install)
+
+    def test_it_reaches_the_result(self):
+        hub = FakeHub(files=[change("requirements.txt")])
+        update.remember(OLD)
+        done = update.apply(hub, update.look(hub), check=False)
+        self.assertTrue(done.as_dict()["needs_install"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

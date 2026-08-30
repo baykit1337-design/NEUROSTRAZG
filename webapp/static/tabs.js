@@ -4547,7 +4547,13 @@ async function upLook(){
       $('upNote').textContent =
         `Изменилось файлов: ${plan.files}, строк: ${plan.lines}. `
         + 'Точный вес станет известен при загрузке — сравнение его не '
-        + 'сообщает. Старые файлы уйдут в корзину.';
+        + 'сообщает. Старые файлы уйдут в корзину.'
+        // Обновление приносит файлы, но не библиотеки: о новой
+        // зависимости человек должен узнать до, а не при падении.
+        + (plan.needs_install
+           ? ' Изменился список зависимостей — после обновления '
+             + 'выполните: pip install -r requirements.txt'
+           : '');
     }
   }catch(err){
     showError(err.message, $('upNote'));
@@ -4573,8 +4579,24 @@ async function upApply(){
         $('upFiles').hidden = true;
         showFailures('upErrors', (job.report?.failures || []).map(
           one => ({file: one, step: 'обновление', error: ''})));
+        const done = job.report || {};
+        if(done.rolled_back){
+          // Прежние файлы уже вернулись на место — сказать это прямо
+          // важнее, чем показать список новшеств, которых не будет.
+          $('upNote').textContent =
+            'Обновление отменено: с новыми файлами программа не '
+            + `запускается (${done.rolled_back}). Прежняя версия на месте.`;
+          $('upApply').hidden = false;
+          return;
+        }
+        upNews(done.news || []);
+        $('upBack').hidden = !done.backup;
         $('upNote').textContent =
-          'Обновлено. Изменения вступят в силу после перезапуска программы.';
+          'Обновлено. Изменения вступят в силу после перезапуска программы.'
+          + (done.needs_install
+             ? ' Изменился список зависимостей — выполните: '
+               + 'pip install -r requirements.txt'
+             : '');
       });
   }catch(err){
     showError(err.message, $('upNote'));
@@ -4582,8 +4604,39 @@ async function upApply(){
   }
 }
 
+/** Что нового: заголовки, появившиеся в истории изменений. */
+function upNews(rows){
+  const list = $('upNewsList');
+  list.innerHTML = '';
+  for(const one of rows){
+    const item = document.createElement('li');
+    item.textContent = one;
+    list.append(item);
+  }
+  $('upNews').hidden = !rows.length;
+}
+
+async function upBack(){
+  showError('');
+  if(!confirm('Вернуть файлы программы к тому, что стояло до обновления?\n\n'
+              + 'Книги, настройки и журнал не тронутся.')) return;
+  const button = $('upBack');
+  button.disabled = true;
+  try{
+    const got = await call('/api/update/undo', {});
+    $('upNote').textContent = got.message;
+    $('upNews').hidden = true;
+    button.hidden = true;
+  }catch(err){
+    showError(err.message, $('upNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
 $('upLook').onclick = upLook;
 $('upApply').onclick = upApply;
+$('upBack').onclick = upBack;
 
 /* ------------------------------------------- отчёт о проблеме
  *

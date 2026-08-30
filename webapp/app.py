@@ -5133,15 +5133,52 @@ def api_update_apply():
         finally:
             client.close()
         job.report = done.as_dict()
+        if done.rolled_back:
+            # Обновление, после которого программа не запускается, хуже
+            # отсутствия обновления. Прежние файлы уже вернулись на место.
+            job.progress.update(
+                stage="done", done=total, total=total,
+                message=("Обновление отменено: с новыми файлами программа "
+                         f"не запускается ({done.rolled_back}). Прежняя "
+                         "версия возвращена на место."))
+            return
         job.progress.update(
             stage="done", done=total, total=total,
             message=(f"Готово. Обновлено {done.written}"
                      + (f", удалено {done.removed}" if done.removed else "")
                      + (f", не вышло {len(done.failures)}"
                         if done.failures else "")
-                     + ". Перезапустите программу."))
+                     + ". Перезапустите программу."
+                     + (" Изменился список зависимостей — выполните "
+                        "pip install -r requirements.txt."
+                        if done.needs_install else "")))
 
     return jsonify(job=start_job(job, work).snapshot())
+
+
+@app.post("/api/update/undo")
+def api_update_undo():
+    """Вернуться к версии, которая стояла до обновления.
+
+    При медленном канале это единственный быстрый выход из неудачного
+    обновления: качать заново нечего, прежние файлы лежат в корзине.
+    """
+    saved = update_op.last_backup()
+    if not saved:
+        return jsonify(error="Возвращаться некуда: копии перед обновлением "
+                             "нет — либо обновления не было, либо копию уже "
+                             "вытеснили из корзины."), 400
+    count = update_op.undo(saved)
+    if not count:
+        return jsonify(error=f"Из копии {saved} ничего не вернулось"), 400
+    # Версию забываем: на диске лежит прежняя, и следующая проверка
+    # должна снова предложить обновиться.
+    update_op.remember("")
+    history_op.add("возврат обновления", source=saved,
+                   output=str(update_op.ROOT), files=count)
+    return jsonify(restored=count, backup=saved,
+                   message=(f"Возвращено файлов: {count}. "
+                            "Перезапустите программу."))
 
 
 @app.get("/api/titles/spellings")
@@ -5297,6 +5334,9 @@ def main() -> None:
         print(f"  Журнал: {written}")
     # Счётчик трафика: месячный итог должен пережить закрытие окна.
     traffic.setup(history_op.DATA_DIR / "traffic.json")
+    # Очередь книг могла остаться с надписью «качается» — программу
+    # закрыли посреди книги. Работы за этой надписью уже нет.
+    downloads_op.recover()
 
     try:
         pool = load_pool(args.proxies)

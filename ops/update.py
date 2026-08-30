@@ -125,10 +125,22 @@ class Look:
         """
         return sum(one.lines for one in self.changes if not one.gone)
 
+    @property
+    def needs_install(self) -> bool:
+        """Менялся ли список зависимостей.
+
+        Обновление приносит файлы, но не библиотеки. Появится в новой
+        версии зависимость — программа после перезапуска упадёт на
+        импорте, и человек с медленным интернетом останется без рабочей
+        программы, не понимая почему.
+        """
+        return any(one.path == "requirements.txt" for one in self.changes)
+
     def as_dict(self) -> dict:
         return {
             "have": self.have, "there": self.there,
             "fresh": self.fresh,
+            "needs_install": self.needs_install,
             "changes": [one.as_dict() for one in self.changes],
             "files": len(self.changes),
             "lines": self.lines,
@@ -147,11 +159,21 @@ class Done:
     bytes: int = 0
     failures: list[str] = field(default_factory=list)
     revision: str = ""
+    #: Куда легла копия прежних файлов — по ней и возвращаются назад.
+    backup: str = ""
+    #: Менялся ли `requirements.txt`: библиотеки обновление не ставит.
+    needs_install: bool = False
+    #: Заголовки, появившиеся в истории изменений, — «что нового».
+    news: list[str] = field(default_factory=list)
+    #: Программа после обновления не запустилась, и мы вернули прежнюю.
+    rolled_back: str = ""
 
     def as_dict(self) -> dict:
         return {"written": self.written, "removed": self.removed,
                 "bytes": self.bytes, "failures": self.failures,
-                "revision": self.revision}
+                "revision": self.revision, "backup": self.backup,
+                "needs_install": self.needs_install, "news": self.news,
+                "rolled_back": self.rolled_back}
 
 
 def current() -> str:
@@ -241,21 +263,118 @@ def _write(path: Path, body: bytes) -> None:
     os.replace(spare, path)
 
 
-def apply(client, plan: Look, progress: Progress | None = None) -> Done:
+CHANGELOG = "CHANGELOG.md"
+
+#: Сколько ждать пробного запуска. Импорт всей программы укладывается в
+#: пару секунд; минута — с запасом на медленную машину.
+CHECK_TIMEOUT = 60
+
+
+def headings(text: str) -> list[str]:
+    """Заголовки разделов истории изменений — по ним и видно, что нового."""
+    return [line[4:].strip() for line in str(text or "").splitlines()
+            if line.startswith("### ")]
+
+
+def news_of(before: str, after: str) -> list[str]:
+    """Что появилось в истории изменений: разница заголовков.
+
+    Показывать весь `CHANGELOG.md` бессмысленно — там полторы тысячи
+    строк. А «обновлено 12 файлов» не говорит ничего.
+    """
+    had = set(headings(before))
+    return [one for one in headings(after) if one not in had]
+
+
+def works() -> str:
+    """Заводится ли программа после обновления. Пусто — заводится.
+
+    Отдельным процессом, а не импортом на месте: этот уже запущен со
+    старым кодом, и проверить им новый нельзя.
+    """
+    import subprocess
+    import sys
+
+    # Проверять нечего, если программы по этому пути нет вовсе: так
+    # бывает в тестах, где корень свой и пустой.
+    if not (ROOT / "webapp" / "app.py").is_file():
+        return ""
+
+    try:
+        run = subprocess.run(
+            [sys.executable, "-c", "import webapp.app"],
+            cwd=str(ROOT), capture_output=True, text=True,
+            timeout=CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Проверить не вышло — это не приговор обновлению.
+        log.warning("Пробный запуск не состоялся: %s", exc)
+        return ""
+    if run.returncode == 0:
+        return ""
+    tail = (run.stderr or run.stdout or "").strip().splitlines()
+    return tail[-1] if tail else f"код возврата {run.returncode}"
+
+
+def undo(backup_path) -> int:
+    """Возвращает файлы программы из копии на место.
+
+    Своё, а не `history.restore`: тот перед восстановлением копирует всю
+    папку назначения, а здесь папка назначения — вся программа вместе с
+    книгами и журналом.
+    """
+    source = Path(backup_path)
+    if not source.is_dir():
+        return 0
+    count = 0
+    for one in source.rglob("*"):
+        if not one.is_file():
+            continue
+        target = ROOT / one.relative_to(source)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write(target, one.read_bytes())
+            count += 1
+        except OSError as exc:
+            log.warning("Не вернуть %s: %s", target, exc)
+    return count
+
+
+def last_backup() -> str:
+    """Последняя копия, снятая перед обновлением. Пусто — такой нет."""
+    from .history import backups
+
+    for one in backups():
+        if one.name.endswith("_обновление"):
+            return str(one)
+    return ""
+
+
+def apply(client, plan: Look, progress: Progress | None = None,
+          check: bool = True) -> Done:
     """Забирает изменившиеся файлы и раскладывает их по местам.
 
-    Перед заменой старые уходят в корзину: обновление — такая же
-    перезапись, как и всё остальное в программе, и откатить её должно
-    быть чем.
+    Перед заменой старые уходят в корзину — с сохранением расположения,
+    иначе вернуть их было бы некуда. После замены программа проверяется
+    пробным запуском: обновление, после которого она не заводится, хуже
+    отсутствия обновления, а человек с медленным каналом остался бы с
+    нерабочей программой и без быстрого пути назад.
     """
-    from .history import backup_files
+    from .history import backup_tree
 
     progress = progress or Progress()
-    result = Done()
+    result = Done(needs_install=plan.needs_install)
     where = settings.update
 
+    was_changelog = ""
+    if any(one.path == CHANGELOG for one in plan.changes):
+        try:
+            was_changelog = (ROOT / CHANGELOG).read_text(encoding="utf-8")
+        except OSError as exc:
+            log.debug("История изменений не прочиталась: %s", exc)
+
     doomed = [ROOT / one.path for one in plan.changes if not one.gone]
-    saved = backup_files(doomed, "обновление")
+    saved = backup_tree(ROOT, doomed, "обновление")
+    result.backup = saved
     if saved:
         log.info("Прежние файлы программы скопированы в %s", saved)
 
@@ -277,6 +396,23 @@ def apply(client, plan: Look, progress: Progress | None = None) -> Done:
             result.failures.append(f"{change.path}: {type(exc).__name__}: {exc}")
         progress.step(index, len(plan.changes),
                       f"Файл {index} из {len(plan.changes)}")
+
+    if was_changelog:
+        try:
+            result.news = news_of(was_changelog,
+                                  (ROOT / CHANGELOG).read_text(encoding="utf-8"))
+        except OSError as exc:
+            log.debug("История изменений не перечиталась: %s", exc)
+
+    # Заводится ли программа с новыми файлами. Не заводится — возвращаем
+    # прежние: остаться без рабочей программы страшнее, чем без новой.
+    if check and not result.failures and result.written:
+        broke = works()
+        if broke:
+            log.error("После обновления программа не запускается: %s", broke)
+            result.rolled_back = broke
+            undo(saved)
+            return result
 
     # Версию запоминаем, только если всё легло. Иначе следующая проверка
     # решила бы, что обновляться не надо, а половина файлов осталась

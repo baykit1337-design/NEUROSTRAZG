@@ -680,5 +680,53 @@ class TestTheQueueReallyDownloads(unittest.TestCase):
         self.assertNotIn("пройдена", job.progress["message"])
 
 
+class TestAQueueBrokenOffMidBook(Base):
+    """«Качается» пишется на диск, чтобы очередь пережила закрытие окна.
+
+    Но если программу закрыли посреди книги, эта надпись оставалась
+    навсегда: очередь показывала работу, которой нет.
+    """
+
+    def stuck(self):
+        item = self.book()
+        rows = downloads.all_items()
+        for one in rows:
+            one.state = downloads.RUNNING
+        downloads._save(rows)
+        return item
+
+    def test_the_stuck_row_goes_back_to_waiting(self):
+        self.stuck()
+        downloads.recover()
+        self.assertEqual(downloads.all_items()[0].state, downloads.WAITING)
+
+    def test_it_says_what_happened(self):
+        self.stuck()
+        downloads.recover()
+        self.assertIn("Прервано", downloads.all_items()[0].message)
+
+    def test_it_stays_fixed_after_a_reread(self):
+        """Правка живёт в файле: программу закрывают."""
+        self.stuck()
+        downloads.recover()
+        self.assertEqual(downloads._load()[0].state, downloads.WAITING)
+
+    def test_a_finished_book_is_left_alone(self):
+        self.book()
+        rows = downloads.all_items()
+        rows[0].state = downloads.DONE
+        rows[0].message = "скачано 40 глав"
+        downloads._save(rows)
+
+        downloads.recover()
+        self.assertEqual(downloads.all_items()[0].state, downloads.DONE)
+        self.assertEqual(downloads.all_items()[0].message, "скачано 40 глав")
+
+    def test_reading_the_queue_during_a_run_does_not_clear_it(self):
+        """Пока очередь работает, «качается» — это правда."""
+        self.stuck()
+        self.assertEqual(downloads.all_items()[0].state, downloads.RUNNING)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -248,6 +248,42 @@ def backup_files(paths, operation: str = "") -> str:
     return str(target)
 
 
+def backup_tree(root, paths, operation: str = "") -> str:
+    """Копирует файлы, сохраняя их место относительно корня.
+
+    `backup_files` кладёт всё в одну папку по именам — для глав книги
+    этого хватает, они и лежат рядом. Для файлов программы нет: там
+    `ops/base.py` и `core/base.py` — разные файлы с одним именем, и
+    плоская копия потеряла бы один из них молча. А вернуть такую копию на
+    место было бы нечем: неизвестно, откуда каждый файл взялся.
+    """
+    root = Path(root)
+    found = [Path(one) for one in paths if Path(one).is_file()]
+    if not found:
+        return ""
+
+    stamp = datetime.now().strftime(STAMP)
+    name = f"{stamp}_{operation}".strip("_") or stamp
+    target = BACKUP_DIR / name
+
+    try:
+        for one in found:
+            try:
+                where = one.relative_to(root)
+            except ValueError:
+                # Файл не из-под корня — кладём по имени, как раньше.
+                where = Path(one.name)
+            destination = target / where
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(one, destination)
+    except OSError as exc:
+        log.warning("Не удалось скопировать файлы из %s: %s", root, exc)
+        return ""
+
+    trim()
+    return str(target)
+
+
 def backup_file(path: Path, operation: str = "") -> str:
     """Копирует один файл в корзину.
 

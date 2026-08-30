@@ -71,8 +71,23 @@ class SplitTestCase(unittest.TestCase):
         self.tmpdir = TemporaryDirectory()
         self.tmp = Path(self.tmpdir.name)
         self.addCleanup(self.tmpdir.cleanup)
+        # Запись идёт в фоновом потоке и переживает конец проверки. Унеси
+        # временную папку из-под него — падает уборка, а не проверка, и
+        # красным становится случайный тест из соседнего класса.
+        # Уборки идут в обратном порядке, поэтому эта — раньше сноса.
+        self.addCleanup(self.settle)
         self.epub = make_epub(self.tmp / "book.epub")
         self.txt = make_txt(self.tmp / "book.txt")
+
+    def settle(self):
+        """Дождаться фоновых записей в свою временную папку."""
+        from webapp.app import JOBS
+
+        for job in list(JOBS.values()):
+            if job.thread is None or not job.running:
+                continue
+            if str(self.tmp) in str(job.output_dir):
+                job.thread.join(timeout=60)
 
 
 class TestReadChapters(SplitTestCase):
