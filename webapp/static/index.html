@@ -1531,6 +1531,19 @@
       <button id="dqStart" class="primary" hidden>Запустить очередь</button>
     </div>
     <p class="hint" id="dqNote" style="margin-top:8px"></p>
+    <!-- Ночной запуск. Очередь и задумана как ночная работа: поставил
+         десяток книг, ушёл спать, утром они лежат. Ночью канал и
+         быстрее, и часто дешевле — а нажимать всё равно приходилось
+         руками. Настройки прогона запоминаются те же, что у кнопки:
+         ночью спросить будет некого. -->
+    <div class="row" id="dqPlanRow" style="margin-top:8px;align-items:center;gap:10px">
+      <label class="check" style="flex:0 0 auto">
+        <input type="checkbox" id="dqPlanOn"> запускать самой в
+      </label>
+      <input id="dqPlanAt" type="time" value="03:00" step="60"
+             style="flex:0 0 auto;width:110px">
+      <span class="hint" id="dqPlanNote" style="flex:1"></span>
+    </div>
     <div id="dqList" hidden style="margin-top:10px"></div>
     <div class="row" id="dqSweep" hidden style="margin-top:8px">
       <button id="dqDone" class="ghost" style="flex:1">Убрать скачанные</button>
@@ -5381,17 +5394,58 @@ async function dqFill(){
   }
 }
 
+/** Настройки прогона: одни и те же у кнопки и у ночного запуска. */
+function dqRunSettings(){
+  return {
+    threads: Number($('dlThreads').value) || 1,
+    mode: dlMode,
+    timeout: Number($('tmRead').value) || 120,
+    connect_timeout: Number($('tmConnect').value) || 15,
+  };
+}
+
+/** Ночной запуск: когда очередь пойдёт сама.
+ *
+ *  Настройки прогона запоминаются вместе со временем — ночью спросить
+ *  будет некого, а качать наугад значит получить утром потраченный
+ *  трафик и пустую папку.
+ */
+async function dqPlanSave(){
+  const at = $('dqPlanAt').value.trim();
+  const on = $('dqPlanOn').checked && !!at;
+  try{
+    dqPlanShow(await call('/api/downloads/schedule',
+                          {at, on, run: dqRunSettings()}));
+  }catch(err){
+    showError(err.message, $('dqPlanNote'));
+  }
+}
+
+function dqPlanShow(plan){
+  plan = plan || {};
+  if(plan.at) $('dqPlanAt').value = plan.at;
+  $('dqPlanOn').checked = !!plan.on;
+  $('dqPlanNote').textContent = plan.on
+    ? `Очередь пойдёт сама в ${plan.at}. Программу для этого надо оставить `
+      + 'открытой.'
+    : 'Ночью канал и быстрее, и часто дешевле.';
+}
+
+async function dqPlanLoad(){
+  try{
+    dqPlanShow(await call('/api/downloads/schedule'));
+  }catch(err){
+    // Расписание — удобство. Не прочиталось — очередь работает руками.
+    $('dqPlanNote').textContent = '';
+  }
+}
+
 /** Запустить очередь. Прогресс тот же, что у одной книги. */
 async function dqStart(){
   showError('');
   $('dqStart').disabled = true;
   try{
-    const data = await call('/api/downloads/start', {
-      threads: Number($('dlThreads').value) || 1,
-      mode: dlMode,
-      timeout: Number($('tmRead').value) || 120,
-      connect_timeout: Number($('tmConnect').value) || 15,
-    });
+    const data = await call('/api/downloads/start', dqRunSettings());
     jobId = data.job.id;
     $('sSource').textContent = 'очередь книг';
     $('place').hidden = true;
@@ -5420,6 +5474,9 @@ $('dqToggle').onclick = () => {
 $('toQueue').onclick = dqAdd;
 $('dqFill').onclick = dqFill;
 $('dqStart').onclick = dqStart;
+$('dqPlanOn').onchange = dqPlanSave;
+$('dqPlanAt').onchange = dqPlanSave;
+dqPlanLoad();
 $('dqDone').onclick = async () => {
   try{ dqTook(await call('/api/downloads/clear', {only_done: true})); }
   catch(err){ showError(err.message); }

@@ -56,6 +56,7 @@ from ops import compare as compare_op  # noqa: E402
 from ops import contradictions as contra_op  # noqa: E402
 from ops import glossary as glossary_op  # noqa: E402
 from ops import downloads as downloads_op  # noqa: E402
+from ops import schedule as schedule_op  # noqa: E402
 from ops import everywhere as everywhere_op  # noqa: E402
 from ops import junk  # noqa: E402
 from ops import library as library_op  # noqa: E402
@@ -1173,6 +1174,62 @@ def api_downloads_move():
     return jsonify(**_queue_out())
 
 
+@app.get("/api/downloads/schedule")
+def api_schedule_show():
+    """Когда очередь запустится сама."""
+    return jsonify(**schedule_op.get().as_dict())
+
+
+@app.post("/api/downloads/schedule")
+def api_schedule_save():
+    """Назначить ночной запуск.
+
+    Настройки прогона запоминаются те же, что и у кнопки: ночью спросить
+    будет некого, а качать наугад — верный способ получить утром пустую
+    папку и потраченный трафик.
+    """
+    payload = request.json or {}
+    try:
+        plan = schedule_op.save(
+            (payload.get("at") or "").strip(),
+            bool(payload.get("on")),
+            payload.get("run"),
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(**plan.as_dict())
+
+
+#: Как часто смотреть на часы. Полминуты хватает: окно запуска — полчаса.
+SCHEDULE_TICK = 30.0
+
+
+def _watch_schedule() -> None:
+    """Ночной сторож: наступило время — запускает очередь книг.
+
+    Отдельным потоком, а не по таймеру в браузере: страница к ночи
+    закрыта, а программа работает.
+    """
+    while True:
+        time.sleep(SCHEDULE_TICK)
+        try:
+            if not schedule_op.due():
+                continue
+            # Очередь уже качается — второй запуск ей ни к чему.
+            with JOBS_LOCK:
+                busy = any(job.running and job.kind == "downloads"
+                           for job in JOBS.values())
+            if busy:
+                continue
+            plan = schedule_op.get()
+            schedule_op.mark()
+            log.info("Расписание: запускаем очередь книг")
+            with app.test_request_context():
+                _downloads_start(plan.payload)
+        except Exception as exc:  # noqa: BLE001 — сторож не должен падать
+            log.warning("Расписание не сработало: %s", exc)
+
+
 @app.post("/api/downloads/clear")
 def api_downloads_clear():
     payload = request.json or {}
@@ -1204,7 +1261,15 @@ def api_downloads_start():
     Упавшая книга не отменяет остальные — в этом всё отличие от очереди
     операций, где следующий шаг ждёт результата предыдущего.
     """
-    payload = request.json or {}
+    return _downloads_start(request.json or {})
+
+
+def _downloads_start(payload: dict):
+    """Тело запуска отдельно от маршрута: тем же путём ходит расписание.
+
+    Иначе ночной запуск повторял бы восемьдесят строк и разошёлся бы с
+    кнопкой на второй же правке.
+    """
     rows = downloads_op.all_items()
     if not any(x.ready for x in rows):
         return jsonify(error="В очереди нет ни одной книги, которую есть "
@@ -5376,6 +5441,8 @@ def main() -> None:
     # Очередь книг могла остаться с надписью «качается» — программу
     # закрыли посреди книги. Работы за этой надписью уже нет.
     downloads_op.recover()
+    # Ночной сторож очереди книг. Демон: закрытие программы его не ждёт.
+    threading.Thread(target=_watch_schedule, daemon=True).start()
 
     try:
         pool = load_pool(args.proxies)
