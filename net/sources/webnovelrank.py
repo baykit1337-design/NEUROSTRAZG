@@ -60,6 +60,10 @@ BOARDS = {
     "novel-collection": "Романы · добавления в библиотеку",
     "novel-alltime": "Романы · сила за всё время",
     "fanfic-power": "Фанфики · сила за сезон",
+    "fanfic-collection": "Фанфики · добавления в библиотеку",
+    "fanfic-popular": "Фанфики · новые читатели",
+    "fanfic-update": "Фанфики · дописано за неделю",
+    "fanfic-active": "Фанфики · обсуждают",
     "comic-power": "Комиксы · сила за сезон",
 }
 
@@ -70,6 +74,10 @@ PATHS = {
     "novel-collection": "novel/season/collection_rank",
     "novel-alltime": "novel/all_time/power_rank",
     "fanfic-power": "fanfic/season/power_rank",
+    "fanfic-collection": "fanfic/all_time/collection_rank",
+    "fanfic-popular": "fanfic/all_time/popular_rank",
+    "fanfic-update": "fanfic/all_time/update_rank",
+    "fanfic-active": "fanfic/all_time/engagement_rank",
     "comic-power": "comic/season/comic_power_rank",
 }
 
@@ -81,6 +89,13 @@ METRICS = {
     "novel-collection": "в библиотеках",
     "novel-alltime": "голосов",
     "fanfic-power": "голосов",
+    "fanfic-collection": "в библиотеках",
+    "fanfic-popular": "новых читателей",
+    #: Не голоса и не читатели: доска считает написанные за срок слова.
+    #: Подписать её «голосами» значило бы соврать про число, которое
+    #: человек прочтёт как оценку.
+    "fanfic-update": "слов дописано",
+    "fanfic-active": "комментариев",
     "comic-power": "голосов",
 }
 
@@ -141,10 +156,14 @@ def _row(item, place: int, metric: str) -> RankRow | None:
             shown = int(digits)
             break
 
-    # Число доски: сайт печатает его тем же шрифтом для цифр, внутри
-    # выделения. Берём самое крупное — мелкие рядом это подписи.
+    # Число доски и имя автора лежат в одинаковых `<strong>`. Различает их
+    # не класс — он у сайта служебный и меняется, — а устройство: у числа
+    # внутри свои теги, значок и `<span>` с самим числом, а имя автора
+    # лежит голым текстом. Без этого автор с именем вроде «50Cent» однажды
+    # стал бы числом доски.
     value = 0
-    for mark in item.find_all("strong"):
+    inner = [mark for mark in item.find_all("strong") if mark.find(True)]
+    for mark in inner or item.find_all("strong"):
         value = max(value, _number(mark.get_text(" ", strip=True)))
 
     # Раздел — ссылка на подборку.
@@ -210,10 +229,17 @@ def _row_box(link):
     return box
 
 
+#: Чем сайт верстает строку рейтинга. Сегодня это `<section>`; `<li>`
+#: остаётся, потому что им свёрстано боковое меню досок и потому что
+#: список — самая частая вёрстка рейтинга вообще. Строки без ссылки на
+#: книгу отсеются сами, так что лишний тег здесь ничего не стоит.
+ROW_TAGS = ("section", "li")
+
+
 def _rows_from_list(soup, metric: str) -> list:
-    """Разбор по `<li>` — тем, чем рейтинг свёрстан сегодня."""
+    """Разбор по строкам разметки — тем, чем рейтинг свёрстан сегодня."""
     rows, seen = [], set()
-    for item in soup.find_all("li"):
+    for item in soup.find_all(ROW_TAGS):
         row = _row(item, len(rows) + 1, metric)
         if row is None or row.book_id in seen:
             continue

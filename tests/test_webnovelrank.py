@@ -485,3 +485,149 @@ class TestTheRefusalCarriesEvidence(unittest.TestCase):
         """Стену объявляем стеной: разметка тут ни при чём."""
         wall = "<html><body><h1>Just a moment...</h1></body></html>"
         self.assertIn("Cloudflare", str(self.refuse(wall)))
+
+
+#: Строка рейтинга ровно в том виде, в каком её отдаёт сайт. Взята со
+#: страницы `/ranking/fanfic/bi_annual/power_rank`; сокращены только
+#: описание и часть меток — устройство строки сохранено полностью.
+#:
+#: Живьём из песочницы этот сайт не открыть, и разбор писался вслепую по
+#: догадке о вёрстке. Догадка не сошлась: строки оказались не `<li>`, а
+#: `<section>`. Поэтому заготовка здесь настоящая, а не сочинённая.
+REAL_ROW = '''<section class="df g_hr pt16 pb16"><i class="w40 h40 ff_number tac \
+fw700 lh20 fs16 ls0.15 mr8 pt12 c_danger">001</i><a \
+href="/book/marvel-terror-stream_35895681908097305" class="g_thumb _48 mr8" \
+title="Marvel: Terror Stream" data-report-did="35895681908097305"><img \
+data-original="//book-pic.webnovel.com/bookcover/35895681908097305?imageMogr2\
+/thumbnail/150&imageId=1783614889353" width="60" height="80" alt="Marvel: \
+Terror Stream"/></a><div class="f1"><p class="mb4 pt4 oh h16 mb8"><a \
+class="fw600 lh16 fs12 ttu ls1 mr12 wsn" href="/tags/action-novel" \
+title="ACTION"># ACTION</a><a class="fw600 lh16 fs12 ttu ls1 mr12 wsn" \
+href="/tags/marvel-novel" title="MARVEL"># MARVEL</a></p><h3 class="fw700 lh20 \
+fs16 ls0.15 ells _2 mb4"><a class="c_l" \
+href="/book/marvel-terror-stream_35895681908097305" title="Marvel: Terror \
+Stream" data-report-did="35895681908097305">Marvel: Terror Stream</a></h3><p \
+class="fw400 lh20 fs14 ls0.2 c_s ells _2 mb4">Luke woke up in the Marvel \
+Universe.</p><p><strong class="c_m fs0 ff_number vam"><svg viewBox="0 0 24 24" \
+fill="none" class="mr4 fs16"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 \
+2z" fill="#000"></path></svg><span class="vam fw400 lh16 fs12">586</span>\
+</strong><i class="c_xs vam ml8 mr8">|</i><a href="/stories/fanfic-anime-comics" \
+title="Anime &amp; Comics" class="c_m vam fw400 lh16 fs12">Anime &amp; Comics\
+</a>·<strong class="c_l vam fw400 lh16 fs12">Marveller</strong></p></div><div \
+class="ml8"><a class="bt _s _link fs0 j_add_to_library add_to_library _mini " \
+data-bookid="35895681908097305" href="###" title="Add to library"><span \
+class="vam fw600 lh16 fs12 ttu ls1">Add</span></a><a \
+href="/book/marvel-terror-stream_35895681908097305/96367413607592963" \
+title="Read" class="ml8 bt _s">Read</a></div></section>'''
+
+#: Та же строка с доски «дописано за неделю»: число там без значка и в
+#: тысячах, а имя автора начинается с цифры — проверка на то, что автор
+#: не сойдёт за число доски.
+REAL_WORDS_ROW = '''<section class="df g_hr pt16 pb16"><i class="w40 h40 \
+ff_number tac fw700 lh20 fs16 ls0.15 mr8 pt12 c_danger">001</i><a \
+href="/book/douluo-twin-dragons_36785303708811405" class="g_thumb _48 mr8" \
+title="Douluo"><img data-original="//book-pic.webnovel.com/bookcover\
+/36785303708811405?imageMogr2/thumbnail/150" width="60" height="80" \
+alt="Douluo"/></a><div class="f1"><h3 class="fw700 lh20 fs16 ls0.15 ells _2 \
+mb4"><a class="c_l" href="/book/douluo-twin-dragons_36785303708811405" \
+title="Douluo">Douluo: Twin Golden and Silver Dragons</a></h3><p \
+class="fw400 lh20 fs14 ls0.2 c_s ells _2 mb4">Transmigrating to the \
+continent.</p><p><strong class="c_m fs0 ff_number vam"><span class="vam fw400 \
+lh16 fs12">46.3K</span></strong><i class="c_xs vam ml8 mr8">|</i><a \
+href="/stories/fanfic-anime-comics" title="Anime &amp; Comics" class="c_m vam \
+fw400 lh16 fs12">Anime &amp; Comics</a>·<strong class="c_l vam fw400 lh16 \
+fs12">56kanwa</strong></p></div></section>'''
+
+#: Боковое меню досок — оно на странице свёрстано именно списком, и
+#: разбор обязан пройти мимо него.
+REAL_SIDEBAR = '''<div class="mr24" style="width: 200px;"><form><a \
+href="/ranking/hot" title="Hot Ranking" class="df jcsb aic g_hr"><h3 \
+class="fw700 lh24 fs20 ell">Hot Ranking</h3></a><div class="m-accordion-bd"><ul \
+class="pt16"><li class="dib vat mb8"><a data-rankid="power_rank" \
+href="/ranking/fanfic/bi_annual/power_rank" title="Power" \
+class="m-accordion-item">Power</a></li><li class="dib vat mb8"><a \
+data-rankid="collection_rank" href="/ranking/fanfic/all_time/collection_rank" \
+title="Collect" class="m-accordion-item">Collect</a></li></ul></div></form>\
+</div>'''
+
+
+def real_page(rows):
+    return ("<html><head><title>Power Ranking in Fan-fic Rankings</title></head>"
+            "<body>" + REAL_SIDEBAR
+            + '<div class="j_rank_wrapper">' + "".join(rows) + "</div>"
+            + "</body></html>")
+
+
+class TestTheRealPage(unittest.TestCase):
+    """Разбор настоящей страницы сайта, а не догадки о ней.
+
+    Первый живой запуск разбора не дал ни одной книги. Причина оказалась
+    ровно одна: строки рейтинга свёрстаны `<section>`, а искали их среди
+    `<li>` — и единственные `<li>` на странице лежат в боковом меню.
+    """
+
+    def fetch(self, body, board="fanfic-power"):
+        return wnrank.fetch(FakeClient(body), board)
+
+    def test_the_row_becomes_a_book(self):
+        found = self.fetch(real_page([REAL_ROW, REAL_WORDS_ROW]))
+        first = found["rows"][0]
+        self.assertEqual(first.book_id, "35895681908097305")
+        self.assertEqual(first.name, "Marvel: Terror Stream")
+
+    def test_the_place_comes_from_the_page(self):
+        """Место сайт печатает с ведущими нулями: «001»."""
+        found = self.fetch(real_page([REAL_ROW]))
+        self.assertEqual(found["rows"][0].place, 1)
+
+    def test_the_number_of_the_board_arrives(self):
+        found = self.fetch(real_page([REAL_ROW]))
+        self.assertEqual(found["rows"][0].score, 586)
+        self.assertEqual(found["rows"][0].metric, "голосов")
+
+    def test_the_author_is_not_mistaken_for_the_number(self):
+        """Имя автора лежит в таком же `<strong>`, что и число доски."""
+        found = self.fetch(real_page([REAL_WORDS_ROW]), "fanfic-update")
+        self.assertEqual(found["rows"][0].score, 46_300)
+
+    def test_the_section_survives(self):
+        found = self.fetch(real_page([REAL_ROW]))
+        self.assertEqual(found["rows"][0].category, "Anime & Comics")
+
+    def test_the_link_and_the_cover(self):
+        first = self.fetch(real_page([REAL_ROW]))["rows"][0]
+        self.assertEqual(
+            first.link,
+            "https://www.webnovel.com/book/marvel-terror-stream_35895681908097305")
+        self.assertIn("35895681908097305", first.cover)
+
+    def test_the_read_link_is_not_a_second_book(self):
+        """В строке три ссылки на одну книгу: обложка, заголовок и «Read»."""
+        found = self.fetch(real_page([REAL_ROW, REAL_WORDS_ROW]))
+        self.assertEqual(len(found["rows"]), 2)
+
+    def test_the_main_parse_finds_the_row_itself(self):
+        """Основной разбор обязан находить строку сам.
+
+        Запасной путь от ссылок вытянет её и без этого — он для того и
+        заведён. Но тогда основной разбор оставался бы сломанным и молчал
+        бы об этом, а чинили бы его в следующий раз опять вслепую.
+        """
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(real_page([REAL_ROW]), "lxml")
+        rows = wnrank._rows_from_list(soup, "голосов")
+        self.assertEqual([row.name for row in rows], ["Marvel: Terror Stream"])
+
+    def test_the_side_menu_is_not_a_book(self):
+        with self.assertRaises(SourceBroken):
+            self.fetch(real_page([]))
+
+    def test_every_fanfic_board_has_an_address_and_a_label(self):
+        """Человек прислал разметку всех пяти досок фанфиков — все и нужны."""
+        fanfic = [key for key in wnrank.BOARDS if key.startswith("fanfic-")]
+        self.assertEqual(len(fanfic), 5)
+        for board in fanfic:
+            with self.subTest(board):
+                self.assertIn("/ranking/fanfic/", wnrank.url_of(board))
+                self.assertTrue(wnrank.METRICS[board])
