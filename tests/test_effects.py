@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 import unittest
@@ -941,13 +942,62 @@ class TestBarWave(Base):
         дёргалась бы раз в оборот."""
         self.assertRegex(self.css, r"0%,\s*100%\s*\{")
 
-    def test_the_glow_follows_the_wave(self):
-        """`box-shadow` рисуется по прямоугольнику элемента, и обрезка
-        его срезает — край оставался голым. `drop-shadow` считается по
-        обрезанному силуэту и обводит саму волну."""
-        rules = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
-        self.assertIn("drop-shadow", rules)
+    def rules(self) -> str:
+        """Файл без пояснений: в них названы и грабли, и отвергнутые
+        решения, и поиск по тексту спотыкался бы о них."""
+        return re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
+
+    def test_the_leading_end_has_no_round_cap(self):
+        """Круглый колпачок на конце и был тем «белым кругом», который
+        видно при увеличении: блик доходил до скруглённого конца и
+        загорался на нём пятном, а волна резала его полумесяцем. Слева
+        скругление остаётся — там полоса и правда кончается."""
+        self.assertIn("border-radius:999px 0 0 999px", self.rules())
+
+    def test_the_edge_itself_glows_white(self):
+        """Светиться должен сам край, а не силуэт вокруг него.
+
+        Свет живёт в заливке: её последние пиксели разгораются добела, а
+        обрезка оставляет от них ровно волну. `box-shadow` тут не годится
+        вовсе — он рисуется по прямоугольнику элемента, и обрезка его
+        срезает.
+        """
+        rules = self.rules()
+        self.assertIn("rgba(255,255,255", rules)
         self.assertNotIn("box-shadow", rules)
+
+    def bar_height(self) -> float:
+        """Высота полосы — из общих стилей, а не числом здесь: поменяй её
+        кто-нибудь, и наклон волны поменяется вместе с ней."""
+        found = re.search(r"\.bar\{[^}]*height:(\d+(?:\.\d+)?)px", self.html)
+        self.assertTrue(found, "не нашлась высота полосы")
+        return float(found.group(1))
+
+    def test_the_wave_slopes_gently(self):
+        """«Резкий угол волны, у тебя там все 90 градусов, а надо 30».
+
+        Наклон края к вертикали считается точно: полволны на всю высоту
+        полосы дают `atan(размах · π / (2 · высота))`. Шесть пикселей на
+        восьми давали пятьдесят градусов — почти отвес, оттого край и
+        читался рубленым. Проверяем не число размаха, а сам наклон: он и
+        есть требование.
+        """
+        # Только кадры: `calc(100% - …)` стоит и в градиенте свечения,
+        # и шестнадцать его пикселей сошли бы за размах волны.
+        frames = self.css[self.css.index("@keyframes"):]
+        deep = [float(x) for x in
+                re.findall(r"calc\(100% - ([\d.]+)px\)", frames)]
+        self.assertTrue(deep, "в кадрах не нашлось ни одной точки края")
+        slope = math.degrees(
+            math.atan(max(deep) * math.pi / (2 * self.bar_height())))
+        self.assertLess(slope, 40, f"край круче просимого: {slope:.0f}°")
+        self.assertGreater(slope, 20, f"волны почти не видно: {slope:.0f}°")
+
+    def test_the_glow_is_measured_from_the_fill_itself(self):
+        """Проценты градиента считаются от ширины заливки, а она и есть
+        прогресс: светлое пятно всегда стоит там, где полоса кончается,
+        сколько бы ни было скачано."""
+        self.assertIn("var(--bar-fill)", self.rules())
 
     def test_it_takes_no_pseudo_element(self):
         """Оба уже заняты: `::after` — бликом, `::before` — искрой.
