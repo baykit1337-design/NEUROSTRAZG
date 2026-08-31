@@ -1115,6 +1115,27 @@ function spNameFormat(){
   };
 }
 
+/** Чем делить книгу и с какого номера нумеровать главы.
+ *
+ *  Оба поля едут во все три запроса вкладки: чтение, проверку объёма и
+ *  запись. Разойдись они — предпросмотр показывал бы одну книгу, а на диск
+ *  легла бы другая.
+ */
+function spCut(){
+  const way = spState.menus.way ? spState.menus.way.value : '';
+  const start = $('spFrom').value.trim();
+  return {
+    way,
+    // Шаблон нужен только делению по заголовку: при делении по разметке
+    // он не при чём, и посланный вместе с ней сбивал бы с толку.
+    pattern: way ? '' : $('spPattern').value.trim(),
+    start,
+  };
+}
+
+//: Чем поделили — словами, для строки под списком файлов.
+const SP_WAY_NAMES = {boxes: 'по рамкам', blank: 'по пустому абзацу'};
+
 /** Читается сразу после выбора — отдельной кнопки «Прочитать» нет. */
 async function spScan(){
   const targets = CHOSEN.spList || [];
@@ -1136,7 +1157,7 @@ async function spScan(){
   try{
     const data = await call('/api/split/scan', {
       targets,
-      pattern: $('spPattern').value.trim(),
+      ...spCut(),
       pieces: spState.pieces,
       name_format: spNameFormat(),
       seq: $('spSeq').checked,
@@ -1155,11 +1176,22 @@ async function spScan(){
     updateListBar('spList', data.file_count);
     $('spScanned').textContent =
       `Файлов: ${data.file_count}, глав: ${data.found}` +
-      (data.total !== data.found ? `, файлов на выходе: ${data.total}` : '') + '.';
+      (data.total !== data.found ? `, файлов на выходе: ${data.total}` : '') +
+      // При «сам определит» человек иначе не узнает, что сработало.
+      (SP_WAY_NAMES[data.way] ? ` (поделено ${SP_WAY_NAMES[data.way]})` : '') + '.';
     if(data.unreadable?.length) showError('Не прочитаны: ' + data.unreadable.join('; '));
     $('spOpts').hidden = false;
     $('spPlace').hidden = false;
-    $('spPatternCard').hidden = true;
+    // Карточку способа показываем в двух случаях. Способ выбран — он там
+    // живёт, и спрятать её значило бы отнять возможность передумать.
+    // Из одного файла вышла одна глава — разбиение ничего не разбило, и
+    // спросить, чем делить, надо прямо сейчас: молча отдать один файл на
+    // выходе значит сделать вид, что операция удалась. Своего вопроса
+    // сервер тут не задаёт — книгу с числом в имени («ОРИГ 80-200») он
+    // принимает за готовую главу и отвечает без возражений.
+    const nothingHappened = data.file_count === 1 && data.found < 2;
+    $('spPatternCard').hidden = !(spCut().way || nothingHappened);
+    if(nothingHappened && !spCut().way) spSayNothingSplit();
     spDrawChapters();
     spDrawPreview();
     // Имя папки само не подставляется: по умолчанию главы ложатся прямо
@@ -1173,10 +1205,11 @@ async function spScan(){
     $('spPlace').hidden = true;
     $('spChaptersCard').hidden = true;
     $('spPreviewCard').hidden = true;
-    // Заголовков не нашлось — наугад не режем, просим шаблон.
-    if(err.needPattern){
+    // Заголовков не нашлось — наугад не режем, просим шаблон. Не нашлось
+    // границ по разметке — просим выбрать другой способ; та же карточка.
+    if(err.needPattern || err.needWay){
       $('spPatternCard').hidden = false;
-      if(!$('spPattern').value) $('spPattern').value = err.pattern || '';
+      if(err.needPattern && !$('spPattern').value) $('spPattern').value = err.pattern || '';
     }
     showError(err.message);
   }
@@ -1352,7 +1385,7 @@ async function spStart(){
       base: $('spBase').value.trim(),
       folder: $('spFolder').value.trim(),
       format: spState.format,
-      pattern: $('spPattern').value.trim(),
+      ...spCut(),
       pieces: spState.pieces,
       name_format: spNameFormat(),
       seq: $('spSeq').checked,
@@ -2130,7 +2163,7 @@ function volumeShow(prefix, data){
 // по файлам. Общая проверка объёма насчитала бы «глав: 1».
 $('spVolLook').onclick = () =>
   volumeLook('sp', '/api/split/volume', {targets: CHOSEN.spList || [],
-                                         pattern: $('spPattern').value.trim()});
+                                         ...spCut()});
 $('rnVolLook').onclick = () =>
   volumeLook('rn', '/api/stats', {targets: [$('rnIn').value.trim()]});
 $('fmVolLook').onclick = () =>
@@ -2139,6 +2172,46 @@ $('fmVolLook').onclick = () =>
 $('spFolder').addEventListener('input', spUpdateFinal);
 $('spRescan').onclick = () => spScan();
 $('spPattern').addEventListener('keydown', e => { if(e.key === 'Enter') spScan(); });
+
+// Способ деления и начало нумерации меняют сам набор глав, а не только их
+// имена, — поэтому книгу перечитываем, а не пересобираем предпросмотр.
+// Номер слушаем по `change`, а не по `input`: иначе книга читалась бы на
+// каждую набранную цифру.
+spState.menus.way = makeDropdown($('spWay'), () => { spShowWay(); spScan(); });
+$('spFrom').addEventListener('change', () => spScan());
+
+/** Говорит, что делить нечем, прямо в карточке выбора способа.
+ *
+ *  Пишем в примечание, а не в общую полосу ошибок: это не поломка, а
+ *  вопрос — и ответ на него в этой же карточке.
+ */
+function spSayNothingSplit(){
+  const note = $('spWayNote');
+  note.hidden = false;
+  note.textContent = 'Книга прочиталась одной главой — делить её нечем. '
+    + 'Заголовков вида «Глава 12» в ней нет. Если книгу собирали '
+    + 'копированием со страницы сайта в Word, выберите деление по разметке.';
+}
+
+/** Показывает то, что нужно выбранному способу деления. */
+function spShowWay(){
+  const way = spState.menus.way ? spState.menus.way.value : '';
+  $('spWayHead').hidden = !!way;
+  const note = $('spWayNote');
+  note.hidden = !way;
+  note.textContent = SP_WAY_HINTS[way] || '';
+}
+
+//: Что означает способ — словами, под выбором.
+const SP_WAY_HINTS = {
+  auto: 'Сначала пробуем рамки, потом пустой абзац. Чем поделили — напишем '
+      + 'в строке под списком файлов.',
+  boxes: 'Рамка вокруг главы: так Word переносит блок с рамкой со страницы '
+       + 'сайта. Работает только с .docx.',
+  blank: 'Каждый пустой абзац начинает новую главу. Работает только с .docx.',
+};
+
+spShowWay();
 
 // Формат имени: любая правка перечитывает предпросмотр. Имена считает
 // сервер, поэтому «показать» и «записать» здесь одно и то же действие.

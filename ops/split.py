@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core import headings, naming
+from core import blocks, headings, naming
 from core.headings import HeadingsNotFound
 from core.models import Chapter, OpReport
 from core.text import PrepOptions
@@ -19,8 +19,60 @@ from .base import Progress, collect_files, read_all
 PREVIEW_TITLES = 5
 
 
+class MarksNotUsable(ValueError):
+    """По разметке делить нечего: это не один документ Word.
+
+    Наследуется от `ValueError` намеренно: для вкладки это отказ того же
+    рода, что и неизвестный формат, и обрабатывается там же.
+    """
+
+
+def marked(files, way: str, report: OpReport | None = None) -> list[Chapter]:
+    """Главы, поделённые по разметке файла, а не по тексту.
+
+    Работает только с одним `.docx`: рамки, таблицы и пустые абзацы — его
+    разметка, и у `.txt` их взять неоткуда. Молча откатываться к делению по
+    заголовкам нельзя: человек выбрал способ, и подмена ответа на его
+    вопрос — худшее, что можно сделать.
+
+    Способ, которым в итоге поделили, кладём в отчёт: при `auto` человек
+    иначе не узнает, рамки сработали или пустой абзац.
+    """
+    if len(files) != 1:
+        raise MarksNotUsable(
+            "Деление по разметке — про один документ Word. "
+            f"Выбрано файлов: {len(files)}."
+        )
+    if files[0].suffix.lower() != ".docx":
+        raise MarksNotUsable(
+            "Рамки и пустые абзацы читаются только из .docx, а выбран "
+            f"{files[0].suffix or 'файл без расширения'}. "
+            "Для остальных форматов делим по заголовку."
+        )
+    found, used = blocks.chapters(files[0], way)
+    if report is not None:
+        report.extra["way"] = used
+    return found
+
+
+def renumber(chapters: list[Chapter], start: int | None) -> list[Chapter]:
+    """Проставляет номера подряд, начиная с указанного.
+
+    Нужно там, где номеров нет вовсе: главы, поделённые по рамке, приходят
+    безымянными и безномерными. Номер, вынутый из заголовка, при этом
+    затирается намеренно — если человек задал начало нумерации, он хочет
+    сплошную нумерацию, а не смесь своей и найденной в тексте.
+    """
+    if start is None:
+        return chapters
+    for offset, chapter in enumerate(chapters):
+        chapter.number = start + offset
+    return chapters
+
+
 def gather(targets, pattern: str | None = None, parts: int = 1,
-           report: OpReport | None = None, progress: Progress | None = None
+           report: OpReport | None = None, progress: Progress | None = None,
+           way: str = "", start: int | None = None
            ) -> tuple[list, list[Chapter]]:
     """Файлы и главы со входа, при необходимости разрезанные по заголовкам.
 
@@ -36,24 +88,32 @@ def gather(targets, pattern: str | None = None, parts: int = 1,
     несколько, у главы распознан номер (значит, это готовая глава, а не
     книга целиком) или задано деление на части — для него заголовки не
     нужны.
+
+    Выбранный способ деления по разметке (`way`) отменяет всё это: там
+    границу ищут не в тексте, и заголовки не нужны вовсе.
     """
     report = report if report is not None else OpReport()
     files = collect_files(targets)
+
+    if way:
+        return files, renumber(marked(files, way, report), start)
+
     chapters = read_all(files, report, progress)
 
     if len(chapters) != 1:
-        return files, chapters
+        return files, renumber(chapters, start)
 
     if headings.find(chapters[0].paragraphs, pattern):
-        return files, headings.cut(chapters[0], pattern)
+        return files, renumber(headings.cut(chapters[0], pattern), start)
     if pattern or (len(files) == 1 and parts < 2 and chapters[0].number is None):
         raise HeadingsNotFound(pattern or headings.DEFAULT_PATTERN)
-    return files, chapters
+    return files, renumber(chapters, start)
 
 
-def scan(targets, pattern: str | None = None, parts: int = 1) -> dict:
+def scan(targets, pattern: str | None = None, parts: int = 1,
+         way: str = "", start: int | None = None) -> dict:
     """Что нашлось на входе — до записи на диск."""
-    return look(targets, pattern, parts)
+    return look(targets, pattern, parts, way=way, start=start)
 
 
 def pieces_for(index: int, chapter, pieces=None, splits=None, parts: int = 1) -> int:
@@ -82,9 +142,13 @@ def stem_of(index: int, width: int, chapter, fmt=None, seq: bool = True) -> str:
     номер части в скобках. С форматом — собирается тем же `naming.build`,
     что и во вкладке «Переименовать», чтобы у одной и той же книги,
     разбитой здесь и переименованной там, имена не расходились.
+
+    У глав, поделённых по рамке, названия может не быть вовсе. Тогда имя
+    держится на номере: без этого все они стали бы «без имени» и затёрли
+    бы друг друга приписками в скобках.
     """
     if fmt is None:
-        name = naming.safe_filename(chapter.title)
+        name = naming.safe_filename(chapter.title or _numbered(chapter))
         if chapter.part:
             name = f"{name} ({chapter.part})"
     else:
@@ -94,9 +158,16 @@ def stem_of(index: int, width: int, chapter, fmt=None, seq: bool = True) -> str:
     return f"{index:0{width}d} - {name}" if seq else name
 
 
+def _numbered(chapter) -> str:
+    """Название для главы, у которой его нет: «Глава 12» или пусто."""
+    number = getattr(chapter, "number", None)
+    return f"Глава {number}" if number is not None else ""
+
+
 def look(targets, pattern: str | None = None, parts: int = 1, pieces=None,
          splits=None, fmt=None, seq: bool = True,
-         progress: Progress | None = None) -> dict:
+         progress: Progress | None = None, way: str = "",
+         start: int | None = None) -> dict:
     """Что получится на выходе — до записи на диск.
 
     Отдаёт и найденные главы (для таблицы), и готовые имена файлов (для
@@ -104,7 +175,8 @@ def look(targets, pattern: str | None = None, parts: int = 1, pieces=None,
     предпросмотр однажды показал бы одно, а на диск легло бы другое.
     """
     report = OpReport()
-    files, chapters = gather(targets, pattern, parts, report, progress)
+    files, chapters = gather(targets, pattern, parts, report, progress,
+                             way=way, start=start)
     prepared, counts = arrange(chapters, parts, pieces, splits)
     width = naming.name_width(len(prepared))
 
@@ -113,6 +185,9 @@ def look(targets, pattern: str | None = None, parts: int = 1, pieces=None,
         "file_count": len(files),
         "total": len(prepared),
         "found": len(chapters),
+        # Чем поделили: при «сам определит» человек иначе не узнает,
+        # сработали рамки или пустой абзац.
+        "way": report.extra.get("way", ""),
         "chapters": [
             {
                 "index": index,
@@ -197,6 +272,8 @@ def run(
     fmt=None,
     seq: bool = True,
     pattern: str | None = None,
+    way: str = "",
+    start: int | None = None,
     prep: PrepOptions | None = None,
     style=None,
     titles: bool = True,
@@ -209,7 +286,8 @@ def run(
     progress = progress or Progress()
     report = OpReport(output=str(output_dir))
 
-    _, chapters = gather(targets, pattern, parts, report, progress)
+    _, chapters = gather(targets, pattern, parts, report, progress,
+                         way=way, start=start)
     if not chapters:
         detail = report.failures[0].as_text() if report.failures else ""
         raise ValueError(f"Не удалось прочитать ни одной главы. {detail}".strip())

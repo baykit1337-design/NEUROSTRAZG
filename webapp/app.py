@@ -24,7 +24,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import formats, naming, platform, traffic  # noqa: E402
+from core import blocks, formats, naming, platform, traffic  # noqa: E402
+from core.blocks import NoBlocksFound  # noqa: E402
 from core.headings import HeadingsNotFound  # noqa: E402
 from core.readers.base import ReadError  # noqa: E402
 from core.registry import TYPES as ENTITY_TYPES  # noqa: E402
@@ -216,6 +217,29 @@ def _out_format(payload: dict) -> str:
 
 def _pattern(payload: dict) -> str | None:
     return (payload.get("pattern") or "").strip() or None
+
+
+def _way(payload: dict) -> str:
+    """Чем делить книгу: пусто — заголовком, иначе разметкой документа.
+
+    Неизвестное слово молча в «сам определит» не превращаем: способ выбирает
+    человек, и подменённый ответ он принял бы за настоящий.
+    """
+    value = (payload.get("way") or "").strip()
+    if value and value not in blocks.WAYS:
+        raise ValueError(f"Неизвестный способ деления: {value}")
+    return value
+
+
+def _start(payload: dict) -> int | None:
+    """С какого номера нумеровать главы. Пусто — не перенумеровывать."""
+    raw = payload.get("start")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        raise ValueError("Начало нумерации — целое число") from None
 
 
 def _order(payload: dict) -> str:
@@ -1623,10 +1647,16 @@ def api_split_scan():
         return jsonify(**split_op.look(
             targets, _pattern(payload), _parts(payload),
             pieces=_pieces(payload), fmt=_name_format(payload),
-            seq=bool(payload.get("seq", True))))
+            seq=bool(payload.get("seq", True)),
+            way=_way(payload), start=_start(payload)))
     except HeadingsNotFound as exc:
         # Наугад не режем — просим своё регулярное выражение.
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except NoBlocksFound as exc:
+        # Способ деления выбран, а границ по нему нет. Шаблон заголовка тут
+        # не поможет, поэтому и не просим его: пусть человек выберет другой
+        # способ или убедится, что форматирование при вставке уцелело.
+        return jsonify(error=str(exc), need_way=True), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -1667,9 +1697,12 @@ def api_split_volume():
     report = OpReport()
     try:
         _, chapters = split_op.gather(targets, _pattern(payload),
-                                      _parts(payload), report)
+                                      _parts(payload), report,
+                                      way=_way(payload), start=_start(payload))
     except HeadingsNotFound as exc:
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except NoBlocksFound as exc:
+        return jsonify(error=str(exc), need_way=True), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -1708,9 +1741,12 @@ def api_split_start():
         info = split_op.look(targets, _pattern(payload), _parts(payload),
                              pieces=_pieces(payload),
                              fmt=_name_format(payload),
-                             seq=bool(payload.get("seq", True)))
+                             seq=bool(payload.get("seq", True)),
+                             way=_way(payload), start=_start(payload))
     except HeadingsNotFound as exc:
         return jsonify(error=str(exc), need_pattern=True, pattern=exc.pattern), 422
+    except NoBlocksFound as exc:
+        return jsonify(error=str(exc), need_way=True), 422
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -1755,6 +1791,8 @@ def api_split_start():
             fmt=_name_format(payload),
             seq=bool(payload.get("seq", True)),
             pattern=_pattern(payload),
+            way=_way(payload),
+            start=_start(payload),
             prep=PrepOptions.from_dict(payload.get("prep")),
             style=Style.from_dict(payload.get("style")),
             titles=bool(payload.get("headings", True)),

@@ -886,3 +886,110 @@ class TestTheTabHidesWhatIsNotAsked(unittest.TestCase):
         о них, было нельзя."""
         self.assertIn('id="spDivide"', self.html)
         self.assertIn("unfold('spChaptersCard')", self.js)
+
+
+class TestSplittingByTheMarkup(SplitTestCase):
+    """Книга, собранная копированием со страницы прямо в Word.
+
+    Заголовков в ней нет вовсе, а границы глав видны только в разметке:
+    рамка вокруг главы и пустой абзац между главами. Полный разбор самой
+    разметки — в `test_blocks.py`; здесь проверяется путь до файлов.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from tests.test_blocks import chapter_box, make_docx
+        from webapp.app import app
+
+        rows = []
+        for number in range(1, 4):
+            rows += chapter_box(number, size=4) + [("", ())]
+        self.pasted = make_docx(self.tmp / "pasted.docx", rows)
+
+        app.config["TESTING"] = True
+        self.app = app.test_client()
+
+    def scan(self, **extra):
+        return self.app.post("/api/split/scan",
+                             json={"path": str(self.pasted), **extra})
+
+    def test_without_a_way_it_asks_for_a_pattern(self):
+        """Заголовков нет — по умолчанию наугад по-прежнему не режем."""
+        res = self.scan()
+        self.assertEqual(res.status_code, 422)
+        self.assertTrue(res.get_json()["need_pattern"])
+
+    def test_the_markup_divides_it(self):
+        body = self.scan(way="auto").get_json()
+        self.assertEqual(body["found"], 3)
+        self.assertEqual(body["way"], "boxes")
+
+    def test_numbering_starts_where_asked(self):
+        body = self.scan(way="auto", start=125, seq=False,
+                         name_format={"number": True, "title": False,
+                                      "prefix": "Глава"}).get_json()
+        self.assertEqual(body["names"], ["Глава 125", "Глава 126", "Глава 127"])
+
+    def test_without_a_start_the_numbers_stay_as_they_were(self):
+        """Пустое поле ничего не перенумеровывает: у этих глав номеров нет."""
+        body = self.scan(way="auto", seq=False,
+                         name_format={"number": True, "title": False,
+                                      "prefix": "Глава"}).get_json()
+        self.assertTrue(all(number is None
+                            for number in [c["number"] for c in body["chapters"]]))
+
+    def test_an_unknown_way_is_refused(self):
+        """Подменять выбранный способ своим — хуже, чем отказать."""
+        self.assertEqual(self.scan(way="как-нибудь").status_code, 400)
+
+    def test_the_way_needs_a_word_document(self):
+        res = self.app.post("/api/split/scan",
+                            json={"path": str(self.txt), "way": "boxes"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn(".docx", res.get_json()["error"])
+
+    def test_a_document_without_marks_asks_for_another_way(self):
+        from tests.test_blocks import make_docx
+
+        plain = make_docx(self.tmp / "plain.docx",
+                          [(f"Просто абзац {n}.", ()) for n in range(1, 5)])
+        res = self.app.post("/api/split/scan",
+                            json={"path": str(plain), "way": "boxes"})
+        self.assertEqual(res.status_code, 422)
+        body = res.get_json()
+        self.assertTrue(body["need_way"])
+        # Шаблон заголовка здесь ни при чём — просить его было бы ответом
+        # не на тот вопрос.
+        self.assertFalse(body.get("need_pattern"))
+
+    def test_the_files_land_on_disk_numbered(self):
+        out = self.tmp / "готовое"
+        res = self.app.post("/api/split/start", json={
+            "path": str(self.pasted), "base": str(out), "folder": "",
+            "format": ".txt", "way": "auto", "start": 125, "seq": False,
+            "name_format": {"number": True, "title": False, "prefix": "Глава"},
+        })
+        self.assertEqual(res.status_code, 200, res.get_json())
+        self.settle()
+        self.assertEqual(sorted(p.name for p in out.iterdir()),
+                         ["Глава 125.txt", "Глава 126.txt", "Глава 127.txt"])
+        # Текст главы должен уехать целиком, а не первой строкой.
+        first = (out / "Глава 125.txt").read_text(encoding="utf-8")
+        self.assertEqual(first.count("главы 1."), 4)
+
+
+class TestNumberingFromAGivenStart(SplitTestCase):
+    """Сплошная нумерация с указанного числа — сама по себе, без разметки."""
+
+    def test_it_overrides_the_numbers_found_in_the_headings(self):
+        """Задал начало — значит, нужна сплошная нумерация, а не смесь."""
+        from ops import split as split_op
+
+        _, chapters = split_op.gather([self.epub], start=10)
+        self.assertEqual([c.number for c in chapters], [10, 11, 12])
+
+    def test_an_empty_start_changes_nothing(self):
+        from ops import split as split_op
+
+        _, chapters = split_op.gather([self.epub])
+        self.assertEqual([c.number for c in chapters], [1, 2, 3])

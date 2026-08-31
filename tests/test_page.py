@@ -230,5 +230,113 @@ class TestWhatTheToolsTabShows(PageTestCase):
         self.assertEqual(self.page.locator("#upApply").count(), 0)
 
 
+class TestSplittingABookPastedFromASite(PageTestCase):
+    """Книга без заголовков, поделённая по разметке, — прямо на вкладке.
+
+    Проверка сквозная нарочно: разбор разметки, ручки вкладки и её
+    скрипт проверяются по отдельности, а вот собираются ли они в
+    работающую вкладку — видно только в браузере. Ровно так уже ловилась
+    поломка: поле с чужим классом роняло скрипт на первом же нажатии, и
+    ни один серверный тест этого не видел.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tempfile import TemporaryDirectory
+
+        from tests.test_blocks import chapter_box, make_docx
+
+        cls.tmpdir = TemporaryDirectory()
+        rows = []
+        for number in range(1, 4):
+            rows += chapter_box(number, size=4) + [("", ())]
+        cls.book = make_docx(Path(cls.tmpdir.name) / "вставленное.docx", rows)
+        # Та же книга под именем с числом: из него разбирается номер главы,
+        # и сервер принимает её за готовую главу, а не за книгу.
+        cls.numbered = make_docx(Path(cls.tmpdir.name) / "ОРИГ ЛАБИРИНТ 80-200.docx",
+                                 rows)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+        super().tearDownClass()
+
+    def open_tab(self):
+        self.page.click('.tabs button[data-tab="split"]')
+        self.page.fill("#spPath", str(self.book))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(800)
+
+    def pick_way(self, label):
+        """Выбирает способ деления в выпадающем списке."""
+        self.page.click("#spWay .dropdown-toggle")
+        self.page.click(f"#spWay .dropdown-item:text-is('{label}')")
+        self.page.wait_for_timeout(900)
+
+    def test_without_a_way_it_asks_how_to_divide(self):
+        self.open_tab()
+        self.assertTrue(self.page.locator("#spPatternCard").is_visible())
+        self.quiet()
+
+    def test_a_number_in_the_file_name_does_not_silence_the_question(self):
+        """Книга, которую сервер принял за готовую главу.
+
+        Номер главы разбирается из имени файла, и у книги «ОРИГ 80-200» он
+        находится: сервер видит готовую главу и отвечает без возражений —
+        одна глава на полтора миллиона знаков. Вкладка при этом молчала, и
+        человек упирался в тупик: файл выбран, а дальше ничего.
+
+        Вопрос теперь задаёт сама вкладка, по итогу: из одного файла вышла
+        одна глава — значит, разбиение ничего не разбило.
+        """
+        self.page.click('.tabs button[data-tab="split"]')
+        self.page.fill("#spPath", str(self.numbered))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(900)
+
+        self.assertIn("глав: 1", self.page.inner_text("#spScanned"))
+        self.assertTrue(self.page.locator("#spPatternCard").is_visible())
+        self.assertIn("делить её нечем", self.page.inner_text("#spWayNote"))
+        self.quiet()
+
+    def test_and_the_markup_then_divides_that_book_too(self):
+        self.page.click('.tabs button[data-tab="split"]')
+        self.page.fill("#spPath", str(self.numbered))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(900)
+        self.pick_way("по разметке — сам определит")
+        self.assertIn("глав: 3", self.page.inner_text("#spScanned"))
+        self.quiet()
+
+    def test_the_markup_divides_it_and_says_how(self):
+        self.open_tab()
+        self.pick_way("по разметке — сам определит")
+        self.assertIn("глав: 3", self.page.inner_text("#spScanned"))
+        self.assertIn("по рамкам", self.page.inner_text("#spScanned"))
+        self.quiet()
+
+    def test_the_pattern_field_hides_when_the_markup_divides(self):
+        """Регулярное выражение к делению по рамке отношения не имеет."""
+        self.open_tab()
+        self.pick_way("по рамкам вокруг глав")
+        self.assertFalse(self.page.locator("#spWayHead").is_visible())
+        self.assertTrue(self.page.locator("#spWayNote").is_visible())
+        self.quiet()
+
+    def test_numbering_from_a_given_start_reaches_the_preview(self):
+        self.open_tab()
+        self.pick_way("по разметке — сам определит")
+        self.page.fill("#spFrom", "125")
+        self.page.dispatch_event("#spFrom", "change")
+        self.page.wait_for_timeout(900)
+
+        self.page.click("#spPreviewCard .foldhead")
+        names = self.page.inner_text("#spPreview")
+        for expected in ("Глава 125", "Глава 126", "Глава 127"):
+            self.assertIn(expected, names)
+        self.quiet()
+
+
 if __name__ == "__main__":
     unittest.main()

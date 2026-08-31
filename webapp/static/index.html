@@ -1582,12 +1582,21 @@
     </div>
   </div>
 
-  <!-- 2. Свой шаблон заголовка, если не нашлись -->
+  <!-- 2. Чем делить книгу, если заголовков в ней не нашлось -->
   <div class="card" id="spPatternCard" hidden>
-    <label for="spPattern">Регулярное выражение для заголовка главы</label>
-    <input id="spPattern" type="text" spellcheck="false" autocomplete="off">
-    <p class="hint">Наугад не режем. Посмотрите, как выглядит начало главы в файле,
-       и опишите его здесь. Пример: <code>^\s*Глава\s+\d+</code></p>
+    <label>Чем делить книгу<i class="hint-icon" data-tip="Заголовков вида «Глава 12» в книге не нашлось. Если её собирали копированием со страницы сайта прямо в Word, границу глав видно по разметке: рамка вокруг главы или пустой абзац между главами.">?</i></label>
+    <div class="dropdown" id="spWay"
+         data-options='[["","по заголовку в тексте"],["auto","по разметке — сам определит"],["boxes","по рамкам вокруг глав"],["blank","по пустому абзацу"]]'></div>
+
+    <div id="spWayHead" style="margin-top:12px">
+      <label for="spPattern">Регулярное выражение для заголовка главы</label>
+      <input id="spPattern" type="text" spellcheck="false" autocomplete="off">
+      <p class="hint">Наугад не режем. Посмотрите, как выглядит начало главы в файле,
+         и опишите его здесь. Пример: <code>^\s*Глава\s+\d+</code></p>
+    </div>
+
+    <p class="hint" id="spWayNote" hidden style="margin-top:12px"></p>
+
     <div class="row" style="margin-top:12px">
       <button id="spRescan" class="ghost" style="flex:1">Прочитать заново</button>
     </div>
@@ -1626,10 +1635,17 @@
                data-options='[[": ",": (двоеточие)"],[". ",". (точка)"],[" — "," — (тире)"],[" - "," - (дефис)"]]'></div>
         </div>
       </div>
-      <div style="margin-top:10px">
-        <label>номер части пишется</label>
-        <div class="dropdown" id="spPartStyle"
-             data-options='[["dot","Глава 22.2"],["word","Глава 22. Часть 2"]]'></div>
+      <div class="row" style="margin-top:10px">
+        <div style="flex:1">
+          <label>номер части пишется</label>
+          <div class="dropdown" id="spPartStyle"
+               data-options='[["dot","Глава 22.2"],["word","Глава 22. Часть 2"]]'></div>
+        </div>
+        <div style="flex:1">
+          <label for="spFrom">нумерация с<i class="hint-icon" data-tip="Пусто — номера берутся из заголовков в тексте. Указали число — главы нумеруются подряд от него: нужно, когда номеров в книге нет вовсе.">?</i></label>
+          <input id="spFrom" type="number" min="0" step="1" placeholder="из текста"
+                 autocomplete="off">
+        </div>
       </div>
     </div>
 
@@ -3925,6 +3941,8 @@ async function call(url, body){
     // Подсказка «заголовки не нашлись, задайте свой шаблон» едет с ответом.
     err.needPattern = !!data.need_pattern;
     err.pattern = data.pattern;
+    // …а «границ по разметке не видно» — просьба выбрать другой способ.
+    err.needWay = !!data.need_way;
     // Подробности поломки разбора: по общим словам чинить нечего.
     err.details = data.details;
     err.needKeys = !!data.need_keys;
