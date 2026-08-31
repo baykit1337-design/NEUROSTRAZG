@@ -3861,91 +3861,6 @@ async function fmJunkClean(){
   }
 }
 
-/* ------------------------------ речь в кавычках — через тире */
-
-async function fmSpeechLook(){
-  showError('');
-  const targets = CHOSEN.fmBookList || [];
-  if(!targets.length){ showError('Сначала выберите готовый .md'); return; }
-
-  $('fmSpeechLook').disabled = true;
-  $('fmSpeechNote').innerHTML = '<span class="spin"></span>Смотрим…';
-  try{
-    const data = await call('/api/format/speech', {targets});
-    $('fmSpeechNote').textContent = data.summary || '';
-    fmSpeechDraw(data);
-  }catch(err){
-    showError(err.message, $('fmSpeechNote'));
-    $('fmSpeechNote').textContent = '';
-  }finally{
-    $('fmSpeechLook').disabled = false;
-  }
-}
-
-/** Список «до и после». Строку показываем целиком: решают по тексту
- *  реплики, а не по её длине. */
-function fmSpeechDraw(data){
-  const table = $('fmSpeechTable');
-  table.innerHTML = '';
-  const rows = data.samples || [];
-  if(!rows.length){
-    table.hidden = true;
-    // Прятать «куда сохранить», когда менять нечего: кнопка, которой
-    // нечего делать, обещает работу, которой не будет.
-    $('fmSpeechWhere').hidden = true;
-    return;
-  }
-
-  for(const row of rows){
-    const line = document.createElement('div');
-    line.className = 'tr';
-    const was = document.createElement('span');
-    was.className = 'grow';
-    was.textContent = row.before;
-    was.title = row.chapter || row.before;
-    const now = document.createElement('span');
-    now.className = 'grow';
-    now.textContent = row.after;
-    now.title = row.chapter || row.after;
-    line.append(was, now);
-    table.append(line);
-  }
-  // Сколько осталось за списком. Молчать нельзя: человек решил бы, что
-  // видит все правки, и не ждал бы остальных.
-  if(data.more){
-    const rest = document.createElement('div');
-    rest.className = 'tr';
-    const text = document.createElement('span');
-    text.className = 'grow';
-    text.textContent = `…и ещё ${data.more}`;
-    rest.append(text);
-    table.append(rest);
-  }
-  table.hidden = false;
-  $('fmSpeechWhere').hidden = false;
-}
-
-async function fmSpeechRun(){
-  showError('');
-  const targets = CHOSEN.fmBookList || [];
-  if(!targets.length){ showError('Сначала выберите готовый .md'); return; }
-
-  $('fmSpeechRun').disabled = true;
-  try{
-    const data = await call('/api/format/speech/apply', {
-      targets,
-      base: $('fmSpeechBase').value.trim(),
-      name: $('fmSpeechName').value.trim(),
-    });
-    $('fmSpeechResult').textContent =
-      `Готово. Реплик переписано: ${data.changed}, глав: ${data.chapters}.\n${data.output}`;
-  }catch(err){
-    showError(err.message, $('fmSpeechResult'));
-  }finally{
-    $('fmSpeechRun').disabled = false;
-  }
-}
-
 /* ---------------------------------------- привязка «Форматировать» */
 
 $('fmList').dataset.onchange = 'fmScan';
@@ -3955,8 +3870,6 @@ $('fmRetitle').onclick = fmRetitle;
 $('fmBefore').onclick = fmBefore;
 $('fmJunkLook').onclick = fmJunkLook;
 $('fmJunkClean').onclick = fmJunkClean;
-$('fmSpeechLook').onclick = fmSpeechLook;
-$('fmSpeechRun').onclick = fmSpeechRun;
 $('fmStop').onclick = () => cancelTab('format');
 
 // Пересчитываем образец на каждое изменение: он и есть ответ на вопрос
@@ -4236,6 +4149,118 @@ async function rpStart(rules, note){
   }
 }
 
+/* ---------------------------- речь в кавычках — через тире (инструменты) */
+
+/** Список «до и после» строится сам, как только выбраны файлы.
+ *
+ *  Кнопки «посмотреть, что изменится» здесь нет намеренно: настраивать
+ *  нечего, и лишнее нажатие ничего не решает — только откладывает ответ
+ *  на единственный вопрос, который в это время и возникает.
+ */
+async function spchScan(){
+  const targets = rpTargets();
+  const table = $('spchTable');
+  if(!targets.length){
+    $('spchNote').textContent = '';
+    table.hidden = true;
+    $('spchPlace').hidden = true;
+    return;
+  }
+
+  $('spchNote').innerHTML = '<span class="spin"></span>Смотрим…';
+  try{
+    const data = await call('/api/speech/preview', {targets});
+    $('spchNote').textContent = data.summary || '';
+    spchDraw(data);
+  }catch(err){
+    showError(err.message, $('spchNote'));
+    $('spchNote').textContent = '';
+    table.hidden = true;
+    $('spchPlace').hidden = true;
+  }
+}
+
+/** Строку показываем целиком: решают по тексту реплики, а не по длине. */
+function spchDraw(data){
+  const table = $('spchTable');
+  table.innerHTML = '';
+  const rows = data.samples || [];
+  if(!rows.length){
+    table.hidden = true;
+    // Прятать «куда сохранить», когда менять нечего: кнопка, которой
+    // нечего делать, обещает работу, которой не будет.
+    $('spchPlace').hidden = true;
+    return;
+  }
+
+  for(const row of rows){
+    const line = document.createElement('div');
+    line.className = 'tr';
+    const was = document.createElement('span');
+    was.className = 'grow';
+    was.textContent = row.before;
+    was.title = [row.file, row.chapter].filter(Boolean).join(' · ') || row.before;
+    const now = document.createElement('span');
+    now.className = 'grow';
+    now.textContent = row.after;
+    now.title = was.title;
+    line.append(was, now);
+    table.append(line);
+  }
+  // Сколько осталось за списком. Молчать нельзя: человек решил бы, что
+  // видит все правки, и не ждал бы остальных.
+  if(data.more){
+    const rest = document.createElement('div');
+    rest.className = 'tr';
+    const text = document.createElement('span');
+    text.className = 'grow';
+    text.textContent = `…и ещё ${data.more}`;
+    rest.append(text);
+    table.append(rest);
+  }
+  table.hidden = false;
+  $('spchPlace').hidden = false;
+}
+
+async function spchStart(){
+  showError('');
+  const targets = rpTargets();
+  if(!targets.length){ showError('Сначала выберите файлы или папку'); return; }
+
+  $('spchStart').disabled = true;
+  try{
+    const {job} = await call('/api/speech/start', {
+      targets,
+      base: $('spchBase').value.trim(),
+      folder: $('spchFolder').value.trim(),
+      format: spchState.format ? spchState.format.value : '',
+    });
+    $('spchProgress').hidden = false;
+    $('spchSummary').textContent = 'Папка: ' + job.output_dir;
+
+    pollJob(job.id,
+      job => {
+        const p = job.progress || {};
+        $('spchWritten').textContent = p.written || p.done || 0;
+        $('spchFailed').textContent = p.failed || 0;
+        return drawResult(p, 'spchFill', 'spchStatus', 'spchPct');
+      },
+      job => {
+        if(job.error){ showError(job.error, $('spchSummary')); return; }
+        const r = job.report || {};
+        $('spchSummary').textContent =
+          `Папка: ${r.output || job.output_dir}` +
+          (r.changed != null ? ` · реплик переписано: ${r.changed}` : '');
+      });
+  }catch(err){
+    showError(err.message, $('spchSummary'));
+  }finally{
+    $('spchStart').disabled = false;
+  }
+}
+
+const spchState = {};
+
 /* --------------------------------------------------- словарь автозамен */
 
 /** Папка книги: словарь ведётся отдельно для каждой. */
@@ -4381,6 +4406,11 @@ async function cmpStart(){
 
 $('rpPreview').onclick = rpPreview;
 $('rpStart').onclick = () => rpStart();
+$('spchStart').onclick = spchStart;
+spchState.format = makeDropdown($('spchFormat'));
+// Список «до и после» строится сам: выбор файлов — единственное,
+// что этой работе нужно знать.
+$('rpList').dataset.onchange = 'spchScan';
 $('dcLoad').onclick = dcLoad;
 $('dcSave').onclick = dcSave;
 $('dcSummary').onclick = dcSummary;

@@ -2503,41 +2503,6 @@
     </div>
   </div>
 
-  <!-- Прямая речь. Перевод отдаёт реплики в кавычках, как в оригинале,
-       а по-русски они пишутся через тире. Правило узкое нарочно: реплика
-       — это абзац, начатый с кавычки; кавычка в середине строки остаётся
-       кавычкой, иначе слетели бы и названия, и цитаты. -->
-  <div class="card" id="fmSpeechCard">
-    <label>Речь в кавычках — через тире</label>
-    <p class="hint">Смотрит выбранный выше <code>.md</code>. Абзац,
-       начатый с кавычки, — это реплика: <code>«Быстрее».</code> станет
-       <code>— Быстрее.</code> Кавычка в середине строки не трогается:
-       «Войну и мир» так и оставим в кавычках. Исходник не
-       переписывается — переписанное пишется рядом.</p>
-    <div class="row" style="margin-top:12px">
-      <button id="fmSpeechLook" class="ghost" style="flex:1">Посмотреть, что изменится</button>
-    </div>
-    <p class="hint" id="fmSpeechNote"></p>
-    <div class="table" id="fmSpeechTable" hidden style="margin-top:10px;max-height:420px"></div>
-
-    <div id="fmSpeechWhere" hidden style="margin-top:14px">
-      <label>Куда сохранить</label>
-      <div class="row">
-        <input id="fmSpeechBase" type="text" placeholder="Папка назначения"
-             autocomplete="off" data-keep list="nzFolders">
-        <button class="ghost browse" data-target="fmSpeechBase" data-kind="folder">Обзор…</button>
-      </div>
-      <div style="margin-top:10px">
-        <input id="fmSpeechName" type="text" placeholder="книга-тире"
-               value="книга-тире" autocomplete="off">
-      </div>
-      <div class="row" style="margin-top:14px">
-        <button id="fmSpeechRun" class="primary" style="flex:1">Переписать через тире</button>
-      </div>
-      <p class="result-path" id="fmSpeechResult"></p>
-    </div>
-  </div>
-
   <!-- Объём глав — тот же блок, что в «Разбить» и «Переименовать».
        Здесь книга лежит одним .md, поэтому за главы берутся куски между
        заголовками загрузчика, а считает их всё тот же `ops/stats`. -->
@@ -2864,8 +2829,8 @@
     <div class="chosen" id="rpList"></div>
   </div>
 
-  <div class="card" id="rpCard">
-    <label>Найти и заменить по всей книге</label>
+  <div class="card folded" data-fold id="rpCard">
+    <label class="foldhead">Найти и заменить по всей книге</label>
     <div class="row" style="margin-top:8px">
       <input id="rpFind" type="text" placeholder="найти" autocomplete="off"
              spellcheck="false">
@@ -2915,9 +2880,61 @@
     </div>
   </div>
 
+  <!-- Прямая речь в кавычках — через тире. Формат файла роли не играет:
+       чаще всего это правят в вордовском файле, до всякой сборки.
+       Кнопки «посмотреть» здесь нет намеренно: смотреть нечего настраивать,
+       список строится сам, как только выбраны файлы. -->
+  <div class="card" id="spchCard">
+    <label>Речь в кавычках — через тире</label>
+    <p class="hint">Абзац, начатый с кавычки, — это реплика:
+       <code>«Быстрее».</code> станет <code>— Быстрее.</code> Кавычка в
+       середине строки не трогается: «Войну и мир» так и оставим в
+       кавычках. Берёт любой формат — <code>.docx</code>, <code>.txt</code>,
+       <code>.rtf</code>, <code>.odt</code>, <code>.fb2</code>,
+       <code>.md</code>. Оригиналы не трогаются — результат ложится в
+       новую папку.</p>
+    <p class="hint" id="spchNote"></p>
+    <div class="table" id="spchTable" hidden style="margin-top:10px;max-height:420px"></div>
+
+    <div id="spchPlace" hidden style="margin-top:14px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="spchBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
+        <button class="ghost browse" data-target="spchBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <label for="spchFolder">имя папки</label>
+        <input id="spchFolder" type="text" placeholder="Речь через тире"
+               value="Речь через тире" autocomplete="off">
+      </div>
+      <div style="margin-top:10px">
+        <label>формат на выходе<i class="hint-icon" data-tip="«Как был» оставляет каждому файлу его собственное расширение: принесли .docx — получите .docx. Работа правит текст, а не перегоняет книгу из формата в формат.">?</i></label>
+        <div class="dropdown" id="spchFormat"
+             data-options='[["","как был"],[".txt","txt"],[".docx","docx"],[".md","md"],[".rtf","rtf"],[".odt","odt"],[".fb2","fb2"]]'></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="spchStart" class="primary" style="flex:1">Переписать через тире</button>
+      </div>
+    </div>
+
+    <div class="card lit" id="spchProgress" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span>
+        <span class="result-text" id="spchStatus"></span></div>
+      <div class="bar"><i id="spchFill"></i></div>
+      <div class="stats">
+        <span>записано <b id="spchWritten">0</b></span>
+        <span>ошибок <b id="spchFailed">0</b></span>
+        <span id="spchPct"></span>
+        <span class="timers" id="spchTimers"></span>
+      </div>
+      <p class="result-path" id="spchSummary"></p>
+    </div>
+  </div>
+
   <!-- 4.2 Словарь автозамен -->
-  <div class="card">
-    <label>Словарь автозамен</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Словарь автозамен</label>
     <p class="hint">Формат «было = стало», по правилу в строке. Строка с
        приставкой <code>re:</code> — регулярное выражение. Словарь свой у
        каждой книги: лежит рядом с ней в <code>replacements.txt</code>.</p>
@@ -2934,8 +2951,8 @@
   </div>
 
   <!-- 4.3 Сверка оригинала и перевода -->
-  <div class="card">
-    <label>Сверка оригинала и перевода</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Сверка оригинала и перевода</label>
     <p class="hint">Главы сопоставляются по номерам. Ничего не исправляется —
        только показывается, где смотреть.</p>
     <div class="row" style="margin-top:10px">
@@ -2957,8 +2974,8 @@
   <!-- Два слива одной книги. От сверки выше отличается тем, что главной
        стороны здесь нет: обе папки равны, объём должен совпадать один к
        одному, и вопрос ровно один — какую из двух брать. -->
-  <div class="card">
-    <label>Два слива одной книги</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Два слива одной книги</label>
     <p class="hint">Одна книга, скачанная с двух сайтов. Слив бывает
        обрезан, и по одной папке этого не видно — она выглядит целой.
        Главы сопоставляются по номерам, ничего не сливается и не
@@ -3042,8 +3059,8 @@
   </div>
 
   <!-- 4.6 Очередь задач -->
-  <div class="card">
-    <label>Очередь задач</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Очередь задач</label>
     <p class="hint">Несколько операций подряд, без участия человека:
        разбить → переименовать → проверить. Шаг без своего выбора берёт на
        вход папку, которую сделал предыдущий, — цепочка складывается сама.
@@ -3088,8 +3105,8 @@
   </div>
 
   <!-- 4.5 Что изменилось -->
-  <div class="card">
-    <label>Что изменилось</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Что изменилось</label>
     <p class="hint">Сравнение двух версий одной книги: до операции и после.
        Сравниваются абзацы, а не байты — перенос строки правкой не считается.</p>
     <div class="row" style="margin-top:10px">
@@ -3108,8 +3125,8 @@
   </div>
 
   <!-- 4.10 Журнал и корзина -->
-  <div class="card">
-    <label>Журнал операций и корзина</label>
+  <div class="card folded" data-fold id="hsCard">
+    <label class="foldhead">Журнал операций и корзина</label>
     <p class="hint" id="hsNote">Перед перезаписью старая версия папки
        копируется в корзину. Хранятся последние копии, старые удаляются сами.</p>
     <!-- «Вернуть как было» — та же корзина, но без похода в список.
@@ -3243,8 +3260,8 @@
   </div>
 
   <!-- 4.8 Шапка и подпись -->
-  <div class="card">
-    <label>Шапка и подпись в главах</label>
+  <div class="card folded" data-fold>
+    <label class="foldhead">Шапка и подпись в главах</label>
     <p class="hint">Дописываются при экспорте, в исходных файлах не
        сохраняются. Подстановки: <code>{номер}</code>,
        <code>{название}</code>, <code>{всего_глав}</code>,

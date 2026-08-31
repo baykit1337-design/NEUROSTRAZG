@@ -199,6 +199,10 @@ class TestWhatTheToolsTabShows(PageTestCase):
                          r"\d")
 
     def test_the_journal_tells_the_weight_of_the_bin(self):
+        # Карточка журнала свёрнута — разворачиваем её так же, как это
+        # делает человек: работ на вкладке полтора десятка, и открытыми
+        # им всем быть незачем.
+        self.page.click("#hsCard .foldhead")
         self.page.click("#hsLoad")
         self.page.wait_for_timeout(500)
         said = self.page.locator("#hsNote").inner_text()
@@ -511,11 +515,11 @@ class TestChoosingWhatHappensToTheName(PageTestCase):
 
 
 class TestTurningQuotedSpeechIntoDashes(PageTestCase):
-    """Карточка «Речь в кавычках» на вкладке «Форматировать».
+    """Карточка «Речь в кавычках» на вкладке «Инструменты».
 
-    Работа необратимая по смыслу — правит текст книги, — поэтому кнопка
-    записи показывается только после того, как человек увидел список
-    «до и после».
+    Работа берёт любой формат и живёт рядом с остальными правками текста.
+    Кнопки «посмотреть, что изменится» у неё нет намеренно: настраивать
+    нечего, и лишнее нажатие только откладывает ответ.
     """
 
     @classmethod
@@ -523,20 +527,18 @@ class TestTurningQuotedSpeechIntoDashes(PageTestCase):
         super().setUpClass()
         from tempfile import TemporaryDirectory
 
+        from core import formats
+        from core.models import Chapter
+
         cls.tmpdir = TemporaryDirectory()
         cls.folder = Path(cls.tmpdir.name)
-        cls.quiet_book = cls.folder / "тире.md"
-        cls.quiet_book.write_text(
-            " # [Глава 1 :|: :|: 1 :|: ]\n"
-            "— Уже через тире.\n",
-            encoding="utf-8")
-        cls.book = cls.folder / "книга.md"
-        cls.book.write_text(
-            " # [Глава 1 :|: :|: 1 :|: ]\n"
-            "«Я-я в порядке...♥»\n"
-            "«Быстрее».\n"
-            "Он читал «Войну и мир».\n",
-            encoding="utf-8")
+        cls.src = cls.folder / "исходники"
+        cls.src.mkdir()
+        formats.write(cls.src / "ОРИГ ЛАБИРИНТ.docx",
+                      [Chapter(number=1, title="Глава 1", paragraphs=[
+                          "«Я-я в порядке...♥»", "«Быстрее».",
+                          "Он читал «Войну и мир»."])],
+                      headings=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -545,43 +547,87 @@ class TestTurningQuotedSpeechIntoDashes(PageTestCase):
 
     def setUp(self):
         super().setUp()
-        self.page.click('.tabs button[data-tab="format"]')
+        self.page.click('.tabs button[data-tab="tools"]')
 
-    def look_at(self, path):
-        self.page.fill("#fmBookPath", str(path))
-        self.page.press("#fmBookPath", "Enter")
-        self.page.wait_for_timeout(800)
-        self.page.click("#fmSpeechLook")
+    def choose(self, where):
+        """Выбрать файлы так же, как это делает кнопка «Выбрать…»."""
+        self.page.evaluate("""(dir) => { CHOSEN.rpList = [dir];
+            const h = document.getElementById('rpList').dataset.onchange;
+            if(h) window[h]();
+        }""", str(where))
 
-    def test_the_card_is_there(self):
-        self.assertTrue(self.page.locator("#fmSpeechCard").count())
+    def test_the_card_lives_in_the_tools_tab(self):
+        self.assertTrue(self.page.locator("#spchCard").count())
         self.quiet()
 
-    def test_where_to_save_stays_hidden_until_it_is_looked_at(self):
-        self.assertTrue(self.page.locator("#fmSpeechWhere").is_hidden())
+    def test_there_is_no_button_to_press_first(self):
+        """Список строится сам — нажимать было нечего и незачем."""
+        self.assertFalse(self.page.locator("#spchLook").count())
         self.quiet()
 
-    def test_it_shows_every_line_before_and_after(self):
-        self.look_at(self.book)
-        self.page.wait_for_selector("#fmSpeechTable:not([hidden])",
-                                    timeout=10000)
-        shown = self.page.inner_text("#fmSpeechTable")
+    def test_the_list_builds_itself_once_files_are_chosen(self):
+        self.choose(self.src)
+        self.page.wait_for_selector("#spchTable:not([hidden])", timeout=15000)
+        shown = self.page.inner_text("#spchTable")
         self.assertIn("— Быстрее.", shown)
         # Не реплика — в список не попадает вовсе.
         self.assertNotIn("Войну и мир", shown)
-        self.assertIn("2", self.page.inner_text("#fmSpeechNote"))
-        self.assertFalse(self.page.locator("#fmSpeechWhere").is_hidden())
+        self.assertFalse(self.page.locator("#spchPlace").is_hidden())
         self.quiet()
 
-    def test_a_book_without_quoted_speech_offers_no_button(self):
-        """Кнопка, которой нечего делать, обещает работу, которой не
-        будет."""
-        self.look_at(self.quiet_book)
+    def test_where_to_save_stays_hidden_until_there_is_something_to_do(self):
+        self.assertTrue(self.page.locator("#spchPlace").is_hidden())
+        self.quiet()
+
+    def test_a_word_file_is_rewritten_into_a_word_file(self):
+        self.choose(self.src)
+        self.page.wait_for_selector("#spchTable:not([hidden])", timeout=15000)
+        self.page.fill("#spchBase", str(self.folder))
+        self.page.fill("#spchFolder", "Через тире")
+        self.page.click("#spchStart")
         self.page.wait_for_function(
-            "() => document.getElementById('fmSpeechNote')"
-            ".textContent.includes('не нашлось')", timeout=10000)
-        self.assertTrue(self.page.locator("#fmSpeechWhere").is_hidden())
-        self.assertTrue(self.page.locator("#fmSpeechTable").is_hidden())
+            "() => document.getElementById('spchSummary')"
+            ".textContent.includes('переписано')", timeout=30000)
+        made = self.folder / "Через тире" / "ОРИГ ЛАБИРИНТ.docx"
+        self.assertTrue(made.is_file(), sorted(
+            p.name for p in (self.folder / "Через тире").iterdir()))
+        self.quiet()
+
+
+class TestTheToolsTabIsFoldedUp(PageTestCase):
+    """Работ на вкладке полтора десятка, и открытыми им всем быть незачем:
+    страница уезжала на несколько экранов вниз."""
+
+    #: Свёрнутыми — те работы, что нужны изредка. Список назван человеком
+    #: поимённо, поэтому и проверяется по именам, а не по числу карточек.
+    FOLDED = ("Найти и заменить по всей книге", "Словарь автозамен",
+              "Сверка оригинала и перевода", "Два слива одной книги",
+              "Очередь задач", "Что изменилось",
+              "Журнал операций и корзина", "Шапка и подпись в главах")
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="tools"]')
+
+    def folded_names(self) -> set:
+        return set(self.page.eval_on_selector_all(
+            "#tab-tools .card.folded > .foldhead",
+            "nodes => nodes.map(n => n.textContent.trim())"))
+
+    def test_every_named_work_starts_folded(self):
+        missing = sorted(set(self.FOLDED) - self.folded_names())
+        self.assertEqual(missing, [], self.folded_names())
+        self.quiet()
+
+    def test_a_folded_card_opens_by_its_head(self):
+        self.page.click("#rpCard .foldhead")
+        self.assertNotIn("folded", self.page.get_attribute("#rpCard", "class"))
+        self.quiet()
+
+    def test_the_speech_card_is_open(self):
+        """За правкой текста на вкладку и заходят."""
+        self.assertNotIn("folded",
+                         self.page.get_attribute("#spchCard", "class"))
         self.quiet()
 
 

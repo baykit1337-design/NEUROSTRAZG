@@ -2769,50 +2769,6 @@ def api_format_junk_clean():
                    source=str(path))
 
 
-@app.post("/api/format/speech")
-def api_format_speech():
-    """Сколько реплик стоит в кавычках и во что они превратятся."""
-    payload = request.json or {}
-    try:
-        path, _, chapters = _read_md(payload)
-    except (ValueError, OSError) as exc:
-        return jsonify(error=str(exc)), 400
-
-    found = speech_op.inspect(_md_pairs(chapters))
-    return jsonify(path=str(path), **found.as_dict())
-
-
-@app.post("/api/format/speech/apply")
-def api_format_speech_apply():
-    """Переписать речь через тире. Исходник не трогаем — пишем рядом."""
-    payload = request.json or {}
-    try:
-        path, lead, chapters = _read_md(payload)
-        output = _md_output(payload)
-    except (ValueError, OSError) as exc:
-        return jsonify(error=str(exc)), 400
-    if output == path:
-        return jsonify(error="Выберите другое имя: исходник не перезаписываем "
-                             "— сверить с ним будет нечего"), 400
-
-    made, count = speech_op.rewrite(_md_pairs(chapters))
-    # Писать копию, ничем не отличающуюся от исходника, незачем: человек
-    # решил бы, что работа сделана, а сделана она не была.
-    if not count:
-        return jsonify(error="Речи в кавычках не нашлось — переписывать "
-                             "нечего"), 400
-
-    rebuilt = [(head, mdbook.lines_of(paragraphs))
-               for (head, _), (_, paragraphs) in zip(chapters, made)]
-    try:
-        output.write_text(mdbook.write_book(rebuilt, lead), encoding="utf-8")
-    except OSError as exc:
-        return jsonify(error=f"Не удалось записать: {exc}"), 400
-
-    return jsonify(output=str(output), changed=count, chapters=len(rebuilt),
-                   source=str(path))
-
-
 #: Сколько строк «до и после» показывать. Книга бывает на полторы тысячи
 #: глав, а решение по такому предпросмотру принимают по первым двум
 #: десяткам: дальше повторяется то же самое.
@@ -4283,6 +4239,66 @@ def _rules(payload: dict) -> list:
     if isinstance(text, str) and text.strip():
         return replace_op.parse_dictionary(text)
     return []
+
+
+@app.post("/api/speech/preview")
+def api_speech_preview():
+    """Какие строки станут речью через тире. На диск ничего не пишется."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    try:
+        return jsonify(**speech_op.look(targets).as_dict())
+    except (ReadError, ValueError) as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/api/speech/start")
+def api_speech_start():
+    """Переписать речь через тире. Оригиналы не трогаем — пишем в папку."""
+    payload = request.json or {}
+    targets = _targets(payload)
+    base = (payload.get("base") or "").strip()
+    folder = (payload.get("folder") or "").strip()
+
+    if not targets:
+        return jsonify(error="Выберите файлы или папку"), 400
+    if not base:
+        return jsonify(error="Выберите папку, где создать каталог"), 400
+    if not folder:
+        return jsonify(error="Введите имя папки"), 400
+
+    try:
+        made = _prepare(base, folder, "speech")
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не удалось создать папку: {exc}"), 400
+
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        kind="speech",
+        meta={"targets": targets},
+        output_dir=str(made.dir),
+    )
+    job.progress = {"stage": "speech", "message": "Переписываем речь…",
+                    "done": 0, "total": 0, "written": 0, "failed": 0}
+    job.keep(made)
+
+    # Пусто — каждый файл остаётся в своём формате. Общий `_out_format`
+    # здесь не годится: он подставляет `.txt`, а работа правит текст, а не
+    # перегоняет книгу из одного формата в другой. Человек принёс `.docx`
+    # — `.docx` и получит.
+    fmt = str(payload.get("format") or "").strip().lower()
+    if fmt and not fmt.startswith("."):
+        fmt = f".{fmt}"
+
+    def work(job: Job):
+        _finish(job, speech_op.run(
+            targets, Path(job.output_dir), out_format=fmt,
+            progress=_progress(job, "Файл"),
+        ), "Записано")
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 @app.post("/api/replace/preview")

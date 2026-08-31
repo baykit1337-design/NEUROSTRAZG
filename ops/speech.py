@@ -27,11 +27,30 @@
 
 Ничего не переписывает само: сначала показывает каждую строку «до и
 после», а пишет — рядом с исходником, новым файлом.
+
+Формат файла роли не играет. Работа живёт в «Инструментах» и берёт то же,
+что и остальные работы там: файлы или папку любого читаемого формата —
+`.docx`, `.txt`, `.rtf`, `.odt`, `.fb2`, `.md`. Речь в кавычках попадается
+не только в собранной книге: чаще всего её и правят в вордовском файле,
+до всякой сборки.
+
+Готовая книга для загрузчика — особый случай, и он разобран отдельно.
+Прочитай мы её обычным читателем, строки-заголовки `# [Название :|: …]`
+стали бы обычным текстом, а при записи первая из них поехала бы. Поэтому
+такую книгу разбирает `ops/mdbook`, и заголовки возвращаются на место
+дословно.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+from core import formats, naming
+from core.models import OpReport
+
+from . import mdbook
+from .base import Progress, collect_files
 
 #: Знак прямой речи. Тире, а не дефис и не минус: короткий знак на этом
 #: месте загрузчик покажет как дефис посреди строки.
@@ -82,10 +101,11 @@ class Change:
     chapter: str = ""
     before: str = ""
     after: str = ""
+    file: str = ""
 
     def as_dict(self) -> dict:
         return {"chapter": self.chapter, "before": self.before,
-                "after": self.after}
+                "after": self.after, "file": self.file}
 
 
 @dataclass
@@ -94,6 +114,10 @@ class Report:
     lines: int = 0
     changed: int = 0
     samples: list[Change] = field(default_factory=list)
+    #: Сколько файлов просмотрено и какие не открылись. Работа берёт
+    #: папку целиком, и сбой одного файла не повод бросать остальные.
+    files: int = 0
+    unreadable: list = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
@@ -109,6 +133,8 @@ class Report:
     def as_dict(self) -> dict:
         return {"chapters": self.chapters, "lines": self.lines,
                 "changed": self.changed, "clean": self.clean,
+                "files": self.files,
+                "unreadable": self.unreadable,
                 "summary": self.summary(),
                 "samples": [change.as_dict() for change in self.samples],
                 "more": max(0, self.changed - len(self.samples))}
@@ -148,5 +174,140 @@ def rewrite(chapters) -> tuple[list[tuple[str, list[str]]], int]:
     return made, count
 
 
+# ------------------------------------------------------------ по файлам
+
+
+def _book(path: Path):
+    """Главы книги для загрузчика — или `None`, если это не она.
+
+    Отличать надо до чтения обычным читателем: у такой книги строки
+    `# [Название :|: …]` не текст, а заголовки, и вернуть их надо
+    дословно, вместе с ценой и томом.
+    """
+    if path.suffix.lower() not in (".md", ".markdown"):
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lead, chapters = mdbook.read_book(text)
+    return (lead, chapters) if chapters else None
+
+
+def _pieces(path: Path) -> list[tuple[str, list[str]]]:
+    """Файл — в пары «заголовок, абзацы», как их берёт `inspect`."""
+    book = _book(path)
+    if book is not None:
+        return [(head.title, mdbook.paragraphs_of(lines))
+                for head, lines in book[1]]
+    return [(chapter.title, list(chapter.paragraphs))
+            for chapter in formats.read(path)]
+
+
+def look(targets, progress: Progress | None = None) -> Report:
+    """Что изменится в выбранных файлах. Ничего не пишет."""
+    progress = progress or Progress()
+    report = Report()
+    files = collect_files(targets)
+    report.files = len(files)
+
+    for index, path in enumerate(files, 1):
+        progress.check()
+        try:
+            pieces = _pieces(path)
+        except Exception as exc:  # noqa: BLE001 — сбой файла не повод бросать
+            report.unreadable.append(f"{path.name}: {type(exc).__name__}: {exc}")
+            pieces = []
+        # Считает всё тот же `inspect`: расщепи мы счёт на два, в списке
+        # значилось бы одно, а в файл легло бы другое.
+        piece = inspect(pieces)
+        report.chapters += piece.chapters
+        report.lines += piece.lines
+        report.changed += piece.changed
+        for change in piece.samples:
+            if len(report.samples) < SHOW:
+                change.file = path.name
+                report.samples.append(change)
+        progress.step(index, len(files), f"Смотрим {path.name}")
+    return report
+
+
+def run(targets, output_dir, out_format: str = "", encoding: str = "utf-8",
+        progress: Progress | None = None) -> OpReport:
+    """Переписывает речь через тире в новую папку. Оригиналы не трогает."""
+    progress = progress or Progress()
+    output_dir = Path(str(output_dir)).expanduser()
+    report = OpReport(output=str(output_dir))
+
+    files = collect_files(targets)
+    if not files:
+        raise ValueError("Не нашлось ни одного файла.")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report.total = len(files)
+
+    changed = 0
+    used: set[str] = set()
+    for index, path in enumerate(files, 1):
+        progress.check()
+        try:
+            changed += _one(path, output_dir, out_format, encoding, used)
+            report.written += 1
+        except Exception as exc:  # noqa: BLE001 — сбой файла не повод бросать
+            report.fail(path.name, "правка", f"{type(exc).__name__}: {exc}")
+        progress.step(index, len(files), f"Файл {index} из {len(files)}")
+
+    report.extra["changed"] = changed
+    return report
+
+
+def _one(path: Path, output_dir: Path, out_format: str, encoding: str,
+         used: set) -> int:
+    """Один файл. Возвращает число переписанных строк."""
+    book = _book(path)
+    suffix = out_format or path.suffix or ".txt"
+
+    if book is not None:
+        # У книги для загрузчика заголовки возвращаются дословно: цена и
+        # том живут в той же строке, и пересобрать её значило бы поменять
+        # книге цену.
+        lead, chapters = book
+        made, count = rewrite([(head.title, mdbook.paragraphs_of(lines))
+                               for head, lines in chapters])
+        rebuilt = [(head, mdbook.lines_of(paragraphs))
+                   for (head, _), (_, paragraphs) in zip(chapters, made)]
+        target = _free(output_dir, path.stem, ".md", used)
+        target.write_text(mdbook.write_book(rebuilt, lead), encoding="utf-8")
+        return count
+
+    read = formats.read(path)
+    made, count = rewrite([(chapter.title, list(chapter.paragraphs))
+                           for chapter in read])
+    # Копия, а не правка на месте: прочитанное — не наше, и менять его
+    # молча нельзя, даже если после нас им никто не пользуется.
+    fresh = [replace(chapter, paragraphs=paragraphs)
+             for chapter, (_, paragraphs) in zip(read, made)]
+
+    target = _free(output_dir, path.stem, suffix, used)
+    formats.write(target, fresh, headings=True, encoding=encoding,
+                  title=fresh[0].title if fresh else path.stem)
+    return count
+
+
+def _free(output_dir: Path, stem: str, suffix: str, used: set) -> Path:
+    """Имя, которое ещё не занято в этой работе.
+
+    Папку берут целиком, а в ней могут лежать «глава.txt» и «глава.docx»:
+    приведи мы оба к одному формату — второй затёр бы первый.
+    """
+    stem = naming.safe_filename(stem) or "файл"
+    name = f"{stem}{suffix}"
+    number = 2
+    while name.lower() in used:
+        name = f"{stem} ({number}){suffix}"
+        number += 1
+    used.add(name.lower())
+    return output_dir / name
+
+
 __all__ = ["DASH", "QUOTES", "SHOW", "Change", "Report", "dashed", "inspect",
-           "rewrite"]
+           "look", "rewrite", "run"]

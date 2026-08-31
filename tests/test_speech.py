@@ -164,103 +164,239 @@ class TestRewritingTheBook(unittest.TestCase):
 
 
 
-class TestOverHttp(unittest.TestCase):
-    """Карточка «Речь в кавычках» на вкладке «Форматировать»."""
 
-    SOURCE = (
-        " # [Глава 1 :|: :|: 1 :|: ]\n"
-        "«Я-я в порядке...♥»\n"
-        "«Быстрее».\n"
-        "Он читал «Войну и мир».\n"
-        " # [Глава 2 :|: :|: 1 :|: ]\n"
-        "— Уже через тире.\n"
-    )
+class FileBase(unittest.TestCase):
+    """Работа берёт файлы любого формата, а не только собранную книгу."""
+
+    BODY = ["«Я-я в порядке...♥»", "«Быстрее».", "«Что?» — спросил он.",
+            "Он читал «Войну и мир»."]
 
     def setUp(self):
         from tempfile import TemporaryDirectory
 
-        from webapp import app as web
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.src = self.tmp / "исходники"
+        self.src.mkdir()
 
-        self.dir = TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
-        self.root = Path(self.dir.name)
-        web.app.config["TESTING"] = True
-        self.app = web.app.test_client()
+    def put(self, suffix=".docx", name="Глава 1", body=None):
+        from core import formats
+        from core.models import Chapter
 
-    def book(self, text=None):
-        path = self.root / "исходник.md"
-        path.write_text(self.SOURCE if text is None else text,
-                        encoding="utf-8")
+        path = self.src / f"{name}{suffix}"
+        formats.write(path, [Chapter(number=1, title="Глава 1",
+                                     paragraphs=list(body or self.BODY))],
+                      headings=True)
         return path
 
-    # Файл создаём только тогда, когда его не передали: иначе вызов
-    # затирал бы книгу, которую тест положил специально.
-    def look(self, **more):
-        targets = more.pop("targets", None) or [str(self.book())]
-        payload = {"targets": targets}
-        payload.update(more)
-        return self.app.post("/api/format/speech", json=payload)
+    def book(self, name="книга.md"):
+        """Готовая книга для загрузчика — с ценой и томом в заголовке."""
+        path = self.src / name
+        path.write_text(" # [Глава 7 :|: 3 :|: 1 :|: Первый ]\n"
+                        "«Быстрее».\n"
+                        "Он читал «Войну и мир».\n", encoding="utf-8")
+        return path
 
-    def apply(self, **more):
-        targets = more.pop("targets", None) or [str(self.book())]
-        payload = {"targets": targets, "base": str(self.root), "name": "тире"}
-        payload.update(more)
-        return self.app.post("/api/format/speech/apply", json=payload)
+    def lines(self, path):
+        from core import formats
 
-    def test_the_look_says_how_many_replies_there_are(self):
-        said = self.look().get_json()
-        self.assertEqual(said["changed"], 2)
-        self.assertEqual(said["chapters"], 2)
+        return [line for chapter in formats.read(path)
+                for line in chapter.paragraphs]
 
-    def test_the_look_shows_both_sides(self):
-        said = self.look().get_json()
-        self.assertEqual(said["samples"][0]["after"], "— Я-я в порядке...♥")
 
-    def test_a_file_without_headers_is_refused(self):
-        path = self.root / "просто.md"
-        path.write_text("Просто текст.\n", encoding="utf-8")
-        res = self.app.post("/api/format/speech", json={"targets": [str(path)]})
-        self.assertEqual(res.status_code, 400)
+class TestLookingAtFiles(FileBase):
 
-    def test_the_rewritten_book_is_written(self):
-        said = self.apply().get_json()
-        self.assertEqual(said["changed"], 2)
-        text = (self.root / "тире.md").read_text(encoding="utf-8")
-        self.assertIn("— Я-я в порядке...♥", text)
-        self.assertIn("— Быстрее.", text)
+    def test_it_reads_a_word_file(self):
+        """С этого всё и началось: файл у человека — вордовский."""
+        self.put(".docx")
+        found = speech.look([str(self.src)])
+        self.assertEqual(found.changed, 3)
+
+    def test_every_readable_format_goes_through(self):
+        for suffix in (".txt", ".docx", ".rtf", ".odt", ".fb2"):
+            with self.subTest(suffix):
+                self.setUp()
+                self.put(suffix)
+                self.assertEqual(speech.look([str(self.src)]).changed, 3)
+
+    def test_a_whole_folder_at_once(self):
+        for n in (1, 2, 3):
+            self.put(".txt", name=f"Глава {n}")
+        found = speech.look([str(self.src)])
+        self.assertEqual(found.files, 3)
+        self.assertEqual(found.changed, 9)
+
+    def test_a_change_says_which_file_it_is_in(self):
+        self.put(".txt", name="ОРИГ ЛАБИРИНТ")
+        found = speech.look([str(self.src)])
+        self.assertEqual(found.samples[0].file, "ОРИГ ЛАБИРИНТ.txt")
+
+    def test_an_unreadable_file_does_not_stop_the_rest(self):
+        """Папку берут целиком, и один сломанный файл в ней — не повод
+        бросать остальные."""
+        self.put(".txt")
+        (self.src / "сломан.docx").write_bytes(b"not a zip, not a docx")
+        found = speech.look([str(self.src)])
+        self.assertEqual(found.changed, 3)
+        self.assertTrue(found.unreadable)
+
+    def test_nothing_is_written_while_looking(self):
+        self.put(".txt")
+        before = sorted(p.name for p in self.src.iterdir())
+        speech.look([str(self.src)])
+        self.assertEqual(sorted(p.name for p in self.src.iterdir()), before)
+
+
+class TestRewritingFiles(FileBase):
+
+    def out(self):
+        return self.tmp / "готово"
+
+    def test_the_word_file_comes_out_a_word_file(self):
+        """Работа правит текст, а не перегоняет книгу из формата в
+        формат: принесли .docx — получите .docx."""
+        self.put(".docx")
+        speech.run([str(self.src)], self.out())
+        self.assertEqual([p.name for p in self.out().iterdir()],
+                         ["Глава 1.docx"])
+
+    def test_the_replies_come_out_with_a_dash(self):
+        self.put(".docx")
+        speech.run([str(self.src)], self.out())
+        self.assertEqual(self.lines(self.out() / "Глава 1.docx")[:2],
+                         ["— Я-я в порядке...♥", "— Быстрее."])
 
     def test_what_was_not_a_reply_survives(self):
-        self.apply()
-        text = (self.root / "тире.md").read_text(encoding="utf-8")
+        self.put(".docx")
+        speech.run([str(self.src)], self.out())
+        self.assertIn("Он читал «Войну и мир».",
+                      self.lines(self.out() / "Глава 1.docx"))
+
+    def test_the_originals_are_left_alone(self):
+        path = self.put(".txt")
+        was = path.read_bytes()
+        speech.run([str(self.src)], self.out())
+        self.assertEqual(path.read_bytes(), was)
+
+    def test_it_says_how_many_replies_it_rewrote(self):
+        self.put(".txt")
+        report = speech.run([str(self.src)], self.out())
+        self.assertEqual(report.extra["changed"], 3)
+        self.assertEqual(report.written, 1)
+
+    def test_the_format_can_be_asked_for(self):
+        self.put(".docx")
+        speech.run([str(self.src)], self.out(), out_format=".txt")
+        self.assertEqual([p.name for p in self.out().iterdir()],
+                         ["Глава 1.txt"])
+
+    def test_two_files_of_one_name_do_not_overwrite_each_other(self):
+        """В папке лежат «Глава 1.txt» и «Глава 1.docx». Приведи мы оба к
+        одному формату — второй затёр бы первый."""
+        self.put(".txt")
+        self.put(".docx")
+        speech.run([str(self.src)], self.out(), out_format=".txt")
+        self.assertEqual(len(list(self.out().iterdir())), 2)
+
+    def test_a_broken_file_is_reported_and_the_rest_are_written(self):
+        self.put(".txt")
+        (self.src / "сломан.docx").write_bytes(b"not a zip, not a docx")
+        report = speech.run([str(self.src)], self.out())
+        self.assertEqual(report.written, 1)
+        self.assertTrue(report.failures)
+
+
+class TestAReadyBookKeepsItsHeaders(FileBase):
+    """Книга для загрузчика — особый случай.
+
+    Прочитай её обычным читателем, и строки `# [Название :|: …]` стали бы
+    обычным текстом, а при записи первая из них поехала бы. Цена и том
+    живут в той же строке: пересобрать её значило бы поменять книге цену.
+    """
+
+    def test_the_header_survives_word_for_word(self):
+        self.book()
+        speech.run([str(self.src)], self.tmp / "готово")
+        text = (self.tmp / "готово" / "книга.md").read_text(encoding="utf-8")
+        self.assertIn(" # [Глава 7 :|: 3 :|: 1 :|: Первый ]", text)
+
+    def test_the_reply_is_still_rewritten(self):
+        self.book()
+        speech.run([str(self.src)], self.tmp / "готово")
+        text = (self.tmp / "готово" / "книга.md").read_text(encoding="utf-8")
+        self.assertIn("— Быстрее.", text)
         self.assertIn("Он читал «Войну и мир».", text)
 
-    def test_the_headers_survive_word_for_word(self):
-        """Речь правим, а цену и том главы — нет."""
-        from ops import mdbook
+    def test_the_header_is_not_counted_as_a_reply(self):
+        self.book()
+        self.assertEqual(speech.look([str(self.src)]).changed, 1)
 
-        self.apply()
-        _, chapters = mdbook.read_book(
-            (self.root / "тире.md").read_text(encoding="utf-8"))
-        self.assertEqual([head.title for head, _ in chapters],
-                         ["Глава 1", "Глава 2"])
-        self.assertTrue(all(head.paid == "1" for head, _ in chapters))
+    def test_a_plain_markdown_is_not_mistaken_for_a_book(self):
+        """У обычного `.md` заголовков загрузчика нет, и разбирать его
+        как книгу нельзя: половина текста ушла бы в никуда."""
+        (self.src / "просто.md").write_text("«Быстрее».\nОбычная строка.\n",
+                                            encoding="utf-8")
+        self.assertEqual(speech.look([str(self.src)]).changed, 1)
 
-    def test_the_source_is_left_alone(self):
-        path = self.book()
-        self.apply()
-        self.assertEqual(path.read_text(encoding="utf-8"), self.SOURCE)
 
-    def test_saving_over_the_source_is_refused(self):
-        res = self.apply(name="исходник")
+class TestOverHttp(unittest.TestCase):
+    """Карточка «Речь в кавычках» на вкладке «Инструменты»."""
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        from core import formats
+        from core.models import Chapter
+        from webapp import app as web
+
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.src = self.tmp / "исходники"
+        self.src.mkdir()
+        formats.write(self.src / "Глава 1.docx",
+                      [Chapter(number=1, title="Глава 1",
+                               paragraphs=["«Быстрее».", "Обычная строка."])],
+                      headings=True)
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.web = web
+
+    def test_the_preview_says_what_will_change(self):
+        said = self.app.post("/api/speech/preview",
+                             json={"targets": [str(self.src)]}).get_json()
+        self.assertEqual(said["changed"], 1)
+        self.assertEqual(said["samples"][0]["after"], "— Быстрее.")
+
+    def test_the_preview_needs_files(self):
+        res = self.app.post("/api/speech/preview", json={"targets": []})
         self.assertEqual(res.status_code, 400)
 
-    def test_a_book_without_quoted_speech_is_refused(self):
-        """Копия, ничем не отличающаяся от исходника, обещает работу,
-        которой не было."""
-        quiet = " # [Глава 1 :|: :|: 1 :|: ]\n— Уже через тире.\n"
-        res = self.apply(targets=[str(self.book(quiet))])
+    def test_the_run_writes_a_new_folder(self):
+        res = self.app.post("/api/speech/start", json={
+            "targets": [str(self.src)], "base": str(self.tmp),
+            "folder": "Речь"})
+        self.assertEqual(res.status_code, 200, res.get_json())
+        job_id = res.get_json()["job"]["id"]
+        self.web.JOBS[job_id].thread.join(timeout=60)
+        job = self.web.JOBS[job_id]
+        self.assertIsNone(job.error)
+        self.assertEqual(job.report["changed"], 1)
+        self.assertTrue((self.tmp / "Речь" / "Глава 1.docx").is_file())
+
+    def test_a_run_without_a_folder_is_refused(self):
+        res = self.app.post("/api/speech/start",
+                            json={"targets": [str(self.src)],
+                                  "base": str(self.tmp)})
         self.assertEqual(res.status_code, 400)
-        self.assertIn("нечего", res.get_json()["error"])
+
+    def test_the_old_place_is_gone(self):
+        """Работа переехала в «Инструменты»: два входа в неё означали бы
+        два разных ответа на один вопрос."""
+        res = self.app.post("/api/format/speech",
+                            json={"targets": [str(self.src)]})
+        self.assertEqual(res.status_code, 404)
 
 
 if __name__ == "__main__":
