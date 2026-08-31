@@ -386,7 +386,35 @@ ABOUT_FIELDS = ("description", "synopsis", "bookIntro", "intro")
 TAG_FIELDS = ("categoryName", "subCategoryName", "typeName")
 
 
-def book(client, code: str, slug: str = "") -> dict:
+def _book_page(client, code: str, slug: str, section: str):
+    """Страница книги и её адрес.
+
+    Раздел берётся из ссылки, которая стоит в строке рейтинга, а не
+    выдумывается: у романов книга живёт в `/book/`, у комиксов — в
+    `/comic/`, и собранный по старому правилу адрес отвечал «HTTP 404».
+    Обложка при этом грузилась — она лежит отдельно и по коду, — отчего
+    выходило особенно странно: картинка есть, книги нет.
+
+    Раздела может и не быть: карточку спрашивают не только из раскрытой
+    строки. Тогда — и только тогда — обходим известные разделы по
+    очереди. Это не догадка: их всего два, и первый же ответивший и есть
+    верный.
+    """
+    order = [section] if section in BOOK_SECTIONS else list(BOOK_SECTIONS)
+    tried, last = [], None
+    for part in order:
+        where = f"{SITE}/{part}/{slug or code}"
+        tried.append(where)
+        try:
+            return page_of(client, where), where
+        except HttpError as exc:
+            last = exc
+    raise SourceBroken(
+        f"Страница книги {code} на Webnovel не открылась: {last}. "
+        f"Пробовали: {', '.join(tried)}")
+
+
+def book(client, code: str, slug: str = "", section: str = "") -> dict:
     """Подробности книги — для раскрытой строки рейтинга.
 
     Страницу книги уже разбирает сам источник (`net/sources/webnovel`):
@@ -403,11 +431,7 @@ def book(client, code: str, slug: str = "") -> dict:
     if not code:
         raise SourceBroken("Не сказано, какую книгу открывать")
 
-    try:
-        page = page_of(client, f"{SITE}/book/{code}")
-    except HttpError as exc:
-        raise SourceBroken(
-            f"Страница книги {code} на Webnovel не открылась: {exc}") from exc
+    page, where = _book_page(client, code, slug, section)
 
     info = (_object_after(page, BOOK_MARK) or {}).get("bookInfo") or {}
     if not info:
@@ -435,7 +459,9 @@ def book(client, code: str, slug: str = "") -> dict:
         "status": WebnovelSource._status(info),
         "language": str(info.get("languageName") or "").strip().lower(),
         "cover": WebnovelSource._cover(code, info),
-        "link": f"{SITE}/book/{code}",
+        # Та ссылка, по которой страница и открылась: собранная заново
+        # снова увела бы комикс в раздел романов.
+        "link": where,
     }
 
 

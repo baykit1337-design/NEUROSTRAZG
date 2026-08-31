@@ -3828,7 +3828,12 @@ def _rank_book_elsewhere(site: str, book_id: str):
 
     client = _rank_client()
     try:
-        found = reader(client, book_id, slug=request.args.get("slug", ""))
+        found = reader(client, book_id,
+                       slug=request.args.get("slug", ""),
+                       # Раздел сайта. У Webnovel комикс живёт в
+                       # `/comic/`, а роман в `/book/`, и собранный
+                       # наугад адрес отвечал «HTTP 404».
+                       section=request.args.get("section", ""))
     except sources.SourceBroken as exc:
         return jsonify(error=str(exc)), 502
     except HttpError as exc:
@@ -3843,7 +3848,8 @@ def _rank_book_elsewhere(site: str, book_id: str):
     return jsonify(**saved, abstract_ru=titles_op.abstract_of(book_id))
 
 
-def _fetch_card(client, site: str, book_id: str, slug: str = "") -> dict:
+def _fetch_card(client, site: str, book_id: str, slug: str = "",
+                section: str = "") -> dict:
     """Карточка книги с сайта, сохранённая в кэш. Без Flask вокруг.
 
     Одна и та же работа нужна и раскрытой строке, и прогону за всеми
@@ -3855,7 +3861,7 @@ def _fetch_card(client, site: str, book_id: str, slug: str = "") -> dict:
         if reader is None:
             raise sources.SourceBroken(
                 f"{RANK_SITES[site]['name']} не отдаёт подробностей книги")
-        found = reader(client, book_id, slug=slug)
+        found = reader(client, book_id, slug=slug, section=section)
     else:
         found = rank_net.fetch_book(client, book_id)
     return books_op.save(book_id, found)

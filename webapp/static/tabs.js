@@ -6655,8 +6655,15 @@ function rkBookUrl(row){
   const at = `/api/rank/book/${encodeURIComponent(row.book_id)}`;
   if(!row.site) return at;
   const parts = [`site=${encodeURIComponent(row.site)}`];
-  const slug = (row.link || '').split('/').filter(Boolean).pop();
+  const path = (row.link || '').split('/').filter(Boolean);
+  const slug = path.pop();
+  // Раздел сайта — то, что стоит перед слагом. У Webnovel комикс живёт
+  // в `/comic/`, а роман в `/book/`; собранный наугад адрес отвечал
+  // «HTTP 404», хотя обложка той же книги грузилась прекрасно: она
+  // лежит отдельно и по коду.
+  const section = path.pop();
   if(slug && slug !== row.book_id) parts.push(`slug=${encodeURIComponent(slug)}`);
+  if(section) parts.push(`section=${encodeURIComponent(section)}`);
   return `${at}?${parts.join('&')}`;
 }
 

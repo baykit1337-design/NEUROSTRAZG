@@ -631,5 +631,58 @@ class TestTheToolsTabIsFoldedUp(PageTestCase):
         self.quiet()
 
 
+class TestNoFieldFallsOutOfTheTheme(PageTestCase):
+    """Поле времени в очереди книг было белым с чёрным текстом посреди
+    тёмной страницы.
+
+    Виновато было перечисление: правила писались на `text`, `number` и
+    `password`, а `time` в список не попал. Следующий новый тип попал бы
+    туда же — поэтому теперь типы не перечисляются, а исключаются те, у
+    которых своя внешность.
+    """
+
+    def paint(self, selector: str) -> dict:
+        return self.page.eval_on_selector(selector, """n => {
+            const s = getComputedStyle(n);
+            return {background: s.backgroundColor, color: s.color};
+        }""")
+
+    def light(self, colour: str) -> bool:
+        """Светлое ли это на глаз — поверх тёмной карточки.
+
+        Прозрачность считаем: белый на четырёх процентах — это чуть
+        подсвеченная темнота, а не белое поле. Без этого «rgba(255, 255,
+        255, .04)» сошло бы за белизну, и тест ругался бы на правильное.
+        """
+        nums = [float(x) for x in colour.replace(",", " ")
+                .replace("(", " ").replace(")", " ").split()
+                if x.replace(".", "", 1).isdigit()]
+        if len(nums) < 3:
+            return False
+        alpha = nums[3] if len(nums) > 3 else 1.0
+        return sum(nums[:3]) / 3 * alpha > 128
+
+    def test_the_time_field_is_dark_like_the_rest(self):
+        got = self.paint("#dqPlanAt")
+        self.assertFalse(self.light(got["background"]), got)
+        self.assertTrue(self.light(got["color"]), got)
+
+    def test_every_kind_of_field_is_painted_the_same(self):
+        """Сверяем с обычным текстовым полем: у них один вид, и
+        расхождение здесь и есть та самая белая заплатка."""
+        plain = self.paint("#dqPlanAt")
+        for other in ("input[type=text]", "input[type=number]"):
+            with self.subTest(other):
+                self.assertEqual(self.paint(other), plain)
+
+    def test_the_night_run_line_reads_as_a_checkbox(self):
+        """Класса `check` в стилях нет вовсе, и строка набиралась как
+        заголовок раздела — в разрядку и капслоком."""
+        said = self.page.eval_on_selector(
+            "#dqPlanRow label",
+            "n => getComputedStyle(n).textTransform")
+        self.assertEqual(said, "none")
+
+
 if __name__ == "__main__":
     unittest.main()

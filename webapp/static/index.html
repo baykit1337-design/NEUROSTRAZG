@@ -143,7 +143,11 @@
 
   label{display:block;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
 
-  input[type=text],input[type=number],input[type=password],textarea{
+  /* Не перечисляем типы, а исключаем те, у которых своя внешность.
+     Перечисление уже подвело: поле времени в очереди книг осталось
+     белым с чёрным текстом посреди тёмной страницы — просто потому, что
+     `time` в списке не значился. Следующий новый тип попал бы туда же. */
+  input:not([type=checkbox]):not([type=radio]):not([type=file]),textarea{
     width:100%;padding:12px 14px;
     background:rgba(255,255,255,.04);
     border:1px solid var(--stroke-soft);
@@ -167,6 +171,15 @@
     margin:0;
   }
   input[type=number]{-moz-appearance:textfield;appearance:textfield}
+  /* Часы, стрелки и подсветку выбранной части поля времени рисует сам
+     браузер. Своими стилями до них не дотянуться — но `color-scheme`
+     говорит ему, какая у нас тема, и он рисует их тёмными. Значок часов
+     всё равно остаётся чёрным: его переворачиваем. */
+  input[type=time]{color-scheme:dark;width:auto}
+  input[type=time]::-webkit-calendar-picker-indicator{
+    filter:invert(1);opacity:.55;cursor:pointer;
+  }
+  input[type=time]::-webkit-calendar-picker-indicator:hover{opacity:1}
   /* Раздел 2: обёртка повторяет ширину поля, иначе кнопки уезжают вправо
      в пустоту — так было у «нумерация начинается с» с max-width:120px. */
   .spin-wrap{position:relative;display:block;width:100%}
@@ -243,16 +256,17 @@
   }
 
   /* 5.1 Границы полей ввода — неон при наведении и фокусе. */
-  input[type=text],input[type=number],select,.table input.rowname{
+  input:not([type=checkbox]):not([type=radio]):not([type=file]),select,
+  .table input.rowname{
     transition:border-color .25s ease, box-shadow .25s ease;
   }
-  input[type=text]:hover,input[type=number]:hover,select:hover,
-  .table input.rowname:hover{
+  input:not([type=checkbox]):not([type=radio]):not([type=file]):hover,
+  select:hover,.table input.rowname:hover{
     border-color:#6d28d9;
     box-shadow:0 0 8px rgba(140,84,255,.3);
   }
-  input[type=text]:focus,input[type=number]:focus,select:focus,
-  .table input.rowname:focus{
+  input:not([type=checkbox]):not([type=radio]):not([type=file]):focus,
+  select:focus,.table input.rowname:focus{
     border-color:#a855f7;
     box-shadow:0 0 12px rgba(168,85,247,.45);
     outline:none;
@@ -1540,7 +1554,7 @@
          руками. Настройки прогона запоминаются те же, что у кнопки:
          ночью спросить будет некого. -->
     <div class="row" id="dqPlanRow" style="margin-top:8px;align-items:center;gap:10px">
-      <label class="check" style="flex:0 0 auto">
+      <label class="chk" style="flex:0 0 auto">
         <input type="checkbox" id="dqPlanOn"> запускать самой в
       </label>
       <input id="dqPlanAt" type="time" value="03:00" step="60"

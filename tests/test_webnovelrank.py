@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from net.sources import webnovelrank as wnrank  # noqa: E402
 from net.sources.base import SourceBroken  # noqa: E402
+from mvl.client import HttpError  # noqa: E402
 
 
 def row(place=1, code="36543528000922105", slug="marvel-i-steal-powers",
@@ -646,6 +647,102 @@ class TestTheComicsBoard(unittest.TestCase):
         """Комиксы добавлены, романы не отняты."""
         found = wnrank.fetch(FakeClient(real_page([REAL_ROW])), "fanfic-power")
         self.assertEqual(found["rows"][0].book_id, "35895681908097305")
+
+
+
+class TestTheComicPageIsNotWhereNovelsLive(unittest.TestCase):
+    """Раскрытая строка комикса отвечала «HTTP 404».
+
+    Адрес страницы книги собирался как `/book/{код}`, а комикс живёт в
+    `/comic/{имя}_{код}`. Обложка при этом грузилась — она лежит отдельно
+    и по коду, — отчего выходило особенно странно: картинка есть, книги
+    нет.
+    """
+
+    SLUG = "shadow-slave_36543528000922105"
+    CODE = "36543528000922105"
+
+    def client(self, *, novels_gone=True):
+        """Сайт, ведущий себя как настоящий: в разделе романов комикса
+        нет, в разделе комиксов — есть."""
+        from tests.test_webnovel import book_page
+
+        page = book_page()
+
+        class Site:
+            def __init__(self):
+                self.asked = []
+
+            def get_text(inner, url, params=None, headers=None):
+                inner.asked.append(url)
+                if novels_gone and "/book/" in url:
+                    raise HttpError("HTTP 404 " + url)
+                return page
+
+            def close(inner):
+                pass
+
+        return Site()
+
+    def test_the_section_from_the_row_is_used(self):
+        """Раздел приезжает из ссылки строки — гадать не приходится."""
+        site = self.client()
+        wnrank.book(site, self.CODE, slug=self.SLUG, section="comic")
+        self.assertEqual(site.asked, [
+            "https://www.webnovel.com/comic/" + self.SLUG])
+
+    def test_the_card_comes_back(self):
+        found = wnrank.book(self.client(), self.CODE,
+                            slug=self.SLUG, section="comic")
+        self.assertEqual(found["author"], "Masked_Narrator")
+
+    def test_the_link_points_where_the_page_actually_opened(self):
+        """Собранная заново ссылка снова увела бы комикс к романам."""
+        found = wnrank.book(self.client(), self.CODE,
+                            slug=self.SLUG, section="comic")
+        self.assertEqual(found["link"],
+                         "https://www.webnovel.com/comic/" + self.SLUG)
+
+    def test_without_a_section_the_known_ones_are_tried(self):
+        """Карточку спрашивают не только из раскрытой строки, и раздела
+        может не быть. Разделов всего два — обходим по очереди."""
+        site = self.client()
+        found = wnrank.book(site, self.CODE, slug=self.SLUG)
+        self.assertEqual(found["author"], "Masked_Narrator")
+        self.assertEqual(len(site.asked), 2)
+        self.assertTrue(site.asked[-1].endswith("/comic/" + self.SLUG))
+
+    def test_a_novel_still_goes_to_the_novel_section(self):
+        """Комиксы добавлены, романы не отняты — и лишнего запроса за
+        ними не ходит."""
+        site = self.client(novels_gone=False)
+        found = wnrank.book(site, self.CODE, slug=self.SLUG, section="book")
+        self.assertEqual(site.asked,
+                         ["https://www.webnovel.com/book/" + self.SLUG])
+        self.assertTrue(found["link"].endswith("/book/" + self.SLUG))
+
+    def test_a_made_up_section_is_not_trusted(self):
+        """Раздел приходит из ссылки, а ссылку рисует сайт. Чужое слово в
+        адрес не подставляем: пойдём по известным разделам."""
+        site = self.client()
+        wnrank.book(site, self.CODE, slug=self.SLUG, section="../../etc")
+        self.assertTrue(all("etc" not in where for where in site.asked),
+                        site.asked)
+
+    def test_when_nothing_opens_the_refusal_says_what_was_tried(self):
+        """«Не открылась» без адресов чинить не с чего."""
+        class Dead:
+            def get_text(self, url, params=None, headers=None):
+                raise HttpError("HTTP 404 " + url)
+
+            def close(self):
+                pass
+
+        with self.assertRaises(SourceBroken) as beda:
+            wnrank.book(Dead(), self.CODE, slug=self.SLUG)
+        said = str(beda.exception)
+        self.assertIn("/book/", said)
+        self.assertIn("/comic/", said)
 
 
 class TestTheRealPage(unittest.TestCase):

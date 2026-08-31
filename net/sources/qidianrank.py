@@ -818,7 +818,8 @@ def _meta(soup, name: str) -> str:
     return str(tag.get("content") or "").strip() if tag else ""
 
 
-def book(client, code: str, slug: str = "") -> dict:
+def book(client, code: str, slug: str = "",
+         section: str = "") -> dict:
     """Подробности книги для раскрытой строки рейтинга."""
     code = str(code or "").strip()
     address = f"{SITE}/book/{code}/"

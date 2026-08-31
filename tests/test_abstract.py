@@ -491,8 +491,11 @@ class TestTheOpenedRowRemembersTheCard(AbstractBase):
         # Подменяем читателя подробностей у одного сайта — на сеть не идём.
         self.site = "mvlempyr"
         kept = web.RANK_SITES[self.site].get("book")
-        web.RANK_SITES[self.site]["book"] = lambda client, code, slug="": {
-            "name": "книга", "abstract": CHINESE, "author": "кто-то"}
+        # Подпись та же, что у настоящих читателей: разойдись она, и
+        # подмена перестала бы проверять то, что вызывается на самом деле.
+        web.RANK_SITES[self.site]["book"] = \
+            lambda client, code, slug="", section="": {
+                "name": "книга", "abstract": CHINESE, "author": "кто-то"}
         self.addCleanup(lambda: web.RANK_SITES[self.site].__setitem__("book",
                                                                      kept))
 

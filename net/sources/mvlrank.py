@@ -311,7 +311,8 @@ def _list(value) -> list:
     return [part.strip() for part in _text(value).split(",") if part.strip()]
 
 
-def book(client, code: str, slug: str = "") -> dict:
+def book(client, code: str, slug: str = "",
+         section: str = "") -> dict:
     """Подробности одной книги — для раскрытой строки рейтинга.
 
     Берутся из того же каталога WordPress, что и сам рейтинг, но по
