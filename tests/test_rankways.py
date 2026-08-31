@@ -262,3 +262,70 @@ class TestThroughTheHandler(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheStumbledPageIsKeptForRepair(Ways):
+    """Страница, на которой споткнулся разбор, сохраняется и называется.
+
+    Разбор чинится по странице, а не по сообщению о ней. К моменту
+    разбора жалобы ответ давно выброшен, и просить человека поймать тот
+    же случай ещё раз — значит ждать неделю.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from tempfile import TemporaryDirectory
+
+        from ops import logbook
+
+        self.logbook = logbook
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self._was = logbook.PAGE_DIR
+        logbook.PAGE_DIR = Path(self._dir.name) / "pages"
+        self.addCleanup(lambda: setattr(logbook, "PAGE_DIR", self._was))
+
+    def broken(self, page=""):
+        def run(client):
+            raise SourceBroken("разбор не нашёл книг", page=page)
+        return run
+
+    def test_the_page_reaches_a_file(self):
+        self.ways("первый", "второй")
+        with self.assertRaises(web.RankUnreachable):
+            web._rank_run(self.broken("<html>то, что пришло</html>"))
+        saved = list(self.logbook.PAGE_DIR.glob("*.html"))
+        self.assertEqual(len(saved), 1)
+        self.assertIn("то, что пришло",
+                      saved[0].read_text(encoding="utf-8"))
+
+    def test_the_report_names_the_file(self):
+        """Иначе человек не знает, что прислать, и файл лежит зря."""
+        self.ways("первый", "второй")
+        with self.assertRaises(web.RankUnreachable) as caught:
+            web._rank_run(self.broken("<html>то, что пришло</html>"))
+        saved = list(self.logbook.PAGE_DIR.glob("*.html"))
+        self.assertIn(saved[0].name, " ".join(caught.exception.tried))
+
+    def test_only_one_copy_for_all_the_ways(self):
+        """Каждый способ принесёт ту же страницу — хранить её надо однажды."""
+        self.ways("первый", "второй", "третий", "четвёртый")
+        with self.assertRaises(web.RankUnreachable):
+            web._rank_run(self.broken("<html>то же самое</html>"))
+        self.assertEqual(len(list(self.logbook.PAGE_DIR.glob("*.html"))), 1)
+
+    def test_a_refusal_without_a_page_saves_nothing(self):
+        """Сетевой отказ страницы не приносит — и пустых файлов не плодит."""
+        self.ways("первый", "второй")
+        with self.assertRaises(web.RankUnreachable):
+            web._rank_run(self.broken(""))
+        self.assertFalse(list(self.logbook.PAGE_DIR.glob("*.html"))
+                         if self.logbook.PAGE_DIR.exists() else [])
+
+    def test_a_password_never_reaches_the_saved_page(self):
+        self.ways("первый",)
+        with self.assertRaises(web.RankUnreachable):
+            web._rank_run(self.broken(
+                "<a href='http://user:s3cret@1.2.3.4:6095/'>x</a>"))
+        saved = list(self.logbook.PAGE_DIR.glob("*.html"))
+        self.assertNotIn("s3cret", saved[0].read_text(encoding="utf-8"))

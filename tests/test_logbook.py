@@ -31,14 +31,17 @@ class Base(unittest.TestCase):
         self.tmp = Path(self._dir.name)
 
         # Пишем в свою папку: прогон не должен трогать настоящий журнал.
-        self._was = (logbook.LOG_DIR, logbook.LOG_FILE, logbook._started)
+        self._was = (logbook.LOG_DIR, logbook.LOG_FILE, logbook.PAGE_DIR,
+                     logbook._started)
         logbook.LOG_DIR = self.tmp / "logs"
         logbook.LOG_FILE = logbook.LOG_DIR / "neurostrazh.log"
+        logbook.PAGE_DIR = logbook.LOG_DIR / "pages"
         logbook._started = False
         self.addCleanup(self._restore)
 
     def _restore(self):
-        logbook.LOG_DIR, logbook.LOG_FILE, logbook._started = self._was
+        (logbook.LOG_DIR, logbook.LOG_FILE, logbook.PAGE_DIR,
+         logbook._started) = self._was
         root = logging.getLogger()
         for handler in list(root.handlers):
             if isinstance(handler, logging.handlers.RotatingFileHandler):
@@ -203,3 +206,73 @@ class TestFinishedJobsAreForgotten(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheStumbledPageIsKept(Base):
+    """Страница, на которой споткнулся разбор, сохраняется в файл.
+
+    Разбор сайта чинится по странице, а не по сообщению о ней: «не
+    нашлось ни одной книги» не отвечает даже на вопрос, пришла ли вообще
+    страница сайта. К моменту разбора жалобы ответ давно выброшен, а
+    следующего случая можно ждать неделю.
+    """
+
+    def test_it_lands_in_a_file(self):
+        path = logbook.keep_page("rank", "<html>страница</html>")
+        self.assertIsNotNone(path)
+        self.assertEqual(path.read_text(encoding="utf-8"), "<html>страница</html>")
+
+    def test_the_name_says_what_it_was(self):
+        path = logbook.keep_page("rank", "<html>страница</html>")
+        self.assertIn("rank", path.name)
+        self.assertTrue(path.name.endswith(".html"))
+
+    def test_a_password_never_reaches_the_file(self):
+        """Файл человек отправит наружу — как и отчёт о проблеме."""
+        path = logbook.keep_page(
+            "rank", "<a href='http://user:s3cret@1.2.3.4:6095/'>прокси</a>")
+        self.assertNotIn("s3cret", path.read_text(encoding="utf-8"))
+
+    def test_a_key_never_reaches_the_file(self):
+        path = logbook.keep_page("rank", f"<p>{KEY}</p>")
+        self.assertNotIn(KEY, path.read_text(encoding="utf-8"))
+
+    def test_a_secret_that_looks_like_a_word_never_reaches_the_file(self):
+        remember_secret("ohnetalk")
+        path = logbook.keep_page("rank", "<p>пароль ohnetalk внутри</p>")
+        self.assertNotIn("ohnetalk", path.read_text(encoding="utf-8"))
+
+    def test_an_empty_page_is_not_saved(self):
+        """Пустой файл ничего не расскажет, а папку засорит."""
+        self.assertIsNone(logbook.keep_page("rank", "   "))
+
+    def test_a_huge_page_is_cut(self):
+        path = logbook.keep_page("rank", "я" * (logbook.PAGE_MAX + 5000))
+        self.assertLessEqual(len(path.read_text(encoding="utf-8")),
+                             logbook.PAGE_MAX)
+
+    def test_only_the_last_pages_are_kept(self):
+        """Иначе папка растёт вечно."""
+        import os
+
+        logbook.PAGE_DIR.mkdir(parents=True, exist_ok=True)
+        for number in range(logbook.PAGE_KEEP + 4):
+            stale = logbook.PAGE_DIR / f"{number:03d}-rank.html"
+            stale.write_text("старое", encoding="utf-8")
+            os.utime(stale, (1000 + number, 1000 + number))
+
+        logbook.keep_page("rank", "<p>последняя</p>")
+
+        kept = list(logbook.PAGE_DIR.glob("*.html"))
+        self.assertLessEqual(len(kept), logbook.PAGE_KEEP)
+        # Уцелеть должна свежая, а не первая попавшаяся.
+        self.assertTrue(any("последняя" in page.read_text(encoding="utf-8")
+                            for page in kept))
+        self.assertFalse((logbook.PAGE_DIR / "000-rank.html").exists())
+
+    def test_a_folder_it_cannot_make_does_not_stop_the_program(self):
+        """Без сохранённой страницы программа работает; падать нельзя."""
+        blocked = self.tmp / "занято"
+        blocked.write_text("не папка", encoding="utf-8")
+        logbook.PAGE_DIR = blocked / "pages"
+        self.assertIsNone(logbook.keep_page("rank", "<p>страница</p>"))

@@ -22,6 +22,7 @@ import logging.handlers
 import platform
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .history import DATA_DIR
@@ -74,6 +75,62 @@ def scrub(text: str) -> str:
     from mvl.proxies import scrub as forget_passwords
 
     return forget_passwords(out)
+
+
+#: Куда класть страницы, на которых споткнулся разбор.
+PAGE_DIR = LOG_DIR / "pages"
+
+#: Сколько держать и сколько от страницы оставлять. Больше мегабайта на
+#: страницу не бывает даже у самых тяжёлых, а десяток файлов — это память
+#: на неделю поломок и ничто для диска.
+PAGE_KEEP = 10
+PAGE_MAX = 1024 * 1024
+
+
+def keep_page(name: str, text: str) -> Path | None:
+    """Сохраняет страницу, на которой споткнулся разбор.
+
+    Зачем. Разбор сайта чинится по странице, а не по сообщению о ней:
+    «не нашлось ни одной книги» не отвечает даже на вопрос, пришла ли
+    вообще страница сайта. Ответ к моменту разбора жалобы давно выброшен,
+    а следующего случая можно ждать неделю — и поймать его снова некому.
+
+    Файл кладётся рядом с журналом, в отдельную папку: он большой и
+    смотреть его будут отдельно от строк журнала.
+
+    Пароли и ключи вычищаются здесь же, той же чисткой, что и у отчёта о
+    проблеме: файл человек отправит наружу, и попади туда пароль прокси
+    один раз — этого хватит.
+
+    Ошибку записи глотаем: программа без сохранённой страницы работает,
+    падать из-за неё она не должна.
+    """
+    said = scrub(str(text or ""))[:PAGE_MAX]
+    if not said.strip():
+        return None
+
+    safe = re.sub(r"[^\w.-]+", "-", str(name or "page")).strip("-") or "page"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = PAGE_DIR / f"{stamp}-{safe}.html"
+    try:
+        PAGE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(said, encoding="utf-8")
+    except OSError:
+        return None
+
+    _forget_old_pages()
+    return path
+
+
+def _forget_old_pages() -> None:
+    """Оставляет только последние страницы: папка не должна расти вечно."""
+    try:
+        kept = sorted(PAGE_DIR.glob("*.html"),
+                      key=lambda item: item.stat().st_mtime, reverse=True)
+        for extra in kept[PAGE_KEEP:]:
+            extra.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def start(level: int = logging.INFO) -> Path | None:

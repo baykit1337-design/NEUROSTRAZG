@@ -360,3 +360,128 @@ class TestBookDetails(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def div_row(place=1, code="36543528000922105", slug="marvel-i-steal-powers",
+            name="Marvel: I Steal Powers", value="132.4K",
+            category="Anime & Comics"):
+    """Та же строка, свёрстанная дивами: списка на странице нет вовсе."""
+    return (
+        '<div class="_rank_item">'
+        '<span class="ff_number">%02d</span>'
+        '<a href="/book/%s_%s"><img src="//book-pic.webnovel.com/bookcover/%s"></a>'
+        '<div><h3><a href="/book/%s_%s">%s</a></h3>'
+        '<p><a href="/stories/novel-fantasy-male">%s</a></p>'
+        '<strong class="ff_number">%s<span>Power</span></strong>'
+        '</div></div>'
+        % (place, slug, code, code, slug, code, name, category, value)
+    )
+
+
+class TestARedesignWithoutLists(unittest.TestCase):
+    """Рейтинг, переверстанный дивами.
+
+    Разбор по `<li>` держится на том, что доска свёрстана списком. Стоит
+    сайту от списка отказаться — и разбор не находит ничего, хотя книги
+    на странице никуда не делись: ссылка `/book/{код}` есть в любой
+    вёрстке, иначе на книгу нельзя было бы перейти.
+    """
+
+    def fetch(self, body):
+        return wnrank.fetch(FakeClient(body), "hot")
+
+    def body(self, count=3):
+        rows = [div_row(place=number, code=f"3654352800092210{number}",
+                        name=f"Книга {number}")
+                for number in range(1, count + 1)]
+        return "<html><body><div class='rank'>" + "".join(rows) + "</div></body></html>"
+
+    def test_the_books_are_found_anyway(self):
+        found = self.fetch(self.body())
+        self.assertEqual([row.name for row in found["rows"]],
+                         ["Книга 1", "Книга 2", "Книга 3"])
+
+    def test_the_order_of_the_page_is_kept(self):
+        found = self.fetch(self.body())
+        self.assertEqual([row.place for row in found["rows"]], [1, 2, 3])
+
+    def test_the_number_of_the_board_still_arrives(self):
+        found = self.fetch(self.body())
+        self.assertEqual(found["rows"][0].score, 132_400)
+
+    def test_one_book_twice_is_still_counted_once(self):
+        """Обложка и заголовок — две ссылки на одну книгу в каждой строке."""
+        found = self.fetch(self.body(count=2))
+        self.assertEqual(len(found["rows"]), 2)
+
+    def test_the_section_survives(self):
+        found = self.fetch(self.body())
+        self.assertEqual(found["rows"][0].category, "Anime & Comics")
+
+    def test_the_list_is_tried_first(self):
+        """Разбор по списку точнее: он знает, где кончается одна книга.
+
+        Свёрстано списком — им и разбираем, к запасному пути не переходим.
+        """
+        found = wnrank.fetch(FakeClient(page([row()])), "hot")
+        self.assertEqual(len(found["rows"]), 1)
+
+    def test_menu_links_are_still_not_books(self):
+        body = ("<html><body><div><a href='/ranking/hot'>Rankings</a>"
+                "<a href='/stories/novel-fantasy-male'>Fantasy</a>"
+                "<a href='/profile/4504916647'>Автор</a></div></body></html>")
+        with self.assertRaises(SourceBroken):
+            self.fetch(body)
+
+
+class TestTheRefusalCarriesEvidence(unittest.TestCase):
+    """Отказ должен говорить, что пришло, а не что мы про это думаем.
+
+    Прежнее сообщение утверждало причину — «сайт переделал рейтинг на
+    подгрузку скриптом», — которой знать не могло. С тем же успехом это
+    могла быть страница входа, заглушка посредника или пустой ответ. Так
+    уверенная догадка уводит чинить не то.
+    """
+
+    def refuse(self, body):
+        with self.assertRaises(SourceBroken) as caught:
+            wnrank.fetch(FakeClient(body), "hot")
+        return caught.exception
+
+    def test_it_does_not_name_a_cause_it_cannot_know(self):
+        said = str(self.refuse("<html><body><p>Пусто</p></body></html>"))
+        self.assertNotIn("переделал", said)
+        self.assertNotIn("подгрузку скриптом", said)
+
+    def test_it_tells_how_much_came(self):
+        said = str(self.refuse("<html><body><p>Пусто</p></body></html>"))
+        self.assertIn("байт", said)
+
+    def test_it_tells_the_window_title(self):
+        """По заголовку окна видно и вход, и заглушку, и пустую страницу."""
+        said = str(self.refuse(
+            "<html><head><title>Log in — Webnovel</title></head>"
+            "<body></body></html>"))
+        self.assertIn("Log in", said)
+
+    def test_it_counts_what_it_looked_for(self):
+        said = str(self.refuse(
+            "<html><body><ul><li>Меню</li><li>Ещё</li></ul></body></html>"))
+        self.assertIn("2", said)
+        self.assertIn("ссылок на книги: 0", said)
+
+    def test_it_names_the_objects_it_saw(self):
+        """Приметы того, что список уехал в скрипт, — но как приметы."""
+        said = str(self.refuse(
+            "<html><body><script>window.__NEXT_DATA__={}</script></body></html>"))
+        self.assertIn("__NEXT_DATA__", said)
+
+    def test_the_page_travels_with_the_refusal(self):
+        """Иначе чинить разбор нечем: ответ к разбору жалобы выброшен."""
+        body = "<html><body><p>Совсем не то</p></body></html>"
+        self.assertEqual(self.refuse(body).page, body)
+
+    def test_a_wall_is_still_told_apart_from_a_redesign(self):
+        """Стену объявляем стеной: разметка тут ни при чём."""
+        wall = "<html><body><h1>Just a moment...</h1></body></html>"
+        self.assertIn("Cloudflare", str(self.refuse(wall)))

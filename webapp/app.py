@@ -3416,6 +3416,8 @@ def _rank_run(run):
     """
     tried: list[str] = []
     first: Exception | None = None
+    #: Путь к сохранённой странице; `False` — сохранить не вышло.
+    kept: object = None
 
     ways = _rank_ways()
     for number, (label, make) in enumerate(ways, 1):
@@ -3437,6 +3439,16 @@ def _rank_run(run):
             said = f"{label} — {exc}"
             if why and why not in said:
                 said = f"{said} ({why})"
+            # Страницу, на которой споткнулся разбор, сохраняем: чинить
+            # разбор по сообщению о странице нельзя, а сама она к разбору
+            # жалобы давно выброшена. Кладём только с первой попытки —
+            # остальные принесут ту же самую.
+            if kept is None and getattr(exc, "page", ""):
+                kept = logbook.keep_page("rank", exc.page) or False
+                if kept:
+                    log.info("Рейтинг: страница сохранена в %s", kept)
+            if kept and number == 1:
+                said = f"{said}. Копия страницы: {kept}"
             tried.append(said)
             first = first or exc
             continue

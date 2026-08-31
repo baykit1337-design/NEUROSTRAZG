@@ -181,15 +181,38 @@ VISIT = {
 }
 
 
-def fetch(client, board: str = "hot") -> dict:
-    """Срез одной доски."""
-    address = url_of(board)
-    page = page_of(client, address, headers=VISIT)
-    soup = BeautifulSoup(page, "lxml")
-    metric = METRICS.get(board, "")
+def _book_code(link) -> str:
+    """Код книги из ссылки. Пусто — ссылка не на книгу."""
+    found = BOOK_LINK.match(link.get("href", "").split("?")[0])
+    return found.group(1) if found else ""
 
-    rows = []
-    seen = set()
+
+def _book_links(node) -> set:
+    """Коды книг, на которые ссылаются изнутри этого куска разметки."""
+    return {code for link in node.find_all("a", href=True)
+            if (code := _book_code(link))}
+
+
+def _row_box(link):
+    """Кусок разметки вокруг ссылки, описывающий одну книгу.
+
+    Поднимаемся от ссылки вверх, пока предок говорит про одну и ту же
+    книгу. Как только в него попадает вторая — это уже не строка, а
+    список, и берём предыдущий.
+    """
+    box = link
+    for parent in link.parents:
+        if parent.name in (None, "body", "html", "[document]"):
+            break
+        if len(_book_links(parent)) > 1:
+            break
+        box = parent
+    return box
+
+
+def _rows_from_list(soup, metric: str) -> list:
+    """Разбор по `<li>` — тем, чем рейтинг свёрстан сегодня."""
+    rows, seen = [], set()
     for item in soup.find_all("li"):
         row = _row(item, len(rows) + 1, metric)
         if row is None or row.book_id in seen:
@@ -198,16 +221,90 @@ def fetch(client, board: str = "hot") -> dict:
         rows.append(row)
         if len(rows) >= TOP:
             break
+    return rows
+
+
+def _rows_from_links(soup, metric: str) -> list:
+    """Запасной разбор: от ссылок на книги вверх, а не от списка вниз.
+
+    Разбор по `<li>` держится на том, что рейтинг свёрстан списком. Стоит
+    сайту переверстать его дивами — и `<li>` на странице не окажется
+    вовсе, а книги никуда не денутся: ссылка вида `/book/{код}` есть в
+    любой вёрстке, иначе на книгу нельзя было бы перейти.
+
+    Порядок сохраняется: ссылки идут в том же порядке, что и на странице.
+    """
+    rows, seen = [], set()
+    for link in soup.find_all("a", href=True):
+        code = _book_code(link)
+        if not code or code in seen:
+            continue
+        row = _row(_row_box(link), len(rows) + 1, metric)
+        if row is None:
+            continue
+        seen.add(row.book_id)
+        rows.append(row)
+        if len(rows) >= TOP:
+            break
+    return rows
+
+
+#: По чему видно, что список книг уехал в скрипт. Ни одна из меток не
+#: доказательство сама по себе — они попадают в сообщение как приметы,
+#: а не как приговор.
+DATA_MARKS = ("g_data", "__NEXT_DATA__", "__INITIAL_STATE__", "rankList",
+              "rankItems", "bookInfo")
+
+
+def _what_came(page: str, soup) -> str:
+    """Чем оказалась страница — фактами, а не догадкой.
+
+    Прежнее сообщение утверждало причину («сайт переделал рейтинг на
+    подгрузку скриптом»), которой знать не могло: с тем же успехом это
+    могла быть страница входа, заглушка посредника или пустой ответ.
+    Уверенная догадка уводит чинить не то — это ровно та ошибка, ради
+    которой заведена проверка на стену.
+    """
+    title = soup.find("title")
+    name = title.get_text(" ", strip=True)[:90] if title else ""
+    books = len({code for link in soup.find_all("a", href=True)
+                 if (code := _book_code(link))})
+    marks = [mark for mark in DATA_MARKS if mark in page]
+
+    return "; ".join([
+        f"пришло {len(page)} байт",
+        f"заголовок окна «{name}»" if name else "заголовка окна нет",
+        f"списков <li>: {len(soup.find_all('li'))}",
+        f"ссылок на книги: {books}",
+        ("в тексте страницы есть " + ", ".join(marks)) if marks
+        else "объектов с данными в тексте не видно",
+    ])
+
+
+def fetch(client, board: str = "hot") -> dict:
+    """Срез одной доски."""
+    address = url_of(board)
+    page = page_of(client, address, headers=VISIT)
+    soup = BeautifulSoup(page, "lxml")
+    metric = METRICS.get(board, "")
+
+    # Сначала так, как рейтинг свёрстан сегодня; не вышло — от ссылок.
+    # Порядок именно такой: разбор по списку точнее, потому что знает,
+    # где кончается одна книга и начинается другая.
+    rows = _rows_from_list(soup, metric) or _rows_from_links(soup, metric)
 
     if not rows:
         # Сначала стена, потом вёрстка. Перепутав их, сообщение уверенно
         # уводит чинить разбор, которого никто не ломал: до разметки дело
         # не дошло, страница вообще не с сайта.
+        #
+        # Страница едет вместе с отказом: починить разбор по одному
+        # «не нашлось ни одной книги» нельзя, а второго случая может не
+        # быть неделю.
         raise SourceBroken(
             f"Рейтинг Webnovel не разобрался: на странице {address} не "
-            "нашлось ни одной книги. Раньше он приходил обычной вёрсткой; "
-            "если сайт переделал его на подгрузку скриптом, чинить надо "
-            "разбор, а не повторять запрос.")
+            f"нашлось ни одной книги. Что пришло: {_what_came(page, soup)}.",
+            page=page)
 
     # Места печатаются с ведущим нулём и иногда только у первой десятки.
     # Приводим к порядку: у соседних строк не должно быть одного места.
