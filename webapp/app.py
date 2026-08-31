@@ -2637,12 +2637,16 @@ def api_format_book():
                    sample=[head.line() for head, _ in chapters[:5]])
 
 
-def _retitled(way: str, number, name: str, known: dict, style):
+def _retitled(way: str, number, name: str, known: dict, style, part=None):
     """Каким станет заголовок. Одна на запись и на предпросмотр.
 
     Держать это двумя копиями нельзя: предпросмотр «до и после» затем и
     нужен, чтобы показать будущий файл, — а разойдись он с записью,
     показывал бы не его.
+
+    Номер части едет вместе с номером главы. Пока он терялся, «Глава
+    201.2» превращалась при перезаписи в «Главу 201» — вторую такую же,
+    как её первая часть, — и книга уезжала на сайт с настоящими дублями.
     """
     if way == "keep":
         ready = name
@@ -2654,7 +2658,7 @@ def _retitled(way: str, number, name: str, known: dict, style):
         # Не перевелось — оставляем как было. Пустой заголовок хуже
         # непереведённого: главу в книге станет не найти.
         ready = known.get(name) or name
-    title = style.build(number, ready) if number is not None else ready
+    title = style.build(number, ready, part=part) if number is not None else ready
     return ready, title
 
 
@@ -2677,16 +2681,20 @@ def _numbered(chapters, renumber: int):
     Пролог и послесловие номера не имели. Выдать им номер значило бы
     сделать из «Пролога» «Главу 3».
     """
-    taken = [mdbook.split_title(head.title) for head, _ in chapters]
+    taken = [mdbook.split_mark(head.title) for head, _ in chapters]
     if not renumber:
         return taken
 
+    # Перенумерация выпрямляет книгу в сплошной ряд, и частям в нём места
+    # нет: «201.1» и «201.2» становятся соседними главами со своими
+    # номерами. Оставь мы часть — вышли бы «301.1» и «302.2», чего не
+    # бывает.
     fresh, at = [], renumber
-    for number, name in taken:
+    for number, _, name in taken:
         if number is None:
-            fresh.append((None, name))
+            fresh.append((None, None, name))
             continue
-        fresh.append((at, name))
+        fresh.append((at, None, name))
         at += 1
     return fresh
 
@@ -2791,8 +2799,8 @@ def api_format_retitle_preview():
     # дальше подряд. Ноль — строку не пересобираем вовсе.
     first = _whole(payload, "first")
     rows, waiting, order = [], 0, first
-    for (head, _), (number, name) in zip(chapters, taken):
-        _, title = _retitled(way, number, name, known, style)
+    for (head, _), (number, part, name) in zip(chapters, taken):
+        _, title = _retitled(way, number, name, known, style, part)
         # «Переведётся» — только там, где перевод и нужен, и ещё не готов.
         later = bool(way == "translate" and name and name not in known)
         waiting += later
@@ -2860,7 +2868,7 @@ def api_format_retitle():
         # `_numbered`, что и предпросмотр, — иначе он показывал бы не то,
         # что запишется.
         taken = _numbered(chapters, renumber)
-        wanted = [name for _, name in taken if name]
+        wanted = [name for _, _, name in taken if name]
 
         done: dict = {}
         if way == "translate":
@@ -2884,8 +2892,8 @@ def api_format_retitle():
 
         names = done.get("names") or {}
         out, order = [], first
-        for (head, body), (number, name) in zip(chapters, taken):
-            ready, title = _retitled(way, number, name, names, style)
+        for (head, body), (number, part, name) in zip(chapters, taken):
+            ready, title = _retitled(way, number, name, names, style, part)
             fresh = _fresh_head(head, title, order)
             pieces = mdbook.cut_into_parts(fresh, body, parts, style,
                                            number, ready)

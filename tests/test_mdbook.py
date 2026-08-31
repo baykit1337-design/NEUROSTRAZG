@@ -96,24 +96,28 @@ class TestNothingButTheTitleChanges(unittest.TestCase):
 class TestWritingAHeaderFromScratch(unittest.TestCase):
 
     def test_every_header_carries_all_three_fields(self):
-        """Так пишет сам загрузчик, и так выглядит книга, которую он
+        """Пробел перед решёткой тоже от загрузчика: так пишет заголовок
+        переводчик, из которого книгу приносят, и так она возвращается с
+        сайта.
+
+        Так пишет сам загрузчик, и так выглядит книга, которую он
         отдаёт обратно. Сначала пустые поля с конца здесь опускались —
         это была выдумка, а строка с одним разделителем вместо трёх для
         сайта уже другая строка."""
         self.assertEqual(mdbook.make_head("Пролог").line(),
-                         "# [Пролог :|: :|: :|: ]")
+                         " # [Пролог :|: :|: :|: ]")
 
     def test_the_usual_header_looks_exactly_like_the_loaders_own(self):
         """Образец из отчёта: платность стоит, порядок и том пусты."""
         self.assertEqual(mdbook.make_head("Глава 31", paid="1").line(),
-                         "# [Глава 31 :|: :|: 1 :|: ]")
+                         " # [Глава 31 :|: :|: 1 :|: ]")
         self.assertEqual(
             mdbook.make_head("Глава 1 — Правила ассасина", paid="1").line(),
-            "# [Глава 1 — Правила ассасина :|: :|: 1 :|: ]")
+            " # [Глава 1 — Правила ассасина :|: :|: 1 :|: ]")
 
     def test_the_order_keeps_its_own_slot(self):
         self.assertEqual(mdbook.make_head("Глава 1", order="1").line(),
-                         "# [Глава 1 :|: 1 :|: :|: ]")
+                         " # [Глава 1 :|: 1 :|: :|: ]")
 
     def test_a_volume_forces_the_price_field(self):
         """Иначе сайт прочитает том как платность."""
@@ -265,7 +269,7 @@ class TestCollectingFilesIntoABook(unittest.TestCase):
         out = mdbook.from_chapters(self.chapters())
         self.assertEqual(len(out), 3)
         for head, _ in out:
-            self.assertTrue(head.line().startswith("# ["))
+            self.assertTrue(head.line().startswith(" # ["))
 
     def test_the_word_chapter_does_not_end_up_twice(self):
         """Читалка отдаёт названием имя файла целиком — вместе с «Глава
@@ -388,7 +392,7 @@ class TestCollectingOverHttp(WebBase):
         said = self.app.post("/api/format/files",
                              json={"targets": [str(folder)]}).get_json()
         self.assertEqual(said["total"], 3)
-        self.assertTrue(said["sample"][0].startswith("# ["))
+        self.assertTrue(said["sample"][0].startswith(" # ["))
 
     def test_the_book_is_written(self):
         folder = self.chapters()
@@ -396,7 +400,7 @@ class TestCollectingOverHttp(WebBase):
             "targets": [str(folder)], "base": str(self.root), "name": "книга"}))
         self.assertIsNone(job.error)
         text = (self.root / "книга.md").read_text(encoding="utf-8")
-        self.assertEqual(text.count("# ["), 3)
+        self.assertEqual(text.count(" # ["), 3)
         self.assertIn("Текст главы 1.", text)
 
     def test_the_numbering_starts_where_asked(self):
@@ -794,3 +798,81 @@ class TestRenumberingTheChapters(WebBase):
         _, chapters = mdbook.read_book(
             (self.root / "готово.md").read_text(encoding="utf-8"))
         self.assertEqual([h.title for h, _ in chapters], ["Глава 1", "Пролог"])
+
+
+class TestTheBookHasNoBlankLines(unittest.TestCase):
+    """Книга для загрузчика пишется строка за строкой, без пустых.
+
+    Пустая строка превращается на сайте в пустой абзац, и книга уезжает
+    туда с огромными отступами между строками. Так же — без пустых строк
+    — пишет книгу и переводчик, из которого её сюда приносят.
+    """
+
+    def book(self, count=2):
+        from core.models import Chapter
+
+        chapters = [Chapter(number=n, title=f"Глава {n}",
+                            paragraphs=[f"Первый абзац {n}.",
+                                        f"Второй абзац {n}."])
+                    for n in range(1, count + 1)]
+        return mdbook.write_book(mdbook.from_chapters(chapters))
+
+    def test_no_empty_line_between_paragraphs(self):
+        self.assertNotIn("\n\n", self.book())
+
+    def test_the_text_follows_the_header_at_once(self):
+        lines = self.book(1).splitlines()
+        self.assertTrue(lines[0].strip().startswith("# ["))
+        self.assertEqual(lines[1], "Первый абзац 1.")
+
+    def test_every_paragraph_keeps_its_own_line(self):
+        self.assertEqual(self.book(1).splitlines()[1:],
+                         ["Первый абзац 1.", "Второй абзац 1."])
+
+    def test_a_chapter_written_without_blanks_can_still_be_divided(self):
+        """Абзац — строка. По прежнему правилу («кусок между пустыми
+        строками») вся такая глава была одним абзацем, а значит
+        неделимой."""
+        body = ["Первый.", "Второй.", "Третий.", "Четвёртый."]
+        self.assertEqual(mdbook.paragraphs_of(body), body)
+
+    def test_a_book_with_blank_lines_reads_the_same_way(self):
+        """Старые книги никуда не делись — их абзац тоже занимает строку."""
+        self.assertEqual(
+            mdbook.paragraphs_of(["Первый.", "", "Второй.", ""]),
+            ["Первый.", "Второй."])
+
+
+class TestPartsAreNotDoubles(unittest.TestCase):
+    """Главу можно поделить на части руками — это не дубль номера.
+
+    Человек делит длинную главу прямо в книге: «Глава 201.1», «Глава
+    201.2». Проверка считала обе «главой 201» и объявляла книгу сплошным
+    непорядком, а перезапись заголовков превращала обе в «Главу 201» —
+    и тогда дубль становился настоящим.
+    """
+
+    def look(self, *titles):
+        return mdbook.inspect([(mdbook.make_head(t), []) for t in titles])
+
+    def test_two_parts_of_one_chapter_are_not_a_double(self):
+        look = self.look("Глава 201.1", "Глава 201.2", "Глава 202")
+        self.assertEqual(look["doubles"], [])
+        self.assertTrue(look["ok"])
+
+    def test_the_same_part_twice_still_is(self):
+        look = self.look("Глава 201.1", "Глава 201.1")
+        self.assertEqual(look["doubles"], ["201.1"])
+
+    def test_the_same_number_without_parts_still_is(self):
+        look = self.look("Глава 5", "Глава 5")
+        self.assertEqual(look["doubles"], ["5"])
+
+    def test_parts_do_not_leave_a_hole_in_the_numbering(self):
+        look = self.look("Глава 201.1", "Глава 201.2", "Глава 202")
+        self.assertEqual(look["gaps"], [])
+
+    def test_the_part_number_is_read(self):
+        self.assertEqual(mdbook.split_mark("Глава 201.2"), (201, 2, ""))
+        self.assertEqual(mdbook.split_mark("Глава 82 — Молния"),
+                         (82, None, "Молния"))

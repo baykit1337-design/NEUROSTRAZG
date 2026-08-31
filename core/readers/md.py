@@ -21,7 +21,23 @@ class MarkdownReader(Reader):
         return super().take_heading(paragraphs, path)
 
     def paragraphs(self, path: Path) -> list[str]:
+        """Абзацы книги. У markdown абзац — строка, а не кусок между
+        пустыми строками.
+
+        Книги для загрузчика пишутся без пустых строк вовсе: пустая строка
+        превращается на сайте в пустой абзац. По прежнему правилу такая
+        книга читалась одним абзацем на весь файл — и «Разбить» честно
+        сообщала «глав: 1», сколько бы их там ни было.
+
+        Книгу с пустыми строками это правило читает так же: абзац там всё
+        равно занимает одну строку. Проигрывает только текст, перенесённый
+        по ширине окна, — но так книги здесь не пишет никто.
+        """
         try:
-            return split_paragraphs(read_text(path))
+            text = read_text(path)
         except OSError as exc:
             raise ReadError(f"{type(exc).__name__}: {exc}") from exc
+        found = [line.strip() for line in text.splitlines() if line.strip()]
+        # Пустой файл `split_paragraphs` отдаёт пустым списком — сохраняем
+        # это поведение, а не подсовываем список из одной пустой строки.
+        return found or split_paragraphs(text)

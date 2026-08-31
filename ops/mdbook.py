@@ -67,7 +67,12 @@ class Head:
     tail: str = ""
     #: Чем строка открывается и чем закрывается — вместе с отступом и
     #: пробелами. Хранится дословно по той же причине, что и `tail`.
-    opening: str = "# ["
+    #:
+    #: Пробел перед решёткой — не украшение: так пишет заголовок
+    #: переводчик, из которого книгу сюда приносят, и так она возвращается
+    #: с сайта. Прочитанный заголовок сохраняет своё начало дословно, а
+    #: это — начало заголовка, написанного с нуля.
+    opening: str = " # ["
     closing: str = "]"
 
     @property
@@ -214,14 +219,26 @@ class TitleStyle:
         return f"{head}{self.separator}{name}" if name else head
 
 
-def split_title(title: str) -> tuple[int | None, str]:
-    """Номер главы и её имя — из заголовка на любом языке.
+def split_mark(title: str) -> tuple[int | None, int | None, str]:
+    """Номер главы, номер части и имя — из заголовка на любом языке.
 
     Разбор берётся из ядра и на язык не опирается: ищется первая группа
     из 1–5 цифр, всё до неё («Chapter», «Глава», «第») отбрасывается.
+
+    Номер части нужен отдельно, потому что он есть. Пока его отбрасывали,
+    «Глава 201.2» становилась при перезаписи «Главой 201» — второй такой
+    же, как её первая часть, — и книга уезжала на сайт с настоящими
+    дублями. Проверка нумерации при этом ругалась на дубли ещё до
+    перезаписи: части 201.1 и 201.2 она считала одной главой дважды.
     """
     parts = naming.parse(str(title or ""))
-    return parts.number, parts.title
+    return parts.number, parts.part, parts.title
+
+
+def split_title(title: str) -> tuple[int | None, str]:
+    """Номер главы и её имя. Часть — в `split_mark`."""
+    number, _, name = split_mark(title)
+    return number, name
 
 
 #: Начало заголовка, где номер главы уже записан: пометка главы на любом
@@ -278,6 +295,12 @@ def _ranges(numbers: list[int]) -> list[str]:
     return out
 
 
+def _mark_text(mark) -> str:
+    """Номер главы для человека: «201» или «201.2»."""
+    number, part = mark
+    return f"{number}.{part}" if part else str(number)
+
+
 def inspect(chapters) -> dict:
     """Что не так с нумерацией книги.
 
@@ -292,9 +315,15 @@ def inspect(chapters) -> dict:
     orders: list[str] = []
     plain: list[str] = []
 
+    #: Пары «номер, часть». Дублем считается совпадение пары, а не номера:
+    #: «Глава 201.1» и «Глава 201.2» — две части одной главы, а не одна
+    #: глава дважды. Книгу, поделённую на части руками, прежняя проверка
+    #: объявляла сплошным непорядком.
+    marks: list[tuple[int, int | None]] = []
+
     previous = None
     for head, _ in chapters:
-        number, _ = split_title(head.title)
+        number, part, _ = split_mark(head.title)
         if number is None:
             nameless.append(head.title)
         else:
@@ -302,16 +331,19 @@ def inspect(chapters) -> dict:
                 backwards.append(f"{previous} → {number}")
             previous = number
             numbers.append(number)
+            marks.append((number, part))
         if head.order.strip():
             orders.append(head.order.strip())
         if not looks_translated(head.title):
             plain.append(head.title)
 
-    seen, doubles = set(), []
-    for number in numbers:
-        if number in seen and number not in doubles:
-            doubles.append(number)
-        seen.add(number)
+    seen_marks: set = set()
+    doubles: list[str] = []
+    for mark in marks:
+        if mark in seen_marks and _mark_text(mark) not in doubles:
+            doubles.append(_mark_text(mark))
+        seen_marks.add(mark)
+    seen = {number for number, _ in marks}
 
     gaps: list[int] = []
     if numbers:
@@ -335,7 +367,7 @@ def inspect(chapters) -> dict:
         "nameless_count": len(nameless),
         "gaps": _ranges(gaps)[:SHOW],
         "gaps_count": len(gaps),
-        "doubles": [str(n) for n in doubles[:SHOW]],
+        "doubles": doubles[:SHOW],
         "doubles_count": len(doubles),
         "backwards": backwards[:SHOW],
         "backwards_count": len(backwards),
@@ -347,27 +379,25 @@ def inspect(chapters) -> dict:
 
 
 def paragraphs_of(lines: list[str]) -> list[str]:
-    """Строки тела главы — в абзацы: делить на части можно только их."""
-    blocks: list[str] = []
-    buffer: list[str] = []
-    for line in lines:
-        if line.strip():
-            buffer.append(line.strip())
-        elif buffer:
-            blocks.append("\n".join(buffer))
-            buffer = []
-    if buffer:
-        blocks.append("\n".join(buffer))
-    return blocks
+    """Строки тела главы — в абзацы: делить на части можно только их.
+
+    Абзац — это строка. Не «кусок между пустыми строками»: книгу для
+    загрузчика пишут без пустых строк вовсе, и по прежнему правилу вся
+    глава оказывалась одним абзацем — а значит, неделимой.
+    """
+    return [line.strip() for line in lines if line.strip()]
 
 
 def lines_of(paragraphs: list[str]) -> list[str]:
-    """Абзацы обратно в строки — с пустой строкой между ними."""
-    out: list[str] = [""]
-    for block in paragraphs:
-        out.append(block)
-        out.append("")
-    return out
+    """Абзацы обратно в строки — по строке на абзац, без пустых.
+
+    Пустая строка между абзацами превращается на сайте в пустой абзац, и
+    книга уезжает туда с огромными отступами между строками. Так же — без
+    пустых строк — пишет книгу и переводчик, из которого её сюда приносят;
+    расхождение здесь означало бы, что после нашей обработки книга
+    выглядит иначе, чем до неё.
+    """
+    return [block for block in paragraphs if block]
 
 
 def cut_into_parts(head: Head, body: list[str], count: int,

@@ -3789,13 +3789,30 @@ function fmJunkDraw(){
     row.append(box, name, count);
     table.append(row);
 
-    // Пример строки: без него непонятно, что именно уйдёт из книги.
-    if(find.sample){
-      const sample = document.createElement('div');
-      sample.className = 'hint';
-      sample.style.margin = '2px 10px 8px';
-      sample.textContent = find.sample;
-      table.append(sample);
+    // Строки находки: без них непонятно, что именно уйдёт из книги.
+    //
+    // Раньше показывалась одна — первая попавшаяся. Находка «не
+    // переведено» собирает под собой все английские строки книги разом,
+    // и по одной из них не понять ни что там осталось, ни стоит ли это
+    // убирать: человек видел «[B]» и не видел ещё сорока строк, которые
+    // уйдут вместе с ней.
+    const spots = find.spots?.length ? find.spots
+                : (find.sample ? [{text: find.sample, where: ''}] : []);
+    for(const spot of spots){
+      const line = document.createElement('div');
+      line.className = 'hint';
+      line.style.margin = '2px 10px 4px';
+      line.textContent = spot.where ? `${spot.where} — ${spot.text}` : spot.text;
+      table.append(line);
+    }
+    // Сколько осталось за списком. Молчать об этом нельзя: человек решил
+    // бы, что видит все находки, и снял бы больше, чем думал.
+    if(find.count > spots.length){
+      const rest = document.createElement('div');
+      rest.className = 'hint';
+      rest.style.margin = '0 10px 8px';
+      rest.textContent = `…и ещё ${find.count - spots.length}`;
+      table.append(rest);
     }
   }
   table.hidden = false;

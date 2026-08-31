@@ -192,3 +192,52 @@ class TestCleaning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEveryFindShowsItsLines(unittest.TestCase):
+    """Находка показывает все свои строки, а не одну.
+
+    «Не переведено» собирает под собой все английские строки книги разом.
+    По одному примеру не понять ни что там осталось, ни стоит ли это
+    убирать: человек видел «[B]» и не видел ещё сорока строк, которые
+    уйдут вместе с ней.
+    """
+
+    def finds(self, chapters):
+        return {find.kind: find.as_dict()
+                for find in junk.inspect(chapters).finds}
+
+    def test_all_the_different_lines_are_shown(self):
+        found = self.finds([
+            ("Глава 1", ["Русский текст.", "Hello there"]),
+            ("Глава 2", ["Русский.", "Another line", "[B]"]),
+        ])["latin"]
+        self.assertEqual([spot["text"] for spot in found["spots"]],
+                         ["Hello there", "Another line", "[B]"])
+
+    def test_each_line_says_where_it_came_from(self):
+        found = self.finds([
+            ("Глава 1", ["Текст.", "Hello"]),
+            ("Глава 2", ["Текст.", "Goodbye"]),
+        ])["latin"]
+        self.assertEqual([spot["where"] for spot in found["spots"]],
+                         ["Глава 1", "Глава 2"])
+
+    def test_one_line_repeated_is_one_example(self):
+        """Строка, стоящая в трёхстах главах, — одна находка с числом
+        триста, а не триста примеров одного и того же."""
+        # Строку кладём вне зоны шапки: там повтор в каждой главе — это
+        # название книги, и находка была бы другая.
+        body = ["Абзац первый.", "Абзац второй.", "Абзац третий.",
+                "Абзац четвёртый.", "Абзац пятый.", "Read on site"]
+        found = self.finds([("Глава %d" % n, list(body))
+                            for n in range(1, 6)])["latin"]
+        self.assertEqual(len(found["spots"]), 1)
+        self.assertEqual(found["count"], 5)
+
+    def test_the_list_does_not_grow_without_end(self):
+        found = self.finds([
+            ("Глава 1", ["Текст."] + [f"English line {n}"
+                                      for n in range(junk.SHOW + 10)]),
+        ])["latin"]
+        self.assertLessEqual(len(found["spots"]), junk.SHOW)

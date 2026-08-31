@@ -16,7 +16,16 @@ from .naming import clean_title, parse
 
 #: Строка, с которой начинается глава. Совпадать должна вся строка целиком:
 #: «Глава 12» — заголовок, а «…в главе 12 говорилось» — обычный текст.
-DEFAULT_PATTERN = r"^\s*(?:Глава|ГЛАВА|глава|Chapter|CHAPTER|Часть)\s*\d+.*$"
+#:
+#: Решётки markdown в начале допускаются: `.md` мы сами так и пишем —
+#: `# Глава 5`, — а разобрать собственный вывод обратно не могли, потому
+#: что решётка не пускала строку под этот шаблон.
+DEFAULT_PATTERN = (r"^\s*#{0,6}\s*"
+                   r"(?:Глава|ГЛАВА|глава|Chapter|CHAPTER|Часть)\s*\d+.*$")
+
+#: Решётки markdown в начале строки. Названием главы им не быть: они
+#: разметка, а не имя, и в имя файла попадать не должны.
+HASHES = re.compile(r"^\s*#{1,6}\s*")
 
 #: Заголовок — короткая строка. Абзац на три экрана заголовком не бывает,
 #: даже если начинается со слова «Глава».
@@ -75,7 +84,7 @@ def cut(chapter: Chapter, pattern: str | None = None) -> list[Chapter]:
 
     for order, start in enumerate(marks):
         end = marks[order + 1] if order + 1 < len(marks) else len(chapter.paragraphs)
-        title = chapter.paragraphs[start].strip()
+        title = HASHES.sub("", chapter.paragraphs[start].strip()).strip()
         body = [p for p in chapter.paragraphs[start + 1:end] if p.strip()]
         chapters.append(_make(title, body, chapter.source))
     return chapters

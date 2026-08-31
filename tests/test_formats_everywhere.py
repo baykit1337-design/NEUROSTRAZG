@@ -146,3 +146,79 @@ class TestRenameRouteAcceptsEveryFormat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMarkdownGoesLineByLine(unittest.TestCase):
+    """У markdown абзац — строка, а не кусок между пустыми строками.
+
+    Книги для загрузчика пишутся без пустых строк вовсе: пустая строка
+    превращается на сайте в пустой абзац. По прежнему правилу такая книга
+    читалась одним абзацем на весь файл — и «Разбить» честно сообщала
+    «глав: 1», сколько бы их там ни было.
+    """
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.tmp = Path(self.tmpdir.name)
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def wrote(self, chapters, **options):
+        from core import formats
+
+        path = self.tmp / "книга.md"
+        formats.write(path, chapters, **options)
+        return path
+
+    def test_the_written_book_has_no_blank_lines(self):
+        from core.models import Chapter
+
+        path = self.wrote([Chapter(number=1, title="Глава 1",
+                                   paragraphs=["Первый.", "Второй."])])
+        self.assertNotIn("\n\n", path.read_text(encoding="utf-8"))
+
+    def test_a_book_without_blank_lines_is_not_one_chapter(self):
+        from core import formats, headings
+
+        path = self.tmp / "сплошная.md"
+        path.write_text("\n".join(f"Глава {n}\nТекст главы {n}."
+                                  for n in range(1, 6)), encoding="utf-8")
+        chapters = formats.read(path)
+        self.assertEqual(len(chapters), 1, "читатель отдаёт книгу одной главой")
+        cut = headings.cut(chapters[0])
+        self.assertEqual(len(cut), 5)
+
+    def test_our_own_markdown_can_be_read_back_into_chapters(self):
+        """Свой же вывод вкладка «Разбить» разобрать не могла: решётка
+        не пускала строку под шаблон заголовка."""
+        from core import formats, headings
+        from core.models import Chapter
+
+        path = self.wrote([Chapter(number=n, title=f"Глава {n}",
+                                   paragraphs=[f"Текст {n}."])
+                           for n in range(1, 4)])
+        cut = headings.cut(formats.read(path)[0])
+        self.assertEqual([c.number for c in cut], [1, 2, 3])
+
+    def test_the_hashes_do_not_reach_the_title(self):
+        """Иначе они уедут в имя файла."""
+        from core import formats, headings
+        from core.models import Chapter
+
+        path = self.wrote([Chapter(number=7, title="Глава 7 — Молния",
+                                   paragraphs=["Текст."]),
+                           Chapter(number=8, title="Глава 8",
+                                   paragraphs=["Текст."])])
+        cut = headings.cut(formats.read(path)[0])
+        # Смотрим вторую: у первой решётку снял читатель, разбирая
+        # заголовок файла, и правило разрезания тут ни при чём.
+        self.assertEqual([c.title for c in cut][-1], "Глава 8")
+        self.assertFalse(any(c.title.startswith("#") for c in cut))
+
+    def test_a_book_with_blank_lines_still_reads(self):
+        """Старые файлы никуда не делись."""
+        from core import formats
+
+        path = self.tmp / "старая.md"
+        path.write_text("# Глава 1\n\nПервый.\n\nВторой.\n", encoding="utf-8")
+        chapters = formats.read(path)
+        self.assertEqual(chapters[0].paragraphs, ["Первый.", "Второй."])

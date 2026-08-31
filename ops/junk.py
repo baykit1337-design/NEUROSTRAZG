@@ -91,6 +91,13 @@ class Find:
     count: int = 0
     where: list[str] = field(default_factory=list)
     sample: str = ""
+    #: Разные строки, попавшие в находку, и главы, где они встретились.
+    #:
+    #: Одного примера мало. Находка «не переведено» собирает под собой все
+    #: английские строки книги разом, и по одной из них не понять ни что
+    #: там осталось, ни стоит ли это убирать: человек видел «[B]» и не
+    #: видел ещё сорока строк, которые уйдут вместе с ней.
+    spots: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def kind_name(self) -> str:
@@ -108,7 +115,9 @@ class Find:
     def as_dict(self) -> dict:
         return {"kind": self.kind, "kind_name": self.kind_name, "key": self.key,
                 "text": self.text, "count": self.count, "spoils": self.spoils,
-                "where": self.where[:SHOW], "sample": self.sample}
+                "where": self.where[:SHOW], "sample": self.sample,
+                "spots": [{"where": where, "text": text}
+                          for where, text in self.spots[:SHOW]]}
 
 
 @dataclass
@@ -257,6 +266,12 @@ def inspect(chapters) -> Report:
             entry.count += 1
             if len(entry.where) < SHOW:
                 entry.where.append(title)
+            # Строки, а не одна строка. Повторы не копим: строка, стоящая
+            # в трёхстах главах, — это одна находка с числом триста, а не
+            # триста примеров одного и того же.
+            if len(entry.spots) < SHOW and \
+                    not any(body == text for _, text in entry.spots):
+                entry.spots.append((title, body))
 
     order = list(KINDS)
     report.finds = sorted(found.values(),

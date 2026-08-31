@@ -17,12 +17,16 @@ class MarkdownWriter(Writer):
         heading = options.get("headings", True)
         separator = options.get("separator", "")
 
+        # Абзацы идут строка за строкой, без пустых между ними. Пустая
+        # строка превращается на сайте в пустой абзац, и книга уезжает
+        # туда с огромными отступами. Так же — без пустых строк — пишет
+        # книгу и переводчик, из которого её сюда приносят.
         pieces = []
         for chapter in chapters:
             blocks = prepare(chapter.paragraphs, chapter.title, prep)
-            body = "\n\n".join(block.text for block in blocks if block.text)
+            body = "\n".join(block.text for block in blocks if block.text)
             if heading and chapter.title:
-                body = f"# {chapter.title}\n\n{body}"
+                body = f"# {chapter.title}\n{body}"
             pieces.append(body)
 
         joiner = f"\n\n{separator}\n\n" if separator else "\n\n---\n\n"
