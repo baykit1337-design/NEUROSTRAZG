@@ -17,7 +17,7 @@ from pathlib import Path
 from core import formats, naming
 from core.models import Chapter, OpReport
 
-from .base import Progress, collect_files, read_all
+from .base import Progress, collect_files, read_all, spread
 
 #: Имя словаря автозамен. Свой у каждой книги — лежит рядом с ней.
 DICT_FILE = "replacements.txt"
@@ -206,6 +206,18 @@ def apply_to(chapter: Chapter, rules, skip=None) -> tuple[Chapter, int]:
                    paragraphs=paragraphs, source=chapter.source), count
 
 
+def _write_one(job) -> str:
+    """Одна глава на диск. Уровень модуля — чтобы её можно было отправить
+    в другой процесс; беда возвращается строкой по той же причине."""
+    target, chapter, encoding = job
+    try:
+        formats.write(Path(target), [chapter], headings=True,
+                      encoding=encoding, title=chapter.title)
+    except Exception as exc:  # noqa: BLE001 — один файл не рушит пачку
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
 def run(
     targets,
     output_dir: Path,
@@ -236,6 +248,12 @@ def run(
     used: set[str] = set()
     replaced = 0
 
+    # Замену считаем здесь, а запись раскладываем по ядрам: правка
+    # текста дёшева, а `.docx` — нет. Имена тоже здесь: они зависят от
+    # того, что уже занято, и не должны зависеть от того, кто какой файл
+    # успел записать первым.
+    jobs, names = [], []
+    heavy = False
     for index, chapter in enumerate(chapters, 1):
         progress.check()
         changed, made = apply_to(chapter, rules, skip)
@@ -248,15 +266,17 @@ def run(
         if f"{stem}{suffix}".lower() in used:
             stem = f"{stem} ({index})"
         used.add(f"{stem}{suffix}".lower())
+        heavy = heavy or formats.is_heavy(suffix)
 
-        try:
-            formats.write(output_dir / f"{stem}{suffix}", [changed],
-                          headings=True, encoding=encoding, title=changed.title)
+        names.append(f"{stem}{suffix}")
+        jobs.append((str(output_dir / f"{stem}{suffix}"), changed, encoding))
+
+    for name, trouble in zip(names, spread(_write_one, jobs, progress,
+                                           heavy=heavy, note="Файл")):
+        if trouble:
+            report.fail(name, "запись", trouble)
+        else:
             report.written += 1
-        except Exception as exc:
-            report.fail(f"{stem}{suffix}", "запись", f"{type(exc).__name__}: {exc}")
-
-        progress.step(index, len(chapters), f"Файл {index} из {len(chapters)}")
 
     report.extra["replaced"] = replaced
     return report

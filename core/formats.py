@@ -132,6 +132,18 @@ def read(path: Path):
     return reader_for(path).read(Path(path))
 
 
+def is_heavy(suffix: str) -> bool:
+    """Дорого ли обходится один файл этого формата.
+
+    По этому признаку работы решают, раскладывать ли запись по ядрам:
+    заводить процессы ради `.txt` дороже, чем его писать.
+    """
+    try:
+        return bool(writer_for(suffix).heavy)
+    except WriteError:
+        return False
+
+
 def write(path: Path, chapters, **options) -> None:
     """Запись глав в файл — единственная точка записи."""
     writer_for(Path(path).suffix).write(Path(path), list(chapters), **options)

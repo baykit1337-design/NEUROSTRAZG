@@ -20,6 +20,9 @@ from core import formats, naming
 #: Ядровая глава нужна только для записи, поэтому берётся под своим именем.
 from core.models import Chapter as OutChapter
 
+from ops.base import Cancelled as Stopped
+from ops.base import Progress, spread
+
 from .booksplit import Cancelled, safe_name
 from .source import read_paragraphs as read_source_paragraphs
 from .textprep import SCENE_BREAK, PrepOptions, prepare, to_text
@@ -403,6 +406,30 @@ def planned_names(rows: list[PlanRow], fmt: str = "txt") -> list[str]:
             for index, row in enumerate(rows, 1)]
 
 
+def _write_one(job) -> str:
+    """Одна глава на диск. Функция уровня модуля — иначе её не отправить
+    в другой процесс; беда возвращается строкой по той же причине."""
+    (target, number, part, title, paragraphs, source,
+     prep, style, headings, encoding) = job
+    try:
+        # Тяжёлый файл до сих пор не читан — вот теперь он и нужен.
+        # Список глав строится по именам, и заставлять человека ждать
+        # разбора всей папки ради предпросмотра незачем.
+        if paragraphs is None:
+            paragraphs = read_paragraphs(Path(source))
+        # Пишем через общий слой: он знает все форматы и применяет ту же
+        # подготовку текста, что и остальные пути вывода.
+        formats.write(
+            Path(target),
+            [OutChapter(number=number, part=part, title=title,
+                        paragraphs=list(paragraphs), source=source)],
+            prep=prep, style=style, headings=headings, encoding=encoding,
+        )
+    except Exception as exc:  # noqa: BLE001 — один файл не рушит пачку
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
 def apply_plan(
     rows: list[PlanRow],
     output_dir: Path,
@@ -438,33 +465,35 @@ def apply_plan(
     # копия в корзину: считает их один `planned_names` на всех.
     names = planned_names(rows, suffix)
 
-    for index, row in enumerate(rows, 1):
-        if cancel is not None and cancel.is_set():
-            raise Cancelled()
+    jobs = [(str(output_dir / names[at]), row.number, row.part, row.title,
+             list(row.paragraphs) if row.loaded else None, row.source,
+             prep, style, headings, encoding)
+            for at, row in enumerate(rows)]
 
-        name = names[index - 1]
-        try:
-            target = output_dir / name
-            # Тяжёлый файл до сих пор не читан — вот теперь он и нужен.
-            # Список глав строится по именам, и заставлять человека
-            # ждать разбора всей папки ради предпросмотра незачем.
-            paragraphs = (list(row.paragraphs) if row.loaded
-                          else read_paragraphs(Path(row.source)))
-            # Пишем через общий слой: он знает все форматы и применяет ту
-            # же подготовку текста, что и остальные пути вывода.
-            formats.write(
-                target,
-                [OutChapter(number=row.number, part=row.part, title=row.title,
-                            paragraphs=paragraphs, source=row.source)],
-                prep=prep, style=style, headings=headings, encoding=encoding,
-            )
-            report.written += 1
-        except Exception as exc:
-            log.warning("Не записан %s: %s", name, exc)
+    # Пятьсот глав в Word писались восемнадцать секунд. Работа эта
+    # посильная любому ядру и ни одному заданию не нужно знать о
+    # соседях — раскладываем. Лёгкие форматы `spread` считает на месте:
+    # `.txt` пишется быстрее, чем заводится процесс.
+    try:
+        troubles = spread(
+            _write_one, jobs,
+            Progress(on_progress=(lambda done, total, message: on_progress(done, total))
+                     if on_progress else None,
+                     cancel=cancel or threading.Event()),
+            heavy=formats.is_heavy(suffix), note="Файл")
+    except Stopped as stop:
+        # Отмену эта вкладка всегда называла своим именем, и снаружи её
+        # ловят именно им. Общая раскладка знает своё — переводим, чтобы
+        # ускорение не поменяло заодно и поведение «Остановить».
+        raise Cancelled() from stop
+
+    for at, trouble in enumerate(troubles):
+        name = names[at]
+        if trouble:
+            log.warning("Не записан %s: %s", name, trouble)
             report.failed += 1
-            report.failed_files.append(f"{name}: {type(exc).__name__}: {exc}")
-
-        if on_progress:
-            on_progress(index, len(rows))
+            report.failed_files.append(f"{name}: {trouble}")
+        else:
+            report.written += 1
 
     return report

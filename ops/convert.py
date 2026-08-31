@@ -22,7 +22,7 @@ from core import formats
 from core.models import OpReport
 from core.text import PrepOptions
 
-from .base import Progress, collect_files, skipped_files
+from .base import Progress, collect_files, skipped_files, spread
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +66,27 @@ def _free_name(output: Path, stem: str, suffix: str, used: set[str]) -> Path:
     return output / name
 
 
+def _one(job) -> str:
+    """Один файл: прочитать и записать в другом формате.
+
+    Отдельной функцией уровня модуля — иначе её не отправить в другой
+    процесс. Беду возвращает строкой: через границу процесса летит
+    только то, что умеет засолиться, а исключение чужого модуля может и
+    не уметь.
+    """
+    path, target, prep, style, headings, encoding = job
+    try:
+        chapters = formats.read(Path(path))
+        if not chapters:
+            raise ValueError("в файле не нашлось ни одной главы")
+        formats.write(Path(target), chapters, prep=prep, style=style,
+                      headings=headings, encoding=encoding,
+                      title=Path(path).stem)
+    except Exception as exc:  # noqa: BLE001 — один файл не рушит пачку
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
 def run(
     targets,
     output: Path,
@@ -101,29 +122,27 @@ def run(
     used: set[str] = set()
     same = 0
 
-    for index, path in enumerate(files, 1):
-        progress.check()
+    # Имена считаем здесь, до раскладки по ядрам: они зависят от того,
+    # что уже занято, и порядок обязан быть один и тот же независимо от
+    # того, кто какой файл успел сделать первым.
+    jobs = []
+    for path in files:
         target = _free_name(output, path.stem, suffix, used)
-
         # Файл уже в нужном формате. Не пропускаем: у вкладки есть и
         # подготовка текста, и своя кодировка — перегон в тот же формат
         # осмыслен. Но считаем отдельно, чтобы в итоге было видно.
         if path.suffix.lower() == suffix:
             same += 1
+        jobs.append((str(path), str(target), prep, style, headings, encoding))
 
-        try:
-            chapters = formats.read(path)
-            if not chapters:
-                raise ValueError("в файле не нашлось ни одной главы")
-            formats.write(target, chapters, prep=prep, style=style,
-                          headings=headings, encoding=encoding,
-                          title=path.stem)
+    troubles = spread(_one, jobs, progress,
+                      heavy=formats.is_heavy(suffix), note="Файл")
+    for path, trouble in zip(files, troubles):
+        if trouble:
+            log.warning("Не перегнан %s: %s", path.name, trouble)
+            report.fail(path.name, "перегон", trouble)
+        else:
             report.written += 1
-        except Exception as exc:  # noqa: BLE001 — один файл не рушит пачку
-            log.warning("Не перегнан %s: %s", path.name, exc)
-            report.fail(path.name, "перегон", f"{type(exc).__name__}: {exc}")
-
-        progress.step(index, len(files), f"Файл {index} из {len(files)}")
 
     if same:
         report.extra["same_format"] = same

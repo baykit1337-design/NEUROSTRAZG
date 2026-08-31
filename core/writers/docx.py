@@ -10,6 +10,8 @@ from .base import WriteError, Writer
 
 class DocxWriter(Writer):
     suffix = ".docx"
+    # Один файл — это разбор шаблона и упаковка zip: дорого.
+    heavy = True
 
     def write(self, path: Path, chapters: list[Chapter], **options) -> None:
         # Оформление живёт в mvl.word — там же разбор markdown и стили.

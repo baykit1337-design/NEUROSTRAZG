@@ -57,6 +57,8 @@ NAV = """<?xml version="1.0" encoding="UTF-8"?>
 
 class EpubWriter(Writer):
     suffix = ".epub"
+    # Один файл — это разбор шаблона и упаковка zip: дорого.
+    heavy = True
 
     def write(self, path: Path, chapters: list[Chapter], **options) -> None:
         prep = options.get("prep")

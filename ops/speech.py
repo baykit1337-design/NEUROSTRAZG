@@ -50,7 +50,7 @@ from core import formats, naming
 from core.models import OpReport
 
 from . import mdbook
-from .base import Progress, collect_files
+from .base import Progress, collect_files, spread
 
 #: Знак прямой речи. Тире, а не дефис и не минус: короткий знак на этом
 #: месте загрузчик покажет как дефис посреди строки.
@@ -245,26 +245,51 @@ def run(targets, output_dir, out_format: str = "", encoding: str = "utf-8",
     output_dir.mkdir(parents=True, exist_ok=True)
     report.total = len(files)
 
-    changed = 0
+    # Имена считаем здесь, до раскладки по ядрам: они зависят от того,
+    # что уже занято, и не должны зависеть от того, кто какой файл
+    # успел сделать первым.
     used: set[str] = set()
-    for index, path in enumerate(files, 1):
-        progress.check()
-        try:
-            changed += _one(path, output_dir, out_format, encoding, used)
+    jobs = []
+    for path in files:
+        book = _book(path)
+        suffix = ".md" if book is not None else (out_format or path.suffix or ".txt")
+        jobs.append((str(path), str(_free(output_dir, path.stem, suffix, used)),
+                     encoding))
+
+    made = spread(_one_file, jobs, progress,
+                  heavy=any(formats.is_heavy(Path(target).suffix)
+                            for _, target, _ in jobs),
+                  note="Файл")
+
+    changed = 0
+    for path, done in zip(files, made):
+        count, trouble = done
+        if trouble:
+            report.fail(path.name, "правка", trouble)
+        else:
             report.written += 1
-        except Exception as exc:  # noqa: BLE001 — сбой файла не повод бросать
-            report.fail(path.name, "правка", f"{type(exc).__name__}: {exc}")
-        progress.step(index, len(files), f"Файл {index} из {len(files)}")
+            changed += count
 
     report.extra["changed"] = changed
     return report
 
 
-def _one(path: Path, output_dir: Path, out_format: str, encoding: str,
-         used: set) -> int:
+def _one_file(job) -> tuple:
+    """Один файл: «сколько строк переписано, что стряслось».
+
+    Функция уровня модуля — иначе её не отправить в другой процесс; беда
+    возвращается значением по той же причине.
+    """
+    source, target, encoding = job
+    try:
+        return _one(Path(source), Path(target), encoding), ""
+    except Exception as exc:  # noqa: BLE001 — сбой файла не повод бросать
+        return 0, f"{type(exc).__name__}: {exc}"
+
+
+def _one(path: Path, target: Path, encoding: str) -> int:
     """Один файл. Возвращает число переписанных строк."""
     book = _book(path)
-    suffix = out_format or path.suffix or ".txt"
 
     if book is not None:
         # У книги для загрузчика заголовки возвращаются дословно: цена и
@@ -275,7 +300,6 @@ def _one(path: Path, output_dir: Path, out_format: str, encoding: str,
                                for head, lines in chapters])
         rebuilt = [(head, mdbook.lines_of(paragraphs))
                    for (head, _), (_, paragraphs) in zip(chapters, made)]
-        target = _free(output_dir, path.stem, ".md", used)
         target.write_text(mdbook.write_book(rebuilt, lead), encoding="utf-8")
         return count
 
@@ -287,7 +311,6 @@ def _one(path: Path, output_dir: Path, out_format: str, encoding: str,
     fresh = [replace(chapter, paragraphs=paragraphs)
              for chapter, (_, paragraphs) in zip(read, made)]
 
-    target = _free(output_dir, path.stem, suffix, used)
     formats.write(target, fresh, headings=True, encoding=encoding,
                   title=fresh[0].title if fresh else path.stem)
     return count
