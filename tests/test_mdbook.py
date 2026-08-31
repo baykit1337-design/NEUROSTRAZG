@@ -876,3 +876,203 @@ class TestPartsAreNotDoubles(unittest.TestCase):
         self.assertEqual(mdbook.split_mark("Глава 201.2"), (201, 2, ""))
         self.assertEqual(mdbook.split_mark("Глава 82 — Молния"),
                          (82, None, "Молния"))
+
+
+class TestTheNameInTheTitleWhenCollecting(unittest.TestCase):
+    """Собирая книгу из файлов, название в заголовке можно не хотеть.
+
+    Выбор этот был только у второй карточки, которая правит уже готовую
+    книгу: собрать сразу «Глава 82», без имени файла в заголовке, было
+    нечем.
+    """
+
+    def chapter(self, number=82, title="Глава 82 - Пурпурная молния",
+                part=None):
+        return Chapter(number=number, part=part, title=title,
+                       paragraphs=["Текст."])
+
+    def titles(self, chapters, **kw):
+        return [head.title for head, _ in mdbook.from_chapters(chapters, **kw)]
+
+    def test_by_default_the_name_stays(self):
+        self.assertEqual(self.titles([self.chapter()]),
+                         ["Глава 82 — Пурпурная молния"])
+
+    def test_asked_to_drop_it_only_the_number_is_left(self):
+        self.assertEqual(self.titles([self.chapter()], names=mdbook.DROP),
+                         ["Глава 82"])
+
+    def test_asked_to_keep_it_the_name_is_kept(self):
+        self.assertEqual(self.titles([self.chapter()], names=mdbook.KEEP),
+                         ["Глава 82 — Пурпурная молния"])
+
+    def test_a_chapter_without_a_number_keeps_its_name_anyway(self):
+        """«Глава» вместо «Пролога» — неправда: номера у него нет, и
+        убрать имя значило бы стереть главу целиком."""
+        prologue = Chapter(title="Пролог", paragraphs=["Текст."])
+        self.assertEqual(self.titles([prologue], names=mdbook.DROP), ["Пролог"])
+
+    def test_the_part_number_survives_dropping_the_name(self):
+        made = self.titles([self.chapter(part=2, title="Глава 82.2 - Молния")],
+                           names=mdbook.DROP)
+        self.assertEqual(made, ["Глава 82.2"])
+
+    def test_the_text_is_not_touched(self):
+        out = mdbook.from_chapters([self.chapter()], names=mdbook.DROP)
+        self.assertEqual(out[0][1], ["Текст."])
+
+    def test_a_part_read_only_from_the_title_survives_too(self):
+        """Номера у главы может не быть вовсе — тогда его вынимают из
+        названия. Часть должна приехать оттуда же."""
+        loose = Chapter(title="Глава 82.3 - Молния", paragraphs=["Текст."])
+        self.assertEqual(self.titles([loose]), ["Глава 82.3 — Молния"])
+
+
+class TestStrippingTheNumberOfAPart(unittest.TestCase):
+    """У файла «Глава 201.2 - Название» пометка главы — всё «Глава
+    201.2». Пока часть в неё не входила, от неё оставалась «2», и в книге
+    выходило «Глава 201.2 — 2 - Название»."""
+
+    def test_the_part_goes_away_with_the_number(self):
+        self.assertEqual(mdbook.bare_name("Глава 201.2 - Пурпурная молния",
+                                          201),
+                         "Пурпурная молния")
+
+    def test_a_name_ending_in_a_number_is_left_alone(self):
+        self.assertEqual(mdbook.bare_name("Название 1", None), "Название 1")
+
+    def test_a_different_number_is_not_stripped(self):
+        self.assertEqual(mdbook.bare_name("Глава 201.2 - Молния", 55),
+                         "Глава 201.2 - Молния")
+
+
+class TestWhatToDoWithTheNameOverHttp(WebBase):
+
+    def chapters(self):
+        folder = self.root / "главы"
+        folder.mkdir(exist_ok=True)
+        for n in (1, 2):
+            (folder / f"Глава {n} - Название {n}.txt").write_text(
+                f"Текст главы {n}.", encoding="utf-8")
+        return folder
+
+    def collect(self, **extra):
+        folder = self.chapters()
+        payload = {"targets": [str(folder)], "base": str(self.root),
+                   "name": "книга"}
+        payload.update(extra)
+        return self.app.post("/api/format/collect", json=payload)
+
+    def written(self):
+        _, chapters = mdbook.read_book(
+            (self.root / "книга.md").read_text(encoding="utf-8"))
+        return [head.title for head, _ in chapters]
+
+    def test_the_choice_reaches_the_book(self):
+        self.finish(self.collect(names=mdbook.DROP))
+        self.assertEqual(self.written(), ["Глава 1", "Глава 2"])
+
+    def test_without_the_choice_nothing_changes(self):
+        self.finish(self.collect())
+        self.assertEqual(self.written(),
+                         ["Глава 1 — Название 1", "Глава 2 — Название 2"])
+
+    def test_an_unknown_choice_is_refused(self):
+        res = self.collect(names="выкинуть всё")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("названием", res.get_json()["error"])
+
+
+class TestBringingAnOldBookToStandard(unittest.TestCase):
+    """Старая книга приходит такой, какой её отдал прежний конвертер:
+    решётка без пробела и пустая строка между абзацами. Пустая строка
+    становится на сайте пустым абзацем — отсюда огромные отступы."""
+
+    def book(self):
+        return mdbook.read_book(
+            "#[Глава 1 :|: :|: 1 :|: ]\n"
+            "\n"
+            "Первый абзац.\n"
+            "\n"
+            "Второй абзац.\n")[1]
+
+    def test_the_space_before_the_hash_appears(self):
+        out = mdbook.to_standard(self.book())
+        self.assertTrue(out[0][0].line().startswith(" # ["))
+
+    def test_the_blank_lines_go_away(self):
+        out = mdbook.to_standard(self.book())
+        self.assertEqual(out[0][1], ["Первый абзац.", "Второй абзац."])
+
+    def test_the_paragraphs_themselves_survive(self):
+        text = mdbook.write_book(mdbook.to_standard(self.book()))
+        self.assertIn("Первый абзац.", text)
+        self.assertIn("Второй абзац.", text)
+
+    def test_the_price_and_the_volume_are_not_touched(self):
+        """Правка вида, а не содержания: поля заголовка значат цену."""
+        head, _ = mdbook.to_standard(self.book())[0]
+        self.assertEqual(head.title, "Глава 1")
+        self.assertEqual(head.paid, "1")
+        self.assertTrue(head.line().endswith(":|: ]"))
+
+    def test_a_book_already_standard_stays_as_it_was(self):
+        was = " # [Глава 1 :|: :|: 1 :|: ]\nПервый абзац.\n"
+        lead, chapters = mdbook.read_book(was)
+        self.assertEqual(mdbook.write_book(mdbook.to_standard(chapters), lead),
+                         was)
+
+
+class TestBringingToStandardOverHttp(WebBase):
+    """Галка «привести к стандарту» на переписывании заголовков."""
+
+    OLD = ("#[Chapter 1168_ Trade :|: :|: 1 :|: ]\n"
+           "\n"
+           "Первый абзац главы.\n"
+           "\n"
+           "Второй абзац главы.\n")
+
+    def book(self):
+        path = self.root / "старая.md"
+        path.write_text(self.OLD, encoding="utf-8")
+        return path
+
+    def retitled(self, **more):
+        payload = {"targets": [str(self.book())], "base": str(self.root),
+                   "name": "готово"}
+        payload.update(more)
+        job = self.finish(self.app.post("/api/format/retitle", json=payload))
+        self.assertIsNone(job.error)
+        return (self.root / "готово.md").read_text(encoding="utf-8")
+
+    def test_asked_to_tidy_the_blank_lines_go_away(self):
+        text = self.retitled(tidy=True)
+        self.assertNotIn("\n\n", text)
+
+    def test_asked_to_tidy_the_hash_gets_its_space(self):
+        text = self.retitled(tidy=True)
+        self.assertTrue(text.startswith(" # ["))
+
+    def test_without_the_checkbox_the_book_is_left_as_it_was(self):
+        """Чужую книгу молча не переписываем."""
+        text = self.retitled()
+        self.assertIn("\n\n", text)
+        self.assertTrue(text.startswith("#["))
+
+    def test_the_text_survives_the_tidying(self):
+        text = self.retitled(tidy=True)
+        self.assertIn("Первый абзац главы.", text)
+        self.assertIn("Второй абзац главы.", text)
+
+    def test_the_price_survives_the_tidying(self):
+        _, chapters = mdbook.read_book(self.retitled(tidy=True))
+        self.assertTrue(all(head.paid == "1" for head, _ in chapters))
+
+    def test_the_preview_shows_the_tidied_line(self):
+        """Показывать надо тот файл, который выйдет, — иначе человек
+        сверяет предпросмотр с чем-то другим."""
+        said = self.app.post("/api/format/retitle/preview", json={
+            "targets": [str(self.book())], "names": "keep",
+            "tidy": True}).get_json()
+        self.assertTrue(said["rows"][0]["before"].startswith("#["))
+        self.assertTrue(said["rows"][0]["after"].startswith(" # ["))

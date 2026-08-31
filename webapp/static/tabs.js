@@ -1738,6 +1738,15 @@ function fmStylePayload(){
   };
 }
 
+/** Что делать с названием, собирая книгу из файлов: оставить или убрать.
+ *
+ *  Перевода здесь нет нарочно: он живёт во второй карточке, вместе с
+ *  ключами, моделью и кэшем.
+ */
+function fmCollectNames(){
+  return fmState.menus.collectNames ? fmState.menus.collectNames.value : 'keep';
+}
+
 /** Что делать с названием: перевести, оставить, убрать. */
 function fmNamesWay(){
   return fmState.menus.names ? fmState.menus.names.value : 'translate';
@@ -1773,8 +1782,11 @@ function fmShowSample(){
   else if(order) rest = [order];
 
   const tail = rest.map(x => ` :|: ${x}`).join('');
+  // Название показываем только если оно и будет: иначе образец обещает
+  // одно, а в книгу ложится другое.
+  const named = fmCollectNames() === 'keep' ? `${s.separator}Название` : '';
   $('fmSample').textContent =
-    `Заголовок выйдет такой: # [${s.prefix} ${mark}${s.separator}Название${tail}]`;
+    `Заголовок выйдет такой:  # [${s.prefix} ${mark}${named}${tail}]`;
 }
 
 async function fmScan(){
@@ -2002,6 +2014,11 @@ async function fmCollect(){
       base: $('fmBase').value.trim(),
       name: $('fmName').value.trim(),
       ...fmStylePayload(),
+      // В `fmStylePayload` этому не место: он едет и в запросы второй
+      // карточки, а там под именем `names` лежит свой, другой выбор —
+      // к нему добавлен перевод. Положи мы наш туда, он поехал бы и
+      // туда, молча затерев тот.
+      names: fmCollectNames(),
     });
     fmWatch(job, job => {
       const total = job.report?.written || 0;
@@ -2029,6 +2046,7 @@ async function fmBefore(){
       targets: CHOSEN.fmBookList || [],
       names: fmNamesWay(),
       renumber: Number($('fmRenumber').value) || 0,
+      tidy: $('fmTidy').checked,
       ...fmStylePayload(),
     });
 
@@ -2087,6 +2105,7 @@ async function fmRetitle(){
       name: $('fmOutName').value.trim(),
       names: fmNamesWay(),
       renumber: Number($('fmRenumber').value) || 0,
+      tidy: $('fmTidy').checked,
       model: fmState.menus.model ? fmState.menus.model.value : '',
       force: $('fmForce').checked,
       ...fmStylePayload(),
@@ -3875,6 +3894,9 @@ async function fmLoadOptions(){
       fmShowSample();
       fmScan();
     });
+    // Название в заголовке: образец перерисовывается, файлы перечитывать
+    // незачем — от этого выбора зависит только заголовок.
+    fmState.menus.collectNames = makeDropdown($('fmCollectNames'), fmShowSample);
     fmState.menus.paid = makeDropdown($('fmPaid'), () => {
       fmShowSample();
       fmScan();

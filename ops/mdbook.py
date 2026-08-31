@@ -243,8 +243,14 @@ def split_title(title: str) -> tuple[int | None, str]:
 
 #: Начало заголовка, где номер главы уже записан: пометка главы на любом
 #: языке (или ничего), сам номер и знак после него.
+#:
+#: Номер части снимается вместе с номером главы: у файла «Глава 201.2 -
+#: Название» пометкой главы является всё «Глава 201.2», а не «Глава 201».
+#: Пока часть в пометку не входила, от неё оставалась «2», и в книге
+#: выходило «Глава 201.2 — 2 - Название».
 OWN_NUMBER = re.compile(
-    rf"^\s*(?:{naming.CHAPTER_WORD})?\s*(\d{{1,5}})(?!\d)\s*[^\w\s]*\s*",
+    rf"^\s*(?:{naming.CHAPTER_WORD})?\s*(\d{{1,5}})(?:\.(\d{{1,3}}))?(?!\d)"
+    r"\s*[^\w\s]*\s*",
     re.IGNORECASE)
 
 
@@ -400,6 +406,30 @@ def lines_of(paragraphs: list[str]) -> list[str]:
     return [block for block in paragraphs if block]
 
 
+def to_standard(chapters) -> list[tuple[Head, list[str]]]:
+    """Книгу — к тому виду, в котором её ждёт загрузчик.
+
+    Старые книги приходят такими, какими их отдал прежний конвертер:
+    заголовок без пробела перед решёткой и пустая строка между абзацами.
+    Прочитанный заголовок мы храним дословно — и правильно делаем, менять
+    чужую строку молча нельзя, — но починить её иногда просят прямо.
+
+    Пустая строка превращается на сайте в пустой абзац, и книга уезжает
+    туда с огромными отступами между строками; пробел перед решёткой
+    ставит и переводчик, из которого книгу сюда приносят.
+
+    Названия, порядок, платность и том не трогаем: это правка вида, а не
+    содержания.
+    """
+    out: list[tuple[Head, list[str]]] = []
+    for head, body in chapters:
+        # Начало и конец строки берём умолчанием `Head` — оно и есть
+        # стандарт; всё остальное переносим как было.
+        fresh = Head(title=head.title, gap=head.gap, tail=head.tail)
+        out.append((fresh, lines_of(paragraphs_of(body))))
+    return out
+
+
 def cut_into_parts(head: Head, body: list[str], count: int,
                    style: TitleStyle | None = None,
                    number=None, name: str = "") -> list[tuple[Head, list[str]]]:
@@ -433,30 +463,48 @@ def cut_into_parts(head: Head, body: list[str], count: int,
     return out
 
 
+#: Что делать с названием главы, собирая книгу из файлов.
+KEEP, DROP = "keep", "drop"
+
+
 def from_chapters(chapters, style: TitleStyle | None = None,
                   paid: str = "", volume: str = "", first: int = 0,
-                  parts: int = 1, numbering: bool = True) -> list:
+                  parts: int = 1, numbering: bool = True,
+                  names: str = KEEP) -> list:
     """Главы, прочитанные из файлов, — в главы книги для загрузчика.
 
     `first` — с какого номера порядка начать. Ноль означает «не писать
     порядок вовсе»: сайт расставит его сам, и это честнее выдуманных
     чисел, когда в именах файлов номеров не было.
+
+    `names` — оставить название из имени файла или убрать его, оставив
+    один номер. Выбора этого здесь не было вовсе: имя файла всегда шло в
+    заголовок, и книгу с заголовками «Глава 82» собрать было нечем —
+    убрать их можно было только вторым проходом, по уже готовой книге.
     """
     style = style or TitleStyle()
     out: list[tuple[Head, list[str]]] = []
     order = first
 
     for chapter in chapters:
-        number = chapter.number
+        # Номер части берём у главы, а не заново из названия: читатель
+        # уже разобрал имя файла. Пока часть отбрасывали, «Глава 201.2»
+        # становилась в книге «Главой 201» — второй такой же, как её
+        # первая часть.
+        number, part = chapter.number, chapter.part
         if number is None:
-            number, _ = split_title(chapter.title)
+            number, part, _ = split_mark(chapter.title)
         # Название у прочитанной главы — это имя файла целиком, вместе с
         # «Глава 101 - ». Возьми мы его как есть, вышло бы «Глава 101 —
         # Глава 101 - Название»: слово и номер встали бы дважды.
         name = bare_name(chapter.title, number)
         if not numbering:
             number = None
-        title = style.build(number, name) if number is not None else \
+        # Убрать название можно только там, где остаётся номер: у пролога
+        # его нет, и «Глава» вместо «Пролога» — неправда.
+        if names == DROP and number is not None:
+            name = ""
+        title = style.build(number, name, part=part) if number is not None else \
             (name or chapter.title or style.prefix)
         head = make_head(title, str(order) if order else "", paid, volume)
         body = lines_of(list(chapter.paragraphs))
@@ -468,9 +516,11 @@ def from_chapters(chapters, style: TitleStyle | None = None,
     return out
 
 
-__all__ = ["DEFAULT_SEPARATOR", "FREE", "HEAD_RE", "Head", "MARK", "PAID",
+__all__ = ["DEFAULT_SEPARATOR", "DROP", "FREE", "HEAD_RE", "Head", "KEEP",
+           "MARK", "PAID",
            "PAYMENT", "SEPARATORS", "TitleStyle", "cut_into_parts",
            "from_chapters", "inspect", "lines_of", "looks_translated",
            "make_head",
            "paragraphs_of", "parse_head", "read_book", "split_title",
+           "to_standard",
            "write_book"]

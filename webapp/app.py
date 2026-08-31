@@ -2564,6 +2564,12 @@ def api_format_collect():
     volume = str(payload.get("volume") or "")
     first = _whole(payload, "first")
     parts = max(1, _whole(payload, "parts", 1))
+    # Перевода здесь нет нарочно: он живёт во второй карточке, вместе с
+    # ключами, моделью и кэшем. Собирая книгу из файлов, названия либо
+    # берут как есть, либо убирают.
+    names = str(payload.get("names") or mdbook.KEEP).strip()
+    if names not in (mdbook.KEEP, mdbook.DROP):
+        return jsonify(error=f"Неизвестно, что делать с названием: {names}"), 400
 
     job = Job(id=uuid.uuid4().hex[:12], kind="format",
               meta={"targets": targets}, output_dir=str(output))
@@ -2580,7 +2586,8 @@ def api_format_collect():
             raise ValueError("Не удалось прочитать ни одной главы.")
 
         made = mdbook.from_chapters(chapters, style=style, paid=paid,
-                                    volume=volume, first=first, parts=parts)
+                                    volume=volume, first=first, parts=parts,
+                                    names=names)
         output.write_text(mdbook.write_book(made), encoding="utf-8")
         report.total = len(chapters)
         report.written = len(made)
@@ -2798,14 +2805,20 @@ def api_format_retitle_preview():
     # Порядок считаем так же, как считает запись: с числа «порядок с» и
     # дальше подряд. Ноль — строку не пересобираем вовсе.
     first = _whole(payload, "first")
+    tidy = bool(payload.get("tidy"))
     rows, waiting, order = [], 0, first
     for (head, _), (number, part, name) in zip(chapters, taken):
         _, title = _retitled(way, number, name, known, style, part)
         # «Переведётся» — только там, где перевод и нужен, и ещё не готов.
         later = bool(way == "translate" and name and name not in known)
         waiting += later
+        fresh = _fresh_head(head, title, order)
+        # Причёсывает строку та же функция, что и при записи: разойдись
+        # они, и предпросмотр показывал бы не тот файл, который выйдет.
+        if tidy:
+            fresh, _ = mdbook.to_standard([(fresh, [])])[0]
         rows.append({"before": head.line(),
-                     "after": _fresh_head(head, title, order).line(),
+                     "after": fresh.line(),
                      "later": later})
         if order:
             order += 1
@@ -2846,6 +2859,10 @@ def api_format_retitle():
     renumber = _whole(payload, "renumber")
     force = bool(payload.get("force"))
     model = (payload.get("model") or "").strip()
+    # Старую книгу можно заодно причесать: пробел перед решёткой и
+    # никаких пустых строк между абзацами. По умолчанию — нет: чужую
+    # книгу молча переписывать не будем.
+    tidy = bool(payload.get("tidy"))
 
     doing = ("Переводим заголовки…" if way == "translate"
              else "Переписываем заголовки…")
@@ -2900,6 +2917,12 @@ def api_format_retitle():
             out.extend(pieces)
             if order:
                 order += len(pieces)
+
+        # Привести к стандарту — правка вида, а не содержания: пробел
+        # перед решёткой и ни одной пустой строки в теле. Делаем её
+        # последней, чтобы под неё попало и то, что настрогали части.
+        if tidy:
+            out = mdbook.to_standard(out)
 
         output.write_text(mdbook.write_book(out, lead), encoding="utf-8")
         job.report = {"output": str(output), "total": len(out),

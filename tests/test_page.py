@@ -462,5 +462,53 @@ class TestTheJunkFindingDoesNotHijackThePage(PageTestCase):
         self.quiet()
 
 
+class TestChoosingWhatHappensToTheName(PageTestCase):
+    """Две карточки «Формат» спрашивают про название по-разному.
+
+    «Собрать книгу» берёт имя из файла — и до сих пор брала его всегда;
+    «Переписать заголовки» правит уже готовую книгу и умеет заодно
+    привести её к стандарту.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="format"]')
+
+    def drop(self):
+        """Выбрать «убрать, оставить номер» в списке у «Собрать книгу».
+
+        Карточка со стилем заголовка свёрнута — разворачиваем её так же,
+        как это делает человек.
+        """
+        self.page.click("#fmStyle .foldhead")
+        self.page.click("#fmCollectNames .dropdown-toggle")
+        self.page.click("#fmCollectNames .dropdown-item:has-text('убрать')")
+        self.page.wait_for_timeout(200)
+
+    def test_collecting_asks_what_to_do_with_the_name(self):
+        self.assertTrue(self.page.locator("#fmCollectNames").count(),
+                        "у «Собрать книгу» должен быть выбор названия")
+        self.quiet()
+
+    def test_the_sample_follows_the_choice(self):
+        self.drop()
+        self.assertNotIn("Название", self.page.inner_text("#fmSample"))
+        self.quiet()
+
+    def test_the_choice_is_what_will_be_sent(self):
+        self.drop()
+        self.assertEqual(self.page.evaluate("fmCollectNames()"), "drop")
+        self.quiet()
+
+    def test_retitling_offers_to_bring_the_book_to_standard(self):
+        box = self.page.locator("#fmTidy")
+        self.assertTrue(box.count(), "нужна галка «привести к стандарту»")
+        self.assertFalse(box.is_checked(),
+                         "чужую книгу молча не переписываем")
+        box.check()
+        self.assertTrue(box.is_checked())
+        self.quiet()
+
+
 if __name__ == "__main__":
     unittest.main()
