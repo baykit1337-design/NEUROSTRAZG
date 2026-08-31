@@ -68,6 +68,7 @@ from ops import headers as headers_op  # noqa: E402
 from ops import history as history_op  # noqa: E402
 from ops import joblog  # noqa: E402
 from ops import session as session_op  # noqa: E402
+from ops import speech as speech_op  # noqa: E402
 from ops import queue as queue_op  # noqa: E402
 from ops import reader as reader_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
@@ -2765,6 +2766,50 @@ def api_format_junk_clean():
         return jsonify(error=f"Не удалось записать: {exc}"), 400
 
     return jsonify(output=str(output), removed=gone, chapters=len(rebuilt),
+                   source=str(path))
+
+
+@app.post("/api/format/speech")
+def api_format_speech():
+    """Сколько реплик стоит в кавычках и во что они превратятся."""
+    payload = request.json or {}
+    try:
+        path, _, chapters = _read_md(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    found = speech_op.inspect(_md_pairs(chapters))
+    return jsonify(path=str(path), **found.as_dict())
+
+
+@app.post("/api/format/speech/apply")
+def api_format_speech_apply():
+    """Переписать речь через тире. Исходник не трогаем — пишем рядом."""
+    payload = request.json or {}
+    try:
+        path, lead, chapters = _read_md(payload)
+        output = _md_output(payload)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    if output == path:
+        return jsonify(error="Выберите другое имя: исходник не перезаписываем "
+                             "— сверить с ним будет нечего"), 400
+
+    made, count = speech_op.rewrite(_md_pairs(chapters))
+    # Писать копию, ничем не отличающуюся от исходника, незачем: человек
+    # решил бы, что работа сделана, а сделана она не была.
+    if not count:
+        return jsonify(error="Речи в кавычках не нашлось — переписывать "
+                             "нечего"), 400
+
+    rebuilt = [(head, mdbook.lines_of(paragraphs))
+               for (head, _), (_, paragraphs) in zip(chapters, made)]
+    try:
+        output.write_text(mdbook.write_book(rebuilt, lead), encoding="utf-8")
+    except OSError as exc:
+        return jsonify(error=f"Не удалось записать: {exc}"), 400
+
+    return jsonify(output=str(output), changed=count, chapters=len(rebuilt),
                    source=str(path))
 
 

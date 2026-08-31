@@ -2503,6 +2503,41 @@
     </div>
   </div>
 
+  <!-- Прямая речь. Перевод отдаёт реплики в кавычках, как в оригинале,
+       а по-русски они пишутся через тире. Правило узкое нарочно: реплика
+       — это абзац, начатый с кавычки; кавычка в середине строки остаётся
+       кавычкой, иначе слетели бы и названия, и цитаты. -->
+  <div class="card" id="fmSpeechCard">
+    <label>Речь в кавычках — через тире</label>
+    <p class="hint">Смотрит выбранный выше <code>.md</code>. Абзац,
+       начатый с кавычки, — это реплика: <code>«Быстрее».</code> станет
+       <code>— Быстрее.</code> Кавычка в середине строки не трогается:
+       «Войну и мир» так и оставим в кавычках. Исходник не
+       переписывается — переписанное пишется рядом.</p>
+    <div class="row" style="margin-top:12px">
+      <button id="fmSpeechLook" class="ghost" style="flex:1">Посмотреть, что изменится</button>
+    </div>
+    <p class="hint" id="fmSpeechNote"></p>
+    <div class="table" id="fmSpeechTable" hidden style="margin-top:10px;max-height:420px"></div>
+
+    <div id="fmSpeechWhere" hidden style="margin-top:14px">
+      <label>Куда сохранить</label>
+      <div class="row">
+        <input id="fmSpeechBase" type="text" placeholder="Папка назначения"
+             autocomplete="off" data-keep list="nzFolders">
+        <button class="ghost browse" data-target="fmSpeechBase" data-kind="folder">Обзор…</button>
+      </div>
+      <div style="margin-top:10px">
+        <input id="fmSpeechName" type="text" placeholder="книга-тире"
+               value="книга-тире" autocomplete="off">
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="fmSpeechRun" class="primary" style="flex:1">Переписать через тире</button>
+      </div>
+      <p class="result-path" id="fmSpeechResult"></p>
+    </div>
+  </div>
+
   <!-- Объём глав — тот же блок, что в «Разбить» и «Переименовать».
        Здесь книга лежит одним .md, поэтому за главы берутся куски между
        заголовками загрузчика, а считает их всё тот же `ops/stats`. -->

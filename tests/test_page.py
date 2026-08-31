@@ -510,5 +510,80 @@ class TestChoosingWhatHappensToTheName(PageTestCase):
         self.quiet()
 
 
+class TestTurningQuotedSpeechIntoDashes(PageTestCase):
+    """Карточка «Речь в кавычках» на вкладке «Форматировать».
+
+    Работа необратимая по смыслу — правит текст книги, — поэтому кнопка
+    записи показывается только после того, как человек увидел список
+    «до и после».
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tempfile import TemporaryDirectory
+
+        cls.tmpdir = TemporaryDirectory()
+        cls.folder = Path(cls.tmpdir.name)
+        cls.quiet_book = cls.folder / "тире.md"
+        cls.quiet_book.write_text(
+            " # [Глава 1 :|: :|: 1 :|: ]\n"
+            "— Уже через тире.\n",
+            encoding="utf-8")
+        cls.book = cls.folder / "книга.md"
+        cls.book.write_text(
+            " # [Глава 1 :|: :|: 1 :|: ]\n"
+            "«Я-я в порядке...♥»\n"
+            "«Быстрее».\n"
+            "Он читал «Войну и мир».\n",
+            encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+        super().tearDownClass()
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="format"]')
+
+    def look_at(self, path):
+        self.page.fill("#fmBookPath", str(path))
+        self.page.press("#fmBookPath", "Enter")
+        self.page.wait_for_timeout(800)
+        self.page.click("#fmSpeechLook")
+
+    def test_the_card_is_there(self):
+        self.assertTrue(self.page.locator("#fmSpeechCard").count())
+        self.quiet()
+
+    def test_where_to_save_stays_hidden_until_it_is_looked_at(self):
+        self.assertTrue(self.page.locator("#fmSpeechWhere").is_hidden())
+        self.quiet()
+
+    def test_it_shows_every_line_before_and_after(self):
+        self.look_at(self.book)
+        self.page.wait_for_selector("#fmSpeechTable:not([hidden])",
+                                    timeout=10000)
+        shown = self.page.inner_text("#fmSpeechTable")
+        self.assertIn("— Быстрее.", shown)
+        # Не реплика — в список не попадает вовсе.
+        self.assertNotIn("Войну и мир", shown)
+        self.assertIn("2", self.page.inner_text("#fmSpeechNote"))
+        self.assertFalse(self.page.locator("#fmSpeechWhere").is_hidden())
+        self.quiet()
+
+    def test_a_book_without_quoted_speech_offers_no_button(self):
+        """Кнопка, которой нечего делать, обещает работу, которой не
+        будет."""
+        self.look_at(self.quiet_book)
+        self.page.wait_for_function(
+            "() => document.getElementById('fmSpeechNote')"
+            ".textContent.includes('не нашлось')", timeout=10000)
+        self.assertTrue(self.page.locator("#fmSpeechWhere").is_hidden())
+        self.assertTrue(self.page.locator("#fmSpeechTable").is_hidden())
+        self.quiet()
+
+
 if __name__ == "__main__":
     unittest.main()
