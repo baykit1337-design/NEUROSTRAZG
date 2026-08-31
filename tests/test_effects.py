@@ -896,21 +896,47 @@ class TestWorkPulse(Base):
 
 
 class TestBarWave(Base):
-    """Течение в полосе."""
+    """Волна на переднем крае полосы."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.css = (CSS / "bar-wave.css").read_text(encoding="utf-8")
+        cls.life = (CSS / "progress-life.css").read_text(encoding="utf-8")
 
     def test_only_while_the_work_goes_on(self):
-        """На готовой полосе рябь означала бы работу, которой нет."""
+        """На готовой полосе волна означала бы работу, которой нет."""
         self.assertIn(".bar > i.active", self.css)
 
-    def test_the_fill_is_taken_from_the_shared_variable(self):
-        """Своя копия палитры разошлась бы с основной на первой правке."""
-        self.assertIn("var(--bar-fill)", self.css)
-        self.assertIn("--bar-fill:", self.html)
+    def test_it_moves_the_edge_itself(self):
+        """Волна — это край, а не рябь поперёк заливки.
+
+        Первый заход красил всю полосу косыми полосами: зебра, спорящая с
+        бликом и с закруглением концов.
+        """
+        self.assertIn("clip-path", self.css)
+        self.assertNotIn("repeating-linear-gradient", self.css)
+
+    def test_the_two_frames_have_the_same_number_of_points(self):
+        """Разное число точек — и браузеру нечего между ними считать."""
+        shapes = re.findall(r"clip-path:polygon\(([^)]*(?:\([^)]*\)[^)]*)*)\)",
+                            self.css)
+        self.assertEqual(len(shapes), 2)
+        self.assertEqual(len({shape.count(",") for shape in shapes}), 1, shapes)
+
+    def test_it_takes_no_pseudo_element(self):
+        """Оба уже заняты: `::after` — бликом, `::before` — искрой.
+
+        Займи волна один из них — два включённых эффекта затирали бы друг
+        друга, и виноватого было бы не найти.
+
+        Смотрим правила, а не файл целиком: в пояснении оба псевдоэлемента
+        названы поимённо, и поиск по тексту спотыкался бы о него.
+        """
+        rules = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
+        self.assertNotIn("::before", rules)
+        self.assertNotIn("::after", rules)
+        self.assertIn(".bar > i.active::before", self.life)
 
 
 class TestFlipCount(Base):

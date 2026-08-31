@@ -338,5 +338,129 @@ class TestSplittingABookPastedFromASite(PageTestCase):
         self.quiet()
 
 
+class TestPickingChaptersInARange(PageTestCase):
+    """Отметка галочек с Shift — как в проводнике.
+
+    Книгу в полторы тысячи глав размечают промежутками, а не по одной:
+    без Shift «отметить главы с 1 по 200» означало двести нажатий.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tempfile import TemporaryDirectory
+
+        cls.tmpdir = TemporaryDirectory()
+        book = Path(cls.tmpdir.name) / "книга.txt"
+        body = "Строка главы, достаточно длинная, чтобы её было видно. " * 3
+        book.write_text("\n\n".join(f"Глава {n}\n\n{body}"
+                                     for n in range(1, 11)), encoding="utf-8")
+        cls.book = book
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+        super().tearDownClass()
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="split"]')
+        self.page.fill("#spPath", str(self.book))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(900)
+        # Карточка глав лежит свёрнутой: раскрываем, иначе ни галочек, ни
+        # кнопок под ними не нажать.
+        self.page.click("#spChaptersCard .foldhead")
+        self.boxes = self.page.locator("#spChapters input[type=checkbox]")
+        self.assertEqual(self.boxes.count(), 10)
+        self.page.click("#spNone")
+
+    def marked(self):
+        return [index for index in range(10)
+                if self.boxes.nth(index).is_checked()]
+
+    def test_shift_marks_everything_in_between(self):
+        self.boxes.nth(1).click()
+        self.boxes.nth(7).click(modifiers=["Shift"])
+        self.assertEqual(self.marked(), [1, 2, 3, 4, 5, 6, 7])
+        self.quiet()
+
+    def test_it_works_upwards_too(self):
+        """Направление неважно — иначе Shift работал бы через раз."""
+        self.boxes.nth(8).click()
+        self.boxes.nth(3).click(modifiers=["Shift"])
+        self.assertEqual(self.marked(), [3, 4, 5, 6, 7, 8])
+        self.quiet()
+
+    def test_shift_can_also_clear_a_range(self):
+        """Снять двести галочек нужно ровно так же часто, как поставить."""
+        self.page.click("#spAll")
+        self.boxes.nth(2).click()
+        self.boxes.nth(6).click(modifiers=["Shift"])
+        self.assertEqual(self.marked(), [0, 1, 7, 8, 9])
+        self.quiet()
+
+    def test_a_plain_click_still_marks_just_one(self):
+        self.boxes.nth(4).click()
+        self.assertEqual(self.marked(), [4])
+        self.quiet()
+
+    def test_the_count_follows_the_range(self):
+        """Счётчик «отмечено» считает то же, что и кнопки под ним."""
+        self.boxes.nth(0).click()
+        self.boxes.nth(4).click(modifiers=["Shift"])
+        self.assertIn("5", self.page.inner_text("#spPicked"))
+        self.quiet()
+
+
+class TestTheJunkFindingDoesNotHijackThePage(PageTestCase):
+    """Находка мусорной шапки — сообщение, а не задача.
+
+    Раньше карточку разворачивали и подводили к ней взгляд: человек
+    выбирал файл, чтобы его разбить, а страницу уносило вниз к находке,
+    которую он не спрашивал.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tempfile import TemporaryDirectory
+
+        cls.tmpdir = TemporaryDirectory()
+        cls.folder = Path(cls.tmpdir.name)
+        body = "Строка главы, достаточно длинная, чтобы её было видно. " * 3
+        for number in range(1, 6):
+            (cls.folder / f"Глава {number}.txt").write_text(
+                f"Читайте на нашем сайте!\n\nГлава {number}\n\n{body}",
+                encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+        super().tearDownClass()
+
+    def test_the_card_stays_folded_and_the_page_stays_put(self):
+        self.page.click('.tabs button[data-tab="split"]')
+        top = self.page.evaluate("window.scrollY")
+        self.page.fill("#spPath", str(self.folder))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(1500)
+
+        card = self.page.locator("#hdCard")
+        self.assertFalse(card.is_hidden(), "карточка должна появиться")
+        # Свёрнута: раскрывать её человек будет сам, если захочет.
+        self.assertIn("folded", card.get_attribute("class"))
+        self.assertEqual(self.page.evaluate("window.scrollY"), top)
+        self.quiet()
+
+    def test_one_notification_says_where_to_look(self):
+        self.page.click('.tabs button[data-tab="split"]')
+        self.page.fill("#spPath", str(self.folder))
+        self.page.press("#spPath", "Enter")
+        self.page.wait_for_timeout(1500)
+        self.assertIn("ниже", self.page.inner_text(".toast"))
+        self.quiet()
+
+
 if __name__ == "__main__":
     unittest.main()

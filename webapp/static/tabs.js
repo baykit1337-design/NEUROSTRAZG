@@ -1051,6 +1051,9 @@ function toggleOptions(p, format){
 const spState = {format: '.txt', job: null, menus: {}, scan: null,
                  //: главам поимённо — на сколько частей резать
                  pieces: {}, chosen: new Set(),
+                 //: последняя глава, по галочке которой нажимали, — от неё
+                 //: считается промежуток при отметке с Shift
+                 lastPicked: null,
                  //: для каких путей формат уже подобран по исходнику
                  forPaths: ''};
 
@@ -1143,6 +1146,7 @@ async function spScan(){
     spState.scan = null;
     spState.pieces = {};
     spState.chosen.clear();
+    spState.lastPicked = null;
     ['spOpts', 'spPlace', 'spStyle', 'spPrep', 'spPatternCard', 'spSchema',
      'spChaptersCard', 'spPreviewCard'].forEach(id => { $(id).hidden = true; });
     $('spScanned').textContent = 'Файлы читаются сразу после выбора.';
@@ -1153,6 +1157,9 @@ async function spScan(){
   // заданное прежним главам по номерам, уехало бы не на те.
   spState.pieces = {};
   spState.chosen.clear();
+  // Книга другая — отсчёт промежутка начинается заново: номера тех же
+  // глав указывали бы на чужой текст.
+  spState.lastPicked = null;
   $('spScanned').innerHTML = '<span class="spin"></span>Читаем…';
   try{
     const data = await call('/api/split/scan', {
@@ -1216,6 +1223,27 @@ async function spScan(){
 }
 window.spScan = spScan;
 
+//: Галочки глав по номеру главы. Нужны отметке промежутком.
+let spBoxes = {};
+
+/** Отмечает или снимает все главы от одной до другой, включая обе.
+ *
+ *  Первая глава, двести первая с Shift — и двести галочек встают разом.
+ *  Направление неважно: вверх и вниз работает одинаково, как в проводнике.
+ *
+ *  Состояние берём от той главы, по которой нажали: сняли галочку с
+ *  двухсотой — снимается весь промежуток. Иначе Shift умел бы только
+ *  отмечать, и снять двести галочек было бы по-прежнему нечем.
+ */
+function spPickRange(from, to, want){
+  const first = Math.min(from, to);
+  const last = Math.max(from, to);
+  for(let index = first; index <= last; index++){
+    want ? spState.chosen.add(index) : spState.chosen.delete(index);
+    if(spBoxes[index]) spBoxes[index].checked = want;
+  }
+}
+
 /** Найденные главы: что отмечено и на сколько частей режется. */
 function spDrawChapters(){
   const data = spState.scan;
@@ -1226,6 +1254,11 @@ function spDrawChapters(){
     return;
   }
 
+  // Галочки помним поимённо: отметка с Shift меняет разом целый
+  // промежуток, а перерисовывать ради этого тысячу строк — заметная
+  // задержка на каждое нажатие.
+  spBoxes = {};
+
   for(const chapter of data.chapters){
     const row = document.createElement('div');
     row.className = 'tr';
@@ -1233,9 +1266,19 @@ function spDrawChapters(){
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = spState.chosen.has(chapter.index);
-    box.onchange = () => {
-      box.checked ? spState.chosen.add(chapter.index)
-                  : spState.chosen.delete(chapter.index);
+    spBoxes[chapter.index] = box;
+    // Слушаем нажатие, а не изменение: в `change` не приходит Shift —
+    // это не событие мыши. Пробел на клавиатуре тоже даёт `click`, так
+    // что с клавиатуры галочка работает по-прежнему.
+    box.onclick = event => {
+      const want = box.checked;
+      if(event.shiftKey && spState.lastPicked !== null){
+        spPickRange(spState.lastPicked, chapter.index, want);
+      }else{
+        want ? spState.chosen.add(chapter.index)
+             : spState.chosen.delete(chapter.index);
+      }
+      spState.lastPicked = chapter.index;
       spShowPicked();
     };
 
@@ -2657,12 +2700,16 @@ window.hdScan = hdScan;
 async function hdOffer(source){
   const found = await hdScan(source, true);
   if(!found) return;
-  // Карточка лежит свёрнутой, пока в ней нечего смотреть. Нашлась
-  // находка — разворачиваем: иначе сообщение «блок открыт выше» врёт, и
-  // человек ищет глазами то, что от него спрятано.
-  unfold('hdCard');
+  // Карточка остаётся свёрнутой, и к ней не подводят взгляд. Раньше делали
+  // ровно наоборот — разворачивали и прокручивали страницу вниз, — и это
+  // перебивало работу: человек выбрал файл, чтобы его разбить, а его
+  // уносило к находке, которую он не спрашивал. Сворачивать её обратно и
+  // возвращаться наверх приходилось руками, каждый раз.
+  //
+  // Находка — это сообщение, а не задача. Уведомления довольно: понадобится
+  // — человек спустится и раскроет карточку сам.
   toast(`В начале файлов нашлась шапка: находок ${found}. `
-        + 'Блок «Мусорная шапка» открыт выше.');
+        + 'Блок «Мусорная шапка» — ниже, раскройте, если нужно.');
 }
 window.hdOffer = hdOffer;
 
