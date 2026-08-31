@@ -917,12 +917,37 @@ class TestBarWave(Base):
         self.assertIn("clip-path", self.css)
         self.assertNotIn("repeating-linear-gradient", self.css)
 
-    def test_the_two_frames_have_the_same_number_of_points(self):
+    def shapes(self) -> list[str]:
+        return re.findall(r"clip-path:polygon\(([^;]*)\);", self.css)
+
+    def test_every_frame_has_the_same_number_of_points(self):
         """Разное число точек — и браузеру нечего между ними считать."""
-        shapes = re.findall(r"clip-path:polygon\(([^)]*(?:\([^)]*\)[^)]*)*)\)",
-                            self.css)
-        self.assertEqual(len(shapes), 2)
-        self.assertEqual(len({shape.count(",") for shape in shapes}), 1, shapes)
+        shapes = self.shapes()
+        self.assertGreater(len(shapes), 1)
+        self.assertEqual(len({shape.count("%") for shape in shapes}), 1, shapes)
+
+    def test_the_edge_is_a_curve_and_not_a_single_vertex(self):
+        """Одна вершина — это не волна, а остриё.
+
+        Второй заход двигал ровно одну точку сверху вниз, и полоса
+        кончалась конусом, будто её заточили. Волну углом не нарисуешь,
+        сколько его ни двигай: кривую задают многие точки.
+        """
+        for shape in self.shapes():
+            self.assertGreater(shape.count("calc("), 5, shape)
+
+    def test_the_circle_closes_without_a_jump(self):
+        """Первый кадр и последний — один и тот же край: иначе волна
+        дёргалась бы раз в оборот."""
+        self.assertRegex(self.css, r"0%,\s*100%\s*\{")
+
+    def test_the_glow_follows_the_wave(self):
+        """`box-shadow` рисуется по прямоугольнику элемента, и обрезка
+        его срезает — край оставался голым. `drop-shadow` считается по
+        обрезанному силуэту и обводит саму волну."""
+        rules = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
+        self.assertIn("drop-shadow", rules)
+        self.assertNotIn("box-shadow", rules)
 
     def test_it_takes_no_pseudo_element(self):
         """Оба уже заняты: `::after` — бликом, `::before` — искрой.
