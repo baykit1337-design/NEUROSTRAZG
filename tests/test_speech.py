@@ -340,6 +340,127 @@ class TestAReadyBookKeepsItsHeaders(FileBase):
         self.assertEqual(speech.look([str(self.src)]).changed, 1)
 
 
+class TestNothingAppearsThatWasNotThere(FileBase):
+    """Работа правит речь и больше ничего.
+
+    Здесь была беда: у вордовского документа без стилей заголовка
+    название берётся из имени файла, а запись «с заголовками» вставляла
+    его в текст новой строкой. Человек открывал готовый файл и видел
+    наверху «ОРИГ ЛАБИРИНТ 80-200» — строку, которой он не писал.
+    """
+
+    def word(self, name, heading="", body=None):
+        from docx import Document
+
+        doc = Document()
+        if heading:
+            doc.add_heading(heading, level=1)
+        for line in (body or ["«Быстрее».", "Обычная строка."]):
+            doc.add_paragraph(line)
+        path = self.src / f"{name}.docx"
+        doc.save(str(path))
+        return path
+
+    def written(self, name):
+        """Абзацы готового файла — как их видит Word, а не читалка.
+
+        Читалка добавленный заголовок как раз прячет: снимает его
+        обратно в название. Смотреть надо в сам документ, иначе беда
+        остаётся невидимой."""
+        from docx import Document
+
+        return [(p.style.name, p.text)
+                for p in Document(str(self.tmp / "готово" / f"{name}.docx"))
+                .paragraphs]
+
+    def test_a_file_without_a_heading_does_not_get_one(self):
+        self.word("ОРИГ ЛАБИРИНТ 80-200")
+        speech.run([str(self.src)], self.tmp / "готово")
+        made = self.written("ОРИГ ЛАБИРИНТ 80-200")
+        self.assertTrue(all("Heading" not in style for style, _ in made), made)
+        self.assertNotIn("ОРИГ ЛАБИРИНТ 80-200", [text for _, text in made])
+
+    def test_the_text_keeps_exactly_its_own_lines(self):
+        self.word("ОРИГ ЛАБИРИНТ 80-200")
+        speech.run([str(self.src)], self.tmp / "готово")
+        self.assertEqual([text for _, text in
+                          self.written("ОРИГ ЛАБИРИНТ 80-200")],
+                         ["— Быстрее.", "Обычная строка."])
+
+    def test_a_real_heading_survives(self):
+        """Заголовок, стоявший в файле, обязан вернуться на место —
+        иначе «не добавляем лишнего» превратилось бы в «теряем своё»."""
+        self.word("Глава 7", heading="Глава 7 — Пурпурная молния")
+        speech.run([str(self.src)], self.tmp / "готово")
+        made = self.written("Глава 7")
+        self.assertEqual(made[0][1], "Глава 7 — Пурпурная молния")
+        self.assertIn("Heading", made[0][0])
+
+    def test_a_plain_file_whose_first_line_is_the_heading_keeps_it(self):
+        """У `.txt` заголовок — обычная первая строка, и читалка забирает
+        её в название. Вернуть её обязаны: она была в тексте."""
+        path = self.src / "Глава 5.txt"
+        path.write_text("Глава 5\n\n«Быстрее».\n", encoding="utf-8")
+        speech.run([str(self.src)], self.tmp / "готово")
+        said = (self.tmp / "готово" / "Глава 5.txt").read_text(encoding="utf-8")
+        self.assertEqual(said.count("Глава 5"), 1, said)
+        self.assertIn("— Быстрее.", said)
+
+    def test_a_plain_file_without_a_heading_does_not_get_one(self):
+        path = self.src / "ОРИГ ЛАБИРИНТ.txt"
+        path.write_text("«Быстрее».\n\nОбычная строка.\n", encoding="utf-8")
+        speech.run([str(self.src)], self.tmp / "готово")
+        said = (self.tmp / "готово" / "ОРИГ ЛАБИРИНТ.txt").read_text(
+            encoding="utf-8")
+        self.assertNotIn("ОРИГ ЛАБИРИНТ", said, said)
+
+
+class TestWhereTheTitleCameFrom(unittest.TestCase):
+    """Читалка говорит, стоял ли заголовок в самом тексте.
+
+    Без этого записать файл обратно нельзя: имя файла и настоящий
+    заголовок часто совпадают, и по одному их названию не различить.
+    """
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+    def read(self, name, text):
+        from core import formats
+
+        path = self.tmp / name
+        path.write_text(text, encoding="utf-8")
+        return formats.read(path)[0]
+
+    def test_a_first_line_heading_is_from_the_text(self):
+        chapter = self.read("Глава 5.txt", "Глава 5\n\nТекст.\n")
+        self.assertTrue(chapter.heading_from_text)
+
+    def test_a_name_taken_from_the_file_is_not(self):
+        chapter = self.read("ОРИГ ЛАБИРИНТ.txt", "Просто текст.\n")
+        self.assertFalse(chapter.heading_from_text)
+
+    def test_the_word_document_says_it_too(self):
+        from docx import Document
+
+        from core import formats
+
+        for heading, expected in (("Глава 7", True), ("", False)):
+            with self.subTest(heading=heading or "без заголовка"):
+                doc = Document()
+                if heading:
+                    doc.add_heading(heading, level=1)
+                doc.add_paragraph("Текст.")
+                path = self.tmp / "Файл.docx"
+                doc.save(str(path))
+                self.assertEqual(formats.read(path)[0].heading_from_text,
+                                 expected)
+
+
 class TestOverHttp(unittest.TestCase):
     """Карточка «Речь в кавычках» на вкладке «Инструменты»."""
 

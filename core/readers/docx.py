@@ -29,6 +29,9 @@ class DocxReader(Reader):
                 title=title,
                 paragraphs=paragraphs,
                 source=str(path),
+                # У документа без стилей заголовка название берётся из
+                # имени файла: в тексте его не было.
+                heading_from_text=bool(heading),
             )
         ]
 

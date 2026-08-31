@@ -43,7 +43,10 @@ class Reader:
         # стоящего в самом тексте: тот человек видит глазами. Заголовок
         # из текста узнаётся по тому, что его оттуда забрали, — сравнивать
         # с именем файла нельзя, они часто совпадают.
-        if len(paragraphs) == len(found):
+        # Тем же сравнением узнаётся и другое: стоял ли заголовок в
+        # тексте вообще. Не стоял — значит, записывать его обратно нельзя.
+        from_text = len(paragraphs) != len(found)
+        if not from_text:
             title = self.title_of(path) or title
         name = parse(title)
         if name.number is None:
@@ -55,6 +58,7 @@ class Reader:
                 title=title,
                 paragraphs=paragraphs,
                 source=str(path),
+                heading_from_text=from_text,
             )
         ]
 

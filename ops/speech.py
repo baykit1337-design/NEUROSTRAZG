@@ -311,7 +311,17 @@ def _one(path: Path, target: Path, encoding: str) -> int:
     fresh = [replace(chapter, paragraphs=paragraphs)
              for chapter, (_, paragraphs) in zip(read, made)]
 
-    formats.write(target, fresh, headings=True, encoding=encoding,
+    # Заголовок пишем только тот, что стоял в самом файле.
+    #
+    # Здесь была беда: у вордовского документа без стилей заголовка
+    # название берётся из имени файла, и запись «с заголовками» вставляла
+    # его в текст новой строкой. Человек открывал готовый файл и видел
+    # наверху «ОРИГ ЛАБИРИНТ 80-200» — строку, которой он не писал.
+    #
+    # Работа эта правит речь и больше ничего: чего в файле не было, тому
+    # там и не появиться.
+    heading = any(chapter.heading_from_text for chapter in read)
+    formats.write(target, fresh, headings=heading, encoding=encoding,
                   title=fresh[0].title if fresh else path.stem)
     return count
 
