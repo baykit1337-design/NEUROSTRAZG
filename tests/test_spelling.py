@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import formats  # noqa: E402
 from core.models import Chapter  # noqa: E402
 from ops import spelling  # noqa: E402
+from ops.base import Cancelled, Progress  # noqa: E402
 
 HAVE_DICT = spelling.available()
 HAVE_HINTS = spelling.suggestions_available()
@@ -207,6 +210,75 @@ class TestWithoutDictionary(Base):
 
     def test_state_says_whether_the_dictionary_is_there(self):
         self.assertIsInstance(spelling.state(self.tmp)["available"], bool)
+
+
+class TestPickingReplacementsDoesNotHang(Base):
+    """Здесь проверка «зависала и ничего не делала».
+
+    Перебор похожих написаний на две правки стоит до полусекунды на
+    длинное слово. Находок в книге бывают сотни, и на них уходили минуты —
+    молча: главы к этому времени прочитаны, полоса стоит на конце.
+    """
+
+    #: Слоги, из которых собираются имена. Цифр в них нет нарочно: слово
+    #: для проверки — это буквы подряд, и «Чжань1лунь» стало бы двумя
+    #: словами, а книга — двумя находками вместо сотни.
+    SYLLABLES = ("чжань", "сюэ", "лунь", "тянь", "вэнь", "бай", "линъ")
+
+    def many(self, count=40):
+        """Книга, где каждое слово словарю незнакомо."""
+        made = []
+        for n in range(count):
+            first, second, third = (self.SYLLABLES[n % 7],
+                                    self.SYLLABLES[n // 7 % 7],
+                                    self.SYLLABLES[n // 49 % 7])
+            made.append((first + second + third + "ъи" * (n // 343 + 1)).capitalize())
+        made = sorted(set(made))
+        return self.book({1: [f"Мастер {w} поднял меч." for w in made]})
+
+    def test_the_search_goes_one_edit_deep(self):
+        """Две правки — это перебор всех слов, отличающихся двумя
+        буквами. Одна лишняя догадка на десять не стоит минут ожидания."""
+        self.assertEqual(spelling.EDITS, 1)
+
+    @unittest.skipUnless(HAVE_HINTS, "нет pyspellchecker")
+    def test_the_speller_is_told_how_deep_to_look(self):
+        """Настройка должна доехать до самого словаря, а не остаться
+        числом в модуле."""
+        made = spelling._dictionary(set())
+        self.assertEqual(made._speller.distance, spelling.EDITS)
+
+    def test_it_says_out_loud_that_it_is_picking_replacements(self):
+        """Молчащий кусок работы неотличим от зависшего."""
+        said = []
+        spelling.check(self.many(),
+                       progress=Progress(on_progress=lambda d, t, m: said.append(m)))
+        self.assertTrue(any("замены" in line for line in said), said)
+
+    def test_stopping_works_while_replacements_are_picked(self):
+        """Раньше отмену здесь не слушали вовсе."""
+        stop = threading.Event()
+        seen = []
+
+        def watch(done, total, message):
+            seen.append(message)
+            if "замены" in message:
+                stop.set()
+
+        with self.assertRaises(Cancelled):
+            spelling.check(self.many(),
+                           progress=Progress(on_progress=watch, cancel=stop))
+
+    def test_a_book_full_of_unknown_words_finishes_quickly(self):
+        """Мерка грубая нарочно: порог в пять секунд ловит возврат к
+        старому поведению, не завися от скорости машины.
+
+        Книга нарочно небольшая. На поиске в две правки сорок незнакомых
+        слов считаются секунд двадцать — этого хватает, чтобы порог
+        сработал, и при этом упавший тест не держит прогон минутами."""
+        start = time.monotonic()
+        spelling.check(self.many())
+        self.assertLess(time.monotonic() - start, 5)
 
 
 if __name__ == "__main__":
