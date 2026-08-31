@@ -558,6 +558,96 @@ def real_page(rows):
             + "</body></html>")
 
 
+
+#: Строка рейтинга комиксов — с настоящей страницы.
+#:
+#: Отличие от романов ровно одно, и оно решающее: книга живёт в разделе
+#: `/comic/`, а не `/book/`. Разбор искал только `/book/` и честно
+#: сообщал «ссылок на книги: 0» — он был прав, просто искал не там.
+COMIC_ROW = '''<section class="df g_hr pt16 pb16"><i class="w40 h40 ff_number \
+tac fw700 lh20 fs16 ls0.15 mr8 pt12 c_danger">001</i><a \
+href="/comic/shadow-slave_36706727700938701" class="g_thumb _48 mr8" \
+title="Shadow Slave" data-report-did="36706727700938701"><img \
+data-original="//book-pic.webnovel.com/bookcover/36706727700938701?imageMogr2\
+/thumbnail/150&imageId=1787109174634" width="60" height="80" alt="Shadow \
+Slave"/></a><div class="f1"><h3 class="fw700 lh20 fs16 ls0.15 ells _2 mb4"><a \
+class="c_l" href="/comic/shadow-slave_36706727700938701" title="Shadow Slave" \
+data-report-did="36706727700938701">Shadow Slave</a></h3><p class="fw400 lh20 \
+fs14 ls0.2 c_s ells _2 mb4">Growing up in poverty, Sunny never expected \
+anything good from life.</p><p><strong class="c_m fs0 ff_number vam"><svg \
+viewBox="0 0 24 24" fill="none" class="mr4 fs16"><path d="M12 22c5.523 0 \
+10-4.477 10-10z" fill="#000"></path></svg><span class="vam fw400 lh16 fs12">\
+150</span></strong><strong class="c_l vam fw400 lh16 fs12">Aethon &amp; Laurel \
+Pursuit</strong></p></div><div class="ml8"><a class="bt _s _link fs0 \
+j_add_to_library" data-bookid="36706727700938701" href="###" title="Add to \
+library"><span class="vam fs12">Add</span></a><a \
+href="/comic/shadow-slave_36706727700938701/98535426125524015" title="Read" \
+class="ml8 bt _s">Read</a></div></section>'''
+
+#: Подвал настоящей страницы. В нём спрятана ссылка на книгу — не строка
+#: рейтинга, а реклама, и в рейтинг ей попадать нельзя.
+COMIC_FOOTER = ('<div class="g_footer"><p class="g_ft_links">'
+                '<a href="https://www.webnovel.com/book/22196546206090805" '
+                'title="Shadow Slave" class="dn">Shadow Slave</a></p></div>')
+
+
+def comic_page(rows):
+    """Страница комиксов: боковое меню, строки рейтинга и подвал."""
+    return ("<html><head><title>Power Ranking in Comics Rankings</title></head>"
+            "<body>" + REAL_SIDEBAR
+            + '<div class="j_rank_wrapper">' + "".join(rows) + "</div>"
+            + COMIC_FOOTER + "</body></html>")
+
+
+class TestTheComicsBoard(unittest.TestCase):
+    """Рейтинг комиксов не разбирался вовсе.
+
+    На живом запуске он отвечал «не нашлось ни одной книги» при 85 КБ
+    страницы и правильном заголовке окна. Книги на ней были — просто в
+    разделе `/comic/`, которого шаблон ссылки не знал.
+    """
+
+    def fetch(self, body, board="comic-power"):
+        return wnrank.fetch(FakeClient(body), board)
+
+    def test_a_comic_becomes_a_book(self):
+        found = self.fetch(comic_page([COMIC_ROW]))
+        first = found["rows"][0]
+        self.assertEqual(first.book_id, "36706727700938701")
+        self.assertEqual(first.name, "Shadow Slave")
+
+    def test_the_link_keeps_the_comic_section(self):
+        """Ссылку берём со страницы, а не собираем из кода: собранная
+        вела бы в раздел романов, где комикса нет."""
+        found = self.fetch(comic_page([COMIC_ROW]))
+        self.assertEqual(found["rows"][0].link,
+                         "https://www.webnovel.com/comic/"
+                         "shadow-slave_36706727700938701")
+
+    def test_the_number_of_the_board_arrives(self):
+        found = self.fetch(comic_page([COMIC_ROW]))
+        self.assertEqual(found["rows"][0].score, 150)
+
+    def test_the_read_link_is_not_a_second_book(self):
+        """«Читать» ведёт на главу: `/comic/{имя}_{код}/{глава}`. Сочти
+        разбор номер главы кодом — и в рейтинге завелась бы книга-призрак
+        с тем же названием."""
+        found = self.fetch(comic_page([COMIC_ROW]))
+        self.assertEqual(len(found["rows"]), 1)
+
+    def test_the_book_hidden_in_the_footer_does_not_get_in(self):
+        """В подвале страницы висит ссылка на книгу — реклама, а не
+        строка рейтинга."""
+        found = self.fetch(comic_page([COMIC_ROW]))
+        self.assertEqual([row.book_id for row in found["rows"]],
+                         ["36706727700938701"])
+
+    def test_a_novel_still_parses(self):
+        """Комиксы добавлены, романы не отняты."""
+        found = wnrank.fetch(FakeClient(real_page([REAL_ROW])), "fanfic-power")
+        self.assertEqual(found["rows"][0].book_id, "35895681908097305")
+
+
 class TestTheRealPage(unittest.TestCase):
     """Разбор настоящей страницы сайта, а не догадки о ней.
 
