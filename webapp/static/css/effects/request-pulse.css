@@ -1,0 +1,53 @@
+/* Искра на каждую пришедшую главу.
+ *
+ * Полоса прогресса на тысяче глав ползёт по одному пикселю за главу, и
+ * стоит она на месте примерно всегда. Идёт обмен или всё встало —
+ * по ней не понять; понять можно по счётчику, но его надо читать и
+ * помнить прежнее значение.
+ *
+ * Искра бежит по проводу на каждую пришедшую главу и краснеет на каждую
+ * непришедшую. Частота видна боковым зрением: густо — сайт отдаёт,
+ * пусто — ждём.
+ *
+ * Провод короткий нарочно. Это указатель жизни, а не картина мира: место
+ * ему в строке рядом с числом потоков, а не во весь экран.
+ */
+
+.fx-request-pulse .fxnet-wire{
+  position:relative;
+  display:inline-block;
+  width:120px;
+  height:2px;
+  border-radius:2px;
+  background:linear-gradient(90deg, rgba(140,84,255,.12), rgba(140,84,255,.4));
+  vertical-align:middle;
+  overflow:hidden;
+}
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-request-pulse .fxnet-spark{
+    position:absolute;
+    top:-2px;
+    left:0;
+    width:6px;
+    height:6px;
+    border-radius:50%;
+    background:#e9d5ff;
+    box-shadow:0 0 8px rgba(176,108,255,.9);
+    animation:fx-net-spark .9s linear 1 both;
+  }
+  /* Глава не пришла. Тот же путь и та же скорость: разница только в
+     цвете — иначе отказ читался бы как «что-то другое», а не как «то же
+     самое, но не вышло». */
+  .fx-request-pulse .fxnet-spark.fxnet-bad{
+    background:#ff8fa6;
+    box-shadow:0 0 8px rgba(255,90,120,.9);
+  }
+}
+
+@keyframes fx-net-spark{
+  from{transform:translateX(0); opacity:0}
+  12% {opacity:1}
+  88% {opacity:1}
+  to  {transform:translateX(114px); opacity:0}
+}

@@ -4470,6 +4470,17 @@ async function tick(){
       failed: p.failed || 0,
     });
 
+    // Тем же путём и по той же причине: точки адресов, искры пришедших
+    // глав и кардиограмма трафика живут с этих же чисел. Своего опроса
+    // они не ведут — эффекту нечего знать про задачи и запросы.
+    if(window.netTune) netTune({
+      busy, held,
+      proxies: stopping ? 0 : (p.proxies || 0),
+      switches: p.switches || 0,
+      done: p.downloaded || p.done || 0,
+      failed: p.failed || 0,
+    });
+
     if(!busy){
       clearInterval(poll);
       $('stop').hidden = true;
@@ -4509,6 +4520,7 @@ async function tick(){
     // Опрос оборвался — качалка больше ничего не расскажет. Дождь про
     // это узнать неоткуда, а идти он будет вечно: гасим здесь.
     if(window.rainTune) rainTune({busy: false, held: false, threads: 0, failed: 0});
+    if(window.netTune) netTune({busy: false, held: false});
     showError(err.message);
   }
 }
@@ -4561,6 +4573,7 @@ function reset(){
   // Карточку сейчас спрячут — дождь должен знать, что работы больше нет,
   // иначе на следующем прогоне он начнёт с недогашенного холста.
   if(window.rainTune) rainTune({busy: false, held: false, threads: 0, failed: 0});
+  if(window.netTune) netTune({busy: false, held: false});
   jobId = null;
   stopping = false;
   probeShown = false;
@@ -5691,6 +5704,9 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/tag-unroll.css">
 <link rel="stylesheet" href="/static/css/effects/board-shuffle.css">
 <link rel="stylesheet" href="/static/css/effects/cover-flight.css">
+<link rel="stylesheet" href="/static/css/effects/proxy-dots.css">
+<link rel="stylesheet" href="/static/css/effects/request-pulse.css">
+<link rel="stylesheet" href="/static/css/effects/traffic-line.css">
 <script src="/static/tabs.js"></script>
 <script src="/static/js/effects/settings.js"></script>
 <script src="/static/js/effects/feedback.js"></script>
@@ -5708,5 +5724,6 @@ $('again').onclick = reset;
 <!-- Строго после `rankmove.js`: тот меряет, где строки стояли и где
      стали, а сдача колоды двигает их прямо во время замера. -->
 <script src="/static/js/effects/ranklook.js"></script>
+<script src="/static/js/effects/net.js"></script>
 </body>
 </html>

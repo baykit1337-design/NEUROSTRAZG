@@ -1221,6 +1221,171 @@ class TestTheCoverFliesToTheDownloader(RankEffectTestCase):
         self.assertEqual(self.page.locator(".fx-flying").count(), 0)
 
 
+class NetEffectTestCase(EffectTestCase):
+    """Связь показывается тем же путём, каким живёт дождь: качалка на
+    каждом опросе рассказывает, что происходит, а эффекты решают, как это
+    показать. Через эту же дверь их и проверяем."""
+
+    def tune(self, **state):
+        base = {"busy": True, "held": False, "proxies": 0, "switches": 0,
+                "done": 0, "failed": 0}
+        base.update(state)
+        self.page.evaluate("(state) => netTune(state)", base)
+
+    def seen(self) -> dict:
+        return self.page.evaluate("() => netState()")
+
+
+class TestTheAddressesAreDots(NetEffectTestCase):
+    """Строка «3 потока · 3 прокси» правду говорит, но вчерашнюю: адрес
+    отваливается посреди работы, а адресов по-прежнему три."""
+
+    def setUp(self):
+        super().setUp()
+        self.turn('proxy-dots')
+
+    def test_there_are_as_many_dots_as_addresses(self):
+        self.tune(proxies=3)
+        self.assertEqual(self.seen()["dots"], 3)
+        self.quiet()
+
+    def test_working_without_proxies_is_one_dot_not_none(self):
+        """Ноль точек не отличить от снятой галочки."""
+        self.tune(proxies=0)
+        self.assertEqual(self.seen()["dots"], 1)
+        self.assertIn("напрямую", self.page.get_attribute("#fxNet .fxnet-dots",
+                                                          "title"))
+        self.quiet()
+
+    def test_a_long_list_does_not_become_a_line_of_dots(self):
+        self.tune(proxies=200)
+        self.assertLessEqual(self.seen()["dots"], 12)
+        self.quiet()
+
+    def test_a_swapped_address_puts_a_dot_out(self):
+        self.tune(proxies=3)
+        self.assertEqual(self.seen()["gone"], 0)
+        self.tune(proxies=3, switches=1)
+        self.assertEqual(self.seen()["gone"], 1)
+        self.quiet()
+
+    def test_the_dots_go_when_the_work_does(self):
+        self.tune(proxies=3)
+        self.tune(busy=False)
+        self.assertEqual(self.seen()["dots"], 0)
+        self.quiet()
+
+    def test_a_taken_off_switch_leaves_no_dots(self):
+        self.turn('proxy-dots', False)
+        self.tune(proxies=3)
+        self.assertEqual(self.seen()["dots"], 0)
+        self.quiet()
+
+
+class TestTheChaptersSpark(NetEffectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.turn('request-pulse')
+
+    def sparks(self) -> dict:
+        # Искры пришедших глав пускаются с задержкой друг за другом, а
+        # живут меньше секунды: считаем, когда вылетели все и не улетел
+        # никто.
+        self.page.wait_for_timeout(420)
+        return self.seen()
+
+    def test_a_chapter_that_came_sparks(self):
+        self.tune(done=0)
+        self.tune(done=2)
+        self.assertEqual(self.sparks()["sparks"], 2)
+        self.quiet()
+
+    def test_a_chapter_that_did_not_come_sparks_red(self):
+        self.tune(failed=0)
+        self.tune(failed=1)
+        self.assertEqual(self.sparks()["bad"], 1)
+        self.quiet()
+
+    def test_a_flood_does_not_become_a_stripe(self):
+        """Искра — указатель жизни, а не счётчик."""
+        self.tune(done=0)
+        self.tune(done=200)
+        self.assertLessEqual(self.sparks()["sparks"], 4)
+        self.quiet()
+
+    def test_a_paused_run_is_quiet(self):
+        """Обмена нет — искрам взяться неоткуда."""
+        self.tune(done=0)
+        self.tune(done=5, held=True)
+        self.assertEqual(self.sparks()["sparks"], 0)
+        self.quiet()
+
+    def test_what_arrived_during_the_pause_does_not_pour_out_after_it(self):
+        self.tune(done=0)
+        self.tune(done=5, held=True)
+        self.tune(done=5)
+        self.assertEqual(self.sparks()["sparks"], 0)
+        self.quiet()
+
+    def test_a_taken_off_switch_takes_the_wire_too(self):
+        self.turn('request-pulse', False)
+        self.tune(done=1)
+        self.assertFalse(self.seen()["wire"])
+        self.quiet()
+
+
+class TestTheTrafficIsDrawn(NetEffectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.turn('traffic-line')
+
+    def test_the_graph_shows_up_while_the_work_runs(self):
+        self.tune()
+        self.assertTrue(self.seen()["graph"])
+        self.quiet()
+
+    def test_it_goes_when_the_work_does(self):
+        """Постоянно висящая в углу панель мешала бы."""
+        self.tune()
+        self.tune(busy=False)
+        self.assertFalse(self.seen()["graph"])
+        self.quiet()
+
+    def test_it_stays_out_of_the_way_of_what_is_under_it(self):
+        """Это указатель, а не орган управления."""
+        self.tune()
+        self.assertEqual(self.styled("#fxTraffic", "pointerEvents"), "none")
+        self.quiet()
+
+    def test_a_taken_off_switch_leaves_the_corner_empty(self):
+        self.turn('traffic-line', False)
+        self.tune()
+        self.assertFalse(self.seen()["graph"])
+        self.quiet()
+
+
+class TestTheStripKeepsOutOfTheWay(NetEffectTestCase):
+    """Пустая строка между способом и кнопками выглядит как забытый
+    отступ."""
+
+    def test_nothing_switched_on_leaves_no_empty_row(self):
+        for key in ('proxy-dots', 'request-pulse', 'traffic-line'):
+            self.turn(key, False)
+        self.tune(proxies=3, done=2)
+        self.assertEqual(self.page.locator("#fxNet").count(), 0)
+        self.quiet()
+
+    def test_the_row_goes_away_with_what_was_in_it(self):
+        """Заведена полоска была не зря — а вот остаться пустой не должна."""
+        self.turn('proxy-dots')
+        self.tune(proxies=3)
+        self.assertEqual(self.page.locator("#fxNet").count(), 1)
+
+        self.tune(busy=False)
+        self.assertEqual(self.page.locator("#fxNet").count(), 0)
+        self.quiet()
+
+
 class TestNoFieldFallsOutOfTheTheme(PageTestCase):
     """Поле времени в очереди книг было белым с чёрным текстом посреди
     тёмной страницы.
