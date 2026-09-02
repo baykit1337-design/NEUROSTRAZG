@@ -17,10 +17,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 
+from core import naming
 from core.models import OpReport
 
 from .base import Progress, collect_files, read_all
@@ -38,11 +40,14 @@ KINDS = {
     "short": "Подозрительно короткая глава",
     "cut": "Обрывается на полуслове",
     "same": "Одинаковый текст",
+    "thin": "Под номером файлов меньше обычного",
+    "tail": "Общий хвост имён",
 }
 
 #: Находки, с которыми книгу выкладывать нельзя: главы либо нет, либо она
 #: пустая. Остальное — повод посмотреть глазами, а не приговор.
-HOLES = frozenset({"missing", "doubles", "parts", "empty", "unreadable"})
+HOLES = frozenset({"missing", "doubles", "parts", "empty", "unreadable",
+                   "thin"})
 
 #: Разрыв между соседними номерами, после которого хвост считается
 #: выбросом. Без этого одна глава 999 среди 201–365 превращает список
@@ -355,5 +360,244 @@ def look(targets, progress: Progress | None = None) -> Look:
     _repeats(chapters, result)
 
     # Дыры вперёд: с них начинают, а «присмотреться» подождёт.
+    result.troubles.sort(key=lambda t: (not t.hole, list(KINDS).index(t.kind)))
+    return result
+
+
+# ------------------------------------------- каких глав нет: по именам
+
+
+"""Проверка нумерации в готовой книге отвечает «под номером 303 глав
+меньше, чем у соседей», и дальше человек остаётся один на один с папкой в
+несколько сотен файлов. Здесь тот же вопрос задаётся самой папке — и
+ответ выходит точный: не «с 303 что-то не так», а «нет 303.1».
+
+Слив в OEBPS размечен не так, как понимает общий разбор имён:
+
+    0002_Chapter_295_The_Anti-Ancient_God_Unified_Alliance.xhtml
+    0003_Chapter_295_The_Anti-Ancient_God_Unified_Alliance_2.xhtml
+
+Вторая часть помечена голой цифрой в хвосте, и одному имени тут верить
+нельзя: «Level 2» в названии главы выглядит ровно так же.
+
+Отличить помогает вся папка сразу. Если у большинства номеров файлы
+складываются в один и тот же ряд — «без хвоста» и «хвост 2», — то хвост в
+этой папке и есть номер части. Тогда и одинокий файл
+`0069_Chapter_330_We_Are_the_Hope_2` читается однозначно: вторая часть на
+месте, первой нет.
+
+Файлы не читаются вовсе — только имена, поэтому проверка идёт мгновенно
+даже на тысяче глав."""
+
+
+#: Номер части в хвосте имени: «…_2», «… 2», «…(2)». Цифра должна быть
+#: отделена — «Hope2» частью не является. Голая цифра целым названием
+#: («Chapter_330_2») частью является: разделитель перед ней уже снят
+#: общим разбором.
+TAIL_PART = re.compile(r"(?:^|[\s_.\-–—(\[])\s*(\d{1,3})[)\]]?\s*$")
+
+#: С чего может начинаться общий хвост имён: он режется по границе слова.
+TAIL_EDGE = " _-.–—"
+
+#: Со скольких номеров у папки появляется свой ряд частей. Меньше — и «у
+#: каждого номера по две части» значит только то, что файлов всего два.
+ENOUGH_NUMBERS = 10
+
+
+@dataclass
+class Piece:
+    """Один файл: что вышло из его имени."""
+
+    name: str
+    number: int | None = None
+    #: Номер части, размеченный явно: «295.2», «295. Часть 2».
+    part: int | None = None
+    #: Голая цифра в хвосте имени. Частью считается не всегда — решает
+    #: вся папка сразу.
+    tail: int | None = None
+
+
+def common_tail(stems: list[str]) -> str:
+    """Общий хвост всех имён — он ничего не различает и мешает разбору.
+
+    Переводчик дописывает к каждому файлу свою подпись:
+    `..._2_translated_gemini`. Номер части перестаёт быть последним, и в
+    хвосте его уже не найти. Снять подпись можно, только увидев всю папку:
+    одному имени неоткуда знать, что «gemini» — не название главы.
+
+    Кончаться цифрой хвост не должен. У папки, где вторая часть есть у
+    каждой главы, общим хвостом окажется сам «_2» — и снять его значило бы
+    стереть пометку части со всех файлов разом.
+    """
+    if len(stems) < 2:
+        return ""
+
+    tail = stems[0]
+    for stem in stems[1:]:
+        while tail and not stem.endswith(tail):
+            tail = tail[1:]
+        if not tail:
+            return ""
+
+    if tail[-1].isdigit():
+        return ""
+
+    # Хвост — это целые слова: «_translated_gemini», а не «ranslated_gemini».
+    at = next((i for i, ch in enumerate(tail) if ch in TAIL_EDGE), -1)
+    tail = tail[at:] if at >= 0 else ""
+    if not tail:
+        return ""
+
+    # Снять хвост, от которого не остаётся имени, значит остаться ни с чем.
+    if any(not stem[:-len(tail)].strip() for stem in stems):
+        return ""
+    return tail
+
+
+def pieces_of(files) -> tuple[list[Piece], str]:
+    """Имена файлов — в «номер главы, номер части». Файлы не читаются."""
+    names = [Path(path).name for path in files]
+    stems = [Path(name).stem for name in names]
+    tail = common_tail(stems)
+
+    pieces: list[Piece] = []
+    for name, stem in zip(names, stems):
+        base = stem[:-len(tail)] if tail else stem
+        parsed = naming.parse(base)
+        mark = None
+        if parsed.number is not None and parsed.part is None:
+            found = TAIL_PART.search(parsed.title)
+            if found:
+                mark = int(found.group(1))
+        pieces.append(Piece(name, parsed.number, parsed.part, mark))
+    return pieces, tail
+
+
+def _rows(pieces) -> dict[int, list[int]]:
+    """Номер главы → номера её частей, как они вышли из имён.
+
+    Часть без пометки считается первой: у главы, лежащей одним файлом,
+    номер части не пишут вовсе.
+    """
+    rows: dict[int, list[int]] = {}
+    for piece in pieces:
+        if piece.number is None:
+            continue
+        rows.setdefault(piece.number, []).append(
+            piece.part or piece.tail or 1)
+    return {number: sorted(parts) for number, parts in rows.items()}
+
+
+def usual_row(rows) -> tuple:
+    """Ряд частей, в который складывается номер в этой папке: (1, 2).
+
+    Пустой кортеж — ряда нет, и назвать пропавшую часть поимённо нельзя:
+    либо папка мала, либо номера разнобойны.
+
+    Ряд признаём только явный. Так должно жить большинство номеров, и
+    самих номеров должно быть достаточно: две части под одним номером в
+    папке из двух файлов — это не ряд, а совпадение. Повтор внутри ряда
+    («1, 1») рядом тоже не считается: две части без пометок неразличимы,
+    и сказать, какой из них не хватает, всё равно нечего.
+    """
+    if len(rows) < ENOUGH_NUMBERS:
+        return ()
+
+    tally: dict[tuple, int] = {}
+    for parts in rows.values():
+        row = tuple(parts)
+        tally[row] = tally.get(row, 0) + 1
+
+    row = max(tally, key=lambda parts: (tally[parts], -len(parts)))
+    if len(row) < 2 or len(set(row)) != len(row):
+        return ()
+    return row if tally[row] * 2 > len(rows) else ()
+
+
+def _usual_count(rows) -> int:
+    """Сколько файлов приходится на номер, когда ряда частей нет."""
+    if len(rows) < ENOUGH_NUMBERS:
+        return 1
+    tally: dict[int, int] = {}
+    for parts in rows.values():
+        tally[len(parts)] = tally.get(len(parts), 0) + 1
+    usual = max(tally, key=lambda size: (tally[size], -size))
+    return usual if tally[usual] * 2 > len(rows) else 1
+
+
+def _by_names(pieces, look: Look) -> None:
+    """Пропущенные номера и части — по одним именам файлов."""
+    nameless = [piece.name for piece in pieces if piece.number is None]
+    if nameless:
+        look.troubles.append(Trouble("nameless", nameless))
+
+    rows = _rows(pieces)
+    numbers = sorted(rows)
+    if not numbers:
+        return
+
+    # Выбросы отделяем ПЕРВЫМИ: иначе одна глава 999 среди 294–582
+    # превращает список пропусков в четыреста номеров.
+    core, strays = _without_strays(numbers)
+    look.first, look.last = core[0], core[-1]
+    if strays:
+        look.troubles.append(Trouble(
+            "stray", _ranges(strays), count=len(strays)))
+
+    present = set(core)
+    missing = [n for n in range(core[0], core[-1] + 1) if n not in present]
+    if missing:
+        look.troubles.append(Trouble(
+            "missing", _ranges(missing), count=len(missing)))
+
+    row = usual_row({number: rows[number] for number in core})
+    if not row:
+        # Ряда нет — назвать пропавшую часть нечем. Остаётся сказать, где
+        # файлов меньше, чем у соседей: пропажу в такой папке иначе не
+        # видно вовсе, номер-то на месте.
+        size = _usual_count({number: rows[number] for number in core})
+        thin = [number for number in core if len(rows[number]) < size]
+        if thin:
+            look.troubles.append(Trouble(
+                "thin", _ranges(thin),
+                detail=f"обычно их тут {size}", count=len(thin)))
+        return
+
+    whole = set(row)
+    holes: list[str] = []
+    doubles: list[str] = []
+    for number in core:
+        parts = rows[number]
+        for part in sorted(whole - set(parts)):
+            holes.append(f"{number}.{part}")
+        for part in sorted({p for p in parts if parts.count(p) > 1}):
+            doubles.append(f"{number}.{part}")
+
+    listing = ", ".join(str(part) for part in row)
+    if holes:
+        look.troubles.append(Trouble(
+            "parts", holes, detail=f"у главы здесь части {listing}",
+            count=len(holes)))
+    if doubles:
+        look.troubles.append(Trouble("doubles", doubles, count=len(doubles)))
+
+
+def look_names(targets) -> Look:
+    """Каких глав и частей нет в папке — по одним именам файлов.
+
+    Ничего не читает и ничего не трогает: на тысяче глав отвечает сразу.
+    """
+    files = collect_files(targets)
+    pieces, tail = pieces_of(files)
+
+    result = Look(files=len(files),
+                  chapters=sum(1 for p in pieces if p.number is not None))
+    _by_names(pieces, result)
+    if tail:
+        # Снятый хвост показываем: если разбор ошибся, видно будет сразу.
+        result.troubles.append(Trouble(
+            "tail", [tail], detail="одинаковый хвост имён в разборе не"
+                                   " участвовал"))
+
     result.troubles.sort(key=lambda t: (not t.hole, list(KINDS).index(t.kind)))
     return result

@@ -4497,6 +4497,24 @@ def api_checkup_start():
     return jsonify(job=start_job(job, work).snapshot())
 
 
+@app.post("/api/checkup/names")
+def api_checkup_names():
+    """Каких глав и частей нет в папке — по одним именам файлов.
+
+    Сразу ответом, а не задачей: файлы не читаются вовсе, и на тысяче
+    глав это укладывается в доли секунды.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    if not targets:
+        return jsonify(error="Выберите папку с главами"), 400
+
+    try:
+        found = checkup_op.look_names(targets)
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(report=found.as_dict())
+
 
 # ------------------------------- журнал, корзина и сравнение версий
 

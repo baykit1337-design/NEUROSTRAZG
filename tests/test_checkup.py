@@ -249,6 +249,210 @@ class TestOrderAndLimits(Base):
                 self.assertTrue(trouble.as_dict()["kind_name"])
 
 
+class Names(Base):
+    """Папка, в которой важны только имена файлов."""
+
+    def folder(self, names, where: str = "OEBPS") -> Path:
+        folder = self.tmp / where
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            # Пустые: проверка по именам файлы не открывает вовсе, и
+            # содержимое здесь ни при чём.
+            (folder / name).write_text("", encoding="utf-8")
+        return folder
+
+    def slice(self, first=294, last=382, missing_first=(), missing_second=(),
+              gone=(), title="Reaping_a_Rich_Harvest", suffix=".xhtml",
+              extra: str = ""):
+        """Слив в OEBPS: у главы две части, вторая помечена цифрой в хвосте.
+
+        `missing_first` — номера, у которых нет первой части, `missing_second`
+        — второй, `gone` — которых нет вовсе.
+        """
+        names, seq = [], 1
+        for number in range(first, last + 1):
+            if number in gone:
+                continue
+            if number not in missing_first:
+                names.append(f"{seq:04d}_Chapter_{number}_{title}{extra}{suffix}")
+                seq += 1
+            if number not in missing_second:
+                names.append(f"{seq:04d}_Chapter_{number}_{title}_2{extra}{suffix}")
+                seq += 1
+        return names
+
+
+class TestTheFolderNamesTheMissingPart(Names):
+    """Ради этого проверка и написана.
+
+    Готовая книга говорит «под номером 303 глав меньше, чем у соседей», и
+    дальше человек остаётся один на один с папкой в несколько сотен
+    файлов. Здесь ответ точный: нет 303.1.
+    """
+
+    def test_the_missing_half_is_named_by_its_part(self):
+        look = checkup.look_names(self.folder(self.slice(
+            missing_first=(303, 330), missing_second=(294, 341))))
+        found = self.kinds(look)["parts"]
+
+        self.assertEqual(found.where, ["294.2", "303.1", "330.1", "341.2"])
+        self.assertEqual(found.count, 4)
+
+    def test_a_number_gone_whole_is_a_missing_chapter_not_a_part(self):
+        """Пропала глава целиком — это другая беда и другое слово."""
+        look = checkup.look_names(self.folder(self.slice(gone=(300,))))
+        found = self.kinds(look)
+
+        self.assertEqual(found["missing"].where, ["300"])
+        self.assertNotIn("parts", found)
+
+    def test_a_folder_with_everything_in_place_is_not_accused(self):
+        """Проверка, которая ругается всегда, не проверка."""
+        look = checkup.look_names(self.folder(self.slice()))
+
+        self.assertTrue(look.clean, look.summary())
+        self.assertEqual((look.first, look.last), (294, 382))
+
+    def test_the_same_part_twice_is_a_double(self):
+        names = self.slice()
+        names.append("9999_Chapter_300_Reaping_a_Rich_Harvest_2.xhtml")
+        found = self.kinds(checkup.look_names(self.folder(names)))
+
+        self.assertEqual(found["doubles"].where, ["300.2"])
+
+    def test_the_names_are_enough_to_answer(self):
+        """Файлы не читаются вовсе — иначе на тысяче глав пришлось бы ждать."""
+        folder = self.folder(self.slice(missing_first=(303,)))
+        for path in folder.iterdir():
+            self.assertEqual(path.read_text(encoding="utf-8"), "")
+        self.assertEqual(
+            self.kinds(checkup.look_names(folder))["parts"].where, ["303.1"])
+
+
+class TestTheTranslatorsSignature(Names):
+    """Переводчик дописывает подпись к каждому имени, и номер части
+    перестаёт быть последним."""
+
+    def test_a_common_tail_is_taken_off_before_the_parts_are_read(self):
+        look = checkup.look_names(self.folder(self.slice(
+            missing_first=(303,), suffix=".html", extra="_translated_gemini")))
+
+        self.assertEqual(self.kinds(look)["parts"].where, ["303.1"])
+
+    def test_the_tail_that_was_taken_off_is_shown(self):
+        """Разбор мог ошибиться — тогда это видно сразу."""
+        look = checkup.look_names(self.folder(self.slice(
+            suffix=".html", extra="_translated_gemini")))
+
+        self.assertEqual(self.kinds(look)["tail"].where, ["_translated_gemini"])
+
+    def test_a_tail_ending_in_a_digit_is_not_taken_off(self):
+        """У папки, где вторая часть есть у каждой главы, общим хвостом
+        окажется сам «_2» — и снять его значило бы стереть пометку части
+        со всех файлов разом."""
+        self.assertEqual(
+            checkup.common_tail([f"Глава_{n}_2" for n in range(1, 20)]), "")
+
+    def test_a_tail_that_is_not_a_whole_word_is_not_taken_off(self):
+        """«ранslated_gemini» хвостом не является: резать имя посередине
+        значит выдумывать."""
+        self.assertEqual(checkup.common_tail(["Глава1рост", "Глава2рост"]), "")
+
+    def test_a_lone_file_keeps_its_whole_name(self):
+        """Общего хвоста у одного имени нет: он и есть всё имя."""
+        self.assertEqual(checkup.common_tail(["Глава_1_перевод"]), "")
+
+
+class TestTheRowNeedsEvidence(Names):
+    """Хвостовая цифра — часть не всегда: «Level 2» выглядит так же.
+    Доказательство берётся у всей папки сразу."""
+
+    def test_two_files_are_not_a_row(self):
+        """В папке из двух файлов «у каждого номера по две части» значит
+        только то, что файлов всего два."""
+        self.assertEqual(checkup.usual_row({1: [1, 2], 2: [1, 2]}), ())
+
+    def test_a_row_the_minority_lives_by_is_no_row(self):
+        """Разнобой рядом не считается: самый частый ряд здесь всё равно
+        встречается реже, чем не встречается, — и объявлять его нормой
+        значило бы обвинить в пропаже две трети папки."""
+        rows = {number: [1, 2] for number in range(1, 11)}
+        rows.update({number: [1] for number in range(11, 19)})
+        rows.update({number: [1, 2, 3] for number in range(19, 27)})
+
+        self.assertEqual(checkup.usual_row(rows), ())
+
+    def test_titles_ending_in_a_digit_do_not_invent_parts(self):
+        """У каждой главы свой файл, а название кончается числом. Ряда тут
+        нет, и обвинять папку в пропаже частей не в чем."""
+        names = [f"{n:04d}_Chapter_{n}_Level_{n % 7 + 2}.xhtml"
+                 for n in range(1, 60)]
+        look = checkup.look_names(self.folder(names))
+
+        self.assertNotIn("parts", self.kinds(look))
+        self.assertTrue(look.clean, look.summary())
+
+    def test_two_unmarked_files_under_one_number_name_no_part(self):
+        """Обе части без пометки неразличимы: сказать, какой не хватает,
+        нечего, — и выдумывать ответ нельзя."""
+        self.assertEqual(checkup.usual_row(
+            {number: [1, 1] for number in range(1, 30)}), ())
+
+
+class TestWhenTheRowIsUnknown(Names):
+    """Ряда нет — назвать пропавшую часть нечем. Но сказать, где файлов
+    меньше, чем у соседей, всё равно надо: пропажу в такой папке иначе не
+    видно вовсе, номер-то на месте."""
+
+    def two_each(self, thin=()):
+        names = []
+        for number in range(1, 40):
+            names.append(f"Глава {number}.xhtml")
+            if number not in thin:
+                names.append(f"Глава {number} (продолжение).xhtml")
+        return names
+
+    def test_a_number_with_fewer_files_is_found(self):
+        found = self.kinds(checkup.look_names(self.folder(self.two_each(thin=(7, 20)))))
+
+        self.assertEqual(found["thin"].where, ["7", "20"])
+        self.assertIn("2", found["thin"].detail)
+
+    def test_a_folder_where_every_number_has_the_same_is_not_accused(self):
+        look = checkup.look_names(self.folder(self.two_each()))
+
+        self.assertTrue(look.clean, look.summary())
+
+
+class TestThePageGetsTheAnswer(Names):
+    """Отчёт должен доехать до страницы целиком: подписи находок она берёт
+    с сервера и второго их экземпляра у себя не держит."""
+
+    def setUp(self):
+        super().setUp()
+        from webapp.app import app
+
+        app.config["TESTING"] = True
+        self.client = app.test_client()
+
+    def test_the_missing_parts_reach_the_page(self):
+        folder = self.folder(self.slice(missing_first=(303,)))
+        res = self.client.post("/api/checkup/names",
+                               json={"targets": [str(folder)]})
+        self.assertEqual(res.status_code, 200)
+
+        report = res.get_json()["report"]
+        found = {row["kind"]: row for row in report["troubles"]}
+        self.assertEqual(found["parts"]["where"], ["303.1"])
+        self.assertTrue(found["parts"]["kind_name"])
+        self.assertIn("пропущенные части: 1", report["summary"])
+
+    def test_nothing_chosen_is_answered_not_crashed(self):
+        res = self.client.post("/api/checkup/names", json={"targets": []})
+        self.assertEqual(res.status_code, 400)
+        self.assertTrue(res.get_json()["error"])
+
+
 class TestStopping(Base):
     def test_stopping_the_look_stops_it(self):
         """Осмотр читает всю книгу. Не прерывался бы — кнопка «Остановить»

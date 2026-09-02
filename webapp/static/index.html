@@ -3367,6 +3367,26 @@
     </div>
   </div>
 
+  <!-- Каких глав нет — по одним именам файлов. Проверка нумерации в
+       готовой книге говорит «под номером 303 глав меньше, чем у соседей»,
+       и дальше человек остаётся один на один с папкой в несколько сотен
+       файлов. Здесь тот же вопрос задаётся самой папке, и ответ выходит
+       точный: не «с 303 что-то не так», а «нет 303.1». -->
+  <div class="card" id="mnCard">
+    <label>Каких глав нет в папке<i class="hint-icon" data-tip="Смотрит одни имена файлов, сами файлы не читает, — поэтому отвечает сразу даже на тысяче глав. Годится и для папки OEBPS из епаба: там вторая часть главы помечена цифрой в хвосте имени, «..._2».">?</i></label>
+    <p class="hint">По именам файлов: каких номеров нет вовсе и у каких глав
+       не хватает части. Ничего не читает и файлы не трогает.
+       Выбор берётся тот же, что у остальных проверок вкладки.</p>
+    <div class="row" style="margin-top:14px">
+      <button id="mnStart" class="ghost" style="flex:1">Найти пропажи</button>
+    </div>
+
+    <div id="mnBox" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="mnStatus"></span></div>
+      <div class="table" id="mnFound" hidden style="margin-top:10px;max-height:460px"></div>
+    </div>
+  </div>
+
   <div class="card">
     <label>Что искать</label>
     <div class="presets" id="ckPresets"></div>

@@ -263,30 +263,49 @@ document.querySelectorAll('.clearlist').forEach(button => {
   };
 });
 
-document.querySelectorAll('.pickany').forEach(button => {
-  button.onclick = async () => {
-    const listId = button.dataset.list;
-    const label = button.textContent;
-    button.disabled = true;
-    button.textContent = 'Окно…';
-    try{
-      const data = await call('/api/pick/any', {});
-      if(data.paths?.length){
-        // Добавляем к уже выбранному, дубликаты отсеиваем.
-        const current = new Set(CHOSEN[listId] || []);
-        data.paths.forEach(p => current.add(p));
-        CHOSEN[listId] = [...current];
-        renderChosen(listId);
-        // Читается сразу после выбора — отдельной кнопки нет.
-        const handler = $(listId).dataset.onchange;
-        if(handler && window[handler]) window[handler]();
-      }
-    }catch(err){
-      showError(err.message + ' Путь можно вписать в поле рядом.');
-    }finally{
-      button.disabled = false;
-      button.textContent = label;
+/** «Выбрать…»: открыть системное окно и добавить выбранное к списку.
+ *
+ * Спрашиваем заранее, файлы или папку. Раньше кнопка сама показывала два
+ * окна подряд — сперва выбор файлов, а если человек ничего не выбрал, то
+ * выбор папки. Tk не умеет окна, принимающего и то и другое, и обойти это
+ * было нечем. Выходило, что «Отмена» открывает окно заново: у Tk отказ и
+ * пустой выбор — один и тот же ответ, и отличить их со стороны нельзя.
+ *
+ * Спрошенное до окна снимает вопрос совсем: окно одно, и «Отмена» в нём
+ * значит отмену.
+ */
+async function pickAny(button, kind){
+  const listId = button.dataset.list;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Окно…';
+  try{
+    const data = await call('/api/pick/' + kind, {});
+    if(data.paths?.length){
+      // Добавляем к уже выбранному, дубликаты отсеиваем.
+      const current = new Set(CHOSEN[listId] || []);
+      data.paths.forEach(p => current.add(p));
+      CHOSEN[listId] = [...current];
+      renderChosen(listId);
+      // Читается сразу после выбора — отдельной кнопки нет.
+      const handler = $(listId).dataset.onchange;
+      if(handler && window[handler]) window[handler]();
     }
+  }catch(err){
+    showError(err.message + ' Путь можно вписать в поле рядом.');
+  }finally{
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+document.querySelectorAll('.pickany').forEach(button => {
+  button.onclick = event => {
+    event.stopPropagation();
+    openMenu(button, [
+      ['Файлы…', () => pickAny(button, 'files')],
+      ['Папку целиком…', () => pickAny(button, 'folder')],
+    ]);
   };
 });
 
@@ -1866,7 +1885,9 @@ function fmShowLook(look){
     // дважды подряд. Пропавшая глава дыры в номерах тогда не оставляет —
     // номер остаётся, просто глав под ним становится меньше.
     [`Глав под номером меньше ${look.per_number}`, look.thin, look.thin_count,
-     'у остальных номеров глав больше — похоже, эти потерялись'],
+     'у остальных номеров глав больше — похоже, эти потерялись. Какой '
+     + 'именно части не хватает, скажет «Каких глав нет в папке» во '
+     + 'вкладке «Проверка»: там видно имена файлов'],
     // Повтор самой главы, а не её номера: номер у двух глав совпадает и
     // по делу — у главы бывает две-три части, — а вот дословно совпавший
     // текст значит ровно одно: глава попала в книгу дважды.
@@ -6192,8 +6213,10 @@ async function cuStart(targets){
   }
 }
 
-function cuShow(report){
-  const box = $('cuFound');
+/** Находки осмотра — списком. Общая на оба осмотра: подписи и порядок
+ *  приходят с сервера, и рисовать их двумя способами не за чем. */
+function cuShow(report, boxId){
+  const box = $(boxId || 'cuFound');
   box.innerHTML = '';
   const troubles = report.troubles || [];
   if(!troubles.length){ box.hidden = true; return; }
@@ -6228,6 +6251,36 @@ function cuShow(report){
 
 $('cuStart').onclick = () => cuStart();
 $('cuStop').onclick = () => stopJob(cuJob);
+
+/* --------------------------------------- каких глав нет: по одним именам
+ *
+ * Проверка нумерации в готовой книге говорит «под номером 303 глав
+ * меньше, чем у соседей», и дальше человек остаётся один на один с
+ * папкой в несколько сотен файлов. Здесь тот же вопрос задаётся самой
+ * папке, и ответ выходит точный: «нет 303.1».
+ *
+ * Задачей не делаем: файлы не читаются вовсе, ответ приходит сразу.
+ */
+
+async function mnStart(){
+  showError('');
+  const targets = CHOSEN.ckList || [];
+  if(!targets.length){ showError('Сначала выберите папку с главами'); return; }
+
+  $('mnStart').disabled = true;
+  try{
+    const {report} = await call('/api/checkup/names', {targets});
+    $('mnBox').hidden = false;
+    $('mnStatus').textContent = report.summary;
+    cuShow(report, 'mnFound');
+  }catch(err){
+    showError(err.message, $('mnCard'));
+  }finally{
+    $('mnStart').disabled = false;
+  }
+}
+
+$('mnStart').onclick = () => mnStart();
 
 // Раздел 3: свои стрелки у всех числовых полей приложения.
 addSpinners();
