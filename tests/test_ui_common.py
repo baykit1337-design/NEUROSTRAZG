@@ -486,7 +486,9 @@ class TestPickingFilesLooksTheSameEverywhere(UiBase):
         for field in self.FIELDS:
             with self.subTest(field=field):
                 row = self.row_of(field)
-                self.assertIn("Выбрать…", row)
+                # По классу, а не по подписи: кнопок стало две, и подпись
+                # у них своя, а вид строки от этого не меняется.
+                self.assertRegex(row, r'class="ghost (pickany|browse)"')
                 self.assertNotIn('style="flex:1"', row)
 
     def test_they_all_say_the_same_thing(self):
@@ -525,6 +527,38 @@ class TestPickingFilesLooksTheSameEverywhere(UiBase):
     def test_typing_is_not_interrupted_by_a_refresh(self):
         body = self.tabs.split("function syncPickPath(listId)", 1)[1]
         self.assertIn("field === document.activeElement", body)
+
+
+class TestOneWindowPerButton(UiBase):
+    """Нажал «Отмена» — и окно выбора открывалось заново.
+
+    Кнопка была одна и показывала два системных окна подряд: сперва выбор
+    файлов, а если ничего не выбрали — выбор папки. Внутри окна это не
+    чинится: Tk не умеет диалог, принимающий и файлы, и папку, а отказ и
+    пустой выбор отдаёт одинаково.
+
+    Поэтому кнопок две, и каждая ведёт ровно в одно окно.
+    """
+
+    def test_a_folder_button_stands_beside_every_files_button(self):
+        """Иначе папку в этой вкладке было бы не выбрать вовсе."""
+        files = self.page.count('class="ghost pickany"')
+        self.assertGreater(files, 0)
+        self.assertEqual(self.page.count('class="ghost pickfolder"'), files)
+
+    def test_each_button_opens_its_own_window(self):
+        self.assertIn("pickAny(button, 'files')", self.tabs)
+        self.assertIn("pickAny(button, 'folder')", self.tabs)
+
+    def test_the_road_with_two_windows_is_not_taken_anymore(self):
+        """`/api/pick/any` — та самая дорога: файлы, а следом папка."""
+        self.assertNotIn("/api/pick/any", self.tabs)
+
+    def test_nothing_is_asked_before_the_window_opens(self):
+        """Меню «файлы или папку» — лишний вопрос: выбор уже сделан тем,
+        какую кнопку нажали."""
+        handler = self.tabs.split(".pickany').forEach", 1)[1].split("});", 1)[0]
+        self.assertNotIn("openMenu", handler)
 
 
 class TestHiddenReallyHides(UiBase):

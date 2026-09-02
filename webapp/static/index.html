@@ -1580,7 +1580,8 @@
     <div class="row">
       <input id="spPath" class="pickpath" data-list="spList" type="text"
              placeholder="Путь к файлу или папке" autocomplete="off">
-      <button class="ghost pickany" data-list="spList">Выбрать…</button>
+      <button class="ghost pickany" data-list="spList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="spList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="spListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="spCount" style="flex:1"></span>
@@ -2015,7 +2016,8 @@
     <div class="row">
       <input id="mgPath" class="pickpath" data-list="mgList" type="text"
              placeholder="Путь к файлу или папке" autocomplete="off">
-      <button class="ghost pickany" data-list="mgList">Выбрать…</button>
+      <button class="ghost pickany" data-list="mgList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="mgList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="mgListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="mgCount" style="flex:1"></span>
@@ -2166,7 +2168,8 @@
     <div class="row">
       <input id="cvPath" class="pickpath" data-list="cvList" type="text"
              placeholder="Путь к файлу или папке" autocomplete="off">
-      <button class="ghost pickany" data-list="cvList">Выбрать…</button>
+      <button class="ghost pickany" data-list="cvList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="cvList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="cvListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="cvCount" style="flex:1"></span>
@@ -2302,7 +2305,8 @@
     <div class="row" style="margin-top:10px">
       <input id="fmPath" class="pickpath" data-list="fmList" type="text"
              placeholder="Путь к файлу или папке" autocomplete="off">
-      <button class="ghost pickany" data-list="fmList">Выбрать…</button>
+      <button class="ghost pickany" data-list="fmList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="fmList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="fmListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="fmCount" style="flex:1"></span>
@@ -2421,7 +2425,8 @@
     <div class="row" style="margin-top:10px">
       <input id="fmBookPath" class="pickpath" data-list="fmBookList" type="text"
              placeholder="Путь к .md книги" autocomplete="off">
-      <button class="ghost pickany" data-list="fmBookList">Выбрать…</button>
+      <button class="ghost pickany" data-list="fmBookList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="fmBookList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="chosen" id="fmBookList"></div>
     <p class="hint" id="fmBookNote"></p>
@@ -2656,7 +2661,8 @@
   <div class="card lit" id="anSourceCard">
     <label>Главы книги</label>
     <div class="row">
-      <button class="ghost pickany" data-list="anList" style="flex:1">Выбрать…</button>
+      <button class="ghost pickany" data-list="anList" style="flex:1">Файлы…</button>
+      <button class="ghost pickfolder" data-list="anList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="anListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="anCount" style="flex:1"></span>
@@ -2840,7 +2846,8 @@
   <div class="card lit">
     <label>Что правим</label>
     <div class="row">
-      <button class="ghost pickany" data-list="rpList" style="flex:1">Выбрать…</button>
+      <button class="ghost pickany" data-list="rpList" style="flex:1">Файлы…</button>
+      <button class="ghost pickfolder" data-list="rpList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="row" id="rpListBar" style="margin-top:8px;align-items:center" hidden>
       <span class="hint" id="rpCount" style="flex:1"></span>
@@ -3339,7 +3346,8 @@
   <div class="card lit">
     <label>Что проверяем<span class="formats" data-formats="readable"></span></label>
     <div class="row">
-      <button class="ghost pickany" data-list="ckList" style="flex:1">Выбрать…</button>
+      <button class="ghost pickany" data-list="ckList" style="flex:1">Файлы…</button>
+      <button class="ghost pickfolder" data-list="ckList" style="flex:0 0 auto">Папку…</button>
     </div>
     <div class="chosen" id="ckList"></div>
   </div>
