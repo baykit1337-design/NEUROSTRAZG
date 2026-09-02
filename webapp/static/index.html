@@ -5686,6 +5686,11 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/lock-shake.css">
 <link rel="stylesheet" href="/static/css/effects/spin-wheel.css">
 <link rel="stylesheet" href="/static/css/effects/tab-slide.css">
+<link rel="stylesheet" href="/static/css/effects/place-glow.css">
+<link rel="stylesheet" href="/static/css/effects/top-breath.css">
+<link rel="stylesheet" href="/static/css/effects/tag-unroll.css">
+<link rel="stylesheet" href="/static/css/effects/board-shuffle.css">
+<link rel="stylesheet" href="/static/css/effects/cover-flight.css">
 <script src="/static/tabs.js"></script>
 <script src="/static/js/effects/settings.js"></script>
 <script src="/static/js/effects/feedback.js"></script>
@@ -5700,5 +5705,8 @@ $('again').onclick = reset;
 <script src="/static/js/effects/errorshake.js"></script>
 <script src="/static/js/effects/neonstart.js"></script>
 <script src="/static/js/effects/forms.js"></script>
+<!-- Строго после `rankmove.js`: тот меряет, где строки стояли и где
+     стали, а сдача колоды двигает их прямо во время замера. -->
+<script src="/static/js/effects/ranklook.js"></script>
 </body>
 </html>

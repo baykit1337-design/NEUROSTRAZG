@@ -966,6 +966,261 @@ class TestTheTabSlidesFromTheSideItWasPressed(EffectTestCase):
         self.quiet()
 
 
+#: Прозрачная точка. Обложки приходят с сайта, а его тут нет: чтобы
+#: полёту было чем лететь, строке подставляется картинка, которую не надо
+#: ниоткуда качать.
+PIXEL = ("data:image/gif;base64,"
+         "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+
+
+class RankEffectTestCase(EffectTestCase):
+    """Рейтинг с подставленным срезом.
+
+    Сайтов отсюда не видно, а эффекты живут на строках. Поэтому кладём
+    свой срез в ту же переменную, откуда его берёт вкладка, и зовём ту же
+    отрисовку: путь от списка до строки — настоящий, чужого в нём только
+    сам список.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="rank"]')
+
+    def seed(self, books):
+        rows = [{"place": at, "book_id": book, "name": f"Книга {book}",
+                 "readers": 1000 - at, "day": 0, "week": 0, "diff": 0,
+                 "is_new": at == 1, "holding": 3, "site": "", "cover": ""}
+                for at, book in enumerate(books, 1)]
+        self.page.evaluate("(rows) => { rkRows = rows; rkRender(); }", rows)
+
+    def at_place(self, place: str, field: str) -> str:
+        """Что у номера места с этим значением."""
+        return self.page.evaluate(
+            """([place, field]) => {
+                for(const node of document.querySelectorAll('#rkTable .place')){
+                    if(node.textContent !== place) continue;
+                    return field.startsWith('--')
+                        ? node.style.getPropertyValue(field)
+                        : getComputedStyle(node)[field];
+                }
+                return '';
+            }""", [place, field])
+
+    def dealt(self) -> int:
+        return self.page.locator("#rkTable .tr.fx-dealt").count()
+
+
+class TestThePlaceBurnsByItsHeight(RankEffectTestCase):
+    """Колонка мест — двадцать одинаковых серых чисел в столбик."""
+
+    def test_the_heat_falls_from_the_first_place_down(self):
+        self.seed([f"b{n}" for n in range(1, 23)])
+        self.assertEqual(self.at_place("1", "--fx-place-heat"), "1.00")
+        self.assertEqual(self.at_place("20", "--fx-place-heat"), "0.05")
+        self.assertEqual(self.at_place("22", "--fx-place-heat"), "0.00")
+        self.quiet()
+
+    def test_the_light_follows_the_heat(self):
+        self.turn('place-glow')
+        self.seed([f"b{n}" for n in range(1, 23)])
+        self.assertNotEqual(self.at_place("1", "textShadow"),
+                            self.at_place("15", "textShadow"))
+        self.quiet()
+
+    def test_a_taken_off_switch_leaves_the_column_grey(self):
+        self.turn('place-glow', False)
+        self.seed([f"b{n}" for n in range(1, 23)])
+        self.assertEqual(self.at_place("1", "textShadow"),
+                         self.at_place("15", "textShadow"))
+        self.quiet()
+
+
+class TestTheTopBreathes(RankEffectTestCase):
+    def marked(self) -> str:
+        return self.page.evaluate(
+            """() => {
+                const rows = document.querySelectorAll('#rkTable .tr.fx-top');
+                if(rows.length !== 1) return `отмечено строк: ${rows.length}`;
+                return rows[0].querySelector('.place').textContent;
+            }""")
+
+    def test_the_book_on_top_is_the_one_marked(self):
+        self.seed(["a", "b", "c"])
+        self.assertEqual(self.marked(), "1")
+        self.quiet()
+
+    def test_the_mark_goes_by_the_place_not_by_the_row(self):
+        """Первое место — не первая строка: список сортируют и по числу
+        читающих, и по движению за сутки."""
+        self.seed(["a", "b", "c"])
+        self.page.evaluate(
+            """() => {
+                const places = document.querySelectorAll('#rkTable .place');
+                places[0].textContent = '2';
+                places[1].textContent = '1';
+                rlMark();
+            }""")
+        self.assertEqual(self.marked(), "1")
+        self.assertFalse(self.page.evaluate(
+            "() => document.querySelector('#rkTable .tr').classList"
+            ".contains('fx-top')"))
+        self.quiet()
+
+    def test_the_cover_breathes(self):
+        self.turn('top-breath')
+        self.seed(["a", "b", "c"])
+        self.assertEqual(
+            self.styled("#rkTable .tr.fx-top .cover", "animationName"),
+            "fx-top-breath")
+        self.quiet()
+
+    def test_it_holds_its_breath_under_the_cursor(self):
+        """«Живые обложки» в этот момент отклоняют обложку вслед за
+        курсором, а анимация просто затёрла бы их преобразование."""
+        self.turn('top-breath')
+        self.seed(["a", "b", "c"])
+        # Мышью, а не `hover`: тот ждёт, пока цель замрёт, а цель как раз
+        # дышит — и ждать он будет вечно.
+        box = self.page.locator("#rkTable .tr.fx-top .cover").bounding_box()
+        self.page.mouse.move(box["x"] + box["width"] / 2,
+                             box["y"] + box["height"] / 2)
+        self.assertEqual(
+            self.styled("#rkTable .tr.fx-top .cover", "animationName"), "none")
+        self.quiet()
+
+
+class TestTheRibbonUnrolls(RankEffectTestCase):
+    def test_the_mark_in_the_rating_unrolls(self):
+        self.turn('tag-unroll')
+        self.seed(["a", "b"])
+        self.assertEqual(self.styled("#rkTable .tr .tag", "animationName"),
+                         "fx-tag-unroll")
+        self.quiet()
+
+    def test_a_mark_anywhere_else_is_left_alone(self):
+        """Метка с этим же именем стоит и в находках проверки, и в замере
+        потоков, где никакой новизны она не означает."""
+        self.turn('tag-unroll')
+        self.seed(["a", "b"])
+        self.assertEqual(self.page.evaluate(
+            """() => {
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.textContent = 'не про рейтинг';
+                document.getElementById('tab-check').append(tag);
+                return getComputedStyle(tag).animationName;
+            }"""), "none")
+        self.quiet()
+
+
+class TestTheBoardIsDealtAgain(RankEffectTestCase):
+    """Досок четырнадцать, и переключаются они соседними кнопками. Список
+    подменялся целиком и молча."""
+
+    def setUp(self):
+        super().setUp()
+        self.turn('board-shuffle')
+
+    def test_another_board_is_dealt_row_by_row(self):
+        self.seed(["a", "b", "c"])
+        self.seed(["x", "y", "z"])
+        self.assertEqual(self.dealt(), 3)
+        self.quiet()
+
+    def test_a_fresh_slice_of_the_same_board_is_not_dealt(self):
+        """Там книги те же, и их перемещение показывает «переезд строк»."""
+        self.seed(["a", "b", "c"])
+        self.seed(["a", "b", "c"])
+        self.assertEqual(self.dealt(), 0)
+        self.quiet()
+
+    def test_the_very_first_showing_is_not_a_change_of_board(self):
+        """Списка до него не было вовсе — меняться было нечему."""
+        self.seed(["a", "b", "c"])
+        self.assertEqual(self.dealt(), 0)
+        self.quiet()
+
+    def test_a_taken_off_switch_leaves_the_list_still(self):
+        self.turn('board-shuffle', False)
+        self.seed(["a", "b", "c"])
+        self.seed(["x", "y", "z"])
+        self.assertEqual(self.dealt(), 0)
+        self.quiet()
+
+
+class TestTheCoverFliesToTheDownloader(RankEffectTestCase):
+    def setUp(self):
+        super().setUp()
+        self.turn('cover-flight')
+        self.seed(["a", "b"])
+        # Обложка приходит с сайта, которого отсюда не видно. Подставляем
+        # картинку: лететь должно чему-то настоящему, иначе проверять
+        # нечего.
+        self.page.evaluate(
+            """(pixel) => {
+                const cover = document.querySelector('#rkTable .tr .cover');
+                cover.replaceChildren();
+                const img = document.createElement('img');
+                img.src = pixel;
+                img.style.width = '34px';
+                img.style.height = '46px';
+                cover.append(img);
+            }""", PIXEL)
+
+    def press(self, name: str):
+        self.page.get_by_role("button", name=name).first.click()
+        self.page.wait_for_timeout(400)
+
+    def test_the_cover_leaves_when_the_downloader_opens(self):
+        self.press("скачать")
+        self.assertEqual(self.page.locator(".fx-flying").count(), 1)
+
+    def test_it_is_headed_for_the_downloader_tab(self):
+        """Смотрим, куда копию отправили, а не где она сейчас: летит она
+        полсекунды, и на любом замере посреди пути она где-то между.
+
+        Сходится по горизонтали: страница после перехода прокручивается к
+        форме качалки, и высота вкладки к моменту замера уже другая, а
+        столбец — тот же.
+        """
+        self.press("скачать")
+        self.assertLess(self.page.evaluate(
+            """() => {
+                const ghost = document.querySelector('.fx-flying');
+                const tab = document.querySelector('.tabs button[data-tab="download"]');
+                const to = tab.getBoundingClientRect();
+                return Math.abs(parseFloat(ghost.style.left)
+                                - (to.left + to.width / 2));
+            }"""), 20)
+
+    def test_it_never_lands_off_the_screen(self):
+        """Строка вкладок не липкая: в длинном рейтинге её на экране может
+        не быть вовсе, и обложка улетала бы за верхний край — в никуда."""
+        self.page.evaluate(
+            "() => document.querySelector('.tabs')"
+            ".style.transform = 'translateY(-900px)'")
+        self.press("скачать")
+        self.assertTrue(self.page.evaluate(
+            """() => {
+                const ghost = document.querySelector('.fx-flying');
+                const top = parseFloat(ghost.style.top);
+                const left = parseFloat(ghost.style.left);
+                return top >= 0 && left >= 0
+                    && top <= window.innerHeight && left <= window.innerWidth;
+            }"""))
+
+    def test_nothing_flies_where_nobody_went(self):
+        """Кнопка рядом открывает меню копирования и никуда не переходит.
+        Полёт туда, куда не перешли, был бы враньём."""
+        self.press("скопировать")
+        self.assertEqual(self.page.locator(".fx-flying").count(), 0)
+
+    def test_a_taken_off_switch_grounds_it(self):
+        self.turn('cover-flight', False)
+        self.press("скачать")
+        self.assertEqual(self.page.locator(".fx-flying").count(), 0)
+
+
 class TestNoFieldFallsOutOfTheTheme(PageTestCase):
     """Поле времени в очереди книг было белым с чёрным текстом посреди
     тёмной страницы.
