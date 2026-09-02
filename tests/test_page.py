@@ -631,6 +631,73 @@ class TestTheToolsTabIsFoldedUp(PageTestCase):
         self.quiet()
 
 
+class TestTheProgressStandsWhereItWasStarted(PageTestCase):
+    """Полоса прогресса на «Форматировать» стояла последней на вкладке.
+
+    Работ там две, и обе с прогрессом: «Собрать книгу из глав» — самая
+    первая карточка, «Заголовки в готовой книге» — четвёртая. Полоса же
+    ждала внизу, под «Мусором в главах» и «Объёмом глав»: нажал наверху —
+    ищи ответ за краем экрана.
+
+    Карточка прогресса одна: у неё свои счётчики, кнопка «Остановить» и
+    журнал перевода, и второй её экземпляр пришлось бы однажды чинить
+    дважды. Поэтому она переезжает к той работе, которую запустили.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="format"]')
+
+    def place(self, button: str) -> str:
+        """Куда встанет прогресс, если работу запустить этой кнопкой."""
+        return self.page.evaluate(
+            """(id) => {
+                fmPlaceProgress(document.getElementById(id));
+                const box = document.getElementById('fmProgress');
+                return box.previousElementSibling.outerHTML;
+            }""", button)
+
+    def test_the_bar_follows_the_button_that_started_the_work(self):
+        self.assertIn("Собрать книгу из глав", self.place("fmCollect"))
+        self.assertIn("Заголовки в готовой книге", self.place("fmRetitle"))
+        self.quiet()
+
+    def test_it_goes_back_up_when_the_first_work_is_started_again(self):
+        """Переезд в один конец оставил бы полосу внизу навсегда."""
+        self.place("fmRetitle")
+        self.assertIn("Собрать книгу из глав", self.place("fmCollect"))
+        self.quiet()
+
+    def started_by(self, button: str) -> str:
+        """Нажать кнопку по-настоящему, подменив сервер.
+
+        Настоящий путь, а не вызов изнутри: забудь работа попросить о
+        переезде — полоса осталась бы там, где её оставила соседняя, и
+        `fmPlaceProgress` сам по себе этого не покажет.
+        """
+        return self.page.evaluate(
+            """async (id) => {
+                const server = window.call, poll = window.pollJob;
+                window.call = async () => (
+                    {job: {id: 'проверка', progress: {}, output_dir: ''}});
+                window.pollJob = () => {};
+                try{
+                    document.getElementById(id).click();
+                    await new Promise(r => setTimeout(r, 60));
+                }finally{
+                    window.call = server;
+                    window.pollJob = poll;
+                }
+                return document.getElementById('fmProgress')
+                    .previousElementSibling.outerHTML;
+            }""", button)
+
+    def test_both_works_move_it_to_themselves(self):
+        self.assertIn("Заголовки в готовой книге",
+                      self.started_by("fmRetitle"))
+        self.assertIn("Собрать книгу из глав", self.started_by("fmCollect"))
+
+
 class TestNoFieldFallsOutOfTheTheme(PageTestCase):
     """Поле времени в очереди книг было белым с чёрным текстом посреди
     тёмной страницы.

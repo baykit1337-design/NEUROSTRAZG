@@ -1994,10 +1994,31 @@ function fmShowKeys(keys){
     + `исчерпано: ${keys.exhausted || 0}, всего: ${keys.total}`;
 }
 
-/** Общее для обеих работ: показать прогресс и дождаться конца. */
-function fmWatch(job, done, withLog){
+/** Прогресс — под ту карточку, в которой нажали кнопку.
+ *
+ * Карточка прогресса одна на всю вкладку, и стояла она последней, ниже
+ * «Мусора в главах» и «Объёма глав». Работ на вкладке две, и запуск
+ * любой из них уводил ответ за край экрана: нажал наверху — ищи внизу.
+ *
+ * Переносим саму карточку, а не заводим вторую: у прогресса свои
+ * счётчики, кнопка «Остановить» и журнал, и держать этому второй
+ * экземпляр значило бы однажды чинить их в двух местах.
+ */
+function fmPlaceProgress(button){
+  const card = button && button.closest('.card');
+  const box = $('fmProgress');
+  if(card && card.nextElementSibling !== box) card.after(box);
+}
+
+/** Общее для обеих работ: показать прогресс и дождаться конца.
+ *
+ * `near` — кнопка, которой работу запустили: прогресс встаёт под её
+ * карточкой.
+ */
+function fmWatch(job, done, withLog, near){
   fmState.job = job.id;
   ownJob('format', job.id);
+  fmPlaceProgress(near);
   $('fmProgress').hidden = false;
   $('fmStop').hidden = false;
   $('fmErrors').hidden = true;
@@ -2054,7 +2075,7 @@ async function fmCollect(){
       const total = job.report?.written || 0;
       $('fmSummary').textContent +=
         ` · глав в книге: ${total}`;
-    });
+    }, false, $('fmCollect'));
   }catch(err){ showError(err.message, $('fmCollect')); }
   finally{ $('fmCollect').disabled = false; }
 }
@@ -2148,7 +2169,7 @@ async function fmRetitle(){
       $('fmSummary').textContent +=
         ` · переведено ${r.translated || 0}, из кэша ${r.cached || 0}`
         + (r.broken ? `, осталось как было ${r.broken}` : '');
-    }, true);
+    }, true, $('fmRetitle'));
   }catch(err){ showError(err.message, $('fmRetitle')); }
   finally{ $('fmRetitle').disabled = false; }
 }
