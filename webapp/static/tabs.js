@@ -1862,8 +1862,16 @@ function fmShowLook(look){
   const found = [
     ['Пропущены номера', look.gaps, look.gaps_count,
      'этих глав в книге нет — похоже, потерялись по дороге'],
-    ['Номер встречается дважды', look.doubles, look.doubles_count,
-     'такая глава уедет на сайт двумя'],
+    // Книгу, поделённую надвое, отдают загрузчику парами: «Глава 295»
+    // дважды подряд. Пропавшая глава дыры в номерах тогда не оставляет —
+    // номер остаётся, просто глав под ним становится меньше.
+    [`Глав под номером меньше ${look.per_number}`, look.thin, look.thin_count,
+     'у остальных номеров глав больше — похоже, эти потерялись'],
+    // Повтор самой главы, а не её номера: номер у двух глав совпадает и
+    // по делу — у главы бывает две-три части, — а вот дословно совпавший
+    // текст значит ровно одно: глава попала в книгу дважды.
+    ['Глава повторяется дословно', look.doubles, look.doubles_count,
+     'один и тот же текст под этими номерами — на сайт уедет дважды'],
     ['Номер идёт назад', look.backwards, look.backwards_count,
      'порядок глав собьётся'],
     ['Повтор в поле «Порядок»', look.order_doubles, look.order_doubles_count,
@@ -2047,6 +2055,7 @@ async function fmBefore(){
       names: fmNamesWay(),
       renumber: Number($('fmRenumber').value) || 0,
       tidy: $('fmTidy').checked,
+      mark_parts: $('fmPartMarks').checked,
       ...fmStylePayload(),
     });
 
@@ -2106,6 +2115,7 @@ async function fmRetitle(){
       names: fmNamesWay(),
       renumber: Number($('fmRenumber').value) || 0,
       tidy: $('fmTidy').checked,
+      mark_parts: $('fmPartMarks').checked,
       model: fmState.menus.model ? fmState.menus.model.value : '',
       force: $('fmForce').checked,
       ...fmStylePayload(),

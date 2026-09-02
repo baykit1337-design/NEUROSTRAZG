@@ -307,6 +307,34 @@ def _mark_text(mark) -> str:
     return f"{number}.{part}" if part else str(number)
 
 
+#: Со скольких номеров книга считается достаточно большой, чтобы у неё
+#: был свой ритм. Меньше — и «у каждого номера по две главы» означает
+#: только то, что глав всего две.
+ENOUGH = 10
+
+
+def _rhythm(counts) -> int:
+    """Сколько глав в этой книге приходится на один номер.
+
+    Обычно одна. Но книгу, поделённую надвое, отдают загрузчику парами:
+    «Глава 295» дважды подряд, без номера части в заголовке. Для такой
+    книги две главы под номером — норма, а не дубль.
+
+    Ритм признаём только явный: так должно жить большинство номеров, и
+    самих номеров должно быть достаточно. Две главы под одним номером в
+    книге из двух глав — это дубль, а не ритм: за ним не стоит ничего,
+    кроме себя самого. Разнобой ритмом тоже не считается — иначе
+    случайный перекос объявил бы нормой то, что нормой не является.
+    """
+    if len(counts) < ENOUGH:
+        return 1
+    tally: dict[int, int] = {}
+    for value in counts.values():
+        tally[value] = tally.get(value, 0) + 1
+    usual = max(tally, key=lambda value: (tally[value], -value))
+    return usual if tally[usual] * 2 > len(counts) else 1
+
+
 def inspect(chapters) -> dict:
     """Что не так с нумерацией книги.
 
@@ -327,8 +355,12 @@ def inspect(chapters) -> dict:
     #: объявляла сплошным непорядком.
     marks: list[tuple[int, int | None]] = []
 
+    #: Тела глав: одинаковый текст — одна и та же глава, под какими бы
+    #: номерами она ни стояла. Одинаковый номер этого ещё не значит.
+    same: dict[str, list[str]] = {}
+
     previous = None
-    for head, _ in chapters:
+    for head, body in chapters:
         number, part, _ = split_mark(head.title)
         if number is None:
             nameless.append(head.title)
@@ -343,12 +375,38 @@ def inspect(chapters) -> dict:
         if not looks_translated(head.title):
             plain.append(head.title)
 
-    seen_marks: set = set()
-    doubles: list[str] = []
-    for mark in marks:
-        if mark in seen_marks and _mark_text(mark) not in doubles:
-            doubles.append(_mark_text(mark))
-        seen_marks.add(mark)
+        # Пустую главу сравнивать не с чем: пустые совпадают все со
+        # всеми, и книга без тел глав вышла бы сплошным повтором.
+        text = "\n".join(line.strip() for line in body if line.strip())
+        if text:
+            mark = _mark_text((number, part)) if number is not None \
+                else (head.title or "без номера")
+            same.setdefault(text, []).append(mark)
+
+    # Дубль — это повтор главы, а не повтор её номера.
+    #
+    # Здесь проверка и врала. Настоящая книга: у каждой главы по две-три
+    # части, пометка «(Часть 2)» стоит не везде, а у иной части и
+    # название своё. Номер при этом один. Проверка объявляла дублями
+    # двести шестьдесят девять номеров — почти всю книгу, — и за этим
+    # списком не было видно ничего.
+    #
+    # Одинаковый номер — ещё не одна и та же глава. Одинаковый текст —
+    # она и есть: такая уедет на сайт дважды.
+    doubles = [" = ".join(marks[:SHOW])
+               for marks in same.values() if len(marks) > 1]
+
+    # Сколько глав под каждым номером — и сколько их тут обычно.
+    counts: dict[int, int] = {}
+    for number, _ in marks:
+        counts[number] = counts.get(number, 0) + 1
+    usual = _rhythm(counts)
+
+    # Пропажу в такой книге иначе не видно вовсе: глава ушла, а номер
+    # остался — дыры в номерах нет. Видно её по тому, что глав под
+    # номером стало меньше, чем у соседей.
+    thin = sorted(number for number, count in counts.items() if count < usual)
+
     seen = {number for number, _ in marks}
 
     gaps: list[int] = []
@@ -375,13 +433,60 @@ def inspect(chapters) -> dict:
         "gaps_count": len(gaps),
         "doubles": doubles[:SHOW],
         "doubles_count": len(doubles),
+        #: Сколько глав приходится на номер в этой книге и где их меньше.
+        "per_number": usual,
+        "thin": _ranges(thin)[:SHOW],
+        "thin_count": len(thin),
         "backwards": backwards[:SHOW],
         "backwards_count": len(backwards),
         "order_doubles": order_doubles[:SHOW],
         "order_doubles_count": len(order_doubles),
         "untranslated": len(plain),
-        "ok": not (gaps or doubles or backwards or order_doubles),
+        "ok": not (gaps or doubles or thin or backwards
+                   or order_doubles),
     }
+
+
+def number_parts(taken) -> list:
+    """Проставить номера частям, у которых их не было.
+
+    `taken` — тройки «номер, часть, название», как их отдаёт разбор
+    заголовков. Возвращает такие же тройки, но у подряд идущих глав с
+    одним номером появляются части: 1, 2, 3.
+
+    Зачем. Настоящая книга: у главы две-три части, и пометки части у них
+    то есть, то нет — «Глава 295», «Глава 295 (Часть 2)», а следом две
+    «Главы 296» подряд без всяких пометок. Загрузчику это уедет как одна
+    и та же глава несколько раз, и порядок на сайте соберётся наугад.
+
+    Считаем по соседству, а не по всей книге. Две главы с одним номером,
+    стоящие рядом, — почти наверняка куски одной; те же два номера в
+    разных концах книги — скорее чужая ошибка, и склеивать их в части
+    было бы выдумкой.
+
+    Часть, которая уже проставлена, не трогаем: она пришла от человека,
+    и знать лучше него нам неоткуда. Одиночную главу частью не делаем —
+    «Глава 300.1» без «300.2» означала бы часть, которой нет.
+    """
+    fresh = list(taken)
+    at = 0
+    while at < len(fresh):
+        number = fresh[at][0]
+        if number is None:
+            at += 1
+            continue
+        end = at
+        while end + 1 < len(fresh) and fresh[end + 1][0] == number:
+            end += 1
+        # Куском одной главы считаем только то, что идёт подряд и не
+        # размечено. Хоть у одной части номер уже есть — значит, человек
+        # разметил их сам, и наша помощь тут лишняя.
+        if end > at and all(part is None for _, part, _ in fresh[at:end + 1]):
+            for shift, place in enumerate(range(at, end + 1), 1):
+                one_number, _, name = fresh[place]
+                fresh[place] = (one_number, shift, name)
+        at = end + 1
+    return fresh
 
 
 def paragraphs_of(lines: list[str]) -> list[str]:
@@ -520,7 +625,7 @@ __all__ = ["DEFAULT_SEPARATOR", "DROP", "FREE", "HEAD_RE", "Head", "KEEP",
            "MARK", "PAID",
            "PAYMENT", "SEPARATORS", "TitleStyle", "cut_into_parts",
            "from_chapters", "inspect", "lines_of", "looks_translated",
-           "make_head",
+           "make_head", "number_parts",
            "paragraphs_of", "parse_head", "read_book", "split_title",
            "to_standard",
            "write_book"]

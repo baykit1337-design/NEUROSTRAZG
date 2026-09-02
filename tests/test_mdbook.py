@@ -537,6 +537,284 @@ class TestRetitlingOverHttp(WebBase):
         self.assertEqual(job.report["translated"], 2)
 
 
+class TestABookThatGoesInPairs(unittest.TestCase):
+    """Книгу, поделённую надвое, отдают загрузчику парами.
+
+    «Глава 295» стоит дважды подряд, без номера части в заголовке — так
+    её собрал переводчик. Для такой книги две главы под номером норма, а
+    не находка.
+
+    Проверка этого не знала и врала дважды. На книге в пятьсот шестьдесят
+    глав она объявляла дублями двести шестьдесят девять номеров — почти
+    всю книгу, — и за этим списком не было видно ничего. А пропажу
+    четырёх глав не показывала вовсе: глава ушла, номер остался, дыры в
+    номерах нет.
+    """
+
+    def book(self, titles):
+        return [(mdbook.make_head(title), []) for title in titles]
+
+    def pairs(self, missing=()):
+        """Книга парами; у названных номеров — по одной главе."""
+        titles = []
+        for number in range(294, 583):
+            titles += [f"Глава {number}"] * (1 if number in missing else 2)
+        return self.book(titles)
+
+    def test_the_book_says_how_many_chapters_a_number_has(self):
+        self.assertEqual(mdbook.inspect(self.pairs())["per_number"], 2)
+
+    def test_pairs_are_not_doubles(self):
+        """Двести шестьдесят девять находок вместо ни одной."""
+        self.assertEqual(mdbook.inspect(self.pairs())["doubles"], [])
+
+    def test_a_book_in_pairs_is_in_order(self):
+        self.assertTrue(mdbook.inspect(self.pairs())["ok"])
+
+    def test_a_lost_chapter_shows_up_as_a_thin_number(self):
+        """Ровно то, чего человек и ждал: «пропущено четыре»."""
+        look = mdbook.inspect(self.pairs(missing=(303, 350, 400, 500)))
+        self.assertEqual(look["thin_count"], 4)
+        self.assertEqual(look["thin"], ["303", "350", "400", "500"])
+
+    def test_a_lost_chapter_makes_the_book_not_ok(self):
+        self.assertFalse(mdbook.inspect(self.pairs(missing=(303,)))["ok"])
+
+    def test_a_third_chapter_under_a_number_is_not_a_double(self):
+        """У главы бывает и три части: в настоящей книге у 298-й их
+        именно три. Объявлять третью лишней нельзя — она такая же часть,
+        как первые две, и текст у неё свой."""
+        book = self.pairs() + self.book(["Глава 300"])
+        self.assertEqual(mdbook.inspect(book)["doubles"], [])
+
+    def test_a_number_missing_entirely_is_still_a_gap(self):
+        """Ушли обе главы — и номера не стало вовсе."""
+        titles = []
+        for number in range(294, 583):
+            if number != 400:
+                titles += [f"Глава {number}"] * 2
+        self.assertEqual(mdbook.inspect(self.book(titles))["gaps"], ["400"])
+
+
+class TestTheRhythmNeedsEvidence(unittest.TestCase):
+    """Ритм — это правило книги, а не совпадение двух строк."""
+
+    def book(self, titles):
+        return [(mdbook.make_head(title), []) for title in titles]
+
+    def test_a_small_book_has_no_rhythm(self):
+        """В книге из двух глав «у каждого номера по две» означает только
+        то, что глав всего две."""
+        look = mdbook.inspect(self.book(["Глава 5", "Глава 5"]))
+        self.assertEqual(look["per_number"], 1)
+        self.assertEqual(look["thin"], [])
+
+    def test_a_small_book_still_finds_a_hole(self):
+        look = mdbook.inspect(self.book(
+            [f"Глава {n}" for n in (1, 2, 2, 4)]))
+        self.assertEqual(look["gaps"], ["3"])
+        self.assertEqual(look["thin"], [])
+
+    def test_a_ragged_book_has_no_rhythm(self):
+        """Разнобой ритмом не считается: иначе случайный перекос объявил
+        бы нормой то, что нормой не является."""
+        titles = []
+        for number in range(1, 21):
+            titles += [f"Глава {number}"] * (1 if number % 2 else 3)
+        self.assertEqual(mdbook.inspect(self.book(titles))["per_number"], 1)
+
+    def test_an_ordinary_book_is_untouched(self):
+        look = mdbook.inspect(self.book(
+            [f"Глава {n}" for n in range(1, 30)]))
+        self.assertEqual(look["per_number"], 1)
+        self.assertTrue(look["ok"])
+        self.assertEqual(look["thin"], [])
+
+    def test_parts_are_still_not_doubles_in_a_long_book(self):
+        """Книга из частей: «201.1» и «201.2» — две части одной главы."""
+        titles = [f"Глава {n}.{part}" for n in range(1, 30) for part in (1, 2)]
+        look = mdbook.inspect(self.book(titles))
+        self.assertEqual(look["doubles"], [])
+        self.assertEqual(look["thin"], [])
+
+    def test_a_missing_part_shows_up(self):
+        """У главы 15 осталась одна часть из двух — её и потеряли."""
+        titles = [f"Глава {n}.{part}" for n in range(1, 30) for part in (1, 2)
+                  if not (n == 15 and part == 2)]
+        self.assertEqual(mdbook.inspect(self.book(titles))["thin"], ["15"])
+
+
+
+class TestADoubleIsTheChapterNotTheNumber(unittest.TestCase):
+    """«Если есть повтор глав, он должен определять дубль по тексту.»
+
+    Совпадение номера этого ещё не значит: книгу, поделённую надвое,
+    отдают загрузчику двумя главами под одним номером, и текст у них
+    разный. А вот дословно совпавший текст значит ровно одно — глава
+    попала в книгу дважды и уедет на сайт дважды.
+    """
+
+    def book(self, rows):
+        return [(mdbook.make_head(title), list(body)) for title, body in rows]
+
+    def pairs(self, extra=()):
+        """Книга парами: у каждого номера две разные главы."""
+        rows = []
+        for number in range(294, 583):
+            rows.append((f"Глава {number}", [f"Первая половина {number}."]))
+            rows.append((f"Глава {number}", [f"Вторая половина {number}."]))
+        return self.book(rows + list(extra))
+
+    def test_one_number_two_different_chapters_is_not_a_double(self):
+        self.assertEqual(mdbook.inspect(self.pairs())["doubles"], [])
+
+    def test_a_book_in_pairs_is_in_order(self):
+        self.assertTrue(mdbook.inspect(self.pairs())["ok"])
+
+    def test_the_same_text_twice_is_a_double(self):
+        look = mdbook.inspect(self.pairs(
+            [("Глава 700", ["Первая половина 400."])]))
+        self.assertEqual(look["doubles"], ["400 = 700"])
+
+    def test_a_double_makes_the_book_not_ok(self):
+        look = mdbook.inspect(self.pairs(
+            [("Глава 700", ["Первая половина 400."])]))
+        self.assertFalse(look["ok"])
+
+    def test_the_finding_names_both_places(self):
+        """Чинить придётся одну из двух — надо знать, какие это."""
+        said = mdbook.inspect(self.pairs(
+            [("Глава 700", ["Первая половина 400."])]))["doubles"][0]
+        self.assertIn("400", said)
+        self.assertIn("700", said)
+
+    def test_spacing_does_not_hide_a_double(self):
+        """Лишние пробелы и пустые строки — не разница в тексте."""
+        look = mdbook.inspect(self.book([
+            ("Глава 1", ["Текст главы."]),
+            ("Глава 2", ["", "  Текст главы.  ", ""]),
+        ]))
+        self.assertEqual(look["doubles"], ["1 = 2"])
+
+    def test_empty_chapters_are_not_all_doubles(self):
+        """Пустую главу сравнивать не с чем: пустые совпадают все со
+        всеми, и книга без тел глав вышла бы сплошным повтором."""
+        look = mdbook.inspect(self.book([("Глава 1", []), ("Глава 2", [])]))
+        self.assertEqual(look["doubles"], [])
+
+    def test_a_chapter_without_a_number_is_named_by_its_title(self):
+        look = mdbook.inspect(self.book([
+            ("Информация", ["Одно и то же."]),
+            ("Глава 5", ["Одно и то же."]),
+        ]))
+        self.assertEqual(look["doubles"], ["Информация = 5"])
+
+
+
+class TestNumberingTheUnmarkedParts(unittest.TestCase):
+    """У главы бывает две-три части, а пометка стоит не везде.
+
+    Настоящая книга: «Глава 295», следом «Глава 295 (Часть 2)», следом
+    две «Главы 296» подряд без всяких пометок, а у 298-й частей три.
+    Загрузчику это уедет как одна и та же глава несколько раз, и порядок
+    на сайте соберётся наугад.
+    """
+
+    def marked(self, taken):
+        return mdbook.number_parts(taken)
+
+    def test_two_chapters_of_one_number_become_parts(self):
+        got = self.marked([(296, None, "А"), (296, None, "Б")])
+        self.assertEqual([(n, p) for n, p, _ in got], [(296, 1), (296, 2)])
+
+    def test_three_chapters_become_three_parts(self):
+        got = self.marked([(298, None, "А"), (298, None, "Б"), (298, None, "В")])
+        self.assertEqual([p for _, p, _ in got], [1, 2, 3])
+
+    def test_a_lone_chapter_is_left_alone(self):
+        """«Глава 300.1» без «300.2» означала бы часть, которой нет."""
+        got = self.marked([(300, None, "Одна")])
+        self.assertEqual(got, [(300, None, "Одна")])
+
+    def test_a_part_the_person_marked_is_not_touched(self):
+        """Она пришла от человека, и знать лучше него нам неоткуда."""
+        taken = [(301, 1, "А"), (301, 2, "Б")]
+        self.assertEqual(self.marked(taken), taken)
+
+    def test_a_half_marked_run_is_left_alone(self):
+        """Хоть у одной части номер есть — значит, разметку вели руками,
+        и наша помощь тут только напортит."""
+        taken = [(302, None, "А"), (302, 5, "Б")]
+        self.assertEqual(self.marked(taken), taken)
+
+    def test_the_same_number_far_apart_is_not_a_part(self):
+        """Два одинаковых номера в разных концах книги — чужая ошибка, а
+        не части: склеивать их было бы выдумкой."""
+        taken = [(400, None, "А"), (401, None, "Б"), (400, None, "В")]
+        self.assertEqual(self.marked(taken), taken)
+
+    def test_a_chapter_without_a_number_is_left_alone(self):
+        taken = [(None, None, "Информация"), (None, None, "Послесловие")]
+        self.assertEqual(self.marked(taken), taken)
+
+    def test_a_missing_number_does_not_join_its_neighbours(self):
+        """Номеров в книге не хватает, и это надо учитывать: между 302-й и
+        304-й нет 303-й, но частями одной главы они от этого не станут."""
+        got = self.marked([(302, None, "А"), (302, None, "Б"),
+                           (304, None, "В"), (304, None, "Г")])
+        self.assertEqual([(n, p) for n, p, _ in got],
+                         [(302, 1), (302, 2), (304, 1), (304, 2)])
+
+    def test_the_hole_stays_a_hole(self):
+        """Простановка частей номеров не выдумывает и дыр не закрывает:
+        пропущенная глава так и остаётся пропущенной."""
+        got = self.marked([(302, None, "А"), (302, None, "Б"),
+                           (304, None, "В"), (304, None, "Г")])
+        self.assertEqual(sorted({n for n, _, _ in got}), [302, 304])
+
+    def test_a_number_left_with_one_part_keeps_no_part(self):
+        """У 303-й половина потерялась. Ставить ей «303.1» значило бы
+        обещать «303.2», которой нет; и проверка должна её найти."""
+        got = self.marked([(302, None, "А"), (302, None, "Б"),
+                           (303, None, "Одна половина"),
+                           (304, None, "В"), (304, None, "Г")])
+        self.assertEqual(got[2], (303, None, "Одна половина"))
+
+    def test_the_names_survive(self):
+        got = self.marked([(296, None, "Разойтись"), (296, None, "Разойтись")])
+        self.assertEqual([name for _, _, name in got],
+                         ["Разойтись", "Разойтись"])
+
+    def test_every_chapter_gets_its_own_mark(self):
+        """Ради чего всё: у каждой главы своя пометка, и загрузчику уже
+        не уедет одна и та же глава несколько раз.
+
+        Глав на номер при этом остаётся две — так книга и устроена, — но
+        теперь это «294.1» и «294.2», а не «294» дважды.
+        """
+        book = []
+        for number in range(294, 320):
+            for half in ("Первая", "Вторая"):
+                book.append((mdbook.make_head(f"Глава {number}"),
+                             [f"{half} половина {number}."]))
+        was = mdbook.inspect(book)
+        self.assertEqual(was["per_number"], 2)
+
+        taken = mdbook.number_parts(
+            [mdbook.split_mark(head.title) for head, _ in book])
+        style = mdbook.TitleStyle()
+        fresh = [(mdbook.make_head(style.build(number, name, part=part)), body)
+                 for (number, part, name), (_, body) in zip(taken, book)]
+        self.assertEqual([head.title for head, _ in fresh][:4],
+                         ["Глава 294.1", "Глава 294.2",
+                          "Глава 295.1", "Глава 295.2"])
+        now = mdbook.inspect(fresh)
+        self.assertTrue(now["ok"])
+        self.assertEqual(now["doubles"], [])
+        self.assertEqual(now["thin"], [])
+
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -547,7 +825,11 @@ class TestLookingAtTheNumbering(unittest.TestCase):
     до отправки на сайт."""
 
     def book(self, *lines):
-        text = "".join(f"{line}\nтекст главы\n\n" for line in lines)
+        # Тело у каждой главы своё: дубль считается по тексту, и книга,
+        # где все главы дословно одинаковы, — это книга из дублей, а не
+        # образец порядка.
+        text = "".join(f"{line}\nтекст главы {at}\n\n"
+                       for at, line in enumerate(lines, 1))
         return mdbook.inspect(mdbook.read_book(text)[1])
 
     def test_a_tidy_book_is_called_tidy(self):
@@ -572,10 +854,19 @@ class TestLookingAtTheNumbering(unittest.TestCase):
         look = self.book("# [Глава 1168 — А]", "# [Глава 1169 — Б]")
         self.assertEqual(look["gaps"], [])
 
-    def test_a_doubled_number_is_found(self):
-        """Такая глава уедет на сайт двумя."""
+    def test_one_number_two_different_chapters_is_not_a_double(self):
+        """Настоящая книга: у главы две-три части, номер у них один, а
+        текст разный. Считать это дублем — объявлять дублем половину
+        книги."""
         look = self.book("# [Глава 5 — А]", "# [Глава 5 — Б]")
-        self.assertEqual(look["doubles"], ["5"])
+        self.assertEqual(look["doubles"], [])
+
+    def test_the_same_chapter_twice_is_found(self):
+        """А вот дословный повтор — дубль: такая уедет на сайт дважды."""
+        text = ("# [Глава 5 — А]\nодин и тот же текст\n\n"
+                "# [Глава 9 — Б]\nодин и тот же текст\n\n")
+        look = mdbook.inspect(mdbook.read_book(text)[1])
+        self.assertEqual(look["doubles"], ["5 = 9"])
 
     def test_a_number_going_backwards_is_found(self):
         look = self.book("# [Глава 7 — А]", "# [Глава 3 — Б]")
@@ -853,20 +1144,26 @@ class TestPartsAreNotDoubles(unittest.TestCase):
     """
 
     def look(self, *titles):
-        return mdbook.inspect([(mdbook.make_head(t), []) for t in titles])
+        # Тело у каждой главы своё: дубль считается по тексту.
+        return mdbook.inspect([(mdbook.make_head(title), [f"текст {at}"])
+                               for at, title in enumerate(titles, 1)])
 
     def test_two_parts_of_one_chapter_are_not_a_double(self):
         look = self.look("Глава 201.1", "Глава 201.2", "Глава 202")
         self.assertEqual(look["doubles"], [])
         self.assertTrue(look["ok"])
 
-    def test_the_same_part_twice_still_is(self):
+    def test_the_same_part_twice_is_not_a_double_by_itself(self):
+        """Номер повторился, а текст разный — значит, это разные куски,
+        которым просто не поправили пометку."""
         look = self.look("Глава 201.1", "Глава 201.1")
-        self.assertEqual(look["doubles"], ["201.1"])
+        self.assertEqual(look["doubles"], [])
 
-    def test_the_same_number_without_parts_still_is(self):
+    def test_the_same_number_without_parts_is_not_a_double_by_itself(self):
+        """Две части одной главы часто идут без пометки части вовсе — так
+        их отдаёт переводчик. Текст у них разный, и дубля тут нет."""
         look = self.look("Глава 5", "Глава 5")
-        self.assertEqual(look["doubles"], ["5"])
+        self.assertEqual(look["doubles"], [])
 
     def test_parts_do_not_leave_a_hole_in_the_numbering(self):
         look = self.look("Глава 201.1", "Глава 201.2", "Глава 202")

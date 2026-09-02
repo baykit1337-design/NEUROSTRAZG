@@ -2683,13 +2683,17 @@ def _fresh_head(head, title: str, order):
     return head.with_title(title)
 
 
-def _numbered(chapters, renumber: int):
+def _numbered(chapters, renumber: int, parts: bool = False):
     """Пары «номер, название» с перенумерацией, если её просили.
 
     Пролог и послесловие номера не имели. Выдать им номер значило бы
     сделать из «Пролога» «Главу 3».
     """
     taken = [mdbook.split_mark(head.title) for head, _ in chapters]
+    # Части, у которых номера не было. Считаем до перенумерации: та
+    # выпрямляет книгу в сплошной ряд, и частей в нём уже не остаётся.
+    if parts:
+        taken = mdbook.number_parts(taken)
     if not renumber:
         return taken
 
@@ -2798,7 +2802,8 @@ def api_format_retitle_preview():
         return jsonify(error=str(exc)), 400
 
     style = _title_style(payload)
-    taken = _numbered(chapters, _whole(payload, "renumber"))
+    taken = _numbered(chapters, _whole(payload, "renumber"),
+                      parts=bool(payload.get("mark_parts")))
     # Что уже известно без единого запроса: словарь имён важнее кэша —
     # написание из него выбрал человек.
     known = {**titles_op.headings(), **titles_op.spellings()}
@@ -2864,6 +2869,10 @@ def api_format_retitle():
     # никаких пустых строк между абзацами. По умолчанию — нет: чужую
     # книгу молча переписывать не будем.
     tidy = bool(payload.get("tidy"))
+    # Части, у которых номера не было: «Глава 296» дважды подряд станет
+    # «296.1» и «296.2». Загрузчику иначе уедет одна и та же глава
+    # несколько раз, и порядок на сайте соберётся наугад.
+    mark_parts = bool(payload.get("mark_parts"))
 
     doing = ("Переводим заголовки…" if way == "translate"
              else "Переписываем заголовки…")
@@ -2885,7 +2894,7 @@ def api_format_retitle():
         # имена, а номер к нему отношения не имеет. Считает их та же
         # `_numbered`, что и предпросмотр, — иначе он показывал бы не то,
         # что запишется.
-        taken = _numbered(chapters, renumber)
+        taken = _numbered(chapters, renumber, parts=mark_parts)
         wanted = [name for _, _, name in taken if name]
 
         done: dict = {}
