@@ -1,0 +1,37 @@
+/* Содержимое уезжает в ту сторону, куда переключили.
+ *
+ * Вкладок двенадцать, и они в один ряд. Нажал соседнюю справа — экран
+ * меняется целиком, и связи с тем, что нажали, никакой: непонятно даже,
+ * шагнул ты вперёд или назад. На третьем переключении подряд человек уже
+ * не помнит, где был.
+ *
+ * Направление отвечает на это само: пошли вправо — содержимое въезжает
+ * справа, пошли влево — слева. Ряд вкладок начинает читаться как ряд, а
+ * не как набор кнопок.
+ *
+ * Сторону считает скрипт: она видна только в момент нажатия, по номеру
+ * кнопки против номера прежней.
+ *
+ * «Рост вкладки» при этом не работает — так решено, а не случайно
+ * вышло: это два разных движения на одном и том же содержимом, и вместе
+ * они дерутся. Выключает его сам «Рост», увидев, что уезд включён.
+ */
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-tab-slide section:not([hidden]).fx-slide-from-right{
+    animation:fx-tab-slide-right .26s cubic-bezier(.2,.8,.3,1) 1;
+  }
+  .fx-tab-slide section:not([hidden]).fx-slide-from-left{
+    animation:fx-tab-slide-left .26s cubic-bezier(.2,.8,.3,1) 1;
+  }
+}
+
+@keyframes fx-tab-slide-right{
+  from{opacity:0; transform:translateX(34px)}
+  to  {opacity:1; transform:translateX(0)}
+}
+
+@keyframes fx-tab-slide-left{
+  from{opacity:0; transform:translateX(-34px)}
+  to  {opacity:1; transform:translateX(0)}
+}

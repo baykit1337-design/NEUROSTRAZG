@@ -90,6 +90,12 @@ function fxHas(key){
   document.addEventListener('click', event => {
     const button = event.target.closest && event.target.closest('.tabs button');
     if(!button || !fxHas('tab-grow')) return;
+    // «Уезд в сторону нажатия» сильнее роста: это два разных движения на
+    // одном и том же содержимом, и вместе они дерутся — содержимое едет
+    // вбок и одновременно вырастает из кнопки. Уступаем здесь, а не
+    // правилом в стилях: там пришлось бы перебивать чужую сложность
+    // своей, и следующая правка любого из двух эффектов ломала бы оба.
+    if(fxHas('tab-slide')) return;
 
     const box = button.getBoundingClientRect();
     const shown = document.querySelector('section:not([hidden])');

@@ -34,6 +34,10 @@ except ImportError:  # pragma: no cover — обычная машина без �
 #: свой; нет и того — тесты пропускаются.
 CHROMIUM = Path("/opt/pw-browsers/chromium")
 
+#: Файлы страницы. Пара проверок ниже смотрит в сам стиль: правило,
+#: которое обязано чего-то НЕ делать, в браузере не увидишь никак.
+STATIC = Path(__file__).resolve().parent.parent / "webapp" / "static"
+
 #: Вкладки в том же порядке, что и в шапке.
 TABS = ("download", "rank", "library", "split", "merge", "convert",
         "format", "rename", "check", "analyze", "tools", "looks")
@@ -696,6 +700,270 @@ class TestTheProgressStandsWhereItWasStarted(PageTestCase):
         self.assertIn("Заголовки в готовой книге",
                       self.started_by("fmRetitle"))
         self.assertIn("Собрать книгу из глав", self.started_by("fmCollect"))
+
+
+class EffectTestCase(PageTestCase):
+    """Эффекты проверяются на живой странице, а не по тексту файлов.
+
+    Реестр и подключение файлов сверяет `test_effects.py`. Там видно, что
+    эффект объявлен, — но не то, что он хоть на что-то влияет: правило,
+    промахнувшееся мимо разметки, выглядит в файле точно так же, как
+    попавшее.
+    """
+
+    def turn(self, key: str, on: bool = True):
+        self.page.evaluate(
+            "([k, on]) => document.documentElement.classList.toggle('fx-' + k, on)",
+            [key, on])
+
+    def styled(self, selector: str, field: str) -> str:
+        return self.page.evaluate(
+            """([sel, field]) => {
+                const node = document.querySelector(sel);
+                return node ? getComputedStyle(node)[field] : '';
+            }""", [selector, field])
+
+
+class TestTheMenuUnfolds(EffectTestCase):
+    """Меню появлялось разом, целиком, — и на месте пустого воздуха вдруг
+    оказывался список."""
+
+    def test_the_items_come_out_one_after_another(self):
+        self.turn('menu-fold')
+        self.page.click('.tabs button[data-tab="format"]')
+        self.page.click("#fmNames .dropdown-toggle")
+        self.assertEqual(
+            self.styled("#fmNames .dropdown-menu .dropdown-item",
+                        "animationName"), "fx-menu-fold-item")
+        self.quiet()
+
+    def test_a_taken_off_switch_takes_the_movement_off(self):
+        self.turn('menu-fold', False)
+        self.page.click('.tabs button[data-tab="format"]')
+        self.page.click("#fmNames .dropdown-toggle")
+        self.assertEqual(
+            self.styled("#fmNames .dropdown-menu .dropdown-item",
+                        "animationName"), "none")
+        self.quiet()
+
+    def test_the_frame_itself_does_not_move(self):
+        """Плавающее меню считает себе место сразу после вставки, а размер
+        оно берёт с учётом преобразований: сожми мы рамку в первом кадре,
+        меню измерило бы себя сжатым и встало бы не туда."""
+        css = (STATIC / "css" / "effects" / "menu-fold.css").read_text(
+            encoding="utf-8")
+        frame = css.split("@keyframes fx-menu-fold-in", 1)[1].split("}", 2)[0]
+        self.assertNotIn("transform", frame)
+
+
+class TestAFilledFieldGlows(EffectTestCase):
+    """На карточке бывает шесть полей подряд, и что заполнено, а что ждёт
+    ввода, видно только по мелкому серому тексту внутри."""
+
+    def border(self, selector: str, text: str) -> str:
+        """Цвет каймы поля с этим содержимым — и без фокуса на нём.
+
+        Фокус снимаем нарочно. У поля в работе своя подсветка, сильнее
+        нашей, и сравнивать заполненное-в-фокусе с пустым-без-фокуса
+        значило бы мерить не то.
+        """
+        self.page.fill(selector, text)
+        self.page.evaluate("(sel) => document.querySelector(sel).blur()",
+                           selector)
+        return self.settled(selector)
+
+    def settled(self, selector: str) -> str:
+        """Цвет каймы, когда переход уже кончился.
+
+        Кайма меняется не рывком, а за долю секунды: прочитанное сразу —
+        это цвет на середине пути, и он не равен ни тому, ни другому.
+        """
+        self.page.wait_for_timeout(350)
+        return self.styled(selector, "borderColor")
+
+    def setUp(self):
+        super().setUp()
+        self.turn('field-filled')
+        self.page.click('.tabs button[data-tab="split"]')
+
+    def test_a_filled_field_differs_from_an_empty_one(self):
+        self.assertNotEqual(self.border("#spPath", "C:/книги"),
+                            self.border("#spPath", ""))
+        self.quiet()
+
+    def test_a_field_being_typed_into_keeps_its_own_light(self):
+        """Два свечения в одних пикселях спорят между собой."""
+        self.page.fill("#spPath", "C:/книги")   # заполнение оставляет фокус
+        lit = self.settled("#spPath")
+        self.page.evaluate("() => document.getElementById('spPath').blur()")
+        self.assertNotEqual(self.settled("#spPath"), lit)
+        self.quiet()
+
+    def test_a_field_without_a_placeholder_is_left_alone(self):
+        """У такого поля `:placeholder-shown` не совпадает никогда — а
+        значит, пустое горело бы наравне с заполненным."""
+        css = (STATIC / "css" / "effects" / "field-filled.css").read_text(
+            encoding="utf-8")
+        for rule in css.splitlines():
+            # Только строки-правила: в пояснении выше псевдокласс тоже
+            # назван, и на нём проверка спотыкалась.
+            if rule.startswith(".fx-") and ":not(:placeholder-shown)" in rule:
+                self.assertIn("[placeholder]", rule, rule)
+
+
+class TestTheInkDries(EffectTestCase):
+    def test_the_path_shows_itself_when_it_appears(self):
+        self.turn('ink-dry')
+        self.page.click('.tabs button[data-tab="format"]')
+        self.assertEqual(self.styled("#fmSummary", "animationName"), "none")
+
+        self.page.evaluate(
+            "() => { document.getElementById('fmSummary').textContent = "
+            "'Файл: C:/книги/книга.md'; }")
+        self.assertEqual(self.styled("#fmSummary", "animationName"),
+                         "fx-ink-dry")
+        self.quiet()
+
+
+class TestTheLockedButtonShakes(EffectTestCase):
+    """Серая кнопка не отвечала ничем: нажатие проваливалось в пустоту, и
+    занятую работой кнопку принимали за сломанную."""
+
+    def poke(self, selector: str) -> bool:
+        """Ткнуть в середину кнопки и сказать, дрогнула ли она."""
+        return self.page.evaluate(
+            """(sel) => {
+                const button = document.querySelector(sel);
+                const box = button.getBoundingClientRect();
+                document.dispatchEvent(new PointerEvent('pointerdown', {
+                    bubbles: true,
+                    clientX: box.left + box.width / 2,
+                    clientY: box.top + box.height / 2,
+                }));
+                return button.classList.contains('fx-locked');
+            }""", selector)
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="check"]')
+        self.page.evaluate(
+            "() => { document.getElementById('mnStart').disabled = true; }")
+
+    def test_a_locked_button_answers_the_poke(self):
+        self.turn('lock-shake')
+        self.assertTrue(self.poke("#mnStart"))
+        self.quiet()
+
+    def test_a_working_button_is_not_shaken(self):
+        """Дрожь на живой кнопке означала бы отказ там, где его нет."""
+        self.turn('lock-shake')
+        self.page.evaluate(
+            "() => { document.getElementById('mnStart').disabled = false; }")
+        self.assertFalse(self.poke("#mnStart"))
+        self.quiet()
+
+    def test_the_poke_reaches_the_page_at_all(self):
+        """Событий от выключенной кнопки браузер не рассылает вовсе —
+        поймать нажатие можно только сняв с неё указатели."""
+        self.turn('lock-shake')
+        self.assertEqual(self.styled("#mnStart", "pointerEvents"), "none")
+
+    def test_a_taken_off_switch_leaves_the_button_alone(self):
+        self.turn('lock-shake', False)
+        self.assertFalse(self.poke("#mnStart"))
+        self.quiet()
+
+
+class TestTheWheelPicksUpSpeed(EffectTestCase):
+    """«Глав в томе» доходит до двухсот пятидесяти за двести пятьдесят
+    щелчков колеса. Столько никто не крутит."""
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="format"]')
+        self.turn('spin-wheel')
+
+    def spin(self, times: int, selector: str = "#fmRenumber") -> int:
+        """Крутануть колесо вверх столько раз подряд."""
+        return self.page.evaluate(
+            """([sel, times]) => {
+                const input = document.querySelector(sel);
+                input.value = '0';
+                input.focus();
+                for(let at = 0; at < times; at += 1){
+                    input.dispatchEvent(new WheelEvent('wheel', {
+                        bubbles: true, cancelable: true, deltaY: -1}));
+                }
+                return Number(input.value);
+            }""", [selector, times])
+
+    def test_the_first_click_moves_by_one(self):
+        """Разгон не должен отбирать точную правку на единицу."""
+        self.assertEqual(self.spin(1), 1)
+        self.quiet()
+
+    def test_spinning_on_goes_faster_than_one_by_one(self):
+        self.assertGreater(self.spin(20), 40)
+        self.quiet()
+
+    def test_a_field_nobody_clicked_into_is_left_to_the_page(self):
+        """Иначе колесо переставало прокручивать страницу каждый раз,
+        когда курсор случайно проезжал над числом."""
+        got = self.page.evaluate(
+            """(sel) => {
+                const input = document.querySelector(sel);
+                input.value = '0';
+                input.blur();
+                const event = new WheelEvent('wheel', {
+                    bubbles: true, cancelable: true, deltaY: -1});
+                input.dispatchEvent(event);
+                return {value: Number(input.value), stopped: event.defaultPrevented};
+            }""", "#fmRenumber")
+        self.assertEqual(got["value"], 0)
+        self.assertFalse(got["stopped"])
+        self.quiet()
+
+    def test_a_taken_off_switch_gives_the_wheel_back(self):
+        self.turn('spin-wheel', False)
+        self.assertEqual(self.spin(20), 0)
+        self.quiet()
+
+
+class TestTheTabSlidesFromTheSideItWasPressed(EffectTestCase):
+    def side(self, tab: str) -> str:
+        self.page.click(f'.tabs button[data-tab="{tab}"]')
+        return self.page.evaluate(
+            """() => {
+                const shown = document.querySelector('section:not([hidden])');
+                return [...shown.classList].find(c => c.startsWith('fx-slide-')) || '';
+            }""")
+
+    def test_it_comes_from_the_right_going_right(self):
+        self.turn('tab-slide')
+        self.page.click('.tabs button[data-tab="download"]')
+        self.assertEqual(self.side("check"), "fx-slide-from-right")
+        self.quiet()
+
+    def test_it_comes_from_the_left_going_back(self):
+        self.turn('tab-slide')
+        self.page.click('.tabs button[data-tab="check"]')
+        self.assertEqual(self.side("download"), "fx-slide-from-left")
+        self.quiet()
+
+    def test_growing_stands_down_while_sliding(self):
+        """Два разных движения на одном содержимом дерутся между собой."""
+        self.turn('tab-slide')
+        self.turn('tab-grow')
+        self.page.click('.tabs button[data-tab="check"]')
+        self.assertFalse(self.page.evaluate(
+            "() => document.querySelector('section:not([hidden])')"
+            ".classList.contains('fx-enter')"))
+        self.quiet()
+
+    def test_a_taken_off_switch_leaves_the_tab_still(self):
+        self.turn('tab-slide', False)
+        self.assertEqual(self.side("check"), "")
+        self.quiet()
 
 
 class TestNoFieldFallsOutOfTheTheme(PageTestCase):

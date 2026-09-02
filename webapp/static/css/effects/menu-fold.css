@@ -1,0 +1,45 @@
+/* Выпадающий список раскрывается гармошкой.
+ *
+ * Меню появлялось разом, целиком, — и на месте, где только что был
+ * пустой воздух, вдруг оказывался список. Откуда он взялся и к какой
+ * кнопке относится, приходилось соображать заново.
+ *
+ * Пункты выезжают сверху вниз с задержкой друг за другом: видно, что
+ * список именно разворачивается из кнопки, а не подменяет собой кусок
+ * страницы.
+ *
+ * Сама рамка меню только проявляется и НЕ двигается. Плавающее меню
+ * (`.floating`) размеры себе считает сразу после вставки в страницу —
+ * `openMenu` берёт их у `getBoundingClientRect`, — а тот учитывает
+ * преобразования. Сожми мы рамку в первом кадре, меню измерило бы себя
+ * сжатым и встало бы не туда. Двигаются только пункты: их
+ * преобразования на размер рамки не влияют.
+ */
+
+@media (prefers-reduced-motion: no-preference){
+  .fx-menu-fold .dropdown-menu:not([hidden]){
+    animation:fx-menu-fold-in .14s ease-out 1;
+  }
+
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item{
+    animation:fx-menu-fold-item .18s ease-out both;
+  }
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(1){animation-delay:0s}
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(2){animation-delay:.03s}
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(3){animation-delay:.06s}
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(4){animation-delay:.09s}
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(5){animation-delay:.12s}
+  /* Дальше пятого не тянем: в списке досок рейтинга их четырнадцать, и
+     последняя появлялась бы почти через полсекунды после первой. */
+  .fx-menu-fold .dropdown-menu:not([hidden]) .dropdown-item:nth-child(n+6){animation-delay:.15s}
+}
+
+@keyframes fx-menu-fold-in{
+  from{opacity:0}
+  to  {opacity:1}
+}
+
+@keyframes fx-menu-fold-item{
+  from{opacity:0; transform:translateY(-6px)}
+  to  {opacity:1; transform:translateY(0)}
+}
