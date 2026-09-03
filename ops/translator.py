@@ -50,6 +50,20 @@ MARK = Path("gemini_translator") / "cli.py"
 #: отправлял человека искать то, что у него и так лежит перед глазами.
 OLD_MARKS = (Path("main.py"), Path("gemini_translator") / "__init__.py")
 
+#: А по этому — что человек принёс собранную версию, а не исходники.
+#: `base_library.zip` лежит в нутре любой сборки PyInstaller, рядом с
+#: `python3*.dll` и десятками `.pyd`.
+#:
+#: Разница тут не в уровне папки, и совет «возьмите папку выше» тут не
+#: работает: в сборке питон уже скомпилирован, и `cli.py` в ней нет
+#: вовсе — ни внутри `_internal`, ни рядом с exe. Прежний отказ отправлял
+#: человека искать файл, которого у него в принципе нет.
+BUILT_MARK = "base_library.zip"
+
+#: Где эта примета лежит: в самой папке (человек указал нутро сборки) или
+#: в её `_internal` (указал папку с exe).
+BUILT_WHERE = (Path(BUILT_MARK), Path("_internal") / BUILT_MARK)
+
 #: Где переводчик держит своё окружение. Так его создаёт `run.bat`.
 VENV = (
     Path(".venv") / "Scripts" / "python.exe",   # Windows
@@ -75,6 +89,14 @@ def where() -> str:
 def looks_right(path) -> bool:
     """Годится ли папка для разговора: есть ли в ней CLI."""
     return bool(path) and (Path(str(path)).expanduser() / MARK).is_file()
+
+
+def looks_built(path) -> bool:
+    """Это собранная версия (.exe), а не исходники переводчика."""
+    if not path:
+        return False
+    root = Path(str(path)).expanduser()
+    return any((root / one).is_file() for one in BUILT_WHERE)
 
 
 def looks_old(path) -> bool:
@@ -120,6 +142,16 @@ def trouble_with(path) -> str:
     root = Path(str(path)).expanduser()
     if not root.is_dir():
         return f"Папки нет: {root}"
+    if looks_built(root) and not looks_right(root):
+        return ("Это собранная версия переводчика, а не его исходники: в "
+                f"папке лежит `{BUILT_MARK}`. Питон в сборке уже "
+                f"скомпилирован, и {MARK.as_posix()} там нет вовсе — ни в "
+                "`_internal`, ни рядом с exe, так что папкой выше это не "
+                "лечится.\n"
+                "Работа без окна берётся из исходников: скачайте "
+                "переводчик исходниками и укажите папку, где рядом с "
+                "`run.bat` лежит `main.py`. Ключи и промпты при этом не "
+                "пострадают — они лежат отдельно, в ~/.epub_translator.")
     if looks_old(root):
         return ("Папка та, но версия переводчика старая: в ней нет "
                 f"{MARK.as_posix()}. Работа без окна появилась у него "

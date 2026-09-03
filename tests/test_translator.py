@@ -153,6 +153,40 @@ class TestWhenItGoesWrong(Base):
         self.assertIn(".epub_translator", said)
         self.assertTrue(translator.looks_old(home))
 
+    def built(self, where: str = "") -> Path:
+        """Собранная версия: нутро PyInstaller вместо исходников."""
+        home = self.tmp / "сборка"
+        inside = home / where if where else home
+        inside.mkdir(parents=True)
+        (inside / translator.BUILT_MARK).write_text("", encoding="utf-8")
+        # Папки чужих пакетов в сборке есть, а `.py` в них нет.
+        (inside / "gemini_translator").mkdir()
+        return home
+
+    def test_a_built_version_is_not_called_a_wrong_folder(self):
+        """Третья беда с третьим лечением.
+
+        Человек скачал релиз, а не исходники. Питон в сборке уже
+        скомпилирован, и `cli.py` там нет ни на одном уровне — совет
+        «возьмите папку выше» тут тупик, а прежний отказ отправлял
+        искать файл, которого у него в принципе нет.
+        """
+        said = self.why(self.built("_internal"))
+
+        self.assertIn("собранная версия", said)
+        self.assertNotIn("не папка переводчика", said)
+        # И сразу говорим, что делать, и чем это не грозит.
+        self.assertIn("исходник", said)
+        self.assertIn(".epub_translator", said)
+
+    def test_the_inner_folder_of_a_build_is_recognised_too(self):
+        """Указать могут и саму `_internal` — так и вышло."""
+        self.assertTrue(translator.looks_built(self.built() ))
+        self.assertTrue(translator.looks_built(self.built("_internal")))
+
+    def test_a_folder_with_sources_is_not_called_a_build(self):
+        self.assertFalse(translator.looks_built(fake_translator(self.tmp)))
+
     def test_a_fresh_version_is_not_called_old(self):
         home = fake_translator(self.tmp)
         (home / "main.py").write_text("", encoding="utf-8")
