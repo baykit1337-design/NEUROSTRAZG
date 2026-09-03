@@ -12,7 +12,8 @@ from core import naming
 from core.models import OpReport
 from core.text import PrepOptions
 
-from .base import Progress, collect_files, read_all, skipped_files
+from .base import (Progress, collect_files, in_reading_order, read_all,
+                   skipped_files)
 
 ORDER_NUMBER = "number"
 ORDER_NAME = "name"
@@ -50,7 +51,10 @@ def _ordered(chapters, order: str):
     """Порядок глав: по номеру (по паре чисел) либо по имени файла."""
     if order == ORDER_NAME:
         return sorted(chapters, key=lambda c: Path(c.source).name.lower())
-    return sorted(chapters, key=naming.sort_key)
+    # По номеру — но не внутри одного файла: епаб и fb2 отдают по многу
+    # глав сразу, и порядок их задан самой книгой. Номера в чужих
+    # заголовках то есть, то нет, и сортировка по ним книгу перемешивает.
+    return in_reading_order(chapters)
 
 
 def run(

@@ -2530,8 +2530,9 @@ def api_format_files():
     report = OpReport()
     try:
         files = base_op.collect_files(targets)
-        chapters = sorted(base_op.read_all(files, report),
-                          key=naming.sort_key)
+        # Не `sorted` по номеру: епаб отдаёт все главы разом, и порядок
+        # их задан самой книгой, а не числами в заголовках.
+        chapters = base_op.in_reading_order(base_op.read_all(files, report))
     except (ReadError, ValueError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -2581,8 +2582,8 @@ def api_format_collect():
         report = OpReport(output=str(output))
         progress = _progress(job, "Файл")
         files = base_op.collect_files(targets)
-        chapters = sorted(base_op.read_all(files, report, progress),
-                          key=naming.sort_key)
+        chapters = base_op.in_reading_order(
+            base_op.read_all(files, report, progress))
         if not chapters:
             raise ValueError("Не удалось прочитать ни одной главы.")
 

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from ..models import Chapter
-from ..naming import parse
+from ..naming import parse_title
 from .base import ReadError, Reader, split_paragraphs
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -38,7 +38,11 @@ class EpubReader(Reader):
 
         chapters = []
         for title, text in raw:
-            name = parse(title)
+            # Разбор заголовка, а не имени файла: в заголовке цифра чаще
+            # всего часть названия, и «Act 3 is about to begin.» третьей
+            # главой не является. Нет номера — и не надо: порядок глав в
+            # епабе задан корешком, и выдумывать числа не за чем.
+            name = parse_title(title)
             # Название нередко стоит и в тексте — убираем общей функцией.
             paragraphs = strip_leading_title(split_paragraphs(text), title)
             chapters.append(

@@ -16,13 +16,17 @@
 
 import argparse
 import html
+import logging
 import os
 import re
 import sys
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote
 from xml.etree import ElementTree as ET
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------- HTML -> текст
@@ -102,6 +106,116 @@ def safe_name(s: str, limit: int = 110) -> str:
 SERVICE_PAGE = 200
 
 
+def _toc_titles(z, names, base, manifest, nav_ids, ncx_ids):
+    """Названия глав из оглавления епаба: путь к файлу → название.
+
+    Зачем. Название главы лежит в епабе в двух местах, и в разных книгах
+    заполнено то одно, то другое. Внутри самой главы — заголовком `<h1>`;
+    его мы и брали. Но целые книги приходят вообще без заголовков внутри:
+    там есть только оглавление, а в файлах — голый текст.
+
+    Раньше на такой книге название бралось из имени файла. Имена в епабе
+    служебные — `0122.xhtml`, — и книга на четыреста сорок шесть глав
+    выходила из программы как «Глава 122», «Глава 123», «Глава 124»: не
+    названия и не номера, а порядковые номера файлов внутри архива.
+
+    Разбираем оба вида оглавления. EPUB3 держит его отдельной страницей
+    со ссылками, EPUB2 — файлом `.ncx`. Книга бывает и с тем и с другим,
+    поэтому берём всё, что нашлось, а первое найденное название за
+    файлом и остаётся.
+    """
+    found: dict[str, str] = {}
+
+    def put(href: str, title: str):
+        title = re.sub(r'\s+', ' ', (title or '')).strip()
+        if not href or not title:
+            return
+        # Ссылка ведёт в место внутри файла: «глава.xhtml#top». Нам нужен
+        # сам файл — глава лежит в нём целиком.
+        href = unquote(href.split('#')[0])
+        if not href:
+            return
+        full = os.path.normpath(os.path.join(base, href)).replace('\\', '/')
+        found.setdefault(full, title)
+
+    for idref in list(nav_ids) + list(ncx_ids):
+        href = manifest.get(idref)
+        if not href:
+            continue
+        full = os.path.normpath(os.path.join(base, href)).replace('\\', '/')
+        if full not in names:
+            continue
+        # Папка самого оглавления, а не книги: ссылки в нём относительны
+        # его собственного места.
+        here = os.path.dirname(full)
+        try:
+            raw = z.read(full)
+        except (KeyError, OSError):
+            continue
+
+        if idref in ncx_ids:
+            # EPUB2: navPoint → navLabel/text и content@src.
+            try:
+                tree = ET.fromstring(raw)
+            except ET.ParseError:
+                continue
+            for point in tree.iter():
+                if not point.tag.endswith('navPoint'):
+                    continue
+                label = src = ''
+                for el in point.iter():
+                    if el.tag.endswith('text') and not label:
+                        label = ''.join(el.itertext())
+                    if el.tag.endswith('content') and el.get('src') and not src:
+                        src = el.get('src')
+                if src:
+                    put(os.path.relpath(
+                        os.path.normpath(os.path.join(here, unquote(src.split('#')[0]))),
+                        base or '.').replace('\\', '/'), label)
+        else:
+            # EPUB3: страница со ссылками. Разбираем как HTML, а не как
+            # XML: страница оглавления бывает и не строгим XML.
+            links = LinkExtractor()
+            try:
+                links.feed(raw.decode('utf-8', errors='replace'))
+            except Exception as exc:  # noqa: BLE001 — кривое оглавление не повод бросать книгу
+                log.warning("Оглавление %s не разобралось: %s", full, exc)
+            for href, label in links.links:
+                put(os.path.relpath(
+                    os.path.normpath(os.path.join(here, unquote(href.split('#')[0]))),
+                    base or '.').replace('\\', '/'), label)
+
+    return found
+
+
+class LinkExtractor(HTMLParser):
+    """Ссылки со страницы оглавления: адрес и подпись."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self._href = None
+        self._text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'a':
+            return
+        href = dict(attrs).get('href')
+        if href:
+            self._href = href
+            self._text = []
+
+    def handle_endtag(self, tag):
+        if tag == 'a' and self._href is not None:
+            self.links.append((self._href, ''.join(self._text)))
+            self._href = None
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+
 def epub_chapters(path: Path):
     """Возвращает список (заголовок, текст) в порядке чтения книги."""
     with zipfile.ZipFile(path) as z:
@@ -128,15 +242,26 @@ def epub_chapters(path: Path):
         # Оглавление помечено в манифесте само — угадывать его по объёму
         # не нужно, а вот короткую настоящую главу так недолго и потерять.
         nav_ids = set()
+        #: Оглавление старого образца, отдельным файлом `.ncx`.
+        ncx_ids = set()
         for el in opf.iter():
             if el.tag.endswith('item') and el.get('id') and el.get('href'):
                 manifest[el.get('id')] = el.get('href')
                 if 'nav' in (el.get('properties') or '').split():
                     nav_ids.add(el.get('id'))
+                if el.get('media-type') == 'application/x-dtbncx+xml':
+                    ncx_ids.add(el.get('id'))
 
         # 3. spine: порядок чтения
         order = [el.get('idref') for el in opf.iter()
                  if el.tag.endswith('itemref') and el.get('idref')]
+        # У корешка бывает своя ссылка на `.ncx` — там, где в манифесте
+        # тип не проставлен.
+        for el in opf.iter():
+            if el.tag.endswith('spine') and el.get('toc'):
+                ncx_ids.add(el.get('toc'))
+
+        toc = _toc_titles(z, names, base, manifest, nav_ids, ncx_ids)
 
         chapters = []
         for idref in order:
@@ -158,7 +283,15 @@ def epub_chapters(path: Path):
             if not text.strip():
                 continue
 
-            title = heading or Path(full).stem
+            # Оглавление — вторым, а не первым. Заголовок внутри главы
+            # пишет тот же, кто писал саму главу, и он точнее; оглавление
+            # же бывает и на уровне томов — тогда его название досталось
+            # бы одной главе из полусотни.
+            #
+            # А вот имя файла названием не является вовсе: в епабе оно
+            # служебное («0122.xhtml»), и до оглавления доходить до него
+            # было нельзя.
+            title = heading or toc.get(full) or Path(full).stem
             chapters.append((title, text))
 
         return chapters

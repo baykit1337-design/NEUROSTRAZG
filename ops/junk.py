@@ -36,6 +36,7 @@ KINDS = {
     "cjk": "Иероглифы",
     "latin": "Не переведено",
     "symbols": "Посторонние знаки",
+    "comment": "Комментарий с сайта",
 }
 
 #: Находки, за которыми стоит настоящая беда загрузчика: второй заголовок
@@ -65,6 +66,34 @@ SHOW = 20
 #: «…в главе 12 говорилось» тоже содержит и слово, и число, но это
 #: обычный текст, и вычёркивать такую строку из книги нельзя.
 STARTS = re.compile(rf"^\s*{naming.CHAPTER_WORD}\s*(\d{{1,5}})(?!\d)", re.IGNORECASE)
+
+#: Комментарии со страницы, утащенные вместе с главой:
+#:
+#:     LoftySite5764.
+#:     9 декабря 2025 года, 12:08.
+#:     BasicDoor109.
+#:     9 декабря 2025 года, 14:53.
+#:
+#: Опознаём по времени, а не по нику. Ник — это любые буквы и цифры, и
+#: отличить его от строки текста нечем; а вот «9 декабря 2025 года,
+#: 12:08.» прозой не бывает. Ник берём тот, что стоит прямо над временем.
+MONTHS = ("января|февраля|марта|апреля|мая|июня|"
+          "июля|августа|сентября|октября|ноября|декабря")
+COMMENT_TIME = re.compile(
+    rf"^\s*\d{{1,2}}\s+(?:{MONTHS})\s+\d{{4}}(?:\s+года)?\s*,\s*"
+    r"\d{1,2}:\d{2}\s*\.?\s*$", re.IGNORECASE)
+
+#: Ник длиннее этого — уже строка текста, а не подпись.
+NICK_MAX = 48
+
+#: И не длиннее стольких слов.
+NICK_WORDS = 4
+
+#: Чем ник не бывает: с этого начинается реплика или цитата.
+NICK_NOT_FIRST = "—–-«\"'“„"
+
+#: Этих знаков в нике нет. Точка бывает, но только в самом конце.
+NICK_NOT_INSIDE = ".,;:!?…"
 
 CYRILLIC = re.compile(r"[а-яёА-ЯЁ]")
 LATIN = re.compile(r"[A-Za-z]")
@@ -221,7 +250,53 @@ def _repeats(chapters) -> set[str]:
     return {key for key, count in seen.items() if count >= limit}
 
 
-def sort_out(line: str, index: int, title: str, repeats) -> str:
+def _looks_like_nick(line: str) -> bool:
+    """Похожа ли строка на подпись под комментарием.
+
+    Ник — короткий, в несколько слов, без знаков препинания внутри и не
+    начинается как реплика. Строгость тут нарочная: ошибись мы — и из
+    главы уедет последняя строка текста, а не чужая подпись.
+    """
+    body = str(line or "").strip()
+    if not body or len(body) > NICK_MAX:
+        return False
+    if body[0] in NICK_NOT_FIRST:
+        return False
+    core = body[:-1] if body.endswith(".") else body
+    if not core or any(char in core for char in NICK_NOT_INSIDE):
+        return False
+    return len(core.split()) <= NICK_WORDS
+
+
+def comment_lines(paragraphs) -> set[int]:
+    """Строки главы, которые на самом деле комментарии со страницы.
+
+    Возвращает их места, а не сами строки: убирать надо именно эти
+    строки, а не все похожие на них в книге. Ник вроде «Killusion.» в
+    тексте книги встретиться может, а вот на своём месте в хвосте — нет.
+
+    Время ищем по всей главе: «9 декабря 2025 года, 12:08.» прозой не
+    бывает нигде. А подписи — только с хвоста и только парами.
+
+    Разница тут не придирка. Строка «Тишина.» и ник «Killusion.» устроены
+    одинаково: одно слово с точкой. Отличает их место: настоящие
+    комментарии идут в конце главы вплотную друг к другу, ник над
+    временем, ник над временем. Идём с последней строки вверх, пока пары
+    складываются; сломалась пара — дальше не смотрим, и последняя строка
+    текста остаётся на месте.
+    """
+    lines = [str(line or "") for line in paragraphs]
+    found = {at for at, line in enumerate(lines) if COMMENT_TIME.match(line)}
+
+    at = len(lines) - 1
+    while at >= 1 and at in found and _looks_like_nick(lines[at - 1]):
+        found.add(at - 1)
+        at -= 2
+    return found
+
+
+def sort_out(line: str, index: int, title: str, repeats,
+             comments=()) -> str:
     """К какой находке отнести эту строку. Пусто — строка нужная.
 
     Порядок закрытый и один на осмотр и на чистку: строка попадает ровно
@@ -232,6 +307,11 @@ def sort_out(line: str, index: int, title: str, repeats) -> str:
     body = (line or "").strip()
     if not body:
         return ""
+    # Комментарий — первым: подпись под ним состоит из латиницы, и без
+    # этой проверки она попала бы в «не переведено», а время — в шапку
+    # следующей главы.
+    if index in comments:
+        return "comment"
     # Заголовок и название книги — только в зоне шапки: та же строка в
     # середине главы уже текст, и вычёркивать её нельзя.
     if index < HEAD_LINES:
@@ -250,8 +330,9 @@ def inspect(chapters) -> Report:
 
     found: dict[str, Find] = {}
     for title, paragraphs in chapters:
+        comments = comment_lines(paragraphs)
         for index, line in enumerate(paragraphs):
-            kind = sort_out(line, index, title, repeats)
+            kind = sort_out(line, index, title, repeats, comments)
             if not kind:
                 continue
             body = line.strip()
@@ -297,9 +378,10 @@ def clean(chapters, keys) -> tuple[list[tuple[str, list[str]]], int]:
     made: list[tuple[str, list[str]]] = []
     gone = 0
     for title, paragraphs in chapters:
+        comments = comment_lines(paragraphs)
         kept: list[str] = []
         for index, line in enumerate(paragraphs):
-            kind = sort_out(line, index, title, repeats)
+            kind = sort_out(line, index, title, repeats, comments)
             drop = (kind in kinds if kind and kind != "repeat"
                     else kind == "repeat" and normalize_loose(line.strip()) in texts)
             if drop:

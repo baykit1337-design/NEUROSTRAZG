@@ -241,3 +241,144 @@ class TestEveryFindShowsItsLines(unittest.TestCase):
                                       for n in range(junk.SHOW + 10)]),
         ])["latin"]
         self.assertLessEqual(len(found["spots"]), junk.SHOW)
+
+
+class TestCommentsFromTheSite(unittest.TestCase):
+    """Комментарии со страницы, утащенные вместе с главой.
+
+    Слив Новелпии кладёт их в конец каждой главы: ник, время, ник, время.
+    Ник — это любые буквы и цифры, и отличить его от строки текста нечем;
+    опознаём по времени, а ник берём тот, что стоит прямо над ним.
+
+    Главное здесь то же, что и во всём этом файле: не найти побольше, а не
+    выкинуть нужное.
+    """
+
+    TEXT = ["Я продолжаю говорить, не в силах стереть улыбку.",
+            "Несмотря на всё это.",
+            "— Может, пойдём по домам?"]
+
+    TAIL = ["LoftySite5764.", "9 декабря 2025 года, 12:08.",
+            "BasicDoor109.", "9 декабря 2025 года, 14:53.",
+            "Killusion.", "11 декабря 2025 года, 04:57."]
+
+    def finds(self, chapters):
+        return {find.kind: find.as_dict()
+                for find in junk.inspect(chapters).finds}
+
+    def test_the_whole_tail_is_found(self):
+        found = self.finds([("Глава 567", self.TEXT + self.TAIL)])["comment"]
+        self.assertEqual(found["count"], len(self.TAIL))
+
+    def test_the_text_of_the_chapter_stays(self):
+        made, gone = junk.clean(
+            [("Глава 567", self.TEXT + self.TAIL)], ["comment"])
+        self.assertEqual(made[0][1], self.TEXT)
+        self.assertEqual(gone, len(self.TAIL))
+
+    def test_a_russian_nick_with_digits_is_a_nick_too(self):
+        tail = ["Тёмный Странник77.", "30 апреля 2026 года, 09:20."]
+        made, _ = junk.clean([("Глава 1", ["Текст."] + tail)], ["comment"])
+        self.assertEqual(made[0][1], ["Текст."])
+
+    def test_a_time_without_a_nick_above_it_goes_alone(self):
+        """Над временем стоит другое время — значит, подписи не было."""
+        body = ["Текст.", "9 декабря 2025 года, 12:08.",
+                "9 декабря 2025 года, 14:53."]
+        made, gone = junk.clean([("Глава 1", body)], ["comment"])
+        self.assertEqual(made[0][1], ["Текст."])
+        self.assertEqual(gone, 2)
+
+    def test_a_sentence_above_the_time_is_not_a_nick(self):
+        """Иначе из главы уедет последняя строка текста."""
+        body = ["Он ушёл, не сказав ни слова.", "9 декабря 2025 года, 12:08."]
+        made, gone = junk.clean([("Глава 1", body)], ["comment"])
+        self.assertEqual(made[0][1], ["Он ушёл, не сказав ни слова."])
+        self.assertEqual(gone, 1)
+
+    def test_a_line_of_speech_is_never_a_nick(self):
+        body = ["— Госпожа Эйлин.", "9 декабря 2025 года, 12:08."]
+        made, _ = junk.clean([("Глава 1", body)], ["comment"])
+        self.assertEqual(made[0][1], ["— Госпожа Эйлин."])
+
+    def test_a_date_inside_a_sentence_is_left_alone(self):
+        """Время прозой не бывает, а вот дата — сколько угодно."""
+        body = ["Это случилось 9 декабря 2025 года, и никто не понял.",
+                "Он ушёл."]
+        made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
+        self.assertEqual(made[0][1], body)
+        self.assertEqual(gone, 0)
+
+    def test_a_book_without_comments_is_not_accused(self):
+        self.assertNotIn("comment", self.finds([("Глава 1", self.TEXT)]))
+
+    def test_nothing_goes_until_it_is_ticked(self):
+        """Находка не из тех, что мешают загрузчику: галочка сама не
+        встаёт, и человек сначала смотрит список."""
+        found = self.finds([("Глава 1", self.TEXT + self.TAIL)])["comment"]
+        self.assertFalse(found["spoils"])
+
+        made, gone = junk.clean([("Глава 1", self.TEXT + self.TAIL)], [])
+        self.assertEqual(made[0][1], self.TEXT + self.TAIL)
+        self.assertEqual(gone, 0)
+
+    def test_the_lines_are_shown_before_they_go(self):
+        """«Может, где-то удалять не надо» — на это и смотрят."""
+        found = self.finds([("Глава 567", self.TEXT + self.TAIL)])["comment"]
+        self.assertEqual([spot["text"] for spot in found["spots"]], self.TAIL)
+
+    def test_a_nick_in_latin_does_not_go_to_untranslated(self):
+        """Иначе подпись уехала бы в «не переведено», а время — в шапку
+        следующей главы."""
+        found = self.finds([("Глава 567", self.TEXT + self.TAIL)])
+        self.assertNotIn("latin", found)
+
+    def test_a_one_word_line_above_a_lone_comment_is_a_known_limit(self):
+        """Строка «Тишина.» и ник «Killusion.» устроены одинаково: одно
+        слово с точкой. Под одиноким комментарием отличить их нечем — и
+        именно поэтому находка показывается, а галочка сама не встаёт.
+
+        Проверка стоит здесь нарочно: предел известен, и молчать о нём
+        хуже, чем назвать.
+        """
+        body = ["Тишина.", "9 декабря 2025 года, 12:08."]
+        made, _ = junk.clean([("Глава 1", body)], ["comment"])
+        self.assertEqual(made[0][1], [])
+
+    def test_the_tail_is_read_from_the_end_and_stops_at_the_break(self):
+        """Сломалась пара — выше не смотрим: там уже текст главы.
+
+        Время при этом уходит и из разорванной пары: временем строка быть
+        не перестала, а вот подписью над ним объявлять текст главы
+        нельзя.
+        """
+        body = ["Он ушёл, не сказав ни слова.", "9 декабря 2025 года, 12:08.",
+                "Ник1.", "9 декабря 2025 года, 14:53."]
+        made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
+        self.assertEqual(made[0][1], ["Он ушёл, не сказав ни слова."])
+        self.assertEqual(gone, 3)
+
+    def test_a_short_line_with_a_comma_is_not_a_nick(self):
+        """В нике знаков препинания нет: «Тишина, наконец.» — это текст,
+        хотя слов в нём и мало."""
+        body = ["Тишина, наконец.", "9 декабря 2025 года, 12:08."]
+        made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
+        self.assertEqual(made[0][1], ["Тишина, наконец."])
+        self.assertEqual(gone, 1)
+
+    def test_a_date_without_a_time_is_just_a_date(self):
+        """Комментарий узнаём по часам с минутами. Без них строка,
+        начатая датой, — обычное предложение."""
+        body = ["9 декабря 2025 года, но это было уже потом.", "Он ушёл."]
+        made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
+        self.assertEqual(made[0][1], body)
+        self.assertEqual(gone, 0)
+
+    def test_a_long_line_without_punctuation_is_not_a_nick_either(self):
+        """Ник — это несколько слов, а не предложение. Знаков препинания
+        внутри может не быть вовсе, и длина остаётся единственным, чем
+        одно отличается от другого."""
+        body = ["Он ушёл прочь и не оглянулся.", "9 декабря 2025 года, 12:08."]
+        made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
+        self.assertEqual(made[0][1], ["Он ушёл прочь и не оглянулся."])
+        self.assertEqual(gone, 1)

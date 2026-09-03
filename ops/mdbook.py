@@ -598,7 +598,14 @@ def from_chapters(chapters, style: TitleStyle | None = None,
         # первая часть.
         number, part = chapter.number, chapter.part
         if number is None:
-            number, part, _ = split_mark(chapter.title)
+            # Строгим разбором, а не общим. Читалка номер уже искала и не
+            # нашла — значит, в заголовке его нет, и докапываться до
+            # первой попавшейся цифры тут не надо. Из епаба так выходила
+            # «Глава 3 — "Act 3 is about to begin."»: цифра из названия
+            # становилась номером главы, а книга потом выстраивалась по
+            # этим числам.
+            found = naming.parse_title(chapter.title)
+            number, part = found.number, found.part
         # Название у прочитанной главы — это имя файла целиком, вместе с
         # «Глава 101 - ». Возьми мы его как есть, вышло бы «Глава 101 —
         # Глава 101 - Название»: слово и номер встали бы дважды.

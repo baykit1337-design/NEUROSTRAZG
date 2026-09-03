@@ -831,7 +831,10 @@ class TestSevenMore(Base):
     каждого своё.
     """
 
-    NEW = ("tab-edge", "work-pulse", "bar-wave", "flip-count",
+    #: «Течение в полосе» отсюда убрано вместе с самим эффектом: волна на
+    #: переднем крае полосы выглядела чужеродно, и полоса вернулась к
+    #: прежнему виду — свечение и искра, без ряби.
+    NEW = ("tab-edge", "work-pulse", "flip-count",
            "favicon-progress", "title-blink", "key-spark")
 
     @classmethod
@@ -894,130 +897,6 @@ class TestWorkPulse(Base):
     def test_only_the_open_tab(self):
         """Скрытые вкладки тоже держат свои полосы."""
         self.assertIn("section:not([hidden])", self.css)
-
-
-class TestBarWave(Base):
-    """Волна на переднем крае полосы."""
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.css = (CSS / "bar-wave.css").read_text(encoding="utf-8")
-        cls.life = (CSS / "progress-life.css").read_text(encoding="utf-8")
-
-    def test_only_while_the_work_goes_on(self):
-        """На готовой полосе волна означала бы работу, которой нет."""
-        self.assertIn(".bar > i.active", self.css)
-
-    def test_it_moves_the_edge_itself(self):
-        """Волна — это край, а не рябь поперёк заливки.
-
-        Первый заход красил всю полосу косыми полосами: зебра, спорящая с
-        бликом и с закруглением концов.
-        """
-        self.assertIn("clip-path", self.css)
-        self.assertNotIn("repeating-linear-gradient", self.css)
-
-    def shapes(self) -> list[str]:
-        return re.findall(r"clip-path:polygon\(([^;]*)\);", self.css)
-
-    def test_every_frame_has_the_same_number_of_points(self):
-        """Разное число точек — и браузеру нечего между ними считать."""
-        shapes = self.shapes()
-        self.assertGreater(len(shapes), 1)
-        self.assertEqual(len({shape.count("%") for shape in shapes}), 1, shapes)
-
-    def test_the_edge_is_a_curve_and_not_a_single_vertex(self):
-        """Одна вершина — это не волна, а остриё.
-
-        Второй заход двигал ровно одну точку сверху вниз, и полоса
-        кончалась конусом, будто её заточили. Волну углом не нарисуешь,
-        сколько его ни двигай: кривую задают многие точки.
-        """
-        for shape in self.shapes():
-            self.assertGreater(shape.count("calc("), 5, shape)
-
-    def test_the_circle_closes_without_a_jump(self):
-        """Первый кадр и последний — один и тот же край: иначе волна
-        дёргалась бы раз в оборот."""
-        self.assertRegex(self.css, r"0%,\s*100%\s*\{")
-
-    def rules(self) -> str:
-        """Файл без пояснений: в них названы и грабли, и отвергнутые
-        решения, и поиск по тексту спотыкался бы о них."""
-        return re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
-
-    def test_the_leading_end_has_no_round_cap(self):
-        """Круглый колпачок на конце и был тем «белым кругом», который
-        видно при увеличении: блик доходил до скруглённого конца и
-        загорался на нём пятном, а волна резала его полумесяцем. Слева
-        скругление остаётся — там полоса и правда кончается."""
-        self.assertIn("border-radius:999px 0 0 999px", self.rules())
-
-    def test_the_edge_itself_glows_white(self):
-        """Светиться должен сам край, а не силуэт вокруг него.
-
-        Свет живёт в заливке: её последние пиксели разгораются добела, а
-        обрезка оставляет от них ровно волну. `box-shadow` тут не годится
-        вовсе — он рисуется по прямоугольнику элемента, и обрезка его
-        срезает.
-        """
-        rules = self.rules()
-        self.assertIn("rgba(255,255,255", rules)
-        self.assertNotIn("box-shadow", rules)
-
-    def bar_height(self) -> float:
-        """Высота полосы — из общих стилей, а не числом здесь: поменяй её
-        кто-нибудь, и наклон волны поменяется вместе с ней."""
-        found = re.search(r"\.bar\{[^}]*height:(\d+(?:\.\d+)?)px", self.html)
-        self.assertTrue(found, "не нашлась высота полосы")
-        return float(found.group(1))
-
-    def test_the_wave_slopes_gently(self):
-        """«Резкий угол волны, у тебя там все 90 градусов, а надо 30».
-
-        Наклон края к вертикали считается точно: полволны на всю высоту
-        полосы дают `atan(размах · π / (2 · высота))`. Шесть пикселей на
-        восьми давали пятьдесят градусов — почти отвес, оттого край и
-        читался рубленым. Проверяем не число размаха, а сам наклон: он и
-        есть требование.
-
-        Нижняя граница держит только одно: волна должна быть. Насколько
-        она пологая — решает глаз, а не тест; сначала просили тридцать,
-        потом ещё положе, и оба раза это был выбор человека, а не
-        поломка. Ниже пяти градусов края уже не отличить от прямого —
-        вот это и была бы пропажа.
-        """
-        # Только кадры: `calc(100% - …)` стоит и в градиенте свечения,
-        # и шестнадцать его пикселей сошли бы за размах волны.
-        frames = self.css[self.css.index("@keyframes"):]
-        deep = [float(x) for x in
-                re.findall(r"calc\(100% - ([\d.]+)px\)", frames)]
-        self.assertTrue(deep, "в кадрах не нашлось ни одной точки края")
-        slope = math.degrees(
-            math.atan(max(deep) * math.pi / (2 * self.bar_height())))
-        self.assertLess(slope, 40, f"край круче просимого: {slope:.0f}°")
-        self.assertGreater(slope, 5, f"волны не видно вовсе: {slope:.0f}°")
-
-    def test_the_glow_is_measured_from_the_fill_itself(self):
-        """Проценты градиента считаются от ширины заливки, а она и есть
-        прогресс: светлое пятно всегда стоит там, где полоса кончается,
-        сколько бы ни было скачано."""
-        self.assertIn("var(--bar-fill)", self.rules())
-
-    def test_it_takes_no_pseudo_element(self):
-        """Оба уже заняты: `::after` — бликом, `::before` — искрой.
-
-        Займи волна один из них — два включённых эффекта затирали бы друг
-        друга, и виноватого было бы не найти.
-
-        Смотрим правила, а не файл целиком: в пояснении оба псевдоэлемента
-        названы поимённо, и поиск по тексту спотыкался бы о него.
-        """
-        rules = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
-        self.assertNotIn("::before", rules)
-        self.assertNotIn("::after", rules)
-        self.assertIn(".bar > i.active::before", self.life)
 
 
 class TestFlipCount(Base):

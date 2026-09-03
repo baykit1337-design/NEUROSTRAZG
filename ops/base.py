@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from core import formats
+from core import formats, naming
 from core.models import Chapter, OpReport
 from core.readers.base import ReadError
 
@@ -220,6 +220,43 @@ def skipped_files(targets) -> list[str]:
                 continue
             skipped.append(item.name)
     return skipped
+
+
+def in_reading_order(chapters) -> list[Chapter]:
+    """Главы в том порядке, в каком их читают.
+
+    Файл, отдавший несколько глав, свой порядок знает сам: у епаба это
+    корешок, у fb2 — порядок разделов. Пересортировать его по номерам,
+    выкопанным из заголовков, — значит перемешать книгу.
+
+    Здесь на этом и погорели. Епаб на четыреста сорок шесть глав пришёл
+    без заголовков внутри, номера достались от служебных имён файлов, и
+    сортировка по ним выстроила книгу заново — по числам, к порядку глав
+    отношения не имеющим. Глава без номера при этом уезжала в самый
+    конец.
+
+    Файлы, отдавшие по одной главе, — другое дело: они лежат в папке в
+    порядке имён, где «Глава 10» встаёт перед «Главой 2». Их сортируем
+    по номеру, как и раньше.
+    """
+    #: Главы одного файла — одной пачкой, в порядке чтения.
+    piles: list[list[Chapter]] = []
+    where: dict[str, int] = {}
+
+    for chapter in chapters:
+        source = str(getattr(chapter, "source", "") or "")
+        # Без источника пачки не сложить: у такой главы своя, отдельная.
+        if source and source in where:
+            piles[where[source]].append(chapter)
+            continue
+        if source:
+            where[source] = len(piles)
+        piles.append([chapter])
+
+    # Пачки — по номеру первой главы в каждой. У файлов с одной главой
+    # это ровно прежняя сортировка: пачка и есть глава.
+    piles.sort(key=lambda pile: naming.sort_key(pile[0]))
+    return [chapter for pile in piles for chapter in pile]
 
 
 def read_all(files: list[Path], report: OpReport, progress: Progress | None = None
