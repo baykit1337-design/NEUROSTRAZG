@@ -52,6 +52,29 @@ def api_translator_path():
     return jsonify(**translator_op.state())
 
 
+@translator.post("/api/translator/plan")
+def api_translator_plan():
+    """Что именно будет переведено — до того, как за это заплатят.
+
+    В сеть не ходит и квоту не тратит, поэтому и отвечаем сразу, а не
+    задачей: ждать тут нечего, кроме чтения самого епаба.
+    """
+    payload = request.json or {}
+    try:
+        said = translator_op.plan(
+            str(payload.get("epub") or "").strip(),
+            str(payload.get("project") or "").strip(),
+            str(payload.get("scope") or translator_op.PENDING).strip(),
+            str(payload.get("path") or "").strip(),
+        )
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+
+    if not said.get("ok", True):
+        return jsonify(error=str(said.get("error") or "переводчик отказал")), 400
+    return jsonify(ok=True, **translator_op.short_plan(said))
+
+
 @translator.post("/api/translator/check")
 def api_translator_check():
     """Проверка связи: зовём самую дешёвую команду и показываем ответ.

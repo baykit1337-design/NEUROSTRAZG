@@ -77,6 +77,22 @@ VENV = (
 #: срок, измеряемый часами.
 QUICK_TIMEOUT = 120
 
+#: План в сеть не ходит, но епаб читает целиком и считает знаки. На книге
+#: в полтысячи глав это уже не мгновение, а быстрый срок ему тесен.
+PLAN_TIMEOUT = 600
+
+#: Какие главы брать. Слова не наши — так их называет сам переводчик, и
+#: переводить их в свои значило бы держать таблицу соответствий ради
+#: ничего.
+PENDING = "pending"      # только ещё не переведённые
+WHOLE = "all"            # все подряд, заново
+DONE = "translated"      # только уже переведённые
+SCOPES = (PENDING, WHOLE, DONE)
+
+#: Сколько глав показывать списком. Остальные — счётчиком: на пятистах
+#: главах список перестаёт быть ответом на вопрос «что возьмётся».
+SHOW_CHAPTERS = 12
+
 
 #: Чем ставятся зависимости переводчика. Список его собственный:
 #: `requirements-translator-only.txt` — самый короткий набор, который он
@@ -300,6 +316,72 @@ def short(said: dict) -> dict:
     }
 
 
+def _whole(value) -> int:
+    """Целое из чужого ответа. Не число — ноль, а не поломка."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def plan(epub: str, project: str, scope: str = PENDING,
+         path: str = "") -> dict:
+    """Что именно будет переведено — не трогая ни сети, ни ключей.
+
+    Это «до и после» для перевода, и нужно оно ровно затем же, зачем оно
+    нужно в форматировании: увидеть работу до того, как за неё заплатят.
+    Цена тут — квота ключей, и промахнуться дороже всего: узнать, что
+    взялась вся книга вместо десяти глав, посреди прогона поздно.
+
+    План читает епаб и считает главы, задачи и знаки. В сеть он не ходит
+    вовсе, поэтому нажимать его можно сколько угодно.
+    """
+    book = Path(str(epub or "").strip()).expanduser()
+    if not str(epub or "").strip():
+        raise TranslatorError("Не выбран .epub, который переводить.")
+    if not book.is_file():
+        raise TranslatorError(f"Файла нет: {book}")
+    if not str(project or "").strip():
+        raise TranslatorError(
+            "Не указана папка проекта. Переводчик держит в ней главы, "
+            "глоссарий и карту перевода — без неё ему некуда складывать.")
+    if scope not in SCOPES:
+        raise TranslatorError(f"Неизвестно, какие главы брать: {scope}")
+
+    return run("plan", ["--epub", str(book),
+                        "--project", str(Path(str(project)).expanduser()),
+                        "--chapters", scope],
+               path=path, timeout=PLAN_TIMEOUT)
+
+
+def short_plan(said: dict) -> dict:
+    """План в том виде, в каком его показывают человеку.
+
+    Читаем бережно, как и всё остальное отсюда: формат чужой и может
+    поменяться. Чего не нашли — не показываем, но и не падаем.
+    """
+    made = said.get("plan") if isinstance(said.get("plan"), dict) else {}
+    saved = said.get("settings") if isinstance(said.get("settings"), dict) else {}
+    limits = saved.get("model_config") if isinstance(
+        saved.get("model_config"), dict) else {}
+
+    names = [str(one) for one in (made.get("chapters") or []) if one]
+    return {
+        "chapters": _whole(made.get("chapter_count")) or len(names),
+        "tasks": _whole(made.get("task_count")),
+        "chars": _whole(made.get("total_source_chars")),
+        "tokens": _whole(made.get("total_source_tokens")),
+        "provider": str(saved.get("provider") or ""),
+        "model": str(saved.get("model") or ""),
+        # Сколько запросов модель отдаёт в минуту и в сутки. Здесь это не
+        # мелочь: по ним и видно, хватит ли квоты на всю книгу разом.
+        "rpm": _whole(limits.get("rpm")),
+        "rpd": _whole(limits.get("rpd")),
+        "sample": names[:SHOW_CHAPTERS],
+        "more": max(0, len(names) - SHOW_CHAPTERS),
+    }
+
+
 def state(path: str = "") -> dict:
     """Что показывать в карточке до всякой проверки."""
     path = str(path or where()).strip()
@@ -314,6 +396,8 @@ def state(path: str = "") -> dict:
     }
 
 
-__all__ = ["MARK", "OLD_MARKS", "QUICK_TIMEOUT", "TranslatorError",
-           "looks_old", "looks_right", "trouble_with",
-           "python_for", "run", "short", "state", "status", "where"]
+__all__ = ["BUILT_MARK", "DONE", "MARK", "NEEDS", "OLD_MARKS", "PENDING",
+           "PLAN_TIMEOUT", "QUICK_TIMEOUT", "SCOPES", "SHOW_CHAPTERS",
+           "TranslatorError", "WHOLE", "looks_built", "looks_old",
+           "looks_right", "plan", "python_for", "run", "short", "short_plan",
+           "state", "status", "trouble_with", "where"]

@@ -343,3 +343,153 @@ class TestAMissingPackageIsExplained(Base):
 
         self.assertIn("нет ключей", said)
         self.assertNotIn(translator.NEEDS, said)
+
+
+#: Как выглядит ответ `plan` у настоящего переводчика. Снято с живого
+#: прогона: словарь чужой, и выдумывать его форму нельзя.
+PLAN = {
+    "ok": True,
+    "epub": "/книги/проба.epub",
+    "project": "/книги/проект",
+    "plan": {
+        "task_count": 5,
+        "chapter_count": 3,
+        "chapters": ["OEBPS/0001.xhtml", "OEBPS/0002.xhtml",
+                     "OEBPS/0003.xhtml"],
+        "total_source_tokens": 987,
+        "total_source_chars": 987,
+    },
+    "settings": {
+        "provider": "gemini",
+        "model": "Gemini 3.7 Flash",
+        "model_config": {"rpm": 5, "rpd": 20},
+    },
+}
+
+
+class TestThePlanBeforeThePay(Base):
+    """План — это «до и после» для перевода.
+
+    Цена тут не в деньгах, а в квоте ключей, и промахнуться дороже всего:
+    узнать, что взялась вся книга вместо десяти глав, посреди прогона
+    поздно.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def echoing(self) -> Path:
+        """Переводчик, который печатает то, о чём его попросили."""
+        home = self.tmp / "эхо"
+        package = home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'плану сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+        return home
+
+    def why(self, **kw) -> str:
+        with self.assertRaises(translator.TranslatorError) as caught:
+            translator.plan(**kw)
+        return str(caught.exception)
+
+    def test_a_missing_book_is_refused_before_the_translator_is_started(self):
+        said = self.why(epub=str(self.tmp / "нет.epub"), project="п",
+                        path=str(fake_translator(self.tmp)))
+        self.assertIn("Файла нет", said)
+
+    def test_no_book_at_all_is_refused(self):
+        self.assertIn("epub", self.why(epub="", project="п", path=""))
+
+    def test_no_project_folder_is_refused_and_explained(self):
+        """Переводчику некуда складывать — и он об этом молчит."""
+        said = self.why(epub=str(self.book), project="",
+                        path=str(fake_translator(self.tmp)))
+        self.assertIn("папка проекта", said.lower())
+
+    def test_an_unknown_scope_is_refused(self):
+        said = self.why(epub=str(self.book), project="п", scope="абы что",
+                        path=str(fake_translator(self.tmp)))
+        self.assertIn("какие главы", said)
+
+    def test_the_translator_is_asked_exactly_what_was_chosen(self):
+        home = self.echoing()
+        said = translator.plan(str(self.book), str(self.tmp / "проект"),
+                               translator.WHOLE, str(home))
+        asked = said["плану сказали"]
+
+        self.assertEqual(asked[0], "plan")
+        self.assertIn("--epub", asked)
+        self.assertEqual(asked[asked.index("--epub") + 1], str(self.book))
+        self.assertEqual(asked[asked.index("--chapters") + 1], translator.WHOLE)
+
+    def test_the_answer_is_read_into_what_the_page_shows(self):
+        short = translator.short_plan(PLAN)
+
+        self.assertEqual(short["chapters"], 3)
+        self.assertEqual(short["tasks"], 5)
+        self.assertEqual(short["chars"], 987)
+        self.assertEqual(short["provider"], "gemini")
+        self.assertEqual(short["model"], "Gemini 3.7 Flash")
+        # Квота — то, ради чего план и смотрят.
+        self.assertEqual((short["rpm"], short["rpd"]), (5, 20))
+        self.assertEqual(len(short["sample"]), 3)
+
+    def test_a_changed_format_does_not_break_us(self):
+        """Формат чужой и может поменяться — падать на этом нельзя."""
+        short = translator.short_plan({"ok": True, "что-то": "иное"})
+
+        self.assertEqual(short["chapters"], 0)
+        self.assertEqual(short["provider"], "")
+        self.assertEqual(short["sample"], [])
+
+    def test_a_long_book_is_not_listed_whole(self):
+        """На пятистах главах список перестаёт быть ответом."""
+        many = dict(PLAN)
+        many["plan"] = dict(PLAN["plan"])
+        many["plan"]["chapters"] = [f"{n}.xhtml" for n in range(300)]
+        short = translator.short_plan(many)
+
+        self.assertEqual(len(short["sample"]), translator.SHOW_CHAPTERS)
+        self.assertEqual(short["more"], 300 - translator.SHOW_CHAPTERS)
+
+
+class TestThePlanOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def ask(self, **kw):
+        body = {"path": str(fake_translator(self.tmp, prints=PLAN)),
+                "epub": str(self.book), "project": str(self.tmp / "проект")}
+        body.update(kw)
+        return self.app.post("/api/translator/plan", json=body)
+
+    def test_the_plan_reaches_the_page(self):
+        got = self.ask().get_json()
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["chapters"], 3)
+        self.assertEqual(got["rpd"], 20)
+
+    def test_a_missing_book_is_a_refusal_not_a_crash(self):
+        res = self.ask(epub=str(self.tmp / "нет.epub"))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Файла нет", res.get_json()["error"])
+
+    def test_a_refusal_from_the_translator_is_passed_on(self):
+        # В своей папке: подделка по умолчанию живёт в `self.tmp` и
+        # перезаписала бы эту, а проверялся бы тогда не отказ.
+        upset = self.tmp / "отказ"
+        upset.mkdir()
+        res = self.ask(path=str(fake_translator(
+            upset, prints={"ok": False, "error": "нет ключей"})))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("нет ключей", res.get_json()["error"])

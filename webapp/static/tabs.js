@@ -5127,6 +5127,96 @@ $('tlCheck').onclick = tlCheck;
 $('tlPath').onchange = tlSave;
 tlLoad();
 
+/* ------------------------------------- что именно будет переведено
+ *
+ * План — это «до и после» для перевода, и нужен он ровно затем же:
+ * увидеть работу до того, как за неё заплатят. Цена тут — квота ключей,
+ * и промахнуться дороже всего.
+ *
+ * В сеть план не ходит и квоту не тратит, поэтому и ответ приходит
+ * сразу, без задачи и полосы прогресса.
+ */
+
+const tlScopeMenu = makeDropdown($('tlScope'));
+
+/** Строка плана: подпись слева, число или текст справа. */
+function tlRow(name, value, hint){
+  const row = document.createElement('div');
+  row.className = 'tr';
+
+  const left = document.createElement('span');
+  left.className = 'grow';
+  left.textContent = name;
+  if(hint) left.title = hint;
+
+  const right = document.createElement('span');
+  right.className = 'num';
+  right.textContent = value;
+
+  row.append(left, right);
+  return row;
+}
+
+function tlPlanShow(got){
+  const table = $('tlPlanRows');
+  table.innerHTML = '';
+
+  for(const [name, value, hint] of [
+    ['Глав возьмётся', ru(got.chapters), ''],
+    ['Задач к модели', ru(got.tasks),
+     'Глава может делиться на несколько запросов — по ним и считается квота'],
+    ['Знаков в исходнике', ru(got.chars), ''],
+    ['Сервис', got.provider || '—', ''],
+    ['Модель', got.model || '—', ''],
+    // Квота — единственное, из-за чего план вообще смотрят: по ней и
+    // видно, хватит ли ключей на всю книгу разом.
+    ['Запросов в минуту', got.rpm ? ru(got.rpm) : '—', ''],
+    ['Запросов в сутки', got.rpd ? ru(got.rpd) : '—',
+     'На один ключ. Задач больше — работа встанет на квоте'],
+  ]){
+    if(value !== '—' || name === 'Сервис' || name === 'Модель'){
+      table.append(tlRow(name, value, hint));
+    }
+  }
+
+  if(got.sample?.length){
+    const where = document.createElement('div');
+    where.className = 'hint';
+    where.style.margin = '6px 10px 8px';
+    where.textContent = got.sample.join(' · ')
+      + (got.more ? ` … и ещё ${got.more}` : '');
+    table.append(where);
+  }
+  table.hidden = false;
+}
+
+async function tlPlanLook(){
+  showError('');
+  const button = $('tlPlan');
+  button.disabled = true;
+  $('tlPlanRows').hidden = true;
+  $('tlPlanNote').innerHTML = '<span class="spin"></span>Считаем план…';
+  try{
+    const got = await call('/api/translator/plan', {
+      path: $('tlPath').value.trim(),
+      epub: $('tlEpub').value.trim(),
+      project: $('tlProject').value.trim(),
+      scope: tlScopeMenu ? tlScopeMenu.value : 'pending',
+    });
+    tlPlanShow(got);
+    $('tlPlanNote').textContent = got.chapters
+      ? `Возьмётся глав: ${ru(got.chapters)}. Ключей и сети это пока не стоило.`
+      : 'Брать нечего: под этот отбор не попала ни одна глава.';
+  }catch(err){
+    showError(err.message, $('tlPlanNote'));
+    $('tlPlanNote').textContent = '';
+  }finally{
+    button.disabled = false;
+  }
+}
+
+$('tlPlan').onclick = tlPlanLook;
+
 /* ------------------------------------------------- счётчик трафика
  *
  * При платном пакете это первое, что хочется видеть. Считает сервер — в
