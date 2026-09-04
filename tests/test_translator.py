@@ -173,7 +173,10 @@ class TestWhenItGoesWrong(Base):
         """
         said = self.why(self.built("_internal"))
 
-        self.assertIn("собранная версия", said)
+        # Не по словам отказа, а по тому, что он называет: примету сборки
+        # и файл, которого в ней нет.
+        self.assertIn(translator.BUILT_MARK, said)
+        self.assertIn(translator.MARK.as_posix(), said)
         self.assertNotIn("не папка переводчика", said)
         # И сразу говорим, что делать, и чем это не грозит.
         self.assertIn("исходник", said)
