@@ -8,26 +8,41 @@
 глава».
 
 Из этого следует главное удобство: оглавление на девяносто семь глав
-стоит **одного** запроса, а не девяноста семи. И главная ловушка: в
-вёрстке, которую видно глазами, списка глав может не быть вовсе — там
-пустые заглушки, а настоящие строки подставляет браузер из того же
-потока. Поэтому разбираем поток, а не разметку.
+стоит **одного** запроса, а не девяноста семи.
 
 Поток режется на куски по границам скриптов, и одна логическая запись
 может оказаться разорванной между двумя `push`. Поэтому куски сперва
 склеиваются в одну строку и только потом разбираются: иначе на длинной
 книге оглавление обрывалось бы ровно там, где Next решил перенести.
 
+**Про вёрстку — уточнение, купленное ошибкой.** Сперва здесь было
+написано, что списка глав в разметке нет вовсе. Это неправда: строки
+`<a data-chapter-index=… href=…/chapter/N>` в HTML есть, просто лежат
+внутри скрытого блока, который React потом подставляет на место
+заглушек. Видимая часть страницы и правда набита пустыми полосками, но
+из этого не следует, что данных в ней нет.
+
+Поэтому путей к оглавлению два, и оба рабочие. Поток идёт первым: в нём
+есть то, чего в разметке нет, — идентификаторы и метка «бесплатна ли
+глава». Разметка идёт вторым номером, на случай если сайт перестанет
+класть поток на страницу книги.
+
 Адрес главы строится по её **номеру**, а не по идентификатору:
 `/novel/<слаг>/chapter/<номер>`. Идентификатор в ссылках не участвует
 вовсе, хотя в потоке и лежит.
 
+Откуда взяты приметы главы. Из расширения `dteviot/WebToEpub` (GPL-3.0):
+у него на этот сайт заведён свой разборщик, и там записано то, что
+снаружи не угадать, — что текст главы лежит в `.chapter-content`, а
+примечания переводчика в `sup.tl-note` и в книгу их брать не надо. Взяты
+именно правила: селекторы. Как и для сайтов-сливов, см. README.
+
 **Живьём не проверено.** Сайт закрыт для среды, в которой писался модуль
 (прокси отвечает 403), поэтому разбор проверен на настоящей странице
 книги, сохранённой человеком, а не на живом запросе. Разбор устроен так,
-чтобы молчаливой полукниги не вышло: не нашлось потока, книги или
-оглавления — модуль говорит «источник изменился» и прикладывает страницу,
-а не отдаёт пустоту.
+чтобы молчаливой полукниги не вышло: не нашлось ни потока, ни разметки —
+модуль говорит «источник изменился» и прикладывает страницу, а не отдаёт
+пустоту.
 """
 
 from __future__ import annotations
@@ -59,10 +74,32 @@ COVER = re.compile(r'"coverUrl":"([^"]*)"')
 #: первым берётся то поле, которое сайт для текста и завёл.
 CHAPTER_KEYS = ("content", "body", "html", "text")
 
+#: Заголовки обычного перехода по ссылке, а не голого запроса. Сайт
+#: закрывается от того, что на браузер не похоже: у человека он рвал
+#: соединение на середине ответа («Connection was reset»), хотя то же
+#: расширение в его же браузере страницу забирало. Отпечаток TLS клиент
+#: подделывает и сам (`curl_cffi` с `impersonate`), а вот заголовки
+#: навигации до сих пор были куцые.
 HEADERS = {
-    "Accept": "text/html,application/xhtml+xml",
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,*/*;q=0.8"),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
     "Referer": f"{SITE}/",
 }
+
+#: Приметы главы и оглавления в разметке. Из WebToEpub, см. заголовок.
+CONTENT_AT = ".chapter-content"
+TITLE_AT = "button.text-2xl span > span"
+#: Примечания переводчика: в книге они не нужны.
+NOTES_AT = "sup.tl-note"
+#: Строка оглавления. Номер главы стоит атрибутом — гадать по тексту
+#: ссылки не нужно.
+ROW_AT = "a[data-chapter-index]"
 
 #: Разметка внутри текста главы. Абзацы и переносы рвут строку, остальные
 #: теги — обёртки вокруг слов, и рвать на них нельзя: фраза распалась бы
@@ -176,6 +213,62 @@ def paragraphs_of(html: str) -> str:
     return BLANKS.sub("\n\n", "\n\n".join(one for one in lines if one)).strip()
 
 
+def _soup(html: str):
+    from bs4 import BeautifulSoup
+
+    try:
+        return BeautifulSoup(html or "", "lxml")
+    except Exception as exc:  # noqa: BLE001 — lxml необязателен, разбор важнее
+        log.debug("lxml не подошёл (%s) — разбираем встроенным", exc)
+        return BeautifulSoup(html or "", "html.parser")
+
+
+def rows_from_markup(page: str) -> list:
+    """Оглавление из разметки — запасной путь, если поток пропал.
+
+    Строки лежат в скрытом блоке, который React подставляет на место
+    заглушек. Номер главы стоит атрибутом, поэтому гадать по тексту
+    ссылки («Ch. 12») не нужно.
+
+    Метки «платная» здесь нет: она есть только в потоке. Возвращаем то,
+    что видно, и не выдумываем недостающее.
+    """
+    out = []
+    for link in _soup(page).select(ROW_AT):
+        try:
+            number = int(str(link.get("data-chapter-index") or "").strip())
+        except ValueError:
+            continue
+        if number <= 0:
+            continue
+        # Название главы — вторая строка в карточке; первая это «Ch. 12».
+        name = link.select_one("p")
+        out.append({"index": number,
+                    "title": name.get_text(" ", strip=True) if name else "",
+                    "href": str(link.get("href") or "")})
+    return out
+
+
+def content_from_markup(page: str) -> str:
+    """Текст главы из разметки.
+
+    Примечания переводчика выкидываем: в книге они не нужны, а внутри
+    абзаца выглядят случайной цифрой посреди фразы.
+    """
+    block = _soup(page).select_one(CONTENT_AT)
+    if block is None:
+        return ""
+    for note in block.select(NOTES_AT):
+        note.decompose()
+    return paragraphs_of(str(block))
+
+
+def title_from_markup(page: str) -> str:
+    """Заголовок главы из разметки. Не нашёлся — берём из оглавления."""
+    found = _soup(page).select_one(TITLE_AT)
+    return found.get_text(" ", strip=True) if found else ""
+
+
 class DreamySource(Source):
     """Dreamy Translations: английские переводы, отданные открыто."""
 
@@ -231,6 +324,13 @@ class DreamySource(Source):
 
         rows = carve(data, "chapters", "[")
         if not isinstance(rows, list) or not rows:
+            # Поток пропал — берём то же из разметки. Метки «платная» там
+            # нет, и это честнее, чем выдумать её отсутствие.
+            rows = rows_from_markup(page)
+            if rows:
+                log.info("Оглавление %s собрано по разметке: потока не было",
+                         slug)
+        if not rows:
             raise SourceBroken(
                 f"У книги {slug} не нашлось списка глав — сайт перестроили",
                 page)
@@ -272,23 +372,27 @@ class DreamySource(Source):
 
         page, data = self._page(client, url)
 
-        # Текст лежит там же, в потоке: сама вёрстка на этом сайте
-        # приходит заглушками, а строки подставляет браузер.
-        body = ""
-        block = carve(data, "chapter")
-        if isinstance(block, dict):
-            for name in CHAPTER_KEYS:
-                body = paragraphs_of(block.get(name) or "")
-                if body:
-                    break
-            title = str(block.get("title") or "").strip()
-        else:
-            title = ""
+        # Разметка идёт первой: примета `.chapter-content` снята с
+        # расширения, которое разбирает этот сайт на живых книгах, а
+        # имя поля в потоке пришлось бы угадывать.
+        body = content_from_markup(page)
+        title = title_from_markup(page)
+
+        if not body:
+            # Запасной путь: тот же текст в потоке серверных данных.
+            block = carve(data, "chapter")
+            if isinstance(block, dict):
+                for name in CHAPTER_KEYS:
+                    body = paragraphs_of(block.get(name) or "")
+                    if body:
+                        break
+                title = title or str(block.get("title") or "").strip()
 
         if not body:
             raise SourceBroken(
-                f"Глава {chapter.number}: в данных страницы не нашлось "
-                "текста — сайт перестроили", page)
+                f"Глава {chapter.number}: на странице не нашлось текста "
+                f"(ни в {CONTENT_AT}, ни в данных Next) — сайт перестроили",
+                page)
 
         return title or chapter.ch_name, body
 

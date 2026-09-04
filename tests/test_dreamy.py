@@ -302,3 +302,175 @@ class TestTheSourceIsWiredIn(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def chapter_page(body: str = "", title: str = "Глава про кота",
+                 stream: dict | None = None) -> str:
+    """Страница главы: текст в `.chapter-content`, как у самого сайта."""
+    shell = ""
+    if body:
+        shell = (f'<button class="text-2xl"><span><span>{title}</span>'
+                 '</span></button>'
+                 f'<div class="chapter-content">{body}</div>')
+    tail = ""
+    if stream is not None:
+        tail = push('e:["$","$L9",null,'
+                    + json.dumps({"chapter": stream}, ensure_ascii=False,
+                                 separators=TIGHT) + "]\n")
+    else:
+        tail = push('e:["$","$L9",null,{}]\n')
+    return shell + tail
+
+
+class TestTheChapterRowsAreInTheMarkupToo(unittest.TestCase):
+    """Поправка к прежнему заблуждению.
+
+    Сперва здесь стояло, что списка глав в разметке нет вовсе. Это
+    неправда: строки лежат в скрытом блоке, а пустые полоски — только то,
+    что видно до подстановки. Запасной путь по разметке держится ровно
+    на этом.
+    """
+
+    def markup(self, rows=((1, "Первая"), (2, "Вторая"))) -> str:
+        out = []
+        for number, name in rows:
+            out.append(
+                f'<a data-chapter-index="{number}" '
+                f'href="/novel/ibatcffhwusd/chapter/{number}">'
+                f'<span class="font-medium">Ch. {number}</span>'
+                f'<p class="truncate">{name}</p></a>')
+        return '<div hidden id="S:2">' + "".join(out) + "</div>"
+
+    def test_the_rows_are_read_out_of_the_markup(self):
+        rows = dreamy.rows_from_markup(self.markup())
+
+        self.assertEqual([one["index"] for one in rows], [1, 2])
+        self.assertEqual(rows[0]["title"], "Первая")
+
+    def test_the_number_is_taken_from_the_attribute_not_the_text(self):
+        """В тексте ссылки стоит «Ch. 12», и разбирать его незачем."""
+        rows = dreamy.rows_from_markup(self.markup(rows=[(12, "Двенадцать")]))
+        self.assertEqual(rows[0]["index"], 12)
+
+    def test_the_navigation_links_do_not_become_chapters(self):
+        """На настоящей странице ссылок десятки: меню, подвал, «Читать».
+
+        Отбор идёт по атрибуту номера, а не по тому, что это вообще
+        ссылка, — иначе в книгу попали бы «Home» и «Privacy».
+        """
+        page = ('<a href="/">Home</a><a href="/series">Series</a>'
+                '<a href="/novel/ibatcffhwusd/chapter/1">Start Reading</a>'
+                '<a href="/terms">Terms</a>' + self.markup())
+        rows = dreamy.rows_from_markup(page)
+
+        self.assertEqual([one["index"] for one in rows], [1, 2])
+        self.assertNotIn("Home", [one["title"] for one in rows])
+
+    def test_a_row_without_a_number_is_skipped_not_guessed(self):
+        page = ('<a data-chapter-index="" href="/x"><p>Пусто</p></a>'
+                + self.markup(rows=[(3, "Третья")]))
+        rows = dreamy.rows_from_markup(page)
+
+        self.assertEqual([one["index"] for one in rows], [3])
+
+    def test_the_markup_saves_the_toc_when_the_stream_is_gone(self):
+        """Пропади поток — книга должна собраться по разметке."""
+        page = self.markup() + push('24:I[1,["/x.js"],"default"]\n')
+        client = Fake({NOVEL_URL: page})
+        book = Novel(code=310, name="Проба", slug="ibatcffhwusd",
+                     total_chapters=2)
+
+        toc = dreamy.DreamySource().toc(client, book)
+        self.assertEqual([one.number for one in toc.chapters], [1, 2])
+
+    def test_the_stream_is_still_preferred_over_the_markup(self):
+        """В потоке есть то, чего в разметке нет: метка платной главы."""
+        page = novel_page() + self.markup()
+        client = Fake({NOVEL_URL: page})
+        book = Novel(code=310, name="Проба", slug="ibatcffhwusd",
+                     total_chapters=3)
+
+        toc = dreamy.DreamySource().toc(client, book)
+        self.assertEqual([one.number for one in toc.chapters], [1, 2, 3])
+        self.assertEqual([one.number for one in toc.chapters if one.locked],
+                         [3])
+
+
+class TestTheChapterText(unittest.TestCase):
+    def setUp(self):
+        self.source = dreamy.DreamySource()
+        self.link = f"{NOVEL_URL}/chapter/7"
+        self.chapter = dreamy.Chapter(number=7, ch_name="Из оглавления",
+                                      link=self.link)
+
+    def ask(self, page: str):
+        return self.source.chapter(Fake({self.link: page}), self.chapter)
+
+    def test_the_text_is_taken_from_the_content_block(self):
+        page = chapter_page("<p>Первый абзац.</p><p>Второй абзац.</p>")
+        title, body = self.ask(page)
+
+        self.assertEqual(body, "Первый абзац.\n\nВторой абзац.")
+        self.assertEqual(title, "Глава про кота")
+
+    def test_a_translator_note_does_not_get_into_the_book(self):
+        """Внутри абзаца она выглядит случайной цифрой посреди фразы."""
+        page = chapter_page(
+            '<p>Он взял мантру<sup class="tl-note">1</sup> и ушёл.</p>')
+        _, body = self.ask(page)
+
+        self.assertEqual(body, "Он взял мантру и ушёл.")
+
+    def test_the_title_falls_back_to_the_one_from_the_toc(self):
+        page = chapter_page("<p>Текст.</p>", title="")
+        page = page.replace("<button class=\"text-2xl\"><span><span></span>"
+                            "</span></button>", "")
+        title, _ = self.ask(page)
+
+        self.assertEqual(title, "Из оглавления")
+
+    def test_the_stream_saves_the_chapter_when_the_markup_changes(self):
+        """Если сайт переименует блок, текст всё ещё есть в потоке."""
+        page = chapter_page(stream={"title": "Из потока",
+                                    "content": "<p>Текст из потока.</p>"})
+        title, body = self.ask(page)
+
+        self.assertEqual(body, "Текст из потока.")
+        self.assertEqual(title, "Из потока")
+
+    def test_no_text_anywhere_is_a_refusal_not_an_empty_file(self):
+        """Иначе качалка молча сложила бы книгу из пустых файлов."""
+        with self.assertRaises(SourceBroken) as caught:
+            self.ask(chapter_page())
+
+        self.assertIn("chapter-content", str(caught.exception))
+        self.assertIn("не нашлось текста", str(caught.exception))
+
+    def test_a_chapter_without_an_address_says_so_plainly(self):
+        naked = dreamy.Chapter(number=7, ch_name="Без адреса")
+        with self.assertRaises(SourceBroken) as caught:
+            self.source.chapter(Fake({}), naked)
+
+        self.assertIn("без адреса", str(caught.exception))
+
+
+class TestWeKnockLikeABrowser(unittest.TestCase):
+    """Сайт рвал соединение на голом запросе, хотя браузеру отвечал."""
+
+    def test_the_request_looks_like_a_navigation(self):
+        for name in ("Sec-Fetch-Mode", "Sec-Fetch-Dest", "Accept-Language",
+                     "Upgrade-Insecure-Requests"):
+            self.assertIn(name, dreamy.HEADERS, name)
+        self.assertEqual(dreamy.HEADERS["Sec-Fetch-Mode"], "navigate")
+
+    def test_the_headers_actually_reach_the_request(self):
+        seen = {}
+
+        class Watcher(Fake):
+            def get_text(self, url, params=None, headers=None, cookies=None):
+                seen.update(headers or {})
+                return super().get_text(url, params, headers, cookies)
+
+        dreamy.DreamySource().find(Watcher({NOVEL_URL: novel_page()}),
+                                   NOVEL_URL)
+        self.assertEqual(seen.get("Sec-Fetch-Mode"), "navigate")
