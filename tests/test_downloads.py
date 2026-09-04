@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -730,3 +731,205 @@ class TestAQueueBrokenOffMidBook(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeveralBooksAtOnce(Base):
+    """Ждать, пока докачается первая, чтобы начать вторую, незачем.
+
+    Книги независимы, и узкое место у них не общее: одна упирается в
+    медленный сайт, другая в разбор. Очередь тут была не устройством, а
+    привычкой.
+    """
+
+    def three(self):
+        for name in ("Первая", "Вторая", "Третья"):
+            self.book(folder=name)
+
+    def test_by_default_nothing_changes(self):
+        """Прежнее поведение остаётся прежним: книги идут подряд."""
+        self.three()
+        seen = []
+        downloads.run(lambda item: seen.append(item.folder) or "готово")
+
+        self.assertEqual(seen, ["Первая", "Вторая", "Третья"])
+
+    def test_asked_for_three_at_once_all_three_are_in_flight_together(self):
+        """Собственно проверка параллельности: все три начались раньше,
+        чем кончилась первая."""
+        import threading
+
+        self.three()
+        started = threading.Barrier(3, timeout=20)
+
+        def perform(item):
+            # Барьер отпустит только когда в нём соберутся все трое.
+            # Иди книги подряд — первая же ждала бы вечно и упала.
+            started.wait()
+            return "готово"
+
+        rows = downloads.run(perform, workers=3)
+        self.assertTrue(all(x.state == downloads.DONE for x in rows))
+
+    def test_the_order_of_the_list_is_not_shuffled_by_the_run(self):
+        """Строки остаются на местах: меняется только то, что несколько
+        из них горят «качается» разом."""
+        self.three()
+        downloads.run(lambda item: "готово", workers=3)
+
+        self.assertEqual([x.folder for x in downloads.all_items()],
+                         ["Первая", "Вторая", "Третья"])
+
+    def test_a_broken_book_still_does_not_cancel_the_rest(self):
+        self.three()
+
+        def perform(item):
+            if item.folder == "Вторая":
+                raise RuntimeError("сайт закрыл доступ")
+            return "готово"
+
+        rows = downloads.run(perform, workers=3)
+        self.assertEqual([x.state for x in rows],
+                         [downloads.DONE, downloads.FAILED, downloads.DONE])
+        self.assertIn("сайт закрыл доступ", rows[1].message)
+
+    def test_every_book_keeps_its_own_outcome(self):
+        """Две книги, кончившие разом, затирали бы записи друг друга."""
+        self.three()
+        rows = downloads.run(lambda item: f"итог {item.folder}", workers=3)
+
+        self.assertEqual([x.message for x in rows],
+                         ["итог Первая", "итог Вторая", "итог Третья"])
+
+    def test_the_outcomes_survive_on_disk_too(self):
+        """Записи идут в один файл из трёх потоков сразу."""
+        self.three()
+        downloads.run(lambda item: f"итог {item.folder}", workers=3)
+
+        self.assertEqual([x.message for x in downloads.all_items()],
+                         ["итог Первая", "итог Вторая", "итог Третья"])
+
+    def test_stopping_leaves_the_untouched_books_waiting(self):
+        """Не начатое ждёт, а не помечается неудачей: очередь продолжат
+        тем же нажатием, что и начали."""
+        import threading
+
+        self.three()
+        stop = threading.Event()
+
+        def perform(item):
+            stop.set()
+            raise RuntimeError("оборвано")
+
+        rows = downloads.run(perform, cancel=stop, workers=1)
+        self.assertEqual(rows[0].state, downloads.WAITING)
+        self.assertEqual(rows[0].message, "")
+
+    def test_more_workers_than_books_is_not_a_problem(self):
+        self.book(folder="Одна")
+        rows = downloads.run(lambda item: "готово", workers=8)
+
+        self.assertEqual([x.state for x in rows], [downloads.DONE])
+
+    def test_the_number_at_once_is_capped(self):
+        """Двадцать книг разом — это сотни глав в минуту с одного адреса:
+        сайт закроется, и виноват будет не он."""
+        import threading
+
+        for number in range(downloads.MAX_AT_ONCE + 4):
+            self.book(folder=f"Книга {number}")
+
+        peak, now = [0], [0]
+        guard = threading.Lock()
+
+        def perform(item):
+            with guard:
+                now[0] += 1
+                peak[0] = max(peak[0], now[0])
+            time.sleep(0.05)
+            with guard:
+                now[0] -= 1
+            return "готово"
+
+        downloads.run(perform, workers=100)
+        self.assertLessEqual(peak[0], downloads.MAX_AT_ONCE)
+
+    def test_a_book_waiting_for_a_link_is_still_stepped_over(self):
+        downloads.add(name="Без ссылки", base="/книги", folder="Б")
+        self.book(folder="Готовая")
+        seen = []
+        downloads.run(lambda item: seen.append(item.folder) or "готово",
+                      workers=4)
+
+        self.assertEqual(seen, ["Готовая"])
+
+
+class TestTheKnobReachesTheRun(unittest.TestCase):
+    """Ручка на экране, не доехавшая до прогона, — самая тихая поломка.
+
+    Число стоит, человек его меняет, а сервер молча берёт своё умолчание.
+    Проверяется именно стык: настройки разбираются и доходят до качалки.
+    """
+
+    def setUp(self):
+        from webapp import app as web
+
+        self.web = web
+        web.app.config["TESTING"] = True
+
+    def settings(self, **more):
+        return self.web._run_settings({"threads": 3, **more})
+
+    def test_the_number_of_books_is_read_from_the_request(self):
+        self.assertEqual(self.settings(books=4).books, 4)
+
+    def test_without_it_the_old_behaviour_stands(self):
+        """Умолчание — одна книга: менять его молча нельзя."""
+        self.assertEqual(self.settings().books, downloads.BOOKS_AT_ONCE)
+
+    def test_an_unset_number_falls_back_to_the_default(self):
+        """Ноль здесь значит «не указали», ровно как у потоков: держи мы
+        два разных правила на два соседних поля — путались бы оба."""
+        self.assertEqual(self.settings(books=0).books,
+                         downloads.BOOKS_AT_ONCE)
+
+    def test_a_silly_number_is_refused_with_words(self):
+        for bad in (-3, downloads.MAX_AT_ONCE + 1, 500):
+            with self.subTest(bad):
+                with self.assertRaises(ValueError) as caught:
+                    self.settings(books=bad)
+                self.assertIn("Книг разом", str(caught.exception))
+
+    def test_a_word_instead_of_a_number_is_refused_too(self):
+        with self.assertRaises(ValueError):
+            self.settings(books="много")
+
+    def test_the_number_reaches_the_runner(self):
+        """Тот самый стык: из тела запроса — в аргумент прогона."""
+        seen = {}
+        was = self.web.downloads_op.run
+
+        def spy(perform, on_change=None, cancel=None, workers=1):
+            seen["workers"] = workers
+            return []
+
+        self.web.downloads_op.run = spy
+        self.addCleanup(setattr, self.web.downloads_op, "run", was)
+
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        was_file = downloads.QUEUE_FILE
+        downloads.QUEUE_FILE = Path(folder.name) / "downloads.json"
+        self.addCleanup(setattr, downloads, "QUEUE_FILE", was_file)
+        downloads.add(name="Книга", source="novelcms",
+                      address="https://x/read/1/", base=folder.name,
+                      folder="Книга")
+
+        with self.web.app.test_request_context():
+            self.web._downloads_start({"threads": 1, "books": 5})
+
+        # Задача уходит в поток; дожидаемся, пока она позовёт прогон.
+        for _ in range(200):
+            if "workers" in seen:
+                break
+            time.sleep(0.02)
+        self.assertEqual(seen.get("workers"), 5)

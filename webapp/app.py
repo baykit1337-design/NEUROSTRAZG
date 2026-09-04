@@ -1197,6 +1197,21 @@ def _downloads_start(payload: dict):
                     "queue_total": sum(1 for x in rows if x.ready)}
     job.log = joblog.JobLog()
 
+    #: Доли прогресса по книгам. Общие числа — их сумма: при одной книге
+    #: это ровно то же, что было, при нескольких — «скачано столько-то из
+    #: стольких-то по всем сразу».
+    parts: dict[str, dict] = {}
+    parts_lock = threading.Lock()
+    counted = ("total", "done", "downloaded", "skipped", "failed")
+
+    def share(book_id: str, **numbers) -> None:
+        with parts_lock:
+            mine = parts.setdefault(book_id, {})
+            mine.update(numbers)
+            job.progress.update({
+                name: sum(int(one.get(name) or 0) for one in parts.values())
+                for name in counted})
+
     def one(item):
         """Скачать одну книгу очереди и вернуть текст итога."""
         source = sources.get(item.source)
@@ -1220,11 +1235,15 @@ def _downloads_start(payload: dict):
             if last < first:
                 return "Новых глав нет — качать нечего"
 
-            job.progress.update(total=last - first + 1, done=0,
-                                downloaded=0, skipped=0, failed=0)
+            # Своя доля прогресса у каждой книги. Пиши они в общие
+            # счётчики, как раньше, — при нескольких книгах разом полоса
+            # прыгала бы взад-вперёд: каждая ставила бы туда своё «из
+            # скольких».
+            share(item.id, total=last - first + 1, done=0,
+                  downloaded=0, skipped=0, failed=0)
             downloader = Downloader(
                 client=client, pool=pool,
-                on_progress=lambda p: job.progress.update(p.as_dict()),
+                on_progress=lambda p: share(item.id, **p.as_dict()),
                 on_event=job.log.add,
                 cancel_event=job.cancel, pause_event=job.paused,
                 threads=run.threads, probe=run.probe, source=source,
@@ -1248,7 +1267,8 @@ def _downloads_start(payload: dict):
             message=_queue_note(rows, item))
 
     def work(job: Job):
-        done = downloads_op.run(one, on_change=changed, cancel=job.cancel)
+        done = downloads_op.run(one, on_change=changed, cancel=job.cancel,
+                                workers=run.books)
         stopped = job.cancel.is_set()
         job.progress.update(stage="cancelled" if stopped else "done",
                             queue=[x.as_dict() for x in done],
@@ -1321,6 +1341,8 @@ class RunSettings:
     connect_timeout: int
     threads: int
     probe: bool
+    #: Сколько книг очереди вести разом. Одна — прежнее поведение.
+    books: int = downloads_op.BOOKS_AT_ONCE
 
 
 def _run_settings(payload: dict) -> RunSettings:
@@ -1352,8 +1374,17 @@ def _run_settings(payload: dict) -> RunSettings:
 
     # Ручной режим пропускает пробу: пользователь сам увидит по времени,
     # работает многопоточность или нет, — это надёжнее любой эвристики.
+    try:
+        books = int(payload.get("books") or downloads_op.BOOKS_AT_ONCE)
+    except (TypeError, ValueError):
+        raise ValueError("Книг разом должно быть числом") from None
+    if not 1 <= books <= downloads_op.MAX_AT_ONCE:
+        raise ValueError(f"Книг разом: от 1 до {downloads_op.MAX_AT_ONCE}")
+
+    # Ручной режим пропускает пробу: пользователь сам увидит по времени,
+    # работает многопоточность или нет, — это надёжнее любой эвристики.
     probe = str(payload.get("mode") or "auto").strip() != "manual"
-    return RunSettings(read_timeout, connect_timeout, threads, probe)
+    return RunSettings(read_timeout, connect_timeout, threads, probe, books)
 
 
 def _reached(output_dir) -> int:

@@ -381,6 +381,12 @@ class TestTheDownloadCarriesItsSettings(UiBase):
         self.assertIn("threads:", self.payload())
         self.assertIn("dlThreads", self.payload())
 
+    def test_how_many_books_at_once_is_sent_too(self):
+        """Ручка есть, а в запрос не уходит — и сервер снова берёт своё
+        умолчание: ровно та беда, из-за которой заведена эта проверка."""
+        self.assertIn("books:", self.payload())
+        self.assertIn("dlBooks", self.payload())
+
     def test_the_chosen_mode_is_sent(self):
         """Ручной режим пропускает автопробу — сервер должен знать о нём."""
         self.assertIn("mode: dlMode", self.payload())

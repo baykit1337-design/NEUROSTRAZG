@@ -1455,6 +1455,13 @@
         <label for="dlThreads">потоков<i class="hint-icon" data-tip="Сколько глав качать одновременно. 3 — безопасное значение. Больше — быстрее, но выше риск, что сайт временно перестанет отвечать.">?</i></label>
         <input id="dlThreads" type="number" value="3" min="1" max="6">
       </div>
+      <!-- Книги очереди независимы, и ждать первую, чтобы начать вторую,
+           незачем. Но перемножается это с потоками: три книги по три
+           потока — уже девять запросов в минуту с одного адреса. -->
+      <div style="flex:1">
+        <label for="dlBooks">книг разом<i class="hint-icon" data-tip="Сколько книг очереди качать одновременно. 1 — по очереди, как раньше. Помните, что это умножается на потоки: 3 книги по 3 потока — девять запросов сразу.">?</i></label>
+        <input id="dlBooks" type="number" value="1" min="1" max="8">
+      </div>
     </div>
 
     <div style="margin-top:14px">
@@ -4523,6 +4530,7 @@ async function exportLinks(){
       last: Number($('last').value) || novel.total_chapters,
       timeout: Number($('tmRead').value) || 120,
       threads: Number($('dlThreads').value) || 1,
+      books: Number($('dlBooks').value) || 1,
       mode: dlMode,
       connect_timeout: Number($('tmConnect').value) || 15
     });
@@ -4610,6 +4618,7 @@ async function start(){
       // Выставленное на экране число не влияло ни на что, и книга
       // качалась в одну нитку, сколько бы потоков ни просили.
       threads: Number($('dlThreads').value) || 1,
+      books: Number($('dlBooks').value) || 1,
       mode: dlMode,
       timeout: Number($('tmRead').value) || 120,
       connect_timeout: Number($('tmConnect').value) || 15,
@@ -4942,6 +4951,7 @@ async function thCheck(){
       novel,
       source: srcMenu ? srcMenu.value : '',
       threads: Number($('dlThreads').value) || 1,
+      books: Number($('dlBooks').value) || 1,
       // Замер должен ждать столько же, сколько и сам прогон: иначе он
       // меряет не то, что потом будет качать.
       timeout: Number($('tmRead').value) || 120,

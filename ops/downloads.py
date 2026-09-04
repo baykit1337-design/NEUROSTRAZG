@@ -31,6 +31,7 @@ import json
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -341,29 +342,57 @@ def state() -> dict:
 # --------------------------------------------------------------- запуск
 
 
-def run(perform, on_change=None, cancel=None) -> list[Item]:
-    """Качает книги подряд. Упавшая книга не отменяет остальные.
+#: Сколько книг качать разом по умолчанию. Одна — прежнее поведение, и
+#: менять его молча нельзя: у книг общий пул прокси и общая квота сайта.
+BOOKS_AT_ONCE = 1
+
+#: Больше этого не пускаем при всём желании. Двадцать книг разом — это
+#: двадцать оглавлений и сотни глав в минуту с одного адреса: сайт
+#: закроется, и виноват будет не он.
+MAX_AT_ONCE = 8
+
+
+def run(perform, on_change=None, cancel=None,
+        workers: int = BOOKS_AT_ONCE) -> list[Item]:
+    """Качает книги очереди. Упавшая книга не отменяет остальные.
 
     `perform(item)` качает одну книгу и возвращает текст итога либо
     возбуждает исключение. В отличие от очереди операций, здесь отказ
     одной строки останавливает только её: книги друг о друге не знают, и
     закрытый сайт у третьей — не повод бросать четвёртую.
+
+    `workers` — сколько книг вести одновременно. Ждать, пока докачается
+    первая, чтобы начать вторую, незачем: книги независимы, а узкое место
+    у них не общее — одна упирается в медленный сайт, другая в разбор.
+
+    Порядок в списке при этом сохраняется: строки остаются на своих
+    местах, меняется только то, что несколько из них горят «качается»
+    разом.
     """
     rows = reset()
+    ready = [one for one in rows if one.ready]
+    workers = max(1, min(int(workers or 1), MAX_AT_ONCE, len(ready) or 1))
 
-    for item in rows:
+    # Список общий на все потоки: и правки строк, и запись на диск, и
+    # доклад наверх идут через один замок. Без него две книги, кончившие
+    # разом, затирали бы записи друг друга прямо в файле очереди.
+    guard = threading.Lock()
+
+    def told(item) -> None:
+        with guard:
+            _save_locked(rows)
+            if on_change:
+                on_change(rows, item)
+
+    def one(item) -> None:
         if cancel is not None and cancel.is_set():
             # Не начатое остаётся ждать, а не помечается пропущенным:
             # очередь продолжат тем же нажатием, что и начали.
-            break
-        if not item.ready:
-            continue
+            return
 
         item.state = RUNNING
         item.message = ""
-        _keep(rows)
-        if on_change:
-            on_change(rows, item)
+        told(item)
 
         try:
             item.message = str(perform(item) or "")
@@ -375,23 +404,44 @@ def run(perform, on_change=None, cancel=None) -> list[Item]:
                 # сделал человек, а книга не попала бы в продолжение.
                 item.state = WAITING
                 item.message = ""
-                _keep(rows)
-                if on_change:
-                    on_change(rows, item)
-                break
-            item.state = FAILED
-            item.message = f"{type(exc).__name__}: {exc}"
-            log.warning("Очередь книг: «%s» не скачалась: %s",
-                        item.title, item.message)
-        _keep(rows)
-        if on_change:
-            on_change(rows, item)
+            else:
+                item.state = FAILED
+                item.message = f"{type(exc).__name__}: {exc}"
+                log.warning("Очередь книг: «%s» не скачалась: %s",
+                            item.title, item.message)
+        told(item)
 
+    if workers == 1:
+        # Тот же путь, что и был: без пула, чтобы одиночная очередь вела
+        # себя ровно как прежде — и в отладке тоже.
+        for item in ready:
+            if cancel is not None and cancel.is_set():
+                break
+            one(item)
+        return rows
+
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="book") as pool:
+        # `map` дождался бы всех и проглотил бы исключения до конца; здесь
+        # каждая книга своя, и разбираться с ней надо на месте.
+        for done in as_completed([pool.submit(one, item) for item in ready]):
+            done.result()
     return rows
 
 
 def _keep(rows: list[Item]) -> None:
     """Записать ход очереди на диск: закройся окно — не пропадёт."""
+    with _LOCK:
+        _save(rows)
+
+
+def _save_locked(rows: list[Item]) -> None:
+    """То же самое, но замок уже держит вызывающий.
+
+    Отдельно, чтобы прогон нескольких книг мог взять один замок на
+    «поправить строку, записать, доложить»: возьми он `_keep`, между
+    правкой и записью влезала бы соседняя книга.
+    """
     with _LOCK:
         _save(rows)
 
