@@ -3295,6 +3295,64 @@
     <div class="table" id="tlPlanRows" hidden style="margin-top:10px;max-height:320px"></div>
   </div>
 
+  <!-- Сама работа. Четыре команды переводчика в том порядке, в каком их
+       и делают: глоссарий, перевод, сверка, сборка. Каждая идёт часами,
+       поэтому обычной задачей — с журналом и кнопкой «Остановить». -->
+  <div class="card" id="tlWorkCard">
+    <label>Перевести<i class="hint-icon" data-tip="Книга, папка проекта и отбор глав берутся из карточки выше. Провайдер, модель и ключи — из настроек самого переводчика.">?</i></label>
+    <p class="hint">Порядок обычный: собрать глоссарий, перевести, сверить,
+       собрать EPUB. Каждая кнопка — часы работы; остановка срабатывает на
+       границе главы, и сделанное остаётся.</p>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label for="tlWorkers">потоков<i class="hint-icon" data-tip="Пусто или 0 — сколько настроено у самого переводчика. Своё число перебивает его настройку только на этот запуск.">?</i></label>
+        <input id="tlWorkers" type="number" min="0" max="32" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlRpm">запросов в минуту<i class="hint-icon" data-tip="0 — как настроено у переводчика. Больше, чем позволяет модель, ставить бессмысленно: упрётся в её квоту.">?</i></label>
+        <input id="tlRpm" type="number" min="0" max="600" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlTemp">температура<i class="hint-icon" data-tip="Пусто — как настроено у переводчика. Ниже — суше и ближе к тексту, выше — вольнее.">?</i></label>
+        <input id="tlTemp" type="text" placeholder="как настроено" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px;flex-wrap:wrap">
+      <button id="tlGlossary" class="ghost">Собрать глоссарий</button>
+      <button id="tlTranslate" class="primary">Перевести</button>
+      <button id="tlConsistency" class="ghost">Сверить перевод</button>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <input id="tlOut" type="text" placeholder="Куда собрать EPUB — пусто, значит в папку проекта"
+             autocomplete="off">
+      <button id="tlBuild" class="ghost" style="flex:0 0 auto">Собрать EPUB</button>
+    </div>
+
+    <div id="tlBox" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="tlStatus"></span></div>
+      <!-- Полоса ожидания, а не процентов: сколько глав впереди,
+           переводчик по ходу не сообщает, и делить нечего. Бегущая
+           отвечает на единственный вопрос, который тут и возникает, —
+           работает оно или подвисло. -->
+      <div class="bar waiting"><i id="tlFill"></i></div>
+      <div class="stats"><span class="timers" id="tlTimers"></span></div>
+      <div class="row" style="margin-top:12px">
+        <button id="tlStop" class="ghost" hidden>Остановить</button>
+      </div>
+      <p class="result-path" id="tlDone"></p>
+      <!-- Журнал самого переводчика: единственное место, где видно, что
+           он делает прямо сейчас. Сколько глав впереди, он не сообщает,
+           и рисовать процент наугад было бы враньём. -->
+      <details id="tlLogBox" style="margin-top:12px" hidden>
+        <summary class="hint" style="cursor:pointer">Журнал переводчика</summary>
+        <div class="joblog" id="tlLog"></div>
+      </details>
+    </div>
+  </div>
+
   <!-- Счётчик трафика. При платном пакете это первое, что хочется
        видеть, а узнать было неоткуда: главы, рейтинги, обложки, перевод
        и обновления уходили в один общий поток, о котором никто не

@@ -407,7 +407,10 @@ function drawProgress(p, fillId, statusId, pctId){
   const busy = !TERMINAL.includes(p.stage);
   const pct = p.total ? Math.min(100, Math.round(p.done / p.total * 100)) : 0;
   const fill = $(fillId);
-  fill.style.width = pct + '%';
+  // Полосе ожидания ширину не ставим: она у неё своя, бегущая, и наши
+  // «0%» её бы просто погасили. Такая полоса стоит там, где процентов
+  // взять неоткуда, — например под переводом книги.
+  if(!fill.parentElement.classList.contains('waiting')) fill.style.width = pct + '%';
   // Блик бежит только пока идёт работа.
   fill.classList.toggle('active', busy);
   if(statusId) $(statusId).innerHTML = (busy ? '<span class="spin"></span>' : '') + (p.message || '');
@@ -5216,6 +5219,114 @@ async function tlPlanLook(){
 }
 
 $('tlPlan').onclick = tlPlanLook;
+
+/* ------------------------------------------------ сама работа
+ *
+ * Четыре команды переводчика в том порядке, в каком их и делают:
+ * глоссарий, перевод, сверка, сборка. Каждая идёт часами, поэтому
+ * обычной задачей — с журналом и остановкой.
+ *
+ * Полосы по главам тут нет и не будет обманной: сколько глав впереди,
+ * переводчик по ходу не сообщает. Вместо процента — его собственный
+ * журнал: видно, что он делает прямо сейчас.
+ */
+
+let tlJob = null;
+
+/** Что отправляем на любую из четырёх команд. */
+function tlWork(){
+  return {
+    path: $('tlPath').value.trim(),
+    epub: $('tlEpub').value.trim(),
+    project: $('tlProject').value.trim(),
+    scope: tlScopeMenu ? tlScopeMenu.value : 'pending',
+    workers: Number($('tlWorkers').value) || 0,
+    rpm: Number($('tlRpm').value) || 0,
+    // Пустое поле — «как настроено у переводчика»: своим значением
+    // затирать его настройку молча нельзя.
+    temperature: $('tlTemp').value.trim() || null,
+  };
+}
+
+/** Полоса: `null` — бежит, `true` — полная, `false` — пустая.
+ *
+ *  Бегущая полоса честна, пока работа идёт, но после «Готово» она врала
+ *  бы: движение читается как «ещё делается».
+ */
+function tlBar(done){
+  const fill = $('tlFill');
+  fill.parentElement.classList.toggle('waiting', done === null);
+  fill.style.width = done === null ? '' : (done ? '100%' : '0');
+}
+
+function tlLog(rows){
+  const box = $('tlLog');
+  if(!box) return;
+  box.textContent = (rows || []).join('\n');
+  $('tlLogBox').hidden = !(rows || []).length;
+  box.scrollTop = box.scrollHeight;
+}
+
+async function tlRun(what, extra){
+  showError('');
+  const buttons = ['tlGlossary', 'tlTranslate', 'tlConsistency', 'tlBuild'];
+  buttons.forEach(id => { $(id).disabled = true; });
+  $('tlBox').hidden = false;
+  $('tlStop').hidden = false;
+  $('tlDone').textContent = '';
+  tlBar(null);
+  tlLog([]);
+
+  try{
+    const {job} = await call('/api/translator/' + what,
+                             {...tlWork(), ...(extra || {})});
+    tlJob = job.id;
+    // Вкладке эта задача намеренно не отдаётся — как и скачивание, см.
+    // `cancelTab`. Перевод идёт часами и стоит квоты ключей, а «Очистить
+    // список» на этой же вкладке снимает совсем другой список: обрывать
+    // им ночную работу нельзя. Останавливает её только своя кнопка.
+    drawResult(job.progress || {}, 'tlFill', 'tlStatus');
+
+    pollJob(job.id,
+      job => {
+        tlLog(job.progress?.lines);
+        return drawResult(job.progress || {}, 'tlFill', 'tlStatus');
+      },
+      job => {
+        $('tlStop').hidden = true;
+        buttons.forEach(id => { $(id).disabled = false; });
+        tlBar(!job.error);
+        if(job.error){ showError(job.error, $('tlDone')); return; }
+        const said = job.report || {};
+        $('tlDone').textContent = tlResult(said);
+      });
+  }catch(err){
+    showError(err.message, $('tlDone'));
+    $('tlStop').hidden = true;
+    buttons.forEach(id => { $(id).disabled = false; });
+  }
+}
+
+/** Итог словами. Читаем бережно: формат чужой и может поменяться. */
+function tlResult(said){
+  const bits = [];
+  for(const [key, name] of [['translated', 'переведено глав'],
+                            ['failed', 'не вышло'],
+                            ['terms', 'терминов в глоссарий'],
+                            ['issues', 'расхождений'],
+                            ['output', 'файл']]){
+    if(said[key] !== undefined && said[key] !== null && said[key] !== ''){
+      bits.push(`${name}: ${said[key]}`);
+    }
+  }
+  return bits.length ? 'Готово. ' + bits.join(', ') + '.' : 'Готово.';
+}
+
+$('tlGlossary').onclick = () => tlRun('glossary');
+$('tlTranslate').onclick = () => tlRun('translate');
+$('tlConsistency').onclick = () => tlRun('consistency');
+$('tlBuild').onclick = () => tlRun('build', {output: $('tlOut').value.trim()});
+$('tlStop').onclick = () => stopJob(tlJob);
 
 /* ------------------------------------------------- счётчик трафика
  *

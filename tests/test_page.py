@@ -230,6 +230,24 @@ class TestWhatTheToolsTabShows(PageTestCase):
         self.assertIn("cli.py", box.inner_text())
         self.quiet()
 
+    def test_the_translate_button_refuses_without_a_book(self):
+        """Отказ приходит ответом на нажатие, а не задачей.
+
+        Заведи маршрут задачу сначала — «файла нет» всплыло бы в ней уже
+        с полосой и кнопкой «Остановить». Заодно это единственная
+        проверка, где скрипт карточки работает целиком: кнопка, запрос,
+        показ отказа.
+        """
+        self.page.click("#tlTranslate")
+        self.page.wait_for_timeout(1500)
+
+        box = self.page.locator(".err:not([hidden])").first
+        self.assertTrue(box.count())
+        self.assertIn("epub", box.inner_text().lower())
+        # Кнопки должны вернуться: отказ — не повод запирать карточку.
+        self.assertFalse(self.page.locator("#tlTranslate").is_disabled())
+        self.quiet()
+
     def test_the_update_card_offers_one_button(self):
         """Одна кнопка на всё: две заставляли человека делать работу
         программы."""

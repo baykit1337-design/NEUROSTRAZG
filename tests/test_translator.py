@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
 from ops import translator  # noqa: E402
+from ops.base import Cancelled  # noqa: E402
 
 #: Ответ, похожий на настоящий: провайдеры, ключи, сохранённые настройки.
 ANSWER = {
@@ -493,3 +494,278 @@ class TestThePlanOverHttp(Base):
             upset, prints={"ok": False, "error": "нет ключей"})))
         self.assertEqual(res.status_code, 400)
         self.assertIn("нет ключей", res.get_json()["error"])
+
+
+class TestTheLongWork(Base):
+    """Перевод книги — это часы. Всё это время экран не должен быть немым,
+    а кнопка «Остановить» — должна останавливать.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def talkative(self, lines: int = 3, pause: str = "0") -> Path:
+        """Переводчик, который пишет журнал и в конце отдаёт итог."""
+        home = self.tmp / "болтун"
+        package = home / "gemini_translator"
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "cli.py").write_text(
+            "import sys, json, time\n"
+            f"for n in range({lines}):\n"
+            "    print(f'глава {n+1} готова', file=sys.stderr, flush=True)\n"
+            f"    time.sleep({pause})\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'translated': 2, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+        return home
+
+    def asked(self, doing, **kw) -> list:
+        """Чем позвали переводчика."""
+        home = self.talkative()
+        said = doing(str(self.book), str(self.tmp / "проект"),
+                     path=str(home), **kw)
+        return said["сказали"]
+
+    def test_the_log_comes_out_line_by_line(self):
+        """Иначе часы работы проходят при пустом экране."""
+        seen = []
+        translator.translate(str(self.book), str(self.tmp / "проект"),
+                             path=str(self.talkative()), note=seen.append)
+        self.assertEqual(seen, ["глава 1 готова", "глава 2 готова",
+                                "глава 3 готова"])
+
+    def test_stopping_does_not_wait_for_the_next_line(self):
+        """Между строками у перевода бывают минуты: жди мы строку —
+        «Остановить» доходило бы только вместе с ней."""
+        import threading
+        import time
+
+        home = self.tmp / "молчун"
+        package = home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import time\ntime.sleep(60)\n", encoding="utf-8")
+
+        stop = threading.Event()
+        threading.Timer(0.3, stop.set).start()
+        began = time.monotonic()
+        # Отмена — не поломка: у неё свой тип, общий на весь проект, и
+        # показывают её иначе, чем отказ переводчика.
+        with self.assertRaises(Cancelled) as caught:
+            translator.translate(str(self.book), str(self.tmp / "проект"),
+                                 path=str(home), stop=stop)
+
+        self.assertIn("Остановлено", str(caught.exception))
+        # Меньше срока добивания: значит, процесс ушёл сам, по-хорошему, а
+        # не был убит по истечении отсрочки. Убийство посреди главы теряет
+        # её перевод — за него уже заплачено квотой.
+        self.assertLess(time.monotonic() - began, translator.GRACE)
+
+    def test_the_verbose_flag_goes_only_where_it_is_known(self):
+        """`consistency` и `build-epub` его не знают и падают на нём."""
+        self.assertIn("--verbose", self.asked(translator.translate))
+        self.assertIn("--verbose", self.asked(translator.glossary))
+        self.assertNotIn("--verbose", self.asked(translator.consistency))
+        self.assertNotIn("--verbose", self.asked(translator.build_epub))
+
+    def test_every_command_is_called_by_its_own_name(self):
+        for doing, name in [(translator.translate, "translate"),
+                            (translator.glossary, "glossary-generate"),
+                            (translator.consistency, "consistency"),
+                            (translator.build_epub, "build-epub")]:
+            with self.subTest(name):
+                self.assertEqual(self.asked(doing)[0], name)
+
+    def test_the_keys_are_his_own(self):
+        """Своего склада ключей для перевода у нас нет и не будет."""
+        self.assertIn("--all-keys", self.asked(translator.translate))
+        # Сборке ключи не нужны вовсе: она складывает уже готовое.
+        self.assertNotIn("--all-keys", self.asked(translator.build_epub))
+
+    def test_what_was_not_named_is_not_passed(self):
+        """Пустая ручка отсюда затёрла бы его же настройку своим нулём."""
+        asked = self.asked(translator.translate)
+
+        for flag in ("--workers", "--rpm", "--temperature", "--prompt-file"):
+            self.assertNotIn(flag, asked, flag)
+
+    def test_what_was_named_reaches_the_translator(self):
+        asked = self.asked(translator.translate, workers=3, rpm=5,
+                           temperature=0.7)
+
+        self.assertEqual(asked[asked.index("--workers") + 1], "3")
+        self.assertEqual(asked[asked.index("--rpm") + 1], "5")
+        self.assertEqual(asked[asked.index("--temperature") + 1], "0.7")
+
+    def test_the_built_book_goes_where_it_was_told(self):
+        asked = self.asked(translator.build_epub, output=str(self.tmp / "го.epub"))
+        self.assertEqual(asked[asked.index("--output") + 1],
+                         str(self.tmp / "го.epub"))
+
+    def test_the_glossary_is_gathered_over_the_whole_book(self):
+        """Имена должны совпадать от первой главы до последней."""
+        asked = self.asked(translator.glossary)
+        self.assertEqual(asked[asked.index("--chapters") + 1], translator.WHOLE)
+
+    def test_the_check_looks_at_what_is_already_translated(self):
+        asked = self.asked(translator.consistency)
+        self.assertEqual(asked[asked.index("--chapters") + 1], translator.DONE)
+
+
+class TestTheLongWorkOverHttp(Base):
+    """Четыре долгие команды — задачей, как и всё долгое в программе.
+
+    Отвечать на них сразу нельзя: перевод книги идёт часами, и страница
+    столько не ждёт. Значит, ответ — номер задачи, а дальше опрос.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def home(self) -> str:
+        """Переводчик, который пишет строку в журнал и отдаёт итог."""
+        home = self.tmp / "болтун"
+        package = home / "gemini_translator"
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "cli.py").write_text(
+            "import sys, json\n"
+            "print('глава 1 готова', file=sys.stderr, flush=True)\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+        return str(home)
+
+    def start(self, what: str, **kw):
+        body = {"path": self.home(), "epub": str(self.book),
+                "project": str(self.tmp / "проект")}
+        body.update(kw)
+        return self.app.post(f"/api/translator/{what}", json=body)
+
+    def finished(self, what: str, **kw) -> dict:
+        """Дождаться задачи и вернуть её последний снимок."""
+        import time
+
+        job = self.start(what, **kw).get_json()["job"]
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                return got
+            time.sleep(0.05)
+        self.fail(f"задача {what} не закончилась")
+
+    def test_each_command_starts_a_job_and_calls_its_own_name(self):
+        for what, name in [("translate", "translate"),
+                           ("glossary", "glossary-generate"),
+                           ("consistency", "consistency"),
+                           ("build", "build-epub")]:
+            with self.subTest(what):
+                got = self.finished(what)
+                self.assertIsNone(got["error"])
+                self.assertEqual(got["report"]["сказали"][0], name)
+
+    def test_the_log_of_the_translator_reaches_the_page(self):
+        """Иначе полоса стоит на месте и непонятно, жива ли работа."""
+        got = self.finished("translate")
+        self.assertIn("глава 1 готова", got["progress"]["lines"])
+
+    def test_a_missing_book_is_refused_before_a_job_is_made(self):
+        """Задача, падающая сразу после запуска, — худший способ сказать
+        «нет такого файла»: её ещё надо открыть, чтобы прочитать."""
+        for what in ("translate", "glossary", "consistency", "build"):
+            with self.subTest(what):
+                res = self.start(what, epub=str(self.tmp / "нет.epub"))
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("Файла нет", res.get_json()["error"])
+
+    def test_the_knobs_from_the_page_reach_the_translator(self):
+        said = self.finished("translate", workers=4, rpm=7)["report"]["сказали"]
+        self.assertEqual(said[said.index("--workers") + 1], "4")
+        self.assertEqual(said[said.index("--rpm") + 1], "7")
+
+    def test_stopping_a_job_is_told_apart_from_a_breakdown(self):
+        """Остановка — не ошибка: человек нажал сам."""
+        import time
+
+        home = self.tmp / "молчун"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import time\ntime.sleep(60)\n", encoding="utf-8")
+
+        job = self.start("translate", path=str(home)).get_json()["job"]
+        self.app.post(f"/api/job/{job['id']}/cancel")
+
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(got["running"], "остановка не дошла")
+        self.assertIsNone(got["error"], "остановка показана поломкой")
+        self.assertEqual(got["progress"]["stage"], "cancelled")
+        self.assertIn("станов", got["progress"]["message"].lower())
+
+    def test_a_long_log_does_not_grow_without_end(self):
+        """Перевод пишет строки тысячами, а смотрят всегда в конец."""
+        home = self.tmp / "многослов"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import sys, json\n"
+            "for n in range(400):\n"
+            "    print(f'строка {n}', file=sys.stderr, flush=True)\n"
+            "sys.stdout.write(json.dumps({'ok': True}))\n",
+            encoding="utf-8")
+
+        rows = self.finished("translate", path=str(home))["progress"]["lines"]
+        self.assertLessEqual(len(rows), 200)
+        self.assertEqual(rows[-1], "строка 399")
+
+    def test_the_current_line_is_shown_while_the_work_goes_on(self):
+        """Строка журнала — и есть весь наш прогресс.
+
+        Сколько глав впереди, переводчик по ходу не сообщает, так что
+        полоса стоит на месте, а живой её делает только эта надпись.
+        """
+        import time
+
+        home = self.tmp / "неспешный"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import sys, time\n"
+            "print('глава 1 готова', file=sys.stderr, flush=True)\n"
+            "time.sleep(60)\n", encoding="utf-8")
+
+        job = self.start("translate", path=str(home)).get_json()["job"]
+        try:
+            until = time.monotonic() + 20
+            while time.monotonic() < until:
+                got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+                if "глава 1 готова" in got["progress"]["message"]:
+                    return
+                time.sleep(0.05)
+            self.fail(f"на экране осталось: {got['progress']['message']!r}")
+        finally:
+            self.app.post(f"/api/job/{job['id']}/cancel")
+
+    def test_a_refusal_after_hours_of_work_is_not_called_done(self):
+        """Отказ он сообщает полем в ответе, а не кодом возврата."""
+        home = self.tmp / "отказ"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import sys, json\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': False, 'error': 'кончились ключи'}))\n",
+            encoding="utf-8")
+
+        got = self.finished("translate", path=str(home))
+        self.assertIn("кончились ключи", got["error"])
+        self.assertNotIn("Готово", got["progress"]["message"])

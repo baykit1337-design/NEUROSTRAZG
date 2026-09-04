@@ -12,15 +12,22 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from flask import Blueprint, jsonify, request
 
 from config import settings
 from ops import translator as translator_op
 
+from .jobs import Job, start_job
+
 log = logging.getLogger(__name__)
 
 translator = Blueprint("translator", __name__)
+
+#: Сколько последних строк журнала держим на виду. Перевод книги пишет их
+#: тысячами, а смотрят всегда в конец.
+LOG_TAIL = 60
 
 
 @translator.get("/api/translator/state")
@@ -73,6 +80,100 @@ def api_translator_plan():
     if not said.get("ok", True):
         return jsonify(error=str(said.get("error") or "переводчик отказал")), 400
     return jsonify(ok=True, **translator_op.short_plan(said))
+
+
+def _start(kind: str, work, payload: dict):
+    """Долгая команда переводчика — обычной задачей.
+
+    Четыре команды устроены одинаково: часы работы, живой журнал в stderr
+    и кнопка «Остановить». Разница между ними — только в том, что зовём,
+    и держать это четырьмя копиями значило бы однажды починить остановку
+    в трёх местах из четырёх.
+    """
+    job = Job(id=uuid.uuid4().hex[:12], kind="translator",
+              meta={"command": kind},
+              output_dir=str(payload.get("project") or ""))
+    job.progress = {"stage": kind, "message": "Запускаем переводчик…",
+                    "done": 0, "total": 0, "lines": []}
+
+    def note(row: str) -> None:
+        """Строка чужого журнала — на экран.
+
+        Она же и есть весь наш прогресс: сколько глав впереди, переводчик
+        по ходу не сообщает, а рисовать процент наугад — врать.
+        """
+        job.progress["message"] = row
+        rows = job.progress.setdefault("lines", [])
+        rows.append(row)
+        del rows[:-LOG_TAIL]
+
+    def run(job: Job):
+        said = work(note=note, stop=job.cancel)
+        job.report = said if isinstance(said, dict) else {}
+        # Отказ он сообщает не кодом возврата, а полем в ответе. Не
+        # посмотри мы сюда — после часа работы вхолостую на экране
+        # написалось бы «Готово».
+        if job.report.get("ok") is False:
+            raise translator_op.TranslatorError(
+                str(job.report.get("error") or "переводчик отказал"))
+        job.progress["stage"] = "done"
+        job.progress["message"] = "Готово."
+
+    return jsonify(job=start_job(job, run).snapshot())
+
+
+def _knobs(payload: dict) -> dict:
+    """Ручки, общие у перевода, глоссария и сверки."""
+    return {
+        "scope": str(payload.get("scope") or translator_op.PENDING).strip(),
+        "workers": payload.get("workers") or 0,
+        "rpm": payload.get("rpm") or 0,
+        "temperature": payload.get("temperature"),
+        "prompt": str(payload.get("prompt") or "").strip(),
+        "limit": payload.get("limit") or 0,
+        "offset": payload.get("offset") or 0,
+    }
+
+
+@translator.post("/api/translator/<any(translate,glossary,consistency):what>")
+def api_translator_work(what: str):
+    """Перевод, сбор глоссария и сверка — три команды одной дорогой."""
+    payload = request.json or {}
+    epub = str(payload.get("epub") or "").strip()
+    project = str(payload.get("project") or "").strip()
+    path = str(payload.get("path") or "").strip()
+    doing = getattr(translator_op, what)
+
+    try:
+        translator_op.verify(epub, project, _knobs(payload)["scope"])
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return _start(what, lambda note, stop: doing(
+        epub, project, path=path, note=note, stop=stop, **_knobs(payload)),
+        payload)
+
+
+@translator.post("/api/translator/build")
+def api_translator_build():
+    """Собрать переведённый EPUB.
+
+    Ни модели, ни ключей: команда складывает уже готовое. Поэтому и ручек
+    у неё нет — только куда положить.
+    """
+    payload = request.json or {}
+    epub = str(payload.get("epub") or "").strip()
+    project = str(payload.get("project") or "").strip()
+    path = str(payload.get("path") or "").strip()
+    output = str(payload.get("output") or "").strip()
+
+    try:
+        translator_op.verify(epub, project)
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return _start("build-epub", lambda note, stop: translator_op.build_epub(
+        epub, project, output, path=path, note=note, stop=stop), payload)
 
 
 @translator.post("/api/translator/check")

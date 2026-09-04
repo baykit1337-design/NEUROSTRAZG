@@ -35,9 +35,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 
 from config import settings
+from ops.base import Cancelled
 
 log = logging.getLogger(__name__)
 
@@ -316,6 +320,125 @@ def short(said: dict) -> dict:
     }
 
 
+#: Долгие команды идут часами: книга на пятьсот глав — это ночь работы.
+#: Срок нужен всё равно — забытый процесс не должен висеть вечно.
+LONG_TIMEOUT = 12 * 3600
+
+#: Как часто смотрим, не попросили ли остановиться.
+WATCH_STEP = 0.2
+
+#: Сколько ждать, пока процесс уйдёт сам, прежде чем убить его.
+GRACE = 10
+
+
+def run_long(command: str, args=(), path: str = "", note=None, stop=None,
+             verbose: bool = False, timeout: int | None = None) -> dict:
+    """Долгая команда: ответ в конце, а по ходу — её собственный журнал.
+
+    Отличие от `run` не в сроке, а в том, что ответа ждут часами. Всё это
+    время экран не должен быть немым, поэтому запускаем процесс и читаем
+    его stderr строка за строкой: с `--verbose` переводчик шлёт туда свой
+    журнал, и в карточке видно, что он делает прямо сейчас.
+
+    Итог он печатает в stdout одним JSON-ом в самом конце, и забирать
+    его из той же трубы нельзя. Пока мы построчно читаем stderr, stdout
+    вычерпывать некому: труба наполняется, чужой процесс встаёт на записи,
+    мы — на чтении, и оба ждут друг друга насмерть. Поэтому stdout уходит
+    в файл, а читается, когда всё кончилось.
+
+    Строки читает отдельный поток, а не этот. Иначе «Остановить» доходило
+    бы только вместе со следующей строкой журнала, а между строками у
+    перевода бывают минуты.
+    """
+    _explain(path)
+    root = Path(str(path or where())).expanduser()
+
+    line = [python_for(root), "-m", "gemini_translator.cli", str(command),
+            *[str(one) for one in args]]
+    # Только там, где он есть: `consistency` и `build-epub` его не знают
+    # и падают на незнакомом флаге.
+    if verbose:
+        line.append("--verbose")
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen",
+           "PYTHONIOENCODING": "utf-8"}
+
+    log.info("Переводчик (долго): %s", " ".join(line[1:]))
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                errors="replace") as out:
+        try:
+            work = subprocess.Popen(
+                line, cwd=str(root), stdout=out, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", env=env)
+        except FileNotFoundError as exc:
+            raise TranslatorError(
+                f"Не запустился Python переводчика ({python_for(root)}): "
+                f"{exc}.") from exc
+
+        listen = threading.Thread(target=_listen, args=(work, note),
+                                  daemon=True)
+        listen.start()
+
+        stopped = _wait(work, stop, timeout or LONG_TIMEOUT)
+        listen.join(timeout=GRACE)
+        # Только когда читать некому: закрыть трубу под живым потоком —
+        # значит уронить его на середине строки.
+        if not listen.is_alive() and work.stderr is not None:
+            work.stderr.close()
+
+        out.seek(0)
+        body = out.read().strip()
+
+    if stopped:
+        # Отмена в проекте одна на всех (`ops/base.py`), и это не ошибка:
+        # своим отказом она подсветилась бы красным, а человек нажал сам.
+        raise Cancelled("Остановлено.")
+    if not body:
+        raise TranslatorError(
+            f"Переводчик ничего не ответил: код возврата {work.returncode}")
+    try:
+        found = json.loads(body)
+    except ValueError as exc:
+        raise TranslatorError(
+            f"Ответ переводчика — не JSON: {body[:200]}") from exc
+    if not isinstance(found, dict):
+        raise TranslatorError(f"Ответ переводчика непонятен: {body[:200]}")
+    return found
+
+
+def _listen(work, note) -> None:
+    """Журнал чужого процесса — наружу, строка за строкой."""
+    if work.stderr is None:
+        return
+    for row in work.stderr:
+        row = row.strip()
+        if row and note:
+            try:
+                note(row)
+            except Exception as exc:  # noqa: BLE001 — показ не роняет работу
+                log.warning("Строка журнала переводчика потерялась: %s", exc)
+
+
+def _wait(work, stop, timeout: int) -> bool:
+    """Ждёт конца. Возвращает «остановили ли по просьбе».
+
+    Просьба об остановке идёт процессу вежливо: `terminate` даёт ему
+    дописать начатую главу и закрыть файлы. Не ушёл за отведённое —
+    убиваем, иначе кнопка «Остановить» врала бы.
+    """
+    began = time.monotonic()
+    asked = False
+    while work.poll() is None:
+        if stop is not None and stop.is_set() and not asked:
+            asked = True
+            work.terminate()
+            began = time.monotonic()
+        if time.monotonic() - began > (GRACE if asked else timeout):
+            work.kill()
+            break
+        time.sleep(WATCH_STEP)
+    return asked
+
+
 def _whole(value) -> int:
     """Целое из чужого ответа. Не число — ноль, а не поломка."""
     try:
@@ -336,22 +459,113 @@ def plan(epub: str, project: str, scope: str = PENDING,
     План читает епаб и считает главы, задачи и знаки. В сеть он не ходит
     вовсе, поэтому нажимать его можно сколько угодно.
     """
-    book = Path(str(epub or "").strip()).expanduser()
+    return run("plan", _work_args(epub, project, scope),
+               path=path, timeout=PLAN_TIMEOUT)
+
+
+def _book_and_project(epub: str, project: str) -> tuple[Path, Path]:
+    """Книга и папка проекта — или внятный отказ.
+
+    Проверяем до запуска чужой программы: сказать «файла нет» сразу
+    полезнее, чем через полминуты её же словами.
+    """
     if not str(epub or "").strip():
         raise TranslatorError("Не выбран .epub, который переводить.")
+    book = Path(str(epub).strip()).expanduser()
     if not book.is_file():
         raise TranslatorError(f"Файла нет: {book}")
     if not str(project or "").strip():
         raise TranslatorError(
             "Не указана папка проекта. Переводчик держит в ней главы, "
             "глоссарий и карту перевода — без неё ему некуда складывать.")
+    return book, Path(str(project).strip()).expanduser()
+
+
+def _work_args(epub: str, project: str, scope: str = PENDING, workers: int = 0,
+               rpm: int = 0, temperature=None, prompt: str = "",
+               limit: int = 0, offset: int = 0) -> list:
+    """Флаги, общие у плана, перевода, глоссария и сверки.
+
+    Чего не назвали, того и не передаём: у переводчика всё это уже
+    настроено в его собственном окне, и пустое значение отсюда затёрло бы
+    его выбор своим.
+    """
+    book, folder = _book_and_project(epub, project)
     if scope not in SCOPES:
         raise TranslatorError(f"Неизвестно, какие главы брать: {scope}")
 
-    return run("plan", ["--epub", str(book),
-                        "--project", str(Path(str(project)).expanduser()),
-                        "--chapters", scope],
-               path=path, timeout=PLAN_TIMEOUT)
+    args = ["--epub", str(book), "--project", str(folder),
+            "--chapters", scope]
+    for flag, value in (("--workers", workers), ("--rpm", rpm),
+                        ("--limit", limit), ("--offset", offset)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    if temperature is not None and str(temperature).strip() != "":
+        args += ["--temperature", str(temperature)]
+    if str(prompt or "").strip():
+        args += ["--prompt-file", str(Path(str(prompt)).expanduser())]
+    return args
+
+
+def verify(epub: str, project: str, scope: str = PENDING) -> None:
+    """Годятся ли книга, папка и отбор. Не годятся — кидает и говорит чем.
+
+    Нужна отдельно от самих команд затем, что отказ должен прийти ответом
+    на нажатие. Заведи мы задачу сначала — «файла нет» всплыло бы в ней
+    через полсекунды, уже с полосой прогресса и кнопкой «Остановить».
+    """
+    _work_args(epub, project, scope)
+
+
+def translate(epub: str, project: str, scope: str = PENDING, path: str = "",
+              note=None, stop=None, **knobs) -> dict:
+    """Перевести главы. Это часы работы, поэтому с журналом и остановкой.
+
+    Ключи, провайдер и модель берутся те, что настроены в самом
+    переводчике: `--all-keys` отдаёт ему все его же ключи, а какие именно
+    — его дело. Своего склада ключей у нас для этого нет и не будет.
+    """
+    args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    return run_long("translate", args, path=path, note=note, stop=stop,
+                    verbose=True)
+
+
+def glossary(epub: str, project: str, scope: str = WHOLE, path: str = "",
+             note=None, stop=None, **knobs) -> dict:
+    """Собрать глоссарий именами и названиями до перевода.
+
+    По всей книге, а не по непереведённому: глоссарий затем и нужен,
+    чтобы имена совпадали от первой главы до последней.
+    """
+    args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    return run_long("glossary-generate", args, path=path, note=note,
+                    stop=stop, verbose=True)
+
+
+def consistency(epub: str, project: str, scope: str = DONE, path: str = "",
+                note=None, stop=None, **knobs) -> dict:
+    """Сверить переведённое: расхождения в именах и пропуски.
+
+    По переведённому, а не по всей книге: сверять нечего там, где перевода
+    ещё нет. `--verbose` эта команда не знает, и журнала по ходу не будет.
+    """
+    args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    return run_long("consistency", args, path=path, note=note, stop=stop)
+
+
+def build_epub(epub: str, project: str, output: str = "",
+               path: str = "", note=None, stop=None) -> dict:
+    """Собрать переведённый EPUB.
+
+    Ни модели, ни ключей тут не нужно: команда складывает уже готовое.
+    Отсюда и путь дальше — собранная книга ложится туда, откуда её берут
+    «Разбить» и «Форматировать».
+    """
+    book, folder = _book_and_project(epub, project)
+    args = ["--epub", str(book), "--project", str(folder)]
+    if str(output or "").strip():
+        args += ["--output", str(Path(str(output)).expanduser())]
+    return run_long("build-epub", args, path=path, note=note, stop=stop)
 
 
 def short_plan(said: dict) -> dict:
