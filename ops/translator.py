@@ -629,17 +629,50 @@ def verify(epub: str, project: str, scope: str = PENDING) -> None:
     _work_args(epub, project, scope)
 
 
+#: Чем главу отдавать модели. Слова его: «saved» — как настроено у него
+#: самого, остальное перебивает эту настройку на один запуск.
+WAY_SAVED = "saved"        # как настроено у переводчика
+WAY_ONE = "single"         # глава целиком одним запросом
+WAY_BATCH = "batch"        # несколько глав в запросе
+WAY_CHUNK = "chunk"        # глава кусками
+WAY_CHAIN = "sequential"   # цепочкой запросов подряд
+WAYS = (WAY_SAVED, WAY_ONE, WAY_BATCH, WAY_CHUNK, WAY_CHAIN)
+
+
 def translate(epub: str, project: str, scope: str = PENDING, path: str = "",
-              note=None, stop=None, **knobs) -> dict:
+              note=None, stop=None, way: str = "", task_size: int = 0,
+              splits: int = 0, force: bool = False, json_epub: bool = False,
+              seconds: int = 0, **knobs) -> dict:
     """Перевести главы. Это часы работы, поэтому с журналом и остановкой.
 
     Ключи, провайдер и модель берутся те, что настроены в самом
     переводчике: `--all-keys` отдаёт ему все его же ключи, а какие именно
     — его дело. Своего склада ключей у нас для этого нет и не будет.
+
+    Чем отдавать главу модели — его же выбор из пяти способов. По
+    умолчанию `saved`, то есть как настроено у него: наш ноль не должен
+    решать за его окно.
     """
+    verify_way(way)
     args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    if way:
+        args += ["--mode", way]
+    for flag, value in (("--task-size", task_size), ("--splits", splits),
+                        ("--timeout", seconds)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    if force:
+        args.append("--force-accept")
+    if json_epub:
+        args.append("--json-epub")
     return run_long("translate", args, path=path, note=note, stop=stop,
                     verbose=True)
+
+
+def verify_way(way: str = "") -> None:
+    """Годится ли способ перевода. Отдельно — чтобы отказать на нажатие."""
+    if way and way not in WAYS:
+        raise TranslatorError(f"Неизвестный способ перевода: {way}")
 
 
 #: Как сливать собранное с тем, что уже есть в глоссарии. Слова его, и
@@ -831,7 +864,8 @@ def short_check(said: dict) -> dict:
 
 def build_epub(epub: str, project: str, output: str = "",
                path: str = "", note=None, stop=None, pick=(), limit: int = 0,
-               offset: int = 0) -> dict:
+               offset: int = 0, suffix: str = "", provider: str = "",
+               strict: bool = False) -> dict:
     """Собрать переведённый EPUB.
 
     Ни модели, ни ключей тут не нужно: команда складывает уже готовое.
@@ -851,6 +885,16 @@ def build_epub(epub: str, project: str, output: str = "",
             args += [flag, str(int(value))]
     for one in _picks(pick):
         args += ["--chapter", one]
+    # Каким сервисом переведено: по нему он и выбирает, какие файлы брать.
+    # Переводили одну книгу двумя — иначе он возьмёт не те.
+    if str(provider or "").strip():
+        args += ["--provider", str(provider).strip()]
+    if str(suffix or "").strip():
+        args += ["--suffix", str(suffix).strip()]
+    # Молча собрать книгу с дырами — худшее, что тут может случиться:
+    # заметно это только при чтении, уже после сборки.
+    if strict:
+        args.append("--strict")
     return run_long("build-epub", args, path=path, note=note, stop=stop)
 
 

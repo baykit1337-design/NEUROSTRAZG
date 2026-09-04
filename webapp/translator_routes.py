@@ -181,6 +181,18 @@ def _check_knobs(payload: dict) -> dict:
     }
 
 
+def _run_knobs(payload: dict) -> dict:
+    """Ручки одного только перевода."""
+    return {
+        "way": str(payload.get("way") or "").strip(),
+        "task_size": payload.get("taskSize") or 0,
+        "splits": payload.get("splits") or 0,
+        "force": bool(payload.get("force")),
+        "json_epub": bool(payload.get("jsonEpub")),
+        "seconds": payload.get("seconds") or 0,
+    }
+
+
 def _glossary_knobs(payload: dict) -> dict:
     """Ручки одного только сбора глоссария."""
     return {
@@ -205,6 +217,8 @@ def api_translator_work(what: str):
         knobs.update(_check_knobs(payload))
     if what == "glossary":
         knobs.update(_glossary_knobs(payload))
+    if what == "translate":
+        knobs.update(_run_knobs(payload))
 
     try:
         translator_op.verify(epub, project, knobs["scope"])
@@ -215,6 +229,8 @@ def api_translator_work(what: str):
                                        knobs["sure"])
         if what == "glossary":
             translator_op.verify_merge(knobs["merge"])
+        if what == "translate":
+            translator_op.verify_way(knobs["way"])
     except translator_op.TranslatorError as exc:
         return jsonify(error=str(exc)), 400
 
@@ -305,7 +321,10 @@ def api_translator_build():
     return _start("build-epub", lambda note, stop: translator_op.build_epub(
         epub, project, output, path=path, note=note, stop=stop,
         pick=payload.get("pick") or "", limit=payload.get("limit") or 0,
-        offset=payload.get("offset") or 0), payload)
+        offset=payload.get("offset") or 0,
+        suffix=str(payload.get("suffix") or "").strip(),
+        provider=str(payload.get("provider") or "").strip(),
+        strict=bool(payload.get("strict"))), payload)
 
 
 @translator.post("/api/translator/check")

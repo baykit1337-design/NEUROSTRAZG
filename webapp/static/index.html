@@ -3354,12 +3354,47 @@
         <label for="tlLimit">взять не больше<i class="hint-icon" data-tip="Предел глав за один запуск. 0 — без предела. Десяток на пробу дешевле, чем вся книга.">?</i></label>
         <input id="tlLimit" type="number" min="0" value="0">
       </div>
+      <div style="flex:1">
+        <label for="tlSuffix">какие файлы<i class="hint-icon" data-tip="Окончание имени переведённых файлов, например «_validated.html». Пусто — как выбирает сам переводчик. Пригождается, когда одну книгу переводили дважды. Действует на сверку, поиск остатков и сборку.">?</i></label>
+        <input id="tlSuffix" type="text" placeholder="сам выберет" autocomplete="off">
+      </div>
     </div>
 
     <div class="row" style="margin-top:14px;flex-wrap:wrap">
       <button id="tlGlossary" class="ghost">Собрать глоссарий</button>
       <button id="tlTranslate" class="primary">Перевести</button>
       <button id="tlConsistency" class="ghost">Сверить перевод</button>
+    </div>
+
+    <!-- Ручки одного только перевода: чем отдавать главу модели. Слова
+         его же; «как настроено» означает его собственную настройку, и
+         наш ноль не должен решать за его окно. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>отдавать главу<i class="hint-icon" data-tip="Целиком — один запрос на главу. Пачкой — несколько глав в запросе, дешевле по квоте. Кусками — длинную главу по частям. Цепочкой — подряд, с оглядкой на предыдущий ответ.">?</i></label>
+        <div class="dropdown" id="tlWayRun" data-options='[["","как настроено"],["single","целиком"],["batch","пачкой"],["chunk","кусками"],["sequential","цепочкой"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="tlTaskSize">знаков в задаче<i class="hint-icon" data-tip="Предел знаков на один запрос при пачке и кусках. 0 — как настроено у переводчика.">?</i></label>
+        <input id="tlTaskSize" type="number" min="0" max="500000" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlSplits">звеньев цепочки<i class="hint-icon" data-tip="На сколько запросов подряд делить главу в режиме «цепочкой». 0 — как настроено.">?</i></label>
+        <input id="tlSplits" type="number" min="0" max="20" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlSeconds">оборвать через, с<i class="hint-icon" data-tip="Сколько секунд работать, потом остановиться самому. 0 — без срока. Полезно, когда квота считается по суткам.">?</i></label>
+        <input id="tlSeconds" type="number" min="0" max="86400" value="0">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlForce"> принимать ответ без проверки разметки
+        <i class="hint-icon" data-tip="Переводчик отбраковывает ответы с поломанным HTML. С этой галкой берёт как есть — выручает, когда модель упорно отдаёт «неправильную» вёрстку.">?</i></label>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlJson"> передавать главы JSON-ом
+        <i class="hint-icon" data-tip="Другой способ упаковки главы для модели. Иногда держит разметку лучше обычного.">?</i></label>
     </div>
 
     <!-- Ручки одного только глоссария. Слияние — его слова и его же
@@ -3416,6 +3451,11 @@
       <input id="tlOut" type="text" placeholder="Куда собрать EPUB — пусто, значит в папку проекта"
              autocomplete="off">
       <button id="tlBuild" class="ghost" style="flex:0 0 auto">Собрать EPUB</button>
+    </div>
+    <div class="row" style="margin-top:10px;align-items:center">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlStrict"> не собирать с дырами
+        <i class="hint-icon" data-tip="Отказаться, если у какой-то отобранной главы перевода нет. Иначе она попадёт в книгу на языке оригинала, и заметите вы это только при чтении.">?</i></label>
     </div>
 
     <!-- Непереведённые остатки. Беда отдельная от сверки: там расходятся

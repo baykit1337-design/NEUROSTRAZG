@@ -1627,3 +1627,181 @@ class TestTheGlossaryOverHttp(Base):
 
         self.assertEqual(res.status_code, 400)
         self.assertNotIn("job", res.get_json())
+
+
+class TestHowTheChapterIsGivenToTheModel(Base):
+    """Пять способов отдать главу модели — его же, не наши.
+
+    По умолчанию `saved`: как настроено у него в окне. Наш ноль не должен
+    решать за его настройку.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, doing=None, **kw) -> list:
+        doing = doing or translator.translate
+        return doing(str(self.book), str(self.tmp / "проект"),
+                     path=str(self.home), **kw)["сказали"]
+
+    def test_every_way_he_knows_reaches_him(self):
+        for way in translator.WAYS:
+            with self.subTest(way):
+                asked = self.asked(way=way)
+                self.assertEqual(asked[asked.index("--mode") + 1], way)
+
+    def test_an_invented_way_is_refused_before_the_run(self):
+        with self.assertRaises(translator.TranslatorError) as caught:
+            self.asked(way="как получится")
+        self.assertIn("способ перевода", str(caught.exception))
+
+    def test_the_sizes_and_the_deadline_reach_him(self):
+        asked = self.asked(task_size=40000, splits=3, seconds=3600)
+
+        self.assertEqual(asked[asked.index("--task-size") + 1], "40000")
+        self.assertEqual(asked[asked.index("--splits") + 1], "3")
+        self.assertEqual(asked[asked.index("--timeout") + 1], "3600")
+
+    def test_the_two_stubborn_switches_are_off_unless_asked(self):
+        """Обе меняют то, как он принимает ответ модели: включать их
+        молча значило бы менять качество перевода за спиной."""
+        asked = self.asked()
+
+        self.assertNotIn("--force-accept", asked)
+        self.assertNotIn("--json-epub", asked)
+        self.assertIn("--force-accept", self.asked(force=True))
+        self.assertIn("--json-epub", self.asked(json_epub=True))
+
+    def test_unnamed_run_knobs_keep_his_own_settings(self):
+        asked = self.asked()
+
+        for flag in ("--mode", "--task-size", "--splits", "--timeout"):
+            self.assertNotIn(flag, asked, flag)
+
+
+class TestBuildingTheBook(Base):
+    """У сборки ручки свои: чем переведено, какие файлы и что с дырами."""
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, **kw) -> list:
+        return translator.build_epub(str(self.book), str(self.tmp / "проект"),
+                                     path=str(self.home), **kw)["сказали"]
+
+    def test_the_service_picks_which_files_are_the_translation(self):
+        """Переводили одну книгу двумя сервисами — иначе возьмёт не те."""
+        asked = self.asked(provider="deepseek")
+        self.assertEqual(asked[asked.index("--provider") + 1], "deepseek")
+
+    def test_the_suffix_picks_them_even_more_exactly(self):
+        asked = self.asked(suffix="_validated.html")
+        self.assertEqual(asked[asked.index("--suffix") + 1], "_validated.html")
+
+    def test_a_book_with_holes_can_be_refused(self):
+        """Молча собрать книгу с непереведённой главой — худшее тут: видно
+        это только при чтении, уже после сборки."""
+        self.assertIn("--strict", self.asked(strict=True))
+        self.assertNotIn("--strict", self.asked())
+
+    def test_the_model_is_never_named_to_the_build(self):
+        """Ни модели, ни ключей: она складывает уже готовое."""
+        asked = self.asked(provider="deepseek")
+
+        self.assertNotIn("--model", asked)
+        self.assertNotIn("--all-keys", asked)
+        self.assertNotIn("--chapters", asked)
+
+
+class TestTheRunKnobsOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "болтун"
+        (self.home / "gemini_translator").mkdir(parents=True)
+        (self.home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'сказали': sys.argv[1:]}))\n", encoding="utf-8")
+
+    def finished(self, what: str, **kw) -> list:
+        import time
+
+        body = {"path": str(self.home), "epub": str(self.book),
+                "project": str(self.tmp / "проект")}
+        body.update(kw)
+        job = self.app.post(f"/api/translator/{what}",
+                            json=body).get_json()["job"]
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                return got["report"]["сказали"]
+            time.sleep(0.05)
+        self.fail(f"{what} не закончилась")
+
+    def test_the_run_knobs_from_the_page_reach_the_translator(self):
+        said = self.finished("translate", way="chunk", taskSize=30000,
+                             splits=2, seconds=900, force=True, jsonEpub=True)
+
+        self.assertEqual(said[said.index("--mode") + 1], "chunk")
+        self.assertEqual(said[said.index("--task-size") + 1], "30000")
+        self.assertEqual(said[said.index("--splits") + 1], "2")
+        self.assertEqual(said[said.index("--timeout") + 1], "900")
+        self.assertIn("--force-accept", said)
+        self.assertIn("--json-epub", said)
+
+    def test_the_translation_is_never_given_a_suffix(self):
+        """`--suffix` у `translate` нет вовсе: он файлы пишет, а не
+        выбирает. Поле на странице одно на все команды, и уйди оно ещё и
+        сюда — перевод падал бы на незнакомом флаге, не начавшись.
+        """
+        said = self.finished("translate", suffix="_validated.html")
+        self.assertNotIn("--suffix", said)
+
+    def test_the_commands_that_do_know_the_suffix_get_it(self):
+        """Одно поле на странице, а доходит только туда, где его знают."""
+        for what in ("consistency", "build"):
+            with self.subTest(what):
+                said = self.finished(what, suffix="_validated.html")
+                self.assertEqual(said[said.index("--suffix") + 1],
+                                 "_validated.html")
+
+    def test_an_invented_way_is_a_refusal_not_a_job(self):
+        res = self.app.post("/api/translator/translate", json={
+            "path": str(self.home), "epub": str(self.book),
+            "project": str(self.tmp / "проект"), "way": "как получится"})
+
+        self.assertEqual(res.status_code, 400)
+        self.assertNotIn("job", res.get_json())
+
+    def test_the_build_knobs_from_the_page_reach_the_translator(self):
+        said = self.finished("build", suffix="_validated.html",
+                             provider="deepseek", strict=True)
+
+        self.assertEqual(said[said.index("--suffix") + 1], "_validated.html")
+        self.assertEqual(said[said.index("--provider") + 1], "deepseek")
+        self.assertIn("--strict", said)

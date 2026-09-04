@@ -5322,6 +5322,10 @@ function tlWork(){
     pick: $('tlPick').value.trim(),
     offset: Number($('tlOffset').value) || 0,
     limit: Number($('tlLimit').value) || 0,
+    // Один вопрос «что брать» на все команды, которые его знают: сверку,
+    // поиск остатков, починку и сборку. У перевода он не спрашивается —
+    // тот пишет файлы, а не выбирает их.
+    suffix: $('tlSuffix').value.trim(),
     workers: Number($('tlWorkers').value) || 0,
     rpm: Number($('tlRpm').value) || 0,
     // Пустое поле — «как настроено у переводчика»: своим значением
@@ -5476,6 +5480,7 @@ function tlScanWork(){
     project: $('tlProject').value.trim(),
     scope: tlScopeMenu ? tlScopeMenu.value : 'translated',
     mixed: $('tlMixed').checked,
+    suffix: $('tlSuffix').value.trim(),
     pick: $('tlPick').value.trim(),
     offset: Number($('tlOffset').value) || 0,
     limit: Number($('tlLimit').value) || 0,
@@ -5620,12 +5625,24 @@ $('tlGlossary').onclick = () => tlRun('glossary', {
   batch: Number($('tlBatch').value) || 0,
   newTerms: Number($('tlNewTerms').value) || 0,
 });
-$('tlTranslate').onclick = () => tlRun('translate');
+const tlRunWayMenu = makeDropdown($('tlWayRun'));
+
+$('tlTranslate').onclick = () => tlRun('translate', {
+  way: tlRunWayMenu ? tlRunWayMenu.value : '',
+  taskSize: Number($('tlTaskSize').value) || 0,
+  splits: Number($('tlSplits').value) || 0,
+  seconds: Number($('tlSeconds').value) || 0,
+  force: $('tlForce').checked,
+  jsonEpub: $('tlJson').checked,
+});
 $('tlConsistency').onclick = () => {
   $('tlCheckRows').hidden = true;
   tlRun('consistency', tlCheckWork());
 };
-$('tlBuild').onclick = () => tlRun('build', {output: $('tlOut').value.trim()});
+$('tlBuild').onclick = () => tlRun('build', {
+  output: $('tlOut').value.trim(),
+  strict: $('tlStrict').checked,
+});
 $('tlStop').onclick = () => stopJob(tlJob);
 
 /* ------------------------------------------------- счётчик трафика
