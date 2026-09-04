@@ -690,6 +690,124 @@ def build_epub(epub: str, project: str, output: str = "",
     return run_long("build-epub", args, path=path, note=note, stop=stop)
 
 
+#: Сколько глав с находками показывать списком и сколько слов в каждой.
+#: На книге в пятьсот глав полный список перестаёт быть ответом.
+SHOW_ISSUES = 40
+SHOW_WORDS = 8
+
+
+def _scan_args(epub: str, project: str, scope: str, suffix: str = "",
+               exceptions: str = "", mixed: bool = True, pick=(),
+               limit: int = 0, offset: int = 0) -> list:
+    """Флаги поиска остатков. Своих `--provider` и `--model` у него нет.
+
+    Команда в сеть не ходит вовсе — читает уже переведённые файлы, — и
+    общих «беговых» флагов ей не объявлено. Передай мы их, она упала бы
+    на первом же незнакомом.
+    """
+    book, folder = _book_and_project(epub, project)
+    if scope not in SCOPES:
+        raise TranslatorError(f"Неизвестно, какие главы брать: {scope}")
+
+    args = ["--epub", str(book), "--project", str(folder),
+            "--chapters", scope]
+    for flag, value in (("--limit", limit), ("--offset", offset)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    for one in _picks(pick):
+        args += ["--chapter", one]
+    if str(suffix or "").strip():
+        args += ["--suffix", str(suffix).strip()]
+    if str(exceptions or "").strip():
+        args += ["--exceptions", str(Path(str(exceptions)).expanduser())]
+    # Флаг обратный: он выключает поиск смешанных слов, а не включает.
+    if not mixed:
+        args.append("--no-mixed-script")
+    return args
+
+
+def scan_untranslated(epub: str, project: str, scope: str = DONE,
+                      path: str = "", **knobs) -> dict:
+    """Найти непереведённые куски в уже готовых главах.
+
+    Отдельная беда от сверки: там расходятся имена и смысл, а тут прямо в
+    переводе остались чужие слова — модель пропустила кусок. Видно это
+    только глазами, и до сих пор искать их было нечем.
+
+    В сеть не ходит и ключей не тратит: читает файлы. Поэтому отвечаем
+    сразу, а не задачей — ждать тут нечего, кроме чтения самих глав.
+    """
+    said = run("untranslated-scan", _scan_args(epub, project, scope, **knobs),
+               path=path, timeout=PLAN_TIMEOUT)
+    if not said.get("ok", True):
+        raise TranslatorError(_about(said.get("error") or "переводчик отказал"))
+    return said
+
+
+def short_scan(said: dict) -> dict:
+    """Находки в том виде, в каком их показывают человеку.
+
+    Читаем бережно: формат чужой. Слова показываем сами — по ним и видно,
+    настоящая это находка или в главе просто стоит имя латиницей.
+    """
+    rows = []
+    for one in said.get("issues") or []:
+        if not isinstance(one, dict):
+            continue
+        words = [str(w) for w in (one.get("untranslated_words") or []) if w]
+        mixed = [str(w) for w in (one.get("mixed_script") or []) if w]
+        rows.append({
+            "chapter": str(one.get("chapter") or one.get("file") or ""),
+            "file": str(one.get("file") or ""),
+            "count": _whole(one.get("problem_count")) or len(words) + len(mixed),
+            "words": words[:SHOW_WORDS],
+            "mixed": mixed[:SHOW_WORDS],
+        })
+    rows.sort(key=lambda row: -row["count"])
+
+    missing = [str(one) for one in (said.get("missing_translations") or [])]
+    return {
+        "checked": _whole(said.get("checked_chapters")),
+        "chapters": _whole(said.get("problem_chapters")) or len(rows),
+        "found": _whole(said.get("problem_count")),
+        # Главы, у которых перевода нет вовсе: это не «остаток», а
+        # пропуск, и лечится он переводом, а не починкой.
+        "missing": missing[:SHOW_ISSUES],
+        "more_missing": max(0, len(missing) - SHOW_ISSUES),
+        "rows": rows[:SHOW_ISSUES],
+        "more": max(0, len(rows) - SHOW_ISSUES),
+    }
+
+
+def fix_untranslated(epub: str, project: str, scope: str = DONE,
+                     path: str = "", note=None, stop=None, suffix: str = "",
+                     exceptions: str = "", fix_prompt: str = "",
+                     batch: int = 0, context: int = 0, dry: bool = False,
+                     **knobs) -> dict:
+    """Починить найденные остатки моделью.
+
+    Это уже работа с ключами, поэтому задачей и с журналом. `--dry-run`
+    оставлен ручкой на виду: посмотреть, что модель собирается заменить,
+    прежде чем она перепишет готовые главы, — единственная защита от
+    порчи того, за что уже заплачено.
+    """
+    args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    if str(suffix or "").strip():
+        args += ["--suffix", str(suffix).strip()]
+    if str(exceptions or "").strip():
+        args += ["--exceptions", str(Path(str(exceptions)).expanduser())]
+    if str(fix_prompt or "").strip():
+        args += ["--fix-prompt-file", str(Path(str(fix_prompt)).expanduser())]
+    for flag, value in (("--batch-size", batch),
+                        ("--max-context-chars", context)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    if dry:
+        args.append("--dry-run")
+    return run_long("untranslated-fix", args, path=path, note=note, stop=stop,
+                    verbose=True)
+
+
 def short_plan(said: dict) -> dict:
     """План в том виде, в каком его показывают человеку.
 

@@ -1068,3 +1068,219 @@ class TestPickingWhichChapters(Base):
 
         self.assertEqual(asked[asked.index("--chapter") + 1], "0012")
         self.assertEqual(asked[asked.index("--limit") + 1], "10")
+
+
+#: Ответ `untranslated-scan` в том виде, в каком его печатает переводчик.
+SCAN = {
+    "ok": True,
+    "epub": "/книга.epub",
+    "project": "/проект",
+    "checked_chapters": 120,
+    "missing_translations": ["0119.xhtml", "0120.xhtml"],
+    "problem_chapters": 2,
+    "problem_count": 5,
+    "issues": [
+        {"chapter": "Глава 12", "file": "0012_gemini.html",
+         "untranslated_words": ["修炼", "灵气"], "mixed_script": [],
+         "problem_count": 2},
+        {"chapter": "Глава 40", "file": "0040_gemini.html",
+         "untranslated_words": ["境界"], "mixed_script": ["Линьчжэнь法"],
+         "problem_count": 3},
+    ],
+}
+
+
+class TestTheUntranslatedLeftovers(Base):
+    """Остатки — беда отдельная от сверки.
+
+    Там расходятся имена и смысл, а тут прямо в готовом переводе остались
+    чужие слова: модель пропустила кусок. Ищется без ключей, чинится с
+    ключами, и путать одно с другим дорого.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, doing, **kw) -> list:
+        return doing(str(self.book), str(self.tmp / "проект"),
+                     path=str(self.home), **kw)["сказали"]
+
+    def test_the_search_looks_at_translated_chapters_by_default(self):
+        """Искать остатки там, где перевода ещё нет, нечего."""
+        asked = self.asked(translator.scan_untranslated)
+
+        self.assertEqual(asked[0], "untranslated-scan")
+        self.assertEqual(asked[asked.index("--chapters") + 1], translator.DONE)
+
+    def test_the_search_is_not_given_the_flags_it_does_not_know(self):
+        """Ни сервиса, ни модели, ни ключей: в сеть оно не ходит вовсе, а
+        на незнакомом флаге команда падает."""
+        asked = self.asked(translator.scan_untranslated)
+
+        for flag in ("--provider", "--model", "--all-keys", "--workers",
+                     "--verbose", "--temperature"):
+            self.assertNotIn(flag, asked, flag)
+
+    def test_the_mixed_words_are_asked_by_a_straight_question(self):
+        """У переводчика флаг обратный — выключающий. Спрашиваем прямо."""
+        self.assertNotIn("--no-mixed-script",
+                         self.asked(translator.scan_untranslated, mixed=True))
+        self.assertIn("--no-mixed-script",
+                      self.asked(translator.scan_untranslated, mixed=False))
+
+    def test_the_search_takes_the_same_chapter_pick(self):
+        asked = self.asked(translator.scan_untranslated, pick="0012", limit=5)
+
+        self.assertEqual(asked[asked.index("--chapter") + 1], "0012")
+        self.assertEqual(asked[asked.index("--limit") + 1], "5")
+
+    def test_the_findings_are_read_with_the_words_themselves(self):
+        """По словам и видно, находка это или в главе просто имя латиницей."""
+        got = translator.short_scan(SCAN)
+
+        self.assertEqual(got["checked"], 120)
+        self.assertEqual(got["found"], 5)
+        self.assertIn("修炼", got["rows"][1]["words"])
+        self.assertIn("Линьчжэнь法", got["rows"][0]["mixed"])
+
+    def test_the_worst_chapters_come_first(self):
+        """На книге в пятьсот глав список читают сверху и до скуки."""
+        got = translator.short_scan(SCAN)
+        self.assertEqual([row["count"] for row in got["rows"]], [3, 2])
+
+    def test_a_chapter_without_a_translation_is_not_a_leftover(self):
+        """Это пропуск, и лечится он переводом, а не починкой."""
+        got = translator.short_scan(SCAN)
+
+        self.assertEqual(got["missing"], ["0119.xhtml", "0120.xhtml"])
+        self.assertNotIn("0119.xhtml",
+                         [row["chapter"] for row in got["rows"]])
+
+    def test_a_changed_format_does_not_break_the_findings(self):
+        got = translator.short_scan({"ok": True, "иное": 1})
+        self.assertEqual(got["rows"], [])
+        self.assertEqual(got["found"], 0)
+
+    def test_the_repair_asks_for_keys_and_a_log(self):
+        """Починка — уже работа с моделью, в отличие от поиска."""
+        asked = self.asked(translator.fix_untranslated)
+
+        self.assertEqual(asked[0], "untranslated-fix")
+        self.assertIn("--all-keys", asked)
+        self.assertIn("--verbose", asked)
+
+    def test_the_dry_run_is_the_only_guard_over_finished_chapters(self):
+        """Перезапись готовых глав необратима, и за неё уже заплачено."""
+        self.assertIn("--dry-run",
+                      self.asked(translator.fix_untranslated, dry=True))
+        self.assertNotIn("--dry-run",
+                         self.asked(translator.fix_untranslated))
+
+    def test_the_repair_knobs_reach_the_translator(self):
+        asked = self.asked(translator.fix_untranslated, batch=20, context=900,
+                           suffix="_validated.html")
+
+        self.assertEqual(asked[asked.index("--batch-size") + 1], "20")
+        self.assertEqual(asked[asked.index("--max-context-chars") + 1], "900")
+        self.assertEqual(asked[asked.index("--suffix") + 1], "_validated.html")
+
+    def test_unnamed_repair_knobs_keep_his_own_defaults(self):
+        asked = self.asked(translator.fix_untranslated)
+
+        for flag in ("--batch-size", "--max-context-chars", "--suffix",
+                     "--exceptions", "--fix-prompt-file"):
+            self.assertNotIn(flag, asked, flag)
+
+
+class TestTheLeftoversOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def test_the_findings_reach_the_page(self):
+        home = fake_translator(self.tmp, prints=SCAN)
+        got = self.app.post("/api/translator/scan", json={
+            "path": str(home), "epub": str(self.book),
+            "project": str(self.tmp / "проект")}).get_json()
+
+        self.assertEqual(got["found"], 5)
+        self.assertEqual(len(got["rows"]), 2)
+        self.assertEqual(got["missing"], ["0119.xhtml", "0120.xhtml"])
+
+    def test_the_mixed_words_question_reaches_the_translator(self):
+        """Флаг у него обратный, и потерять эту галку значит молча искать
+        не то, о чём попросили.
+
+        Находки мы показываем разобранными, аргументов в них не видно.
+        Поэтому поддельный переводчик кладёт их туда, где список глав без
+        перевода, — единственное окно, через которое их отсюда видно.
+        """
+        home = self.tmp / "эхо-скан"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, "
+            "'missing_translations': [x for x in sys.argv[1:]"
+            " if x.startswith('--no-')]}))\n", encoding="utf-8")
+
+        def ask(**kw):
+            body = {"path": str(home), "epub": str(self.book),
+                    "project": str(self.tmp / "проект")}
+            body.update(kw)
+            return self.app.post("/api/translator/scan",
+                                 json=body).get_json()["missing"]
+
+        self.assertEqual(ask(mixed=False), ["--no-mixed-script"])
+        self.assertEqual(ask(mixed=True), [])
+        # Не спросили вовсе — ищем и смешанные: так у него по умолчанию.
+        self.assertEqual(ask(), [])
+
+    def test_a_missing_book_is_refused_at_once(self):
+        home = fake_translator(self.tmp, prints=SCAN)
+        for what in ("scan", "fix"):
+            with self.subTest(what):
+                res = self.app.post(f"/api/translator/{what}", json={
+                    "path": str(home), "epub": str(self.tmp / "нет.epub"),
+                    "project": str(self.tmp / "проект")})
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("Файла нет", res.get_json()["error"])
+
+    def test_the_repair_is_a_job_and_guards_finished_chapters(self):
+        import time
+
+        home = self.tmp / "болтун"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'сказали': sys.argv[1:]}))\n", encoding="utf-8")
+
+        job = self.app.post("/api/translator/fix", json={
+            "path": str(home), "epub": str(self.book),
+            "project": str(self.tmp / "проект"),
+            "dry": True}).get_json()["job"]
+
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                break
+            time.sleep(0.05)
+
+        said = got["report"]["сказали"]
+        self.assertEqual(said[0], "untranslated-fix")
+        self.assertIn("--dry-run", said)

@@ -3368,6 +3368,30 @@
       <button id="tlBuild" class="ghost" style="flex:0 0 auto">Собрать EPUB</button>
     </div>
 
+    <!-- Непереведённые остатки. Беда отдельная от сверки: там расходятся
+         имена и смысл, а тут прямо в готовом переводе остались чужие
+         слова — модель пропустила кусок. Ищется без ключей, чинится с
+         ключами, поэтому кнопки две и между ними просмотр. -->
+    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
+      <label>Непереведённые остатки<i class="hint-icon" data-tip="Ищет в уже переведённых главах слова, оставшиеся на языке оригинала, и смешанные — где в одном слове и кириллица, и иероглифы.">?</i></label>
+      <p class="hint">Поиск ключей не тратит: читает готовые файлы. Починка
+         тратит — сначала посмотрите находки.</p>
+
+      <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+        <button id="tlScan" class="ghost">Найти остатки</button>
+        <button id="tlFix" class="ghost">Починить моделью</button>
+        <label class="chk" style="flex:0 0 auto">
+          <input type="checkbox" id="tlDry" checked> только показать, не переписывать
+          <i class="hint-icon" data-tip="Модель посчитает замены и покажет их, но готовые главы не тронет. Снимайте только когда находки просмотрены.">?</i></label>
+        <label class="chk" style="flex:0 0 auto">
+          <input type="checkbox" id="tlMixed" checked> смешанные слова
+          <i class="hint-icon" data-tip="Слова, где кириллица и иероглифы стоят вместе. Обычно это склейка перевода с оригиналом.">?</i></label>
+      </div>
+
+      <p class="hint" id="tlScanNote"></p>
+      <div class="table" id="tlScanRows" hidden style="margin-top:8px;max-height:320px"></div>
+    </div>
+
     <div id="tlBox" hidden style="margin-top:14px">
       <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="tlStatus"></span></div>
       <!-- Полоса ожидания, а не процентов: сколько глав впереди,

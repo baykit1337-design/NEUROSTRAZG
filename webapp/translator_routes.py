@@ -186,6 +186,68 @@ def api_translator_work(what: str):
         payload)
 
 
+def _scan_knobs(payload: dict) -> dict:
+    """Ручки поиска остатков. Сервиса и модели у него нет — не ходит в сеть."""
+    return {
+        "scope": str(payload.get("scope") or translator_op.DONE).strip(),
+        "suffix": str(payload.get("suffix") or "").strip(),
+        "exceptions": str(payload.get("exceptions") or "").strip(),
+        # Обратный флаг у переводчика, прямой вопрос у нас: галка «искать
+        # смешанные слова» понятнее, чем «не искать».
+        "mixed": payload.get("mixed", True) is not False,
+        "pick": payload.get("pick") or "",
+        "limit": payload.get("limit") or 0,
+        "offset": payload.get("offset") or 0,
+    }
+
+
+@translator.post("/api/translator/scan")
+def api_translator_scan():
+    """Непереведённые куски в уже готовых главах.
+
+    В сеть не ходит и ключей не тратит — читает файлы. Поэтому отвечаем
+    сразу, как и плану: ждать тут нечего, а находки надо просмотреть
+    прежде, чем пускать на них модель.
+    """
+    payload = request.json or {}
+    try:
+        said = translator_op.scan_untranslated(
+            str(payload.get("epub") or "").strip(),
+            str(payload.get("project") or "").strip(),
+            path=str(payload.get("path") or "").strip(),
+            **_scan_knobs(payload))
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, **translator_op.short_scan(said))
+
+
+@translator.post("/api/translator/fix")
+def api_translator_fix():
+    """Починить остатки моделью. Это уже ключи — значит задачей."""
+    payload = request.json or {}
+    epub = str(payload.get("epub") or "").strip()
+    project = str(payload.get("project") or "").strip()
+    path = str(payload.get("path") or "").strip()
+    knobs = _knobs(payload)
+    knobs["scope"] = str(payload.get("scope") or translator_op.DONE).strip()
+
+    try:
+        translator_op.verify(epub, project, knobs["scope"])
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+
+    return _start("untranslated-fix",
+                  lambda note, stop: translator_op.fix_untranslated(
+                      epub, project, path=path, note=note, stop=stop,
+                      suffix=str(payload.get("suffix") or "").strip(),
+                      exceptions=str(payload.get("exceptions") or "").strip(),
+                      fix_prompt=str(payload.get("fixPrompt") or "").strip(),
+                      batch=payload.get("batch") or 0,
+                      context=payload.get("context") or 0,
+                      dry=bool(payload.get("dry")), **knobs),
+                  payload)
+
+
 @translator.post("/api/translator/build")
 def api_translator_build():
     """Собрать переведённый EPUB.

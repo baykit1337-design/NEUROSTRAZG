@@ -5351,7 +5351,8 @@ function tlLog(rows){
 
 async function tlRun(what, extra){
   showError('');
-  const buttons = ['tlGlossary', 'tlTranslate', 'tlConsistency', 'tlBuild'];
+  const buttons = ['tlGlossary', 'tlTranslate', 'tlConsistency', 'tlBuild',
+                   'tlFix'];
   buttons.forEach(id => { $(id).disabled = true; });
   $('tlBox').hidden = false;
   $('tlStop').hidden = false;
@@ -5396,6 +5397,7 @@ function tlResult(said){
                             ['failed', 'не вышло'],
                             ['terms', 'терминов в глоссарий'],
                             ['issues', 'расхождений'],
+                            ['problem_count', 'остатков'],
                             ['output', 'файл']]){
     if(said[key] !== undefined && said[key] !== null && said[key] !== ''){
       bits.push(`${name}: ${said[key]}`);
@@ -5403,6 +5405,101 @@ function tlResult(said){
   }
   return bits.length ? 'Готово. ' + bits.join(', ') + '.' : 'Готово.';
 }
+
+/* ------------------------------------ непереведённые остатки
+ *
+ * Беда отдельная от сверки: там расходятся имена и смысл, а тут прямо в
+ * готовом переводе остались чужие слова. Поиск ключей не тратит — читает
+ * файлы, — поэтому отвечает сразу; починка тратит и идёт задачей.
+ */
+
+/** Что отправляем поиску: сервиса и модели у него нет, он не ходит в сеть. */
+function tlScanWork(){
+  return {
+    path: $('tlPath').value.trim(),
+    epub: $('tlEpub').value.trim(),
+    project: $('tlProject').value.trim(),
+    scope: tlScopeMenu ? tlScopeMenu.value : 'translated',
+    mixed: $('tlMixed').checked,
+    pick: $('tlPick').value.trim(),
+    offset: Number($('tlOffset').value) || 0,
+    limit: Number($('tlLimit').value) || 0,
+  };
+}
+
+function tlScanShow(got){
+  const table = $('tlScanRows');
+  table.innerHTML = '';
+
+  for(const row of got.rows || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = row.chapter;
+    name.title = row.file || row.chapter;
+
+    // Сами слова, а не только счётчик: по ним и видно, настоящая это
+    // находка или в главе просто стоит имя латиницей.
+    const what = document.createElement('span');
+    what.className = 'hint';
+    what.style.flex = '2';
+    what.textContent = row.words.concat(row.mixed).join(' · ');
+
+    const count = document.createElement('span');
+    count.className = 'num';
+    count.textContent = ru(row.count);
+
+    line.append(name, what, count);
+    table.append(line);
+  }
+
+  if(got.more){
+    const tail = document.createElement('div');
+    tail.className = 'hint';
+    tail.style.margin = '6px 10px 8px';
+    tail.textContent = `…и ещё глав с находками: ${ru(got.more)}`;
+    table.append(tail);
+  }
+  table.hidden = !(got.rows || []).length;
+}
+
+async function tlScanLook(){
+  showError('');
+  const button = $('tlScan');
+  button.disabled = true;
+  $('tlScanRows').hidden = true;
+  $('tlScanNote').innerHTML = '<span class="spin"></span>Читаем готовые главы…';
+  try{
+    const got = await call('/api/translator/scan', tlScanWork());
+    tlScanShow(got);
+
+    const bits = [`Просмотрено глав: ${ru(got.checked)}`];
+    bits.push(got.found
+      ? `находок: ${ru(got.found)} в ${ru(got.chapters)} гл.`
+      : 'остатков не нашлось');
+    // Глава без перевода — не «остаток», а пропуск, и чинить его надо
+    // переводом. Смешай мы одно с другим — починка ушла бы вхолостую.
+    if(got.missing?.length){
+      bits.push(`без перевода: ${ru(got.missing.length + got.more_missing)}`
+        + ' — это лечится переводом, а не починкой');
+    }
+    $('tlScanNote').textContent = bits.join('. ') + '.';
+  }catch(err){
+    $('tlScanNote').textContent = '';
+    showError(err.message, $('tlScanNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
+$('tlScan').onclick = tlScanLook;
+$('tlFix').onclick = () => tlRun('fix', {
+  mixed: $('tlMixed').checked,
+  // Галка стоит по умолчанию: перезапись готовых глав — единственное
+  // здесь необратимое действие.
+  dry: $('tlDry').checked,
+});
 
 $('tlGlossary').onclick = () => tlRun('glossary');
 $('tlTranslate').onclick = () => tlRun('translate');
