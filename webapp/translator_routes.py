@@ -167,6 +167,20 @@ def api_translator_models():
     return jsonify(ok=True, **translator_op.short_models(said))
 
 
+def _check_knobs(payload: dict) -> dict:
+    """Ручки одной только сверки. У перевода и глоссария их нет."""
+    return {
+        "way": str(payload.get("way") or "").strip(),
+        "deed": str(payload.get("deed") or translator_op.LOOK).strip(),
+        "sure": payload.get("sure") or (),
+        "chunk": payload.get("chunk") or 0,
+        "glossary_first": bool(payload.get("glossaryFirst")),
+        # Вопрос прямой, флаг у него обратный.
+        "source": payload.get("source", True) is not False,
+        "suffix": str(payload.get("suffix") or "").strip(),
+    }
+
+
 @translator.post("/api/translator/<any(translate,glossary,consistency):what>")
 def api_translator_work(what: str):
     """Перевод, сбор глоссария и сверка — три команды одной дорогой."""
@@ -175,15 +189,22 @@ def api_translator_work(what: str):
     project = str(payload.get("project") or "").strip()
     path = str(payload.get("path") or "").strip()
     doing = getattr(translator_op, what)
+    knobs = _knobs(payload)
+    if what == "consistency":
+        knobs.update(_check_knobs(payload))
 
     try:
-        translator_op.verify(epub, project, _knobs(payload)["scope"])
+        translator_op.verify(epub, project, knobs["scope"])
+        # Ручки сверки — здесь же, а не в задаче: она начнётся в отдельном
+        # потоке, и отказ из неё пришлось бы разбирать, открыв журнал.
+        if what == "consistency":
+            translator_op.verify_check(knobs["way"], knobs["deed"],
+                                       knobs["sure"])
     except translator_op.TranslatorError as exc:
         return jsonify(error=str(exc)), 400
 
     return _start(what, lambda note, stop: doing(
-        epub, project, path=path, note=note, stop=stop, **_knobs(payload)),
-        payload)
+        epub, project, path=path, note=note, stop=stop, **knobs), payload)
 
 
 def _scan_knobs(payload: dict) -> dict:

@@ -654,15 +654,127 @@ def glossary(epub: str, project: str, scope: str = WHOLE, path: str = "",
                     stop=stop, verbose=True)
 
 
+#: Как сверять. Имена канонические, его же: «fast» он у себя разворачивает
+#: в `fast_proofread_3_1`, а «deep» — в `deep_consistency`, и писать
+#: короткие значило бы полагаться на чужой разбор синонимов.
+CHECK_FAST = "fast_proofread_3_1"
+CHECK_DEEP = "deep_consistency"
+CHECK_WAYS = (CHECK_FAST, CHECK_DEEP, "fast", "deep")
+
+#: Насколько модель уверена в находке. Порядок её, не наш.
+SURE_LEVELS = ("high", "medium", "low")
+
+#: Что делать с найденным. Три ступени, а не две галки: `--write` без
+#: `--fix` у него не делает ничего — молча, — и такую пару человек
+#: собрал бы первым же движением.
+LOOK = "look"
+OFFER = "offer"
+APPLY = "apply"
+DEEDS = (LOOK, OFFER, APPLY)
+
+
 def consistency(epub: str, project: str, scope: str = DONE, path: str = "",
-                note=None, stop=None, **knobs) -> dict:
-    """Сверить переведённое: расхождения в именах и пропуски.
+                note=None, stop=None, way: str = "", deed: str = LOOK,
+                sure=(), chunk: int = 0, glossary_first: bool = False,
+                source: bool = True, suffix: str = "", **knobs) -> dict:
+    """Сверить переведённое: расхождения в именах, роде, логике и опечатки.
 
     По переведённому, а не по всей книге: сверять нечего там, где перевода
     ещё нет. `--verbose` эта команда не знает, и журнала по ходу не будет.
+
+    Что делать с находками — три ступени. Посмотреть; попросить модель
+    предложить правки; внести их в файлы. Двумя галками это не описать:
+    `--write` без `--fix` у переводчика не делает ровно ничего, и притом
+    молча — а собрать такую пару человек может первым же движением.
     """
+    verify_check(way, deed, sure)
     args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    if way:
+        args += ["--consistency-mode", way]
+    if int(chunk or 0) > 0:
+        args += ["--chunk-size", str(int(chunk))]
+    if glossary_first:
+        args.append("--glossary-first")
+    # Флаг обратный: он убирает оригинал из сверки, а не добавляет.
+    if not source:
+        args.append("--no-source")
+    if str(suffix or "").strip():
+        args += ["--suffix", str(suffix).strip()]
+
+    if deed in (OFFER, APPLY):
+        args.append("--fix")
+        # Только вместе с `--fix`: в одиночку он у него пустой.
+        if deed == APPLY:
+            args.append("--write")
+        for one in _sure(sure):
+            args += ["--confidences", one]
     return run_long("consistency", args, path=path, note=note, stop=stop)
+
+
+def verify_check(way: str = "", deed: str = LOOK, sure=()) -> None:
+    """Годятся ли ручки сверки. Не годятся — кидает и говорит чем.
+
+    Отдельно от самой команды затем же, зачем и `verify`: отказ должен
+    прийти ответом на нажатие. Проверь мы это уже в задаче — «неизвестный
+    способ сверки» всплыло бы в ней через полсекунды, и разбирать его
+    пришлось бы, открыв журнал.
+    """
+    if deed not in DEEDS:
+        raise TranslatorError(f"Неизвестно, что делать с находками: {deed}")
+    if way and way not in CHECK_WAYS:
+        raise TranslatorError(f"Неизвестный способ сверки: {way}")
+    _sure(sure)
+
+
+def _sure(sure) -> list:
+    """Насколько уверенные находки чинить. Чужих уровней не выдумываем."""
+    if isinstance(sure, str):
+        parts = PICK_SPLIT.split(sure)
+    else:
+        parts = list(sure or [])
+    want = [str(one).strip().lower() for one in parts if str(one).strip()]
+    unknown = [one for one in want if one not in SURE_LEVELS]
+    if unknown:
+        raise TranslatorError(
+            f"Неизвестная уверенность находки: {', '.join(unknown)}")
+    return want
+
+
+def short_check(said: dict) -> dict:
+    """Находки сверки в том виде, в каком их показывают человеку.
+
+    Формат чужой и приходит от модели, поэтому читаем по одному полю и
+    ничего не требуем: пустая строка лучше, чем пустая карточка.
+    """
+    rows = []
+    for one in said.get("problems") or []:
+        if not isinstance(one, dict):
+            continue
+        rows.append({
+            "chapter": str(one.get("chapter") or one.get("chapter_file") or ""),
+            "kind": str(one.get("type") or ""),
+            "what": str(one.get("description") or ""),
+            "quote": str(one.get("quote") or ""),
+            "sure": str(one.get("confidence") or ""),
+        })
+
+    fixed = said.get("fix") if isinstance(said.get("fix"), dict) else {}
+    written = [str(one) for one in (fixed.get("written_files") or [])]
+    changed = [str(one) for one in (fixed.get("changed_files") or [])]
+    return {
+        "way": str(said.get("mode") or ""),
+        "checked": len(said.get("checked_chapters") or []),
+        "found": _whole(said.get("problem_count")) or len(rows),
+        "rows": rows[:SHOW_ISSUES],
+        "more": max(0, len(rows) - SHOW_ISSUES),
+        # Предложено и записано — разные числа, и путать их нельзя:
+        # «исправлено 40» при пустой записи означало бы, что правки есть,
+        # а в файлах их нет.
+        "offered": len(changed),
+        "written": len(written),
+        "missing": [str(one) for one
+                    in (said.get("missing_translations") or [])][:SHOW_ISSUES],
+    }
 
 
 def build_epub(epub: str, project: str, output: str = "",

@@ -5381,6 +5381,12 @@ async function tlRun(what, extra){
         tlBar(!job.error);
         if(job.error){ showError(job.error, $('tlDone')); return; }
         const said = job.report || {};
+        if(what === 'consistency'){
+          const short = tlCheckSum(said);
+          tlCheckShow(short);
+          $('tlDone').textContent = tlCheckWords(short);
+          return;
+        }
         $('tlDone').textContent = tlResult(said);
       });
   }catch(err){
@@ -5388,6 +5394,45 @@ async function tlRun(what, extra){
     $('tlStop').hidden = true;
     buttons.forEach(id => { $(id).disabled = false; });
   }
+}
+
+/** Находки сверки из ответа переводчика. Разбор тот же, что на сервере,
+ *  но здесь он нужен потому, что отчёт задачи приходит как есть.
+ */
+function tlCheckSum(said){
+  const rows = (said.problems || []).filter(one => one && typeof one === 'object')
+    .map(one => ({
+      chapter: String(one.chapter || one.chapter_file || ''),
+      kind: String(one.type || ''),
+      what: String(one.description || ''),
+      quote: String(one.quote || ''),
+      sure: String(one.confidence || ''),
+    }));
+  const fix = said.fix && typeof said.fix === 'object' ? said.fix : {};
+  return {
+    found: Number(said.problem_count || rows.length) || 0,
+    checked: (said.checked_chapters || []).length,
+    rows: rows.slice(0, 40),
+    more: Math.max(0, rows.length - 40),
+    offered: (fix.changed_files || []).length,
+    written: (fix.written_files || []).length,
+  };
+}
+
+/** Итог сверки словами.
+ *
+ *  «Предложено» и «записано» — разные числа, и путать их нельзя: правки
+ *  без записи остаются только на экране.
+ */
+function tlCheckWords(short){
+  if(!short.found) return `Сверено глав: ${ru(short.checked)}. Расхождений нет.`;
+  const bits = [`Сверено глав: ${ru(short.checked)}`,
+                `находок: ${ru(short.found)}`];
+  if(short.offered) bits.push(`правок предложено: ${ru(short.offered)}`);
+  bits.push(short.written
+    ? `записано в файлы: ${ru(short.written)}`
+    : 'в файлы ничего не записано');
+  return bits.join(', ') + '.';
 }
 
 /** Итог словами. Читаем бережно: формат чужой и может поменяться. */
@@ -5501,9 +5546,69 @@ $('tlFix').onclick = () => tlRun('fix', {
   dry: $('tlDry').checked,
 });
 
+/* ------------------------------------------------------- сверка
+ *
+ * Ручки у неё свои, и главная — что делать с находками. Тремя ступенями,
+ * а не двумя галками: «переписать» без «чинить» у переводчика не делает
+ * ровно ничего, и притом молча.
+ */
+
+const tlWayMenu = makeDropdown($('tlWay'));
+const tlDeedMenu = makeDropdown($('tlDeed'));
+
+function tlCheckWork(){
+  return {
+    way: tlWayMenu ? tlWayMenu.value : '',
+    deed: tlDeedMenu ? tlDeedMenu.value : 'look',
+    sure: $('tlSure').value.trim(),
+    chunk: Number($('tlChunk').value) || 0,
+    glossaryFirst: $('tlGlossFirst').checked,
+    source: $('tlSource').checked,
+  };
+}
+
+/** Находки сверки таблицей. Читаем по одному полю: их пишет модель. */
+function tlCheckShow(said){
+  const table = $('tlCheckRows');
+  table.innerHTML = '';
+
+  for(const row of said.rows || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+
+    const where = document.createElement('span');
+    where.className = 'grow';
+    where.textContent = row.chapter || '—';
+
+    const what = document.createElement('span');
+    what.style.flex = '3';
+    what.textContent = row.what || row.quote || row.kind;
+    what.title = row.quote || '';
+
+    const sure = document.createElement('span');
+    sure.className = 'num';
+    sure.textContent = row.sure || row.kind || '';
+
+    line.append(where, what, sure);
+    table.append(line);
+  }
+
+  if(said.more){
+    const tail = document.createElement('div');
+    tail.className = 'hint';
+    tail.style.margin = '6px 10px 8px';
+    tail.textContent = `…и ещё находок: ${ru(said.more)}`;
+    table.append(tail);
+  }
+  table.hidden = !(said.rows || []).length;
+}
+
 $('tlGlossary').onclick = () => tlRun('glossary');
 $('tlTranslate').onclick = () => tlRun('translate');
-$('tlConsistency').onclick = () => tlRun('consistency');
+$('tlConsistency').onclick = () => {
+  $('tlCheckRows').hidden = true;
+  tlRun('consistency', tlCheckWork());
+};
 $('tlBuild').onclick = () => tlRun('build', {output: $('tlOut').value.trim()});
 $('tlStop').onclick = () => stopJob(tlJob);
 

@@ -3362,6 +3362,39 @@
       <button id="tlConsistency" class="ghost">Сверить перевод</button>
     </div>
 
+    <!-- Ручки одной только сверки. Что делать с находками — тремя
+         ступенями, а не двумя галками: «переписать» без «чинить» у
+         переводчика не делает ровно ничего, и притом молча. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>как сверять<i class="hint-icon" data-tip="Быстрая ловит опечатки, метакомментарии модели и путаницу в роде. Глубокая — ещё и расхождения в именах, логике и сюжете; она дороже по квоте.">?</i></label>
+        <div class="dropdown" id="tlWay" data-options='[["","как настроено"],["fast_proofread_3_1","быстрая вычитка"],["deep_consistency","глубокая сверка"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>с находками<i class="hint-icon" data-tip="«Внести правки» переписывает готовые главы — это единственное необратимое действие здесь.">?</i></label>
+        <div class="dropdown" id="tlDeed" data-options='[["look","только показать"],["offer","предложить правки"],["apply","внести правки в файлы"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="tlChunk">глав в запросе<i class="hint-icon" data-tip="Сколько глав уходит модели одним куском. 0 — как настроено у переводчика. Больше — дешевле по квоте, но хуже видно детали.">?</i></label>
+        <input id="tlChunk" type="number" min="0" max="50" value="0">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlSource" checked> сверять с оригиналом
+        <i class="hint-icon" data-tip="Модель видит исходный текст рядом с переводом. Без него она судит только по переводу — дешевле, но пропусков не заметит.">?</i></label>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlGlossFirst"> сначала глоссарий
+        <i class="hint-icon" data-tip="Глубокая сверка в два прохода: сперва имена и термины, потом всё остальное. Точнее и дороже.">?</i></label>
+      <div style="flex:1;min-width:220px">
+        <label for="tlSure">чинить находки с уверенностью<i class="hint-icon" data-tip="high, medium, low через запятую. Пусто — как настроено у переводчика. Применяется только когда правки просят.">?</i></label>
+        <input id="tlSure" type="text" placeholder="пусто — как настроено" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="table" id="tlCheckRows" hidden style="margin-top:10px;max-height:320px"></div>
+
     <div class="row" style="margin-top:14px">
       <input id="tlOut" type="text" placeholder="Куда собрать EPUB — пусто, значит в папку проекта"
              autocomplete="off">

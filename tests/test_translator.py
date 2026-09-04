@@ -1284,3 +1284,210 @@ class TestTheLeftoversOverHttp(Base):
         said = got["report"]["сказали"]
         self.assertEqual(said[0], "untranslated-fix")
         self.assertIn("--dry-run", said)
+
+
+#: Ответ `consistency` в том виде, в каком его печатает переводчик.
+CHECK = {
+    "ok": True,
+    "mode": "deep_consistency",
+    "checked_chapters": ["Глава 1", "Глава 2", "Глава 3"],
+    "missing_translations": [],
+    "problem_count": 2,
+    "problems": [
+        {"id": 1, "type": "name_inconsistency", "chapter": "Глава 2",
+         "description": "Линь Фэн назван Лин Фен",
+         "quote": "…сказал Лин Фен…", "confidence": "high"},
+        {"id": 2, "type": "typo", "chapter": "Глава 3",
+         "description": "лишний пробел", "quote": "он  пошёл",
+         "confidence": "low"},
+    ],
+    "fix": {"changed_files": ["0002.html", "0003.html"],
+            "written_files": ["0002.html"], "write": True},
+    "errors": [],
+    "logs": [],
+}
+
+
+class TestCheckingTheTranslation(Base):
+    """Сверка не только смотрит: она умеет и чинить.
+
+    Три ступени, а не две галки: `--write` без `--fix` у переводчика не
+    делает ровно ничего, и притом молча — а собрать такую пару человек
+    может первым же движением.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, **kw) -> list:
+        return translator.consistency(str(self.book), str(self.tmp / "проект"),
+                                      path=str(self.home), **kw)["сказали"]
+
+    def test_looking_does_not_touch_a_single_file(self):
+        asked = self.asked()
+
+        self.assertNotIn("--fix", asked)
+        self.assertNotIn("--write", asked)
+
+    def test_offering_fixes_does_not_write_them(self):
+        asked = self.asked(deed=translator.OFFER)
+
+        self.assertIn("--fix", asked)
+        self.assertNotIn("--write", asked)
+
+    def test_writing_always_comes_together_with_fixing(self):
+        """`--write` в одиночку у него пустой: правок нет — писать нечего."""
+        asked = self.asked(deed=translator.APPLY)
+
+        self.assertIn("--fix", asked)
+        self.assertIn("--write", asked)
+
+    def test_an_unknown_deed_is_refused_before_the_translator_starts(self):
+        with self.assertRaises(translator.TranslatorError) as caught:
+            self.asked(deed="стереть всё")
+        self.assertIn("что делать с находками", str(caught.exception))
+
+    def test_an_unknown_way_is_refused_too(self):
+        with self.assertRaises(translator.TranslatorError) as caught:
+            self.asked(way="на глазок")
+        self.assertIn("способ сверки", str(caught.exception))
+
+    def test_the_way_of_checking_reaches_the_translator(self):
+        asked = self.asked(way=translator.CHECK_FAST)
+        self.assertEqual(asked[asked.index("--consistency-mode") + 1],
+                         translator.CHECK_FAST)
+
+    def test_the_source_is_asked_by_a_straight_question(self):
+        """Флаг у него обратный — убирающий оригинал из сверки."""
+        self.assertNotIn("--no-source", self.asked(source=True))
+        self.assertIn("--no-source", self.asked(source=False))
+
+    def test_the_confidences_go_one_flag_each(self):
+        """Флаг повторяемый: одной строкой «high,low» он не поймёт."""
+        asked = self.asked(deed=translator.OFFER, sure="high, low")
+        found = [asked[i + 1] for i, one in enumerate(asked)
+                 if one == "--confidences"]
+
+        self.assertEqual(found, ["high", "low"])
+
+    def test_an_invented_confidence_is_refused(self):
+        """Уровни его, и «очень уверенно» он не знает."""
+        with self.assertRaises(translator.TranslatorError) as caught:
+            self.asked(deed=translator.OFFER, sure="очень")
+        self.assertIn("уверенность", str(caught.exception).lower())
+
+    def test_the_confidences_are_pointless_without_fixing(self):
+        """Чинить нечего — и уровни чинимого не о чем."""
+        self.assertNotIn("--confidences", self.asked(sure="high"))
+
+    def test_the_rest_of_the_knobs_reach_the_translator(self):
+        asked = self.asked(chunk=7, glossary_first=True,
+                           suffix="_validated.html")
+
+        self.assertEqual(asked[asked.index("--chunk-size") + 1], "7")
+        self.assertIn("--glossary-first", asked)
+        self.assertEqual(asked[asked.index("--suffix") + 1], "_validated.html")
+
+    def test_unnamed_knobs_keep_his_own_settings(self):
+        asked = self.asked()
+
+        for flag in ("--consistency-mode", "--chunk-size", "--suffix",
+                     "--glossary-first"):
+            self.assertNotIn(flag, asked, flag)
+
+    def test_the_findings_are_read_the_way_he_prints_them(self):
+        got = translator.short_check(CHECK)
+
+        self.assertEqual(got["found"], 2)
+        self.assertEqual(got["checked"], 3)
+        self.assertEqual(got["rows"][0]["chapter"], "Глава 2")
+        self.assertEqual(got["rows"][0]["sure"], "high")
+        self.assertIn("Лин Фен", got["rows"][0]["what"])
+
+    def test_offered_and_written_are_counted_apart(self):
+        """«Исправлено 2» при одной записи означало бы, что правки есть, а
+        в файлах их нет."""
+        got = translator.short_check(CHECK)
+
+        self.assertEqual(got["offered"], 2)
+        self.assertEqual(got["written"], 1)
+
+    def test_a_changed_format_does_not_break_the_findings(self):
+        got = translator.short_check({"ok": True})
+
+        self.assertEqual(got["rows"], [])
+        self.assertEqual((got["offered"], got["written"]), (0, 0))
+
+
+class TestTheCheckOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def start(self, **kw):
+        home = self.tmp / "болтун"
+        (home / "gemini_translator").mkdir(parents=True, exist_ok=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'сказали': sys.argv[1:]}))\n", encoding="utf-8")
+        body = {"path": str(home), "epub": str(self.book),
+                "project": str(self.tmp / "проект")}
+        body.update(kw)
+        return self.app.post("/api/translator/consistency", json=body)
+
+    def finished(self, **kw) -> dict:
+        import time
+
+        job = self.start(**kw).get_json()["job"]
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                return got
+            time.sleep(0.05)
+        self.fail("сверка не закончилась")
+
+    def test_the_knobs_from_the_page_reach_the_translator(self):
+        said = self.finished(way="fast_proofread_3_1", deed="apply",
+                             sure="high", chunk=4, source=False,
+                             glossaryFirst=True)["report"]["сказали"]
+
+        self.assertEqual(said[said.index("--consistency-mode") + 1],
+                         "fast_proofread_3_1")
+        self.assertIn("--fix", said)
+        self.assertIn("--write", said)
+        self.assertEqual(said[said.index("--confidences") + 1], "high")
+        self.assertEqual(said[said.index("--chunk-size") + 1], "4")
+        self.assertIn("--no-source", said)
+        self.assertIn("--glossary-first", said)
+
+    def test_looking_is_the_default_over_http_too(self):
+        """Молчаливая перезапись готовых глав по умолчанию — недопустима."""
+        said = self.finished()["report"]["сказали"]
+
+        self.assertNotIn("--fix", said)
+        self.assertNotIn("--write", said)
+
+    def test_a_bad_knob_is_refused_on_the_press_not_inside_the_job(self):
+        """Иначе отказ пришлось бы разбирать, открыв журнал задачи."""
+        for bad in ({"deed": "стереть"}, {"way": "на глазок"},
+                    {"deed": "offer", "sure": "очень"}):
+            with self.subTest(str(bad)):
+                res = self.start(**bad)
+                self.assertEqual(res.status_code, 400)
+                self.assertNotIn("job", res.get_json())
