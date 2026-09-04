@@ -5209,6 +5209,11 @@ async function tlPlanLook(){
       // той модели, которой потом и переводить.
       provider: tlProviderMenu ? tlProviderMenu.value : '',
       model: tlModelMenu ? tlModelMenu.value : '',
+      // И отбор тот же: план про десять глав и план про всю книгу —
+      // разные ответы, а спрашивают его как раз чтобы их различить.
+      pick: $('tlPick').value.trim(),
+      offset: Number($('tlOffset').value) || 0,
+      limit: Number($('tlLimit').value) || 0,
     });
     tlPlanShow(got);
     $('tlPlanNote').textContent = got.chapters
@@ -5314,6 +5319,9 @@ function tlWork(){
     scope: tlScopeMenu ? tlScopeMenu.value : 'pending',
     provider: tlProviderMenu ? tlProviderMenu.value : '',
     model: tlModelMenu ? tlModelMenu.value : '',
+    pick: $('tlPick').value.trim(),
+    offset: Number($('tlOffset').value) || 0,
+    limit: Number($('tlLimit').value) || 0,
     workers: Number($('tlWorkers').value) || 0,
     rpm: Number($('tlRpm').value) || 0,
     // Пустое поле — «как настроено у переводчика»: своим значением

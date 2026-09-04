@@ -3338,6 +3338,24 @@
       </div>
     </div>
 
+    <!-- Отбор глав поверх «все / непереведённые / переведённые». Нужен
+         затем же, зачем и план: взять десять глав на пробу, а не книгу
+         целиком. Имена — фильтры самого переводчика, повторяемые. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:2">
+        <label for="tlPick">только эти главы<i class="hint-icon" data-tip="Куски имён файлов глав через запятую: «0012, 0013» или «Глава 5». Пусто — все, что попали под отбор выше.">?</i></label>
+        <input id="tlPick" type="text" placeholder="пусто — все под отбором" autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label for="tlOffset">пропустить<i class="hint-icon" data-tip="Сколько глав пропустить с начала отбора. 0 — не пропускать.">?</i></label>
+        <input id="tlOffset" type="number" min="0" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlLimit">взять не больше<i class="hint-icon" data-tip="Предел глав за один запуск. 0 — без предела. Десяток на пробу дешевле, чем вся книга.">?</i></label>
+        <input id="tlLimit" type="number" min="0" value="0">
+      </div>
+    </div>
+
     <div class="row" style="margin-top:14px;flex-wrap:wrap">
       <button id="tlGlossary" class="ghost">Собрать глоссарий</button>
       <button id="tlTranslate" class="primary">Перевести</button>

@@ -564,7 +564,7 @@ def _book_and_project(epub: str, project: str) -> tuple[Path, Path]:
 def _work_args(epub: str, project: str, scope: str = PENDING, workers: int = 0,
                rpm: int = 0, temperature=None, prompt: str = "",
                limit: int = 0, offset: int = 0, provider: str = "",
-               model: str = "") -> list:
+               model: str = "", pick=()) -> list:
     """Флаги, общие у плана, перевода, глоссария и сверки.
 
     Ровно те, что переводчик объявил общими у себя (`_add_common_*`), —
@@ -592,7 +592,31 @@ def _work_args(epub: str, project: str, scope: str = PENDING, workers: int = 0,
         args += ["--temperature", str(temperature)]
     if str(prompt or "").strip():
         args += ["--prompt-file", str(Path(str(prompt)).expanduser())]
+    # Отбор по именам глав. Флаг повторяемый, и это не мелочь: одна
+    # строка «1,5,17» отсюда стала бы одним фильтром, который не совпадёт
+    # ни с чем.
+    for one in _picks(pick):
+        args += ["--chapter", one]
     return args
+
+
+#: Чем человек разделяет главы, когда пишет их списком. Запятая, точка с
+#: запятой и перевод строки — всё, что приходит в голову; гадать, какой
+#: из них «правильный», незачем.
+PICK_SPLIT = re.compile(r"[,;\r\n]+")
+
+
+def _picks(pick) -> list:
+    """Список отборов главы — из строки или из готового списка.
+
+    Пустые куски выбрасываем: лишняя запятая в конце — обычная опечатка,
+    а пустой `--chapter` переводчик понял бы как «совпадает со всем».
+    """
+    if isinstance(pick, str):
+        parts = PICK_SPLIT.split(pick)
+    else:
+        parts = list(pick or [])
+    return [str(one).strip() for one in parts if str(one).strip()]
 
 
 def verify(epub: str, project: str, scope: str = PENDING) -> None:
@@ -642,17 +666,27 @@ def consistency(epub: str, project: str, scope: str = DONE, path: str = "",
 
 
 def build_epub(epub: str, project: str, output: str = "",
-               path: str = "", note=None, stop=None) -> dict:
+               path: str = "", note=None, stop=None, pick=(), limit: int = 0,
+               offset: int = 0) -> dict:
     """Собрать переведённый EPUB.
 
     Ни модели, ни ключей тут не нужно: команда складывает уже готовое.
     Отсюда и путь дальше — собранная книга ложится туда, откуда её берут
     «Разбить» и «Форматировать».
+
+    Отбор глав своя: у этой команды нет ни `--chapters`, ни сервиса с
+    моделью — только имена, пропуск и предел. Собрать половину книги
+    бывает нужно, когда вторая ещё переводится.
     """
     book, folder = _book_and_project(epub, project)
     args = ["--epub", str(book), "--project", str(folder)]
     if str(output or "").strip():
         args += ["--output", str(Path(str(output)).expanduser())]
+    for flag, value in (("--limit", limit), ("--offset", offset)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    for one in _picks(pick):
+        args += ["--chapter", one]
     return run_long("build-epub", args, path=path, note=note, stop=stop)
 
 

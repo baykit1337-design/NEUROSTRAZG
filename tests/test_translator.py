@@ -719,6 +719,20 @@ class TestTheLongWorkOverHttp(Base):
         self.assertEqual(said[said.index("--workers") + 1], "4")
         self.assertEqual(said[said.index("--rpm") + 1], "7")
 
+    def test_the_chapter_pick_reaches_the_translator_over_http(self):
+        """Строка «0012, 0013» со страницы — два отдельных фильтра."""
+        said = self.finished("translate", pick="0012, 0013",
+                             limit=5)["report"]["сказали"]
+        found = [said[i + 1] for i, one in enumerate(said)
+                 if one == "--chapter"]
+
+        self.assertEqual(found, ["0012", "0013"])
+        self.assertEqual(said[said.index("--limit") + 1], "5")
+
+    def test_the_build_takes_the_pick_too(self):
+        said = self.finished("build", pick="0012")["report"]["сказали"]
+        self.assertEqual(said[said.index("--chapter") + 1], "0012")
+
     def test_the_chosen_service_and_model_reach_the_translator(self):
         """Самое видное в его окне — и самое обидное было бы потерять."""
         said = self.finished("translate", provider="deepseek",
@@ -969,3 +983,88 @@ class TestTheListsOverHttp(Base):
                                     json={"path": str(self.tmp / "нет")})
                 self.assertEqual(res.status_code, 400)
                 self.assertIn("Папки нет", res.get_json()["error"])
+
+
+class TestPickingWhichChapters(Base):
+    """Отбор поверх «все / непереведённые / переведённые».
+
+    Нужен затем же, зачем и план: взять десяток глав на пробу, а не книгу
+    целиком. Ошибка тут стоит квоты ключей, а не времени.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, doing=None, **kw) -> list:
+        doing = doing or translator.translate
+        return doing(str(self.book), str(self.tmp / "проект"),
+                     path=str(self.home), **kw)["сказали"]
+
+    def test_each_chapter_gets_its_own_flag(self):
+        """Одной строкой «0012,0013» вышел бы фильтр, не совпадающий ни с
+        чем: флаг у переводчика повторяемый."""
+        asked = self.asked(pick="0012, 0013")
+        found = [asked[i + 1] for i, one in enumerate(asked)
+                 if one == "--chapter"]
+
+        self.assertEqual(found, ["0012", "0013"])
+
+    def test_the_separators_people_actually_use_all_work(self):
+        """Гадать, какой из них «правильный», незачем."""
+        asked = self.asked(pick="а; б\nв,г")
+        found = [asked[i + 1] for i, one in enumerate(asked)
+                 if one == "--chapter"]
+
+        self.assertEqual(found, ["а", "б", "в", "г"])
+
+    def test_a_trailing_comma_does_not_become_a_match_all_filter(self):
+        """Пустой `--chapter` переводчик понял бы как «совпадает со всем»
+        — то есть тихо взял бы книгу целиком."""
+        asked = self.asked(pick="0012, ,")
+        found = [asked[i + 1] for i, one in enumerate(asked)
+                 if one == "--chapter"]
+
+        self.assertEqual(found, ["0012"])
+
+    def test_a_ready_list_works_the_same_as_a_typed_line(self):
+        self.assertEqual(self.asked(pick=["а", "б"]),
+                         self.asked(pick="а, б"))
+
+    def test_nothing_picked_means_no_filter_at_all(self):
+        self.assertNotIn("--chapter", self.asked())
+        self.assertNotIn("--chapter", self.asked(pick="  "))
+
+    def test_the_limit_and_the_offset_reach_the_translator(self):
+        asked = self.asked(offset=30, limit=10)
+
+        self.assertEqual(asked[asked.index("--offset") + 1], "30")
+        self.assertEqual(asked[asked.index("--limit") + 1], "10")
+
+    def test_the_build_takes_the_same_pick_without_a_scope(self):
+        """Собрать половину книги нужно, когда вторая ещё переводится.
+
+        Сервиса, модели и `--chapters` у сборки нет вовсе — она их не
+        знает и на них падает.
+        """
+        asked = self.asked(translator.build_epub, pick="0012", limit=5)
+
+        self.assertEqual(asked[asked.index("--chapter") + 1], "0012")
+        self.assertEqual(asked[asked.index("--limit") + 1], "5")
+        self.assertNotIn("--chapters", asked)
+        self.assertNotIn("--provider", asked)
+
+    def test_the_plan_is_asked_about_the_same_chapters(self):
+        """План про десять глав и план про книгу — разные ответы."""
+        asked = self.asked(translator.plan, pick="0012", limit=10)
+
+        self.assertEqual(asked[asked.index("--chapter") + 1], "0012")
+        self.assertEqual(asked[asked.index("--limit") + 1], "10")

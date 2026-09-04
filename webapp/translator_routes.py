@@ -134,6 +134,7 @@ def _knobs(payload: dict) -> dict:
         "prompt": str(payload.get("prompt") or "").strip(),
         "limit": payload.get("limit") or 0,
         "offset": payload.get("offset") or 0,
+        "pick": payload.get("pick") or "",
     }
 
 
@@ -204,7 +205,9 @@ def api_translator_build():
         return jsonify(error=str(exc)), 400
 
     return _start("build-epub", lambda note, stop: translator_op.build_epub(
-        epub, project, output, path=path, note=note, stop=stop), payload)
+        epub, project, output, path=path, note=note, stop=stop,
+        pick=payload.get("pick") or "", limit=payload.get("limit") or 0,
+        offset=payload.get("offset") or 0), payload)
 
 
 @translator.post("/api/translator/check")
