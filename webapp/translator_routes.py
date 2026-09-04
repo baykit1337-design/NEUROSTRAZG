@@ -181,6 +181,17 @@ def _check_knobs(payload: dict) -> dict:
     }
 
 
+def _glossary_knobs(payload: dict) -> dict:
+    """Ручки одного только сбора глоссария."""
+    return {
+        "merge": str(payload.get("merge") or "").strip(),
+        "batch": payload.get("batch") or 0,
+        "new_terms": payload.get("newTerms") or 0,
+        "glossary_prompt": str(payload.get("glossaryPrompt") or "").strip(),
+        "glossary_file": str(payload.get("glossaryFile") or "").strip(),
+    }
+
+
 @translator.post("/api/translator/<any(translate,glossary,consistency):what>")
 def api_translator_work(what: str):
     """Перевод, сбор глоссария и сверка — три команды одной дорогой."""
@@ -192,6 +203,8 @@ def api_translator_work(what: str):
     knobs = _knobs(payload)
     if what == "consistency":
         knobs.update(_check_knobs(payload))
+    if what == "glossary":
+        knobs.update(_glossary_knobs(payload))
 
     try:
         translator_op.verify(epub, project, knobs["scope"])
@@ -200,6 +213,8 @@ def api_translator_work(what: str):
         if what == "consistency":
             translator_op.verify_check(knobs["way"], knobs["deed"],
                                        knobs["sure"])
+        if what == "glossary":
+            translator_op.verify_merge(knobs["merge"])
     except translator_op.TranslatorError as exc:
         return jsonify(error=str(exc)), 400
 

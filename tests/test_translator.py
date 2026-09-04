@@ -1491,3 +1491,139 @@ class TestTheCheckOverHttp(Base):
                 res = self.start(**bad)
                 self.assertEqual(res.status_code, 400)
                 self.assertNotIn("job", res.get_json())
+
+
+#: Ответ `glossary-generate` в том виде, в каком его печатает переводчик.
+GLOSSARY = {
+    "ok": True,
+    "status": "finished",
+    "epub": "/книга.epub",
+    "project": "/проект",
+    "chapters": ["0001.xhtml", "0002.xhtml", "0003.xhtml"],
+    "task_count": 3,
+    "merge_mode": "supplement",
+    "glossary_results": {"rows": 412, "unique_terms": 47},
+    "result": {"finished": True},
+}
+
+
+class TestGatheringTheGlossary(Base):
+    """Как сливать собранное с уже набранным — его дело и его слова."""
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+        self.home = self.tmp / "эхо"
+        package = self.home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+
+    def asked(self, **kw) -> list:
+        return translator.glossary(str(self.book), str(self.tmp / "проект"),
+                                   path=str(self.home), **kw)["сказали"]
+
+    def test_the_merge_way_reaches_the_translator(self):
+        for way in translator.MERGE_WAYS:
+            with self.subTest(way):
+                asked = self.asked(merge=way)
+                self.assertEqual(asked[asked.index("--merge-mode") + 1], way)
+
+    def test_an_invented_merge_way_is_refused_before_the_run(self):
+        with self.assertRaises(translator.TranslatorError) as caught:
+            self.asked(merge="слить как-нибудь")
+        self.assertIn("слияния глоссария", str(caught.exception))
+
+    def test_the_batch_and_the_term_limit_reach_the_translator(self):
+        asked = self.asked(batch=5, new_terms=30)
+
+        self.assertEqual(asked[asked.index("--batch-size") + 1], "5")
+        self.assertEqual(asked[asked.index("--new-terms-limit") + 1], "30")
+
+    def test_unnamed_glossary_knobs_keep_his_own_settings(self):
+        asked = self.asked()
+
+        for flag in ("--merge-mode", "--batch-size", "--new-terms-limit",
+                     "--glossary-prompt-file", "--glossary"):
+            self.assertNotIn(flag, asked, flag)
+
+    def test_a_glossary_of_ones_own_can_be_pointed_at(self):
+        asked = self.asked(glossary_file=str(self.tmp / "свой.json"),
+                           glossary_prompt=str(self.tmp / "промпт.txt"))
+
+        self.assertEqual(asked[asked.index("--glossary") + 1],
+                         str(self.tmp / "свой.json"))
+        self.assertEqual(asked[asked.index("--glossary-prompt-file") + 1],
+                         str(self.tmp / "промпт.txt"))
+
+    def test_it_still_goes_over_the_whole_book(self):
+        """Имена должны совпадать от первой главы до последней."""
+        asked = self.asked()
+        self.assertEqual(asked[asked.index("--chapters") + 1], translator.WHOLE)
+
+    def test_rows_and_terms_are_counted_apart(self):
+        """Одно слово приходит из десяти глав: «собрано 412» при сорока
+        семи терминах вводило бы в заблуждение."""
+        got = translator.short_glossary(GLOSSARY)
+
+        self.assertEqual(got["rows"], 412)
+        self.assertEqual(got["terms"], 47)
+        self.assertEqual(got["chapters"], 3)
+        self.assertFalse(got["stopped"])
+
+    def test_a_stopped_run_is_told_apart_from_a_finished_one(self):
+        got = translator.short_glossary({**GLOSSARY, "status": "stopped"})
+        self.assertTrue(got["stopped"])
+
+    def test_a_changed_format_does_not_break_the_summary(self):
+        got = translator.short_glossary({"ok": True})
+        self.assertEqual((got["rows"], got["terms"]), (0, 0))
+
+
+class TestTheGlossaryOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def start(self, **kw):
+        home = self.tmp / "болтун"
+        (home / "gemini_translator").mkdir(parents=True, exist_ok=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            "sys.stdout.write(json.dumps("
+            "{'ok': True, 'сказали': sys.argv[1:]}))\n", encoding="utf-8")
+        body = {"path": str(home), "epub": str(self.book),
+                "project": str(self.tmp / "проект")}
+        body.update(kw)
+        return self.app.post("/api/translator/glossary", json=body)
+
+    def test_the_knobs_from_the_page_reach_the_translator(self):
+        import time
+
+        job = self.start(merge="accumulate", batch=4,
+                         newTerms=25).get_json()["job"]
+        until = time.monotonic() + 30
+        while time.monotonic() < until:
+            got = self.app.get(f"/api/job/{job['id']}").get_json()["job"]
+            if not got["running"]:
+                break
+            time.sleep(0.05)
+
+        said = got["report"]["сказали"]
+        self.assertEqual(said[said.index("--merge-mode") + 1], "accumulate")
+        self.assertEqual(said[said.index("--batch-size") + 1], "4")
+        self.assertEqual(said[said.index("--new-terms-limit") + 1], "25")
+
+    def test_an_invented_merge_way_is_a_refusal_not_a_job(self):
+        res = self.start(merge="как-нибудь")
+
+        self.assertEqual(res.status_code, 400)
+        self.assertNotIn("job", res.get_json())

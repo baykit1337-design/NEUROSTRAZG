@@ -5381,6 +5381,16 @@ async function tlRun(what, extra){
         tlBar(!job.error);
         if(job.error){ showError(job.error, $('tlDone')); return; }
         const said = job.report || {};
+        if(what === 'glossary'){
+          // Строк и терминов — разные числа: одно слово приходит из
+          // десяти глав, и «собрано 400» при сорока терминах врало бы.
+          const made = said.glossary_results || {};
+          $('tlDone').textContent = made.unique_terms
+            ? `Готово. Терминов: ${ru(made.unique_terms)}`
+              + ` (записей: ${ru(made.rows || 0)}).`
+            : 'Готово. Новых терминов не набралось.';
+          return;
+        }
         if(what === 'consistency'){
           const short = tlCheckSum(said);
           tlCheckShow(short);
@@ -5603,7 +5613,13 @@ function tlCheckShow(said){
   table.hidden = !(said.rows || []).length;
 }
 
-$('tlGlossary').onclick = () => tlRun('glossary');
+const tlMergeMenu = makeDropdown($('tlMerge'));
+
+$('tlGlossary').onclick = () => tlRun('glossary', {
+  merge: tlMergeMenu ? tlMergeMenu.value : '',
+  batch: Number($('tlBatch').value) || 0,
+  newTerms: Number($('tlNewTerms').value) || 0,
+});
 $('tlTranslate').onclick = () => tlRun('translate');
 $('tlConsistency').onclick = () => {
   $('tlCheckRows').hidden = true;

@@ -642,16 +642,68 @@ def translate(epub: str, project: str, scope: str = PENDING, path: str = "",
                     verbose=True)
 
 
+#: Как сливать собранное с тем, что уже есть в глоссарии. Слова его, и
+#: подписи в его окне — «Дополнение», «Обновление», «Накопление».
+MERGE_ADD = "supplement"     # дополнить, не трогая старое
+MERGE_SET = "update"         # перезаписать расхождения новым
+MERGE_KEEP = "accumulate"    # копить все варианты
+MERGE_WAYS = (MERGE_ADD, MERGE_SET, MERGE_KEEP)
+
+
 def glossary(epub: str, project: str, scope: str = WHOLE, path: str = "",
-             note=None, stop=None, **knobs) -> dict:
+             note=None, stop=None, merge: str = "", batch: int = 0,
+             new_terms: int = 0, glossary_prompt: str = "",
+             glossary_file: str = "", **knobs) -> dict:
     """Собрать глоссарий именами и названиями до перевода.
 
     По всей книге, а не по непереведённому: глоссарий затем и нужен,
     чтобы имена совпадали от первой главы до последней.
+
+    Как сливать с уже собранным — его дело и его слова: дополнить,
+    обновить или копить варианты. Своих названий не выдумываем: в его
+    окне подписи те же.
     """
+    verify_merge(merge)
     args = _work_args(epub, project, scope, **knobs) + ["--all-keys"]
+    if merge:
+        args += ["--merge-mode", merge]
+    for flag, value in (("--batch-size", batch),
+                        ("--new-terms-limit", new_terms)):
+        if int(value or 0) > 0:
+            args += [flag, str(int(value))]
+    if str(glossary_prompt or "").strip():
+        args += ["--glossary-prompt-file",
+                 str(Path(str(glossary_prompt)).expanduser())]
+    # Свой файл глоссария: по умолчанию он берёт его из папки проекта.
+    if str(glossary_file or "").strip():
+        args += ["--glossary", str(Path(str(glossary_file)).expanduser())]
     return run_long("glossary-generate", args, path=path, note=note,
                     stop=stop, verbose=True)
+
+
+def verify_merge(merge: str = "") -> None:
+    """Годится ли способ слияния. Отдельно — чтобы отказать на нажатие."""
+    if merge and merge not in MERGE_WAYS:
+        raise TranslatorError(f"Неизвестный способ слияния глоссария: {merge}")
+
+
+def short_glossary(said: dict) -> dict:
+    """Итог сбора глоссария в том виде, в каком его показывают.
+
+    Строк и терминов — разные числа: одно слово может прийти из десяти
+    глав, и «собрано 400» при сорока терминах вводило бы в заблуждение.
+    """
+    made = said.get("glossary_results")
+    made = made if isinstance(made, dict) else {}
+    return {
+        "merge": str(said.get("merge_mode") or ""),
+        "chapters": len(said.get("chapters") or []),
+        "tasks": _whole(said.get("task_count")),
+        "rows": _whole(made.get("rows")),
+        "terms": _whole(made.get("unique_terms")),
+        # «stopped» он отвечает и когда остановили, и когда упёрся в срок.
+        "stopped": str(said.get("status") or "") == "stopped",
+    }
 
 
 #: Как сверять. Имена канонические, его же: «fast» он у себя разворачивает
