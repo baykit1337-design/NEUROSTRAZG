@@ -2507,6 +2507,52 @@
        одной главы. Сюда же — всё, что не перевелось: иероглифы и
        английские абзацы посреди русского текста. Ничего не удаляется
        само: убирается только отмеченное, и в новый файл. -->
+  <!-- Работа отдельная: поделить главы внутри уже готовых книг.
+       Раньше это можно было только попутно, вместе с переписыванием
+       заголовков, — то есть ценой ключей и риска переписать всю книгу.
+       Здесь не трогается ничего, кроме границ глав. -->
+  <div class="card" id="fmCutCard">
+    <label>Поделить главы на части</label>
+    <p class="hint">Берёт готовые книги <code>.md</code> — одну или сколько
+       угодно — и делит каждую главу внутри них. Заголовки не переводятся,
+       номера не перебиваются, к модели не ходим. Исходники не трогаются:
+       поделённое пишется в выбранную папку под теми же именами.</p>
+
+    <div class="row" style="margin-top:10px">
+      <input id="fmCutPath" class="pickpath" data-list="fmCutList" type="text"
+             placeholder="Путь к .md или папке с ними" autocomplete="off">
+      <button class="ghost pickany" data-list="fmCutList">Файлы…</button>
+      <button class="ghost pickfolder" data-list="fmCutList" style="flex:0 0 auto">Папку…</button>
+    </div>
+    <div class="row" id="fmCutListBar" style="margin-top:8px;align-items:center" hidden>
+      <span class="hint" id="fmCutCount" style="flex:1"></span>
+      <button class="ghost clearlist" data-list="fmCutList"
+              style="padding:5px 12px;font-size:12px">Очистить список</button>
+    </div>
+    <div class="chosen" id="fmCutList"></div>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 160px">
+        <label for="fmCutParts">на сколько частей<i class="hint-icon" data-tip="2 — пополам. Режется по границам абзацев, части выходят примерно равными по числу знаков.">?</i></label>
+        <input id="fmCutParts" type="number" value="2" min="2" max="10">
+      </div>
+      <div style="flex:1">
+        <label for="fmCutBase">куда сохранить</label>
+        <div class="row">
+          <input id="fmCutBase" type="text" placeholder="Папка назначения"
+                 autocomplete="off" data-keep list="nzFolders">
+          <button class="ghost browse" data-target="fmCutBase" data-kind="folder">Обзор…</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="fmCutGo" class="primary" style="flex:1">Поделить главы</button>
+    </div>
+    <p class="hint" id="fmCutNote"></p>
+    <div class="table" id="fmCutTable" hidden style="margin-top:10px;max-height:320px"></div>
+  </div>
+
   <div class="card" id="fmJunkCard">
     <label>Мусор в главах</label>
     <p class="hint">Смотрит выбранный выше <code>.md</code>: название книги,

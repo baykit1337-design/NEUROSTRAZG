@@ -3924,6 +3924,78 @@ $('fmBookList').dataset.onchange = 'fmBookScan';
 $('fmCollect').onclick = fmCollect;
 $('fmRetitle').onclick = fmRetitle;
 $('fmBefore').onclick = fmBefore;
+/* ------------------------------------ поделить главы на части
+ *
+ * Работа отдельная от переписывания заголовков, и в этом весь смысл:
+ * раньше поделить главы можно было только попутно, вместе с переводом
+ * названий, — то есть ценой ключей и риска переписать всю книгу.
+ * Здесь не меняется ничего, кроме границ глав.
+ */
+async function fmCutRun(){
+  showError('');
+  const button = $('fmCutGo');
+  button.disabled = true;
+  $('fmCutTable').hidden = true;
+  $('fmCutNote').innerHTML = '<span class="spin"></span>Делим…';
+  try{
+    const got = await call('/api/format/halve', {
+      targets: CHOSEN.fmCutList || [],
+      parts: Number($('fmCutParts').value) || 2,
+      base: $('fmCutBase').value.trim(),
+      // Приставка и разделитель — те же, что и у остальной вкладки:
+      // заголовки частей должны выглядеть как соседние.
+      prefix: $('fmPrefix').value.trim(),
+      separator: fmState.menus.sep ? fmState.menus.sep.value : ' — ',
+    });
+
+    const table = $('fmCutTable');
+    table.innerHTML = '';
+    for(const row of got.files || []){
+      const line = document.createElement('div');
+      line.className = 'tr';
+      const name = document.createElement('span');
+      name.className = 'grow';
+      name.textContent = row.file;
+      name.title = row.output;
+      const count = document.createElement('span');
+      count.className = 'num';
+      count.textContent = `${ru(row.was)} → ${ru(row.now)}`;
+      line.append(name, count);
+      table.append(line);
+    }
+    // Книги, которые не поддались, показываем тут же: молча пропустить
+    // половину выбранного — худшее, что тут можно сделать.
+    for(const bad of got.failed || []){
+      const line = document.createElement('div');
+      line.className = 'tr';
+      const name = document.createElement('span');
+      name.className = 'grow';
+      name.textContent = bad.file;
+      const why = document.createElement('span');
+      why.className = 'hint';
+      why.style.flex = '2';
+      why.textContent = bad.error;
+      line.append(name, why);
+      table.append(line);
+    }
+    table.hidden = !table.children.length;
+
+    const bits = [`Книг: ${ru((got.files || []).length)}`,
+                  `глав было ${ru(got.chapters)}, стало ${ru(got.made)}`];
+    if((got.failed || []).length){
+      bits.push(`не вышло: ${ru(got.failed.length)}`);
+    }
+    $('fmCutNote').textContent = bits.join(', ') + '.';
+  }catch(err){
+    $('fmCutNote').textContent = '';
+    showError(err.message, $('fmCutNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
+$('fmCutGo').onclick = fmCutRun;
+
 $('fmJunkLook').onclick = fmJunkLook;
 $('fmJunkClean').onclick = fmJunkClean;
 $('fmStop').onclick = () => cancelTab('format');

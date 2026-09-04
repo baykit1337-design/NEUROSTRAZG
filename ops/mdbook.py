@@ -568,6 +568,24 @@ def cut_into_parts(head: Head, body: list[str], count: int,
     return out
 
 
+def cut_all(chapters, count: int = 2,
+            style: TitleStyle | None = None) -> list:
+    """Каждую главу книги — на части. Больше ничего не трогаем.
+
+    Отдельно от `from_chapters` и переписывания заголовков затем, что это
+    и есть вся работа: у человека готовая книга, и ему нужно только
+    поделить в ней главы, не переводя названий, не перенумеровывая и не
+    подходя к модели.
+
+    Глава, которую делить не на что (один абзац), остаётся как была: это
+    не отказ, а «нечего резать».
+    """
+    out = []
+    for head, body in chapters:
+        out.extend(cut_into_parts(head, body, count, style))
+    return out
+
+
 #: Что делать с названием главы, собирая книгу из файлов.
 KEEP, DROP = "keep", "drop"
 
@@ -630,7 +648,7 @@ def from_chapters(chapters, style: TitleStyle | None = None,
 
 __all__ = ["DEFAULT_SEPARATOR", "DROP", "FREE", "HEAD_RE", "Head", "KEEP",
            "MARK", "PAID",
-           "PAYMENT", "SEPARATORS", "TitleStyle", "cut_into_parts",
+           "PAYMENT", "SEPARATORS", "TitleStyle", "cut_all", "cut_into_parts",
            "from_chapters", "inspect", "lines_of", "looks_translated",
            "make_head", "number_parts",
            "paragraphs_of", "parse_head", "read_book", "split_title",

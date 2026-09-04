@@ -1373,3 +1373,196 @@ class TestBringingToStandardOverHttp(WebBase):
             "tidy": True}).get_json()
         self.assertTrue(said["rows"][0]["before"].startswith("#["))
         self.assertTrue(said["rows"][0]["after"].startswith(" # ["))
+
+
+class TestCuttingEveryChapterInTwo(unittest.TestCase):
+    """Поделить главы в готовой книге — работа сама по себе.
+
+    Раньше добраться до неё можно было только попутно, вместе с
+    переписыванием заголовков: то есть ценой ключей и с риском заодно
+    переписать всю книгу. А нужно бывает ровно одно — границы глав.
+    """
+
+    def book(self, chapters: int = 2, blocks: int = 6):
+        out = []
+        for number in range(1, chapters + 1):
+            body = []
+            for at in range(blocks):
+                body.append(f"Абзац {at + 1} главы {number}.")
+                body.append("")
+            out.append((mdbook.make_head(f"Глава {number} — Название",
+                                         paid="1", volume="2"), body))
+        return out
+
+    def test_every_chapter_becomes_two(self):
+        cut = mdbook.cut_all(self.book(chapters=3), 2)
+        self.assertEqual(len(cut), 6)
+
+    def test_the_parts_are_numbered_inside_the_chapter(self):
+        cut = mdbook.cut_all(self.book(chapters=1), 2)
+        self.assertEqual([head.title for head, _ in cut],
+                         ["Глава 1.1 — Название", "Глава 1.2 — Название"])
+
+    def test_not_a_single_paragraph_is_lost(self):
+        """Половина книги, пропавшая молча, — худшее, что тут может быть."""
+        book = self.book(chapters=2, blocks=5)
+        was = [line for _, body in book for line in body if line.strip()]
+        cut = mdbook.cut_all(book, 2)
+        now = [line for _, body in cut for line in body if line.strip()]
+
+        self.assertEqual(now, was)
+
+    def test_the_price_and_the_volume_survive_the_cut(self):
+        """В заголовке лежит цена главы: поправь её — узнаешь уже на сайте."""
+        cut = mdbook.cut_all(self.book(chapters=1), 2)
+        for head, _ in cut:
+            with self.subTest(head.title):
+                self.assertEqual(head.paid, "1")
+                self.assertEqual(head.volume, "2")
+
+    def test_a_chapter_too_short_to_cut_stays_whole(self):
+        """Это не отказ, а «нечего резать»."""
+        short = [(mdbook.make_head("Глава 7 — Коротко"), ["Одна строка."])]
+        cut = mdbook.cut_all(short, 2)
+
+        self.assertEqual(len(cut), 1)
+        self.assertEqual(cut[0][0].title, "Глава 7 — Коротко")
+
+    def test_more_than_two_parts_works_the_same(self):
+        cut = mdbook.cut_all(self.book(chapters=1, blocks=9), 3)
+        self.assertEqual([head.title for head, _ in cut],
+                         ["Глава 1.1 — Название", "Глава 1.2 — Название",
+                          "Глава 1.3 — Название"])
+
+    def test_asking_for_one_part_changes_nothing(self):
+        book = self.book(chapters=2)
+        self.assertEqual(len(mdbook.cut_all(book, 1)), 2)
+
+    def test_the_book_still_reads_back_after_the_cut(self):
+        """Проверка сквозная: записали поделённое — и прочли обратно."""
+        cut = mdbook.cut_all(self.book(chapters=2), 2)
+        lead, again = mdbook.read_book(mdbook.write_book(cut, ""))
+
+        self.assertEqual(len(again), 4)
+        self.assertEqual([head.title for head, _ in again],
+                         [head.title for head, _ in cut])
+
+
+class TestCuttingOverHttp(unittest.TestCase):
+    """Маршрут берёт один файл или сколько угодно — человеку без разницы."""
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.out = self.tmp / "готово"
+        self.out.mkdir()
+
+    def write(self, name: str, chapters: int = 2) -> Path:
+        lines = []
+        for number in range(1, chapters + 1):
+            lines.append(f"# [Глава {number} — Название :|: :|: 1 :|: ]")
+            for at in range(6):
+                lines.append(f"Абзац {at + 1} главы {number}.")
+                lines.append("")
+        path = self.tmp / name
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    def cut(self, **more):
+        body = {"base": str(self.out), "parts": 2}
+        body.update(more)
+        return self.app.post("/api/format/halve", json=body)
+
+    def test_one_book_is_cut(self):
+        book = self.write("книга.md", chapters=3)
+        got = self.cut(targets=[str(book)]).get_json()
+
+        self.assertEqual(got["chapters"], 3)
+        self.assertEqual(got["made"], 6)
+        self.assertTrue((self.out / "книга.md").is_file())
+
+    def test_many_books_at_once_are_no_different(self):
+        for name in ("одна.md", "вторая.md", "третья.md"):
+            self.write(name)
+        got = self.cut(targets=[str(self.tmp / "одна.md"),
+                                str(self.tmp / "вторая.md"),
+                                str(self.tmp / "третья.md")]).get_json()
+
+        self.assertEqual(len(got["files"]), 3)
+        self.assertEqual(got["made"], 12)
+
+    def test_a_whole_folder_can_be_given_instead(self):
+        for name in ("одна.md", "вторая.md"):
+            self.write(name)
+        (self.tmp / "заметка.txt").write_text("не книга", encoding="utf-8")
+
+        got = self.cut(targets=[str(self.tmp)]).get_json()
+        self.assertEqual(sorted(one["file"] for one in got["files"]),
+                         ["вторая.md", "одна.md"])
+        # И именно молча: в папке рядом с книгами лежит служебное, и
+        # жаловаться на каждый её файл значит утопить настоящие отказы.
+        # Тем этот случай и отличается от файла, выбранного руками.
+        self.assertEqual(got["failed"], [])
+
+    def test_a_file_chosen_by_hand_that_is_not_md_is_refused(self):
+        """Человек указал именно на него — молчать нельзя."""
+        other = self.tmp / "заметка.txt"
+        other.write_text("не книга", encoding="utf-8")
+
+        res = self.cut(targets=[str(other)])
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("не книга .md", res.get_json()["error"])
+
+    def test_the_source_is_never_overwritten(self):
+        """Не понравится — сверять будет не с чем, а работа необратима."""
+        book = self.write("книга.md")
+        was = book.read_text(encoding="utf-8")
+
+        res = self.cut(targets=[str(book)], base=str(self.tmp))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(book.read_text(encoding="utf-8"), was)
+
+    def test_a_file_that_is_not_a_loader_book_is_named_not_swallowed(self):
+        """Молча пропустить половину выбранного — худшее, что тут можно."""
+        good = self.write("книга.md")
+        bad = self.tmp / "чужая.md"
+        bad.write_text("Просто текст без заголовков.", encoding="utf-8")
+
+        got = self.cut(targets=[str(good), str(bad)]).get_json()
+        self.assertEqual([one["file"] for one in got["files"]], ["книга.md"])
+        self.assertEqual([one["file"] for one in got["failed"]], ["чужая.md"])
+
+    def test_nothing_chosen_is_a_refusal(self):
+        res = self.cut(targets=[])
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Выберите", res.get_json()["error"])
+
+    def test_a_missing_output_folder_is_a_refusal(self):
+        book = self.write("книга.md")
+        res = self.cut(targets=[str(book)], base=str(self.tmp / "нет-такой"))
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Папка не найдена", res.get_json()["error"])
+
+    def test_the_number_of_parts_reaches_the_work(self):
+        book = self.write("книга.md", chapters=1)
+        got = self.cut(targets=[str(book)], parts=3).get_json()
+
+        self.assertEqual(got["made"], 3)
+
+    def test_a_silly_number_of_parts_is_squeezed_into_reason(self):
+        """Ноль частей и тысяча — обе бессмыслица, но не повод падать."""
+        book = self.write("книга.md", chapters=1)
+
+        self.assertEqual(self.cut(targets=[str(book)],
+                                  parts=0).get_json()["parts"], 2)
+        self.assertLessEqual(self.cut(targets=[str(book)],
+                                      parts=999).get_json()["parts"], 10)

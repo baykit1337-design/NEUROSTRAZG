@@ -2805,6 +2805,100 @@ def api_format_junk_clean():
                    source=str(path))
 
 
+#: На сколько частей делим главу по умолчанию. Пополам — то, ради чего
+#: кнопка и заведена; больше двух бывает нужно на очень длинных главах.
+HALVE_PARTS = 2
+MAX_PARTS = 10
+
+
+def _md_files(payload: dict) -> list[Path]:
+    """Выбранные книги `.md`: файлы и папки вперемешку.
+
+    Только `.md` и только они: это книги для загрузчика, и отдать сюда
+    `.txt` с главами по файлам значит получить одну «главу» на файл.
+    """
+    found: list[Path] = []
+    seen: set[str] = set()
+    for one in _targets(payload):
+        path = Path(one).expanduser()
+        if path.is_dir():
+            picked = sorted(p for p in path.iterdir()
+                            if p.is_file() and p.suffix.lower() == ".md")
+        elif path.is_file():
+            if path.suffix.lower() != ".md":
+                raise ValueError(f"Это не книга .md: {path.name}")
+            picked = [path]
+        else:
+            raise ValueError(f"Не найдено: {path}")
+        for item in picked:
+            key = str(item.resolve())
+            if key not in seen:
+                seen.add(key)
+                found.append(item)
+    if not found:
+        raise ValueError("Выберите книгу .md или папку с ними")
+    return found
+
+
+@app.post("/api/format/halve")
+def api_format_halve():
+    """Поделить главы внутри книг на части. Больше ничего не трогаем.
+
+    Отдельно от переписывания заголовков затем, что это и есть вся
+    работа: у человека готовые книги, и ему нужно только поделить в них
+    главы — не переводя названий, не перенумеровывая и не подходя к
+    модели. Раньше это было доступно только попутно, вместе с переводом
+    заголовков, то есть ценой ключей и риска переписать всю книгу.
+
+    Исходники не трогаем: пишем в выбранную папку под теми же именами.
+    """
+    payload = request.json or {}
+    try:
+        files = _md_files(payload)
+        parts = max(2, min(_whole(payload, "parts", HALVE_PARTS), MAX_PARTS))
+        base = (payload.get("base") or "").strip()
+        if not base:
+            raise ValueError("Выберите, куда сохранить")
+        folder = Path(base).expanduser()
+        if not folder.is_dir():
+            raise ValueError(f"Папка не найдена: {folder}")
+    except (ValueError, OSError) as exc:
+        return jsonify(error=str(exc)), 400
+
+    style = _title_style(payload)
+    rows, chapters, made, failed = [], 0, 0, []
+
+    for path in files:
+        # Писать поверх исходника нельзя: не понравится — сверять будет
+        # не с чем, а работа необратима.
+        output = folder / path.name
+        if output.resolve() == path.resolve():
+            failed.append({"file": path.name,
+                           "error": "исходник и вывод — один файл"})
+            continue
+        try:
+            lead, book = mdbook.read_book(
+                path.read_text(encoding="utf-8", errors="replace"))
+            if not book:
+                raise ValueError("нет заголовков вида «# [Название :|: …]»")
+            cut = mdbook.cut_all(book, parts, style)
+            output.write_text(mdbook.write_book(cut, lead), encoding="utf-8")
+        except (ValueError, OSError) as exc:
+            failed.append({"file": path.name, "error": str(exc)})
+            continue
+
+        chapters += len(book)
+        made += len(cut)
+        rows.append({"file": path.name, "was": len(book), "now": len(cut),
+                     "output": str(output)})
+
+    if not rows:
+        return jsonify(error="Ни одну книгу поделить не вышло",
+                       failed=failed), 400
+    return jsonify(files=rows, failed=failed, chapters=chapters,
+                   made=made, parts=parts, output=str(folder))
+
+
 #: Сколько строк «до и после» показывать. Книга бывает на полторы тысячи
 #: глав, а решение по такому предпросмотру принимают по первым двум
 #: десяткам: дальше повторяется то же самое.
