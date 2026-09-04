@@ -297,3 +297,49 @@ class TestWeStoreNothingOfItsOwn(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAMissingPackageIsExplained(Base):
+    """Голое `ModuleNotFoundError: No module named 'fs'` в карточке —
+    тупик: человек видит чужую питоновскую ошибку и не знает ни чей это
+    пакет, ни куда его ставить.
+
+    А беда обычная: взяли исходники и не поставили им зависимости.
+    """
+
+    def why(self, home) -> str:
+        settings.translator.path = str(home)
+        with self.assertRaises(translator.TranslatorError) as caught:
+            translator.status(str(home))
+        return str(caught.exception)
+
+    def test_the_refusal_names_the_package_and_the_cure(self):
+        home = fake_translator(
+            self.tmp,
+            prints={"ok": False,
+                    "error": "ModuleNotFoundError: No module named 'fs'"})
+        said = self.why(home)
+
+        self.assertIn("fs", said)
+        self.assertIn(translator.NEEDS, said)
+
+    def test_silence_with_the_same_cause_gets_the_same_cure(self):
+        """Нехватка пакета валит команду и до JSON, и молча."""
+        home = self.tmp / "молчун"
+        package = home / "gemini_translator"
+        package.mkdir(parents=True)
+        (package / "cli.py").write_text(
+            "import sys\n"
+            "print(\"ModuleNotFoundError: No module named 'fs'\", file=sys.stderr)",
+            encoding="utf-8")
+
+        self.assertIn(translator.NEEDS, self.why(home))
+
+    def test_other_refusals_are_left_as_they_came(self):
+        """Не всякий отказ лечится установкой пакетов."""
+        home = fake_translator(self.tmp,
+                               prints={"ok": False, "error": "нет ключей"})
+        said = self.why(home)
+
+        self.assertIn("нет ключей", said)
+        self.assertNotIn(translator.NEEDS, said)

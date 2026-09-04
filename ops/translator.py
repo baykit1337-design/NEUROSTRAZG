@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -77,8 +78,41 @@ VENV = (
 QUICK_TIMEOUT = 120
 
 
+#: Чем ставятся зависимости переводчика. Список его собственный:
+#: `requirements-translator-only.txt` — самый короткий набор, который он
+#: сам же и объявил (без браузера, озвучки и загрузчиков).
+#:
+#: `fs` дописан отдельно, и это не придирка: без него не поднимается его
+#: же патч файловой системы, а в короткий список он не попал. Проверено
+#: на живой копии: с этими двумя `status` отвечает `ok`.
+NEEDS = "python -m pip install -r requirements-translator-only.txt fs"
+
+#: Отказ, за которым стоит не поломка, а неустановленный пакет.
+MISSING = re.compile(r"No module named '([^']+)'")
+
+
 class TranslatorError(Exception):
     """С переводчиком не поговорили. Причина — в сообщении."""
+
+
+def _about(said: str) -> str:
+    """Отказ переводчика словами, за которыми видно, что делать.
+
+    Голое `ModuleNotFoundError: No module named 'fs'` в карточке — тупик:
+    человек видит чужую питоновскую ошибку и не знает ни чей это пакет,
+    ни куда его ставить. А беда обычная: взяли исходники и не поставили
+    им зависимости.
+    """
+    said = str(said or "")
+    found = MISSING.search(said)
+    if not found:
+        return said
+    return (f"Переводчику не хватает пакета «{found.group(1)}» — это его "
+            "собственная зависимость, и её не поставили.\n"
+            "Откройте командную строку в его папке и выполните:\n"
+            f"{NEEDS}\n"
+            "Тем же Python, которым программа его и запускает. "
+            "Установленную версию переводчика это не затронет.")
 
 
 def where() -> str:
@@ -211,7 +245,9 @@ def run(command: str, args=(), path: str = "", timeout: int | None = None) -> di
     if not body:
         tail = (said.stderr or "").strip().splitlines()
         why = tail[-1] if tail else f"код возврата {said.returncode}"
-        raise TranslatorError(f"Переводчик ничего не ответил: {why}")
+        # Через тот же разбор: нехватка пакета валит команду и до JSON, и
+        # молча — а лечится она одинаково.
+        raise TranslatorError(f"Переводчик ничего не ответил: {_about(why)}")
 
     try:
         found = json.loads(body)
@@ -231,7 +267,8 @@ def status(path: str = "") -> dict:
     """
     said = run("status", path=path)
     if not said.get("ok", True):
-        raise TranslatorError(str(said.get("error") or "переводчик отказал"))
+        raise TranslatorError(
+            _about(said.get("error") or "переводчик отказал"))
     return said
 
 
