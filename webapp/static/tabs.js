@@ -5205,6 +5205,10 @@ async function tlPlanLook(){
       epub: $('tlEpub').value.trim(),
       project: $('tlProject').value.trim(),
       scope: tlScopeMenu ? tlScopeMenu.value : 'pending',
+      // Сервис и модель — те же, что у работы: план должен считать квоту
+      // той модели, которой потом и переводить.
+      provider: tlProviderMenu ? tlProviderMenu.value : '',
+      model: tlModelMenu ? tlModelMenu.value : '',
     });
     tlPlanShow(got);
     $('tlPlanNote').textContent = got.chapters
@@ -5219,6 +5223,74 @@ async function tlPlanLook(){
 }
 
 $('tlPlan').onclick = tlPlanLook;
+
+/* --------------------------------------- сервис, модель и их списки
+ *
+ * Списки свои не держим: их отдаёт сам переводчик командами `providers`
+ * и `models`. Заведи мы свой перечень — он разошёлся бы с его
+ * настройками в первый же раз, когда он добавит себе провайдера.
+ */
+
+let tlProviderMenu = makeDropdown($('tlProvider'), () => tlModelsLoad());
+let tlModelMenu = makeDropdown($('tlModel'));
+
+/** Пересобрать список: пункты приходят с сервера уже после отрисовки. */
+function tlFill(id, options, chosen){
+  const box = $(id);
+  box.dataset.options = JSON.stringify(options);
+  box.innerHTML = '';
+  const menu = makeDropdown(box, id === 'tlProvider' ? () => tlModelsLoad() : null);
+  if(chosen) menu.set(chosen, {notify: false});
+  return menu;
+}
+
+async function tlPicksLoad(){
+  showError('');
+  const button = $('tlLoad');
+  button.disabled = true;
+  $('tlPickNote').innerHTML = '<span class="spin"></span>Спрашиваем переводчик…';
+  try{
+    const got = await call('/api/translator/providers',
+                           {path: $('tlPath').value.trim()});
+    // «Как настроено» остаётся первым пунктом: не выбрать сервис — это
+    // тоже выбор, и самый безопасный.
+    tlProviderMenu = tlFill('tlProvider',
+      [['', 'как настроено']].concat((got.providers || []).map(one => [
+        one.id,
+        one.name + (one.browser ? '  · через браузер'
+                                : `  · ключей ${ru(one.keys)}`),
+      ])));
+    $('tlPickNote').textContent =
+      `Сервисов: ${ru((got.providers || []).length)}. Ключи остаются у него.`;
+    await tlModelsLoad();
+  }catch(err){
+    $('tlPickNote').textContent = '';
+    showError(err.message, $('tlPickNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
+async function tlModelsLoad(){
+  try{
+    const got = await call('/api/translator/models', {
+      path: $('tlPath').value.trim(),
+      provider: tlProviderMenu ? tlProviderMenu.value : '',
+    });
+    tlModelMenu = tlFill('tlModel',
+      [['', 'как настроено']].concat((got.models || []).map(one => [
+        one.name,
+        // Квота рядом с названием — то, из-за чего модель и выбирают:
+        // по ней видно, хватит ли её на книгу разом.
+        one.name + (one.rpm || one.rpd
+          ? `  · ${one.rpm || '—'}/мин, ${one.rpd || '—'}/сут` : ''),
+      ])), got.saved);
+  }catch(err){
+    showError(err.message, $('tlPickNote'));
+  }
+}
+
+$('tlLoad').onclick = tlPicksLoad;
 
 /* ------------------------------------------------ сама работа
  *
@@ -5240,6 +5312,8 @@ function tlWork(){
     epub: $('tlEpub').value.trim(),
     project: $('tlProject').value.trim(),
     scope: tlScopeMenu ? tlScopeMenu.value : 'pending',
+    provider: tlProviderMenu ? tlProviderMenu.value : '',
+    model: tlModelMenu ? tlModelMenu.value : '',
     workers: Number($('tlWorkers').value) || 0,
     rpm: Number($('tlRpm').value) || 0,
     // Пустое поле — «как настроено у переводчика»: своим значением

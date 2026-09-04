@@ -248,6 +248,19 @@ class TestWhatTheToolsTabShows(PageTestCase):
         self.assertFalse(self.page.locator("#tlTranslate").is_disabled())
         self.quiet()
 
+    def test_the_service_list_refuses_to_invent_its_own_options(self):
+        """Список сервисов до опроса переводчика — только «как настроено».
+
+        Свой перечень провайдеров разошёлся бы с его настройками в первый
+        же раз, когда он добавит себе сервис. Поэтому в разметке пунктов
+        нет: они приходят от него.
+        """
+        for box in ("#tlProvider", "#tlModel"):
+            with self.subTest(box):
+                items = self.page.locator(f"{box} .dropdown-item")
+                self.assertEqual(items.count(), 1)
+                self.assertIn("как настроено", items.first.inner_text())
+
     def test_the_update_card_offers_one_button(self):
         """Одна кнопка на всё: две заставляли человека делать работу
         программы."""

@@ -292,6 +292,84 @@ def status(path: str = "") -> dict:
     return said
 
 
+def providers(path: str = "") -> dict:
+    """Сервисы перевода, настроенные у него, — с числом ключей у каждого.
+
+    Нужны затем, чтобы список в карточке был его собственный. Заведи мы
+    свой перечень — он разошёлся бы с его настройками в первый же раз,
+    когда он добавит себе провайдера.
+    """
+    said = run("providers", path=path)
+    if not said.get("ok", True):
+        raise TranslatorError(_about(said.get("error") or "переводчик отказал"))
+    return said
+
+
+def short_providers(said: dict) -> list:
+    """Сервисы в том виде, в каком их показывают списком.
+
+    Читаем бережно: формат чужой. Скрытые провайдеры не спрашиваем и не
+    показываем — он их сам от себя прячет.
+    """
+    rows = []
+    for one in said.get("providers") or []:
+        if not isinstance(one, dict):
+            continue
+        name = str(one.get("display_name") or one.get("id") or "")
+        if not name:
+            continue
+        rows.append({
+            "id": str(one.get("id") or ""),
+            "name": name,
+            "keys": _whole(one.get("configured_keys")),
+            "models": _whole(one.get("model_count")),
+            # Провайдеру через браузер ключ не нужен, и «ключей: 0» у
+            # него — не беда, а норма. Без этого признака карточка
+            # ругалась бы на исправный сервис.
+            "browser": bool(one.get("browser_based")),
+            "needs_key": bool(one.get("requires_api_key", True)),
+        })
+    return rows
+
+
+def models(provider: str = "", path: str = "") -> dict:
+    """Модели одного сервиса — с его же квотами.
+
+    Квоты тут не украшение: по ним и видно, хватит ли одной модели на
+    книгу разом. Не назвали сервис — он ответит про сохранённый у себя.
+    """
+    args = ["--provider", str(provider).strip()] if str(provider or "").strip() else []
+    said = run("models", args, path=path)
+    if not said.get("ok", True):
+        raise TranslatorError(_about(said.get("error") or "переводчик отказал"))
+    return said
+
+
+def short_models(said: dict) -> dict:
+    """Модели в том виде, в каком их показывают списком."""
+    rows = []
+    for one in said.get("models") or []:
+        if not isinstance(one, dict):
+            continue
+        name = str(one.get("name") or "")
+        if not name:
+            continue
+        rows.append({
+            "name": name,
+            "rpm": _whole(one.get("rpm")),
+            "rpd": _whole(one.get("rpd")),
+            "context": _whole(one.get("context_window")),
+            "thinking": bool(one.get("supports_thinking")),
+        })
+    return {
+        "provider": str(said.get("provider") or ""),
+        # Какая выбрана у него самого: с неё и начинаем, чтобы список в
+        # карточке открывался на том же, что у него в окне.
+        "saved": str(said.get("saved_model") or ""),
+        "models": rows,
+    }
+
+
 def short(said: dict) -> dict:
     """Ответ `status` в том виде, в каком его показывают человеку.
 
@@ -448,7 +526,7 @@ def _whole(value) -> int:
 
 
 def plan(epub: str, project: str, scope: str = PENDING,
-         path: str = "") -> dict:
+         path: str = "", **knobs) -> dict:
     """Что именно будет переведено — не трогая ни сети, ни ключей.
 
     Это «до и после» для перевода, и нужно оно ровно затем же, зачем оно
@@ -459,7 +537,9 @@ def plan(epub: str, project: str, scope: str = PENDING,
     План читает епаб и считает главы, задачи и знаки. В сеть он не ходит
     вовсе, поэтому нажимать его можно сколько угодно.
     """
-    return run("plan", _work_args(epub, project, scope),
+    # Ручки те же, что у перевода: план должен считать квоту той модели,
+    # которой потом и переводить, иначе он отвечает не про эту работу.
+    return run("plan", _work_args(epub, project, scope, **knobs),
                path=path, timeout=PLAN_TIMEOUT)
 
 
@@ -483,8 +563,12 @@ def _book_and_project(epub: str, project: str) -> tuple[Path, Path]:
 
 def _work_args(epub: str, project: str, scope: str = PENDING, workers: int = 0,
                rpm: int = 0, temperature=None, prompt: str = "",
-               limit: int = 0, offset: int = 0) -> list:
+               limit: int = 0, offset: int = 0, provider: str = "",
+               model: str = "") -> list:
     """Флаги, общие у плана, перевода, глоссария и сверки.
+
+    Ровно те, что переводчик объявил общими у себя (`_add_common_*`), —
+    иначе команда падает на незнакомом флаге.
 
     Чего не назвали, того и не передаём: у переводчика всё это уже
     настроено в его собственном окне, и пустое значение отсюда затёрло бы
@@ -496,6 +580,10 @@ def _work_args(epub: str, project: str, scope: str = PENDING, workers: int = 0,
 
     args = ["--epub", str(book), "--project", str(folder),
             "--chapters", scope]
+    # Сервис и модель — то же правило: не выбрали, значит его сохранённые.
+    for flag, value in (("--provider", provider), ("--model", model)):
+        if str(value or "").strip():
+            args += [flag, str(value).strip()]
     for flag, value in (("--workers", workers), ("--rpm", rpm),
                         ("--limit", limit), ("--offset", offset)):
         if int(value or 0) > 0:

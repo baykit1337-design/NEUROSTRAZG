@@ -68,11 +68,11 @@ def api_translator_plan():
     """
     payload = request.json or {}
     try:
+        knobs = _knobs(payload)
         said = translator_op.plan(
             str(payload.get("epub") or "").strip(),
             str(payload.get("project") or "").strip(),
-            str(payload.get("scope") or translator_op.PENDING).strip(),
-            str(payload.get("path") or "").strip(),
+            path=str(payload.get("path") or "").strip(), **knobs,
         )
     except translator_op.TranslatorError as exc:
         return jsonify(error=str(exc)), 400
@@ -123,9 +123,11 @@ def _start(kind: str, work, payload: dict):
 
 
 def _knobs(payload: dict) -> dict:
-    """Ручки, общие у перевода, глоссария и сверки."""
+    """Ручки, общие у плана, перевода, глоссария и сверки."""
     return {
         "scope": str(payload.get("scope") or translator_op.PENDING).strip(),
+        "provider": str(payload.get("provider") or "").strip(),
+        "model": str(payload.get("model") or "").strip(),
         "workers": payload.get("workers") or 0,
         "rpm": payload.get("rpm") or 0,
         "temperature": payload.get("temperature"),
@@ -133,6 +135,35 @@ def _knobs(payload: dict) -> dict:
         "limit": payload.get("limit") or 0,
         "offset": payload.get("offset") or 0,
     }
+
+
+@translator.post("/api/translator/providers")
+def api_translator_providers():
+    """Какие сервисы перевода у него настроены и сколько там ключей.
+
+    Список берём у него, а не держим свой: добавит он себе провайдера —
+    наш перечень о том не узнает и начнёт врать.
+    """
+    payload = request.json or {}
+    path = str(payload.get("path") or "").strip()
+    try:
+        said = translator_op.providers(path)
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, providers=translator_op.short_providers(said))
+
+
+@translator.post("/api/translator/models")
+def api_translator_models():
+    """Модели выбранного сервиса — с его же квотами."""
+    payload = request.json or {}
+    path = str(payload.get("path") or "").strip()
+    provider = str(payload.get("provider") or "").strip()
+    try:
+        said = translator_op.models(provider, path)
+    except translator_op.TranslatorError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, **translator_op.short_models(said))
 
 
 @translator.post("/api/translator/<any(translate,glossary,consistency):what>")

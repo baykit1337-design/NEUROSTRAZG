@@ -3304,6 +3304,25 @@
        собрать EPUB. Каждая кнопка — часы работы; остановка срабатывает на
        границе главы, и сделанное остаётся.</p>
 
+    <!-- Сервис и модель. Списки не свои: их отдаёт сам переводчик
+         командами `providers` и `models`, и они всегда те же, что у него
+         в окне. Свой перечень разошёлся бы с его настройками в первый же
+         раз, когда он добавит себе провайдера. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>сервис<i class="hint-icon" data-tip="Из настроенных у вас в переводчике. Не выбран — берётся тот, что сохранён у него.">?</i></label>
+        <div class="dropdown" id="tlProvider" data-options='[["","как настроено"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>модель<i class="hint-icon" data-tip="Модели выбранного сервиса, с его же квотами: сколько запросов в минуту и в сутки она отдаёт.">?</i></label>
+        <div class="dropdown" id="tlModel" data-options='[["","как настроено"]]'></div>
+      </div>
+      <div style="flex:0 0 auto;align-self:flex-end">
+        <button id="tlLoad" class="ghost">Обновить списки</button>
+      </div>
+    </div>
+    <p class="hint" id="tlPickNote"></p>
+
     <div class="row" style="margin-top:12px">
       <div style="flex:1">
         <label for="tlWorkers">потоков<i class="hint-icon" data-tip="Пусто или 0 — сколько настроено у самого переводчика. Своё число перебивает его настройку только на этот запуск.">?</i></label>

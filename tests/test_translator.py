@@ -485,6 +485,34 @@ class TestThePlanOverHttp(Base):
         self.assertEqual(res.status_code, 400)
         self.assertIn("Файла нет", res.get_json()["error"])
 
+    def test_the_plan_is_counted_for_the_chosen_model(self):
+        """Иначе план отвечает про чужую квоту.
+
+        Ответ плана мы показываем разобранным, и аргументы в нём не
+        видны. Поэтому поддельный переводчик кладёт их туда, где список
+        глав, — единственное окно, через которое их отсюда видно.
+        """
+        home = self.tmp / "эхо-план"
+        (home / "gemini_translator").mkdir(parents=True)
+        (home / "gemini_translator" / "cli.py").write_text(
+            "import json, sys\n"
+            # Только эта пара: список глав в ответе обрезается, и клади мы
+            # туда все аргументы, проверка ломалась бы от каждого нового
+            # флага — по причине, к сервису и модели не относящейся.
+            "a = sys.argv[1:]\n"
+            "pair = ('--provider', '--model')\n"
+            "want = [x for i, x in enumerate(a)\n"
+            "        if x in pair or (i and a[i - 1] in pair)]\n"
+            "print(json.dumps({'ok': True, 'plan': {'chapters': want}}))\n",
+            encoding="utf-8")
+
+        got = self.ask(path=str(home), provider="deepseek",
+                       model="Кот 9.0").get_json()
+        asked = got["sample"]
+
+        self.assertEqual(asked[asked.index("--provider") + 1], "deepseek")
+        self.assertEqual(asked[asked.index("--model") + 1], "Кот 9.0")
+
     def test_a_refusal_from_the_translator_is_passed_on(self):
         # В своей папке: подделка по умолчанию живёт в `self.tmp` и
         # перезаписала бы эту, а проверялся бы тогда не отказ.
@@ -691,6 +719,14 @@ class TestTheLongWorkOverHttp(Base):
         self.assertEqual(said[said.index("--workers") + 1], "4")
         self.assertEqual(said[said.index("--rpm") + 1], "7")
 
+    def test_the_chosen_service_and_model_reach_the_translator(self):
+        """Самое видное в его окне — и самое обидное было бы потерять."""
+        said = self.finished("translate", provider="deepseek",
+                             model="Кот 9.0")["report"]["сказали"]
+
+        self.assertEqual(said[said.index("--provider") + 1], "deepseek")
+        self.assertEqual(said[said.index("--model") + 1], "Кот 9.0")
+
     def test_stopping_a_job_is_told_apart_from_a_breakdown(self):
         """Остановка — не ошибка: человек нажал сам."""
         import time
@@ -769,3 +805,167 @@ class TestTheLongWorkOverHttp(Base):
         got = self.finished("translate", path=str(home))
         self.assertIn("кончились ключи", got["error"])
         self.assertNotIn("Готово", got["progress"]["message"])
+
+
+#: Ответы `providers` и `models` в том виде, в каком их печатает сам
+#: переводчик. Сняты с его `cli.py`, а не выдуманы: разойдись форма — и
+#: списки в карточке молча опустели бы.
+PROVIDERS = {
+    "ok": True,
+    "providers": [
+        {"id": "gemini", "display_name": "Google Gemini Free", "visible": True,
+         "requires_api_key": True, "configured_keys": 69, "model_count": 12,
+         "file_suffix": "_gemini.html", "browser_based": False,
+         "dynamic_model_discovery": False, "discovery_checked": False},
+        {"id": "local", "display_name": "Локальная модель", "visible": True,
+         "requires_api_key": False, "configured_keys": 0, "model_count": 2,
+         "file_suffix": None, "browser_based": True,
+         "dynamic_model_discovery": True, "discovery_checked": False},
+    ],
+    "diagnose": False,
+}
+
+MODELS = {
+    "ok": True,
+    "provider": "gemini",
+    "saved_model": "Gemini 3.0 Flash Preview",
+    "models": [
+        {"name": "Gemini 3.0 Flash Preview", "id": "gemini-3.0-flash",
+         "provider": "gemini", "rpm": 5, "rpd": 20,
+         "max_output_tokens": 8192, "context_window": 1048576,
+         "supports_thinking": True},
+        {"name": "Gemini 2.5 Pro", "id": "gemini-2.5-pro", "provider": "gemini",
+         "rpm": 2, "rpd": 50, "max_output_tokens": 8192,
+         "context_window": 2097152, "supports_thinking": False},
+    ],
+}
+
+
+class TestTheServiceAndTheModel(Base):
+    """Сервис и модель — самое видное в его окне, и списки у них его.
+
+    Свой перечень провайдеров разошёлся бы с его настройками в первый же
+    раз, когда он добавит себе сервис. Поэтому спрашиваем каждый раз.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.book = self.tmp / "проба.epub"
+        self.book.write_bytes(b"PK\x03\x04")
+
+    def echoing(self, name: str) -> str:
+        """Переводчик, который печатает, о чём его попросили."""
+        home = self.tmp / name
+        package = home / "gemini_translator"
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "cli.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'ok': True, 'сказали': sys.argv[1:]}))\n",
+            encoding="utf-8")
+        return str(home)
+
+    def test_the_services_are_read_the_way_he_prints_them(self):
+        rows = translator.short_providers(PROVIDERS)
+
+        self.assertEqual(rows[0]["name"], "Google Gemini Free")
+        self.assertEqual(rows[0]["keys"], 69)
+        self.assertEqual(rows[0]["models"], 12)
+
+    def test_a_browser_service_is_told_apart_from_one_without_keys(self):
+        """«Ключей 0» у браузерного — норма, а не беда: ключ ему не нужен."""
+        rows = translator.short_providers(PROVIDERS)
+
+        self.assertTrue(rows[1]["browser"])
+        self.assertFalse(rows[1]["needs_key"])
+        self.assertFalse(rows[0]["browser"])
+
+    def test_the_models_come_with_their_quota(self):
+        """Ради квоты модель и выбирают: хватит ли её на книгу разом."""
+        got = translator.short_models(MODELS)
+
+        self.assertEqual(got["models"][0]["name"], "Gemini 3.0 Flash Preview")
+        self.assertEqual((got["models"][0]["rpm"], got["models"][0]["rpd"]),
+                         (5, 20))
+        # С какой открывать список: с той, что выбрана у него самого.
+        self.assertEqual(got["saved"], "Gemini 3.0 Flash Preview")
+
+    def test_a_changed_format_empties_the_list_but_does_not_break_us(self):
+        self.assertEqual(translator.short_providers({"ok": True}), [])
+        self.assertEqual(translator.short_models({"ok": True})["models"], [])
+
+    def test_the_service_is_asked_by_its_own_command(self):
+        said = translator.providers(self.echoing("сервисы"))
+        self.assertEqual(said["сказали"][0], "providers")
+
+    def test_the_models_are_asked_for_the_chosen_service(self):
+        asked = translator.models("deepseek", self.echoing("модели"))["сказали"]
+
+        self.assertEqual(asked[0], "models")
+        self.assertEqual(asked[asked.index("--provider") + 1], "deepseek")
+
+    def test_no_service_named_means_his_own_saved_one(self):
+        """Пустой `--provider` отсюда спросил бы не про то."""
+        asked = translator.models("", self.echoing("сами"))["сказали"]
+        self.assertNotIn("--provider", asked)
+
+    def test_a_refusal_is_explained_not_swallowed(self):
+        home = self.tmp / "отказ"
+        home.mkdir()
+        fake_translator(home, prints={"ok": False, "error": "нет настроек"})
+
+        with self.assertRaises(translator.TranslatorError) as caught:
+            translator.providers(str(home))
+        self.assertIn("нет настроек", str(caught.exception))
+
+    def test_the_chosen_service_and_model_reach_every_command(self):
+        home = self.echoing("работа")
+        for doing in (translator.plan, translator.translate,
+                      translator.glossary, translator.consistency):
+            with self.subTest(doing.__name__):
+                asked = doing(str(self.book), str(self.tmp / "проект"),
+                              path=home, provider="deepseek",
+                              model="Кот 9.0")["сказали"]
+                self.assertEqual(asked[asked.index("--provider") + 1],
+                                 "deepseek")
+                self.assertEqual(asked[asked.index("--model") + 1], "Кот 9.0")
+
+    def test_what_was_not_chosen_leaves_his_settings_alone(self):
+        """Пустой сервис отсюда затёр бы его же выбор пустотой."""
+        asked = translator.translate(str(self.book), str(self.tmp / "проект"),
+                                     path=self.echoing("пусто"))["сказали"]
+
+        self.assertNotIn("--provider", asked)
+        self.assertNotIn("--model", asked)
+
+
+class TestTheListsOverHttp(Base):
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+
+    def test_the_services_reach_the_page(self):
+        home = fake_translator(self.tmp, prints=PROVIDERS)
+        got = self.app.post("/api/translator/providers",
+                            json={"path": str(home)}).get_json()
+
+        self.assertEqual(got["providers"][0]["name"], "Google Gemini Free")
+        self.assertEqual(got["providers"][0]["keys"], 69)
+
+    def test_the_models_reach_the_page_with_the_saved_one_marked(self):
+        home = fake_translator(self.tmp, prints=MODELS)
+        got = self.app.post("/api/translator/models",
+                            json={"path": str(home)}).get_json()
+
+        self.assertEqual(got["saved"], "Gemini 3.0 Flash Preview")
+        self.assertEqual(got["models"][1]["rpd"], 50)
+
+    def test_a_broken_translator_answers_with_words(self):
+        for what in ("providers", "models"):
+            with self.subTest(what):
+                res = self.app.post(f"/api/translator/{what}",
+                                    json={"path": str(self.tmp / "нет")})
+                self.assertEqual(res.status_code, 400)
+                self.assertIn("Папки нет", res.get_json()["error"])
