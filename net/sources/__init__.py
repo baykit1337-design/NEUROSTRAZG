@@ -15,6 +15,7 @@ from .base import Source, SourceBroken
 
 #: Порядок здесь же и порядок в списке на экране.
 def all_sources() -> list:
+    from .dreamy import DreamySource
     from .fanqie import FanqieSource
     from .fanqiemirror import FanqieMirrorSource
     from .mvlempyr import MvlempyrSource
@@ -37,8 +38,12 @@ def all_sources() -> list:
     # RanobeLIB стоит особняком: оттуда книга приходит уже по-русски, и
     # переводить её после скачивания не нужно вовсе. Это другой размен —
     # не «текст подешевле», а «чужой перевод вместо своего».
+    # Dreamy стоит рядом с RanobeLIB и по той же причине: оттуда книга
+    # приходит уже переведённой, только на английский. Это тоже размен
+    # «чужой перевод вместо своего», и делает его человек сам.
     return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource(),
-            NovelCmsSource(), WebnovelSource(), RanobeLibSource()]
+            NovelCmsSource(), WebnovelSource(), RanobeLibSource(),
+            DreamySource()]
 
 
 def get(name: str) -> Source:
