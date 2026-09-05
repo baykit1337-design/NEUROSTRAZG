@@ -1658,3 +1658,78 @@ class TestWhatGetsRefreshedInTheLibrary(unittest.TestCase):
         self.assertNotIn("genres_ru", said)
         self.assertNotIn("site_tags_ru", said)
         self.assertNotIn("name_ru", said)
+
+
+class TestWhyTheCheckDidNotGoThrough(unittest.TestCase):
+    """«Не ответили: 12» — это не ответ, а отписка.
+
+    Человек жмёт кнопку, в библиотеке ничего не меняется, и виноватой
+    выглядит кнопка. Причина же на сервере есть — её просто выбрасывали.
+    """
+
+    def setUp(self):
+        from webapp import app as web
+
+        self.web = web
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+        was = library.LIBRARY_FILE
+        library.LIBRARY_FILE = self.tmp / "library.json"
+        self.addCleanup(setattr, library, "LIBRARY_FILE", was)
+
+        library.remember("k", name="Книга", source="mvlempyr",
+                         address="kniga", chapters=10, last=5)
+
+    def breaks_with(self, trouble):
+        """Источник, который на любой вопрос отвечает этой бедой."""
+        source = SimpleNamespace(
+            key="mvlempyr", name="MVLEMPYR",
+            find=lambda client, query: (_ for _ in ()).throw(trouble))
+        was = self.web.sources.get
+        self.web.sources.get = lambda key: source
+        self.addCleanup(setattr, self.web.sources, "get", was)
+
+        was_client = self.web.Client
+        self.web.Client = lambda **kw: SimpleNamespace(close=lambda: None)
+        self.addCleanup(setattr, self.web, "Client", was_client)
+
+    def test_the_reason_comes_back_with_the_miss(self):
+        from mvl.client import HttpError
+
+        self.breaks_with(HttpError("HTTP 502 — каталог молчит"))
+        _, missed = self.web._check_updates(["k"])
+
+        self.assertEqual(len(missed), 1)
+        self.assertIn("502", missed[0]["why"])
+
+    def test_a_dns_failure_is_explained_here_too(self):
+        """Та же беда, что валит качалку, валит и проверку — и объяснять
+        её надо теми же словами, а не заново."""
+        from mvl.client import NetworkError
+
+        self.breaks_with(NetworkError(
+            "curl: (6) Could not resolve host: chap.heliosarchive.online"))
+        _, missed = self.web._check_updates(["k"])
+
+        self.assertIn("chap.heliosarchive.online", missed[0]["why"])
+        self.assertIn("браузере", missed[0]["why"])
+
+    def test_a_book_that_went_through_is_not_called_a_miss(self):
+        """Работающее должно остаться работающим."""
+        novel = SimpleNamespace(total_chapters=12, about="", genres=[],
+                                tags=[], cover="", status="", language="")
+        source = SimpleNamespace(key="mvlempyr", name="MVLEMPYR",
+                                 find=lambda client, query: novel)
+        was = self.web.sources.get
+        self.web.sources.get = lambda key: source
+        self.addCleanup(setattr, self.web.sources, "get", was)
+        was_client = self.web.Client
+        self.web.Client = lambda **kw: SimpleNamespace(close=lambda: None)
+        self.addCleanup(setattr, self.web, "Client", was_client)
+
+        checked, missed = self.web._check_updates(["k"])
+
+        self.assertEqual((checked, missed), (["k"], []))
+        self.assertEqual(library.get("k").chapters, 12)

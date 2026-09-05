@@ -1052,6 +1052,9 @@
     color:var(--muted);
   }
   #lbList .lb-note{margin-top:8px;font-size:13px;padding:6px 10px}
+  /* Почему проверка не прошла. Не в списке книг, а под самой кнопкой:
+     причина у всех непрошедших обычно одна на всех. */
+  .lb-why{margin-top:6px;font-size:12px;line-height:1.5;color:#ff9d9d}
   #lbList .lb-deeds{
     display:flex;flex-direction:column;gap:6px;flex:0 0 auto;min-width:132px;
   }
@@ -5468,11 +5471,23 @@ async function libCheck(noteId, buttonId){
     libBooks = data.books || libBooks;
     histShow(data.state || {});
     libTook(data);
-    const missed = (data.missed || []).length;
-    if(missed || data.left){
-      note.textContent += (missed ? ` Не ответили: ${missed}.` : '')
+    const missed = data.missed || [];
+    if(missed.length || data.left){
+      note.textContent += (missed.length ? ` Не ответили: ${missed.length}.` : '')
         + (data.left ? ` Осталось проверить: ${data.left} — нажмите ещё раз.`
                      : '');
+    }
+    // Одно «не ответили: 12» ничего не объясняет: человек жмёт кнопку,
+    // ничего не меняется, и виноватой выглядит кнопка. Причина у всех
+    // непрошедших книг обычно одна — сайт не открывается, — поэтому
+    // показываем её один раз, а не двенадцать.
+    const why = (missed.find(one => one && one.why) || {}).why;
+    if(why){
+      const said = document.createElement('div');
+      said.className = 'lb-why';
+      said.textContent = missed.length > 1
+        ? `Почему не вышло: ${why}` : why;
+      note.append(said);
     }
   }catch(err){
     showError(err.message);

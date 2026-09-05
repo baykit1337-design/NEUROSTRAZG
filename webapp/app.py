@@ -924,7 +924,12 @@ def _check_updates(keys, cancel=None) -> tuple[list, list]:
                                 **_about_fields(novel, {}))
             checked.append(key)
         except (HttpError, sources.SourceBroken, LookupError, ValueError) as exc:
-            missed.append({"key": key, "why": str(exc)})
+            # Причина — теми же словами, что и в очереди. Без неё на
+            # экране остаётся «не ответили: 12» и ни намёка на то, что
+            # каталог не открывается вовсе: человек жмёт кнопку, ничего
+            # не меняется, и виноватой выглядит сама кнопка.
+            missed.append({"key": key,
+                           "why": f"{client_mod.explain(exc)}{exc}"})
         finally:
             client.close()
 

@@ -1558,6 +1558,53 @@ class TestTheLibraryCardOpens(PageTestCase):
         self.page.click("#lbList .lb-name")
         self.quiet()
 
+    def checked_with(self, answer) -> str:
+        """Нажать «Проверить обновления», подменив ответ сервера."""
+        self.open_library()
+        return self.page.evaluate(
+            """async (answer) => {
+                const server = window.call;
+                window.call = async () => answer;
+                try{ await libCheck('lbNote', 'lbCheck'); }
+                finally{ window.call = server; }
+                return document.getElementById('lbNote').textContent;
+            }""", answer)
+
+    def test_the_reason_is_shown_and_not_just_the_count(self):
+        """«Не ответили: 12» — не ответ: человек жмёт кнопку, ничего не
+        меняется, и виноватой выглядит кнопка."""
+        said = self.checked_with({
+            "checked": [], "left": 0, "books": [], "state": {},
+            "missed": [{"key": "проба",
+                        "why": "Ваш компьютер не узнал адрес chap.example"}]})
+
+        self.assertIn("Не ответили: 1", said)
+        self.assertIn("не узнал адрес chap.example", said)
+        self.quiet()
+
+    def test_one_reason_is_enough_for_the_whole_batch(self):
+        """Причина у всех непрошедших обычно одна, и двенадцать её копий
+        превратили бы заметку в простыню."""
+        said = self.checked_with({
+            "checked": [], "left": 0, "books": [], "state": {},
+            "missed": [{"key": str(n), "why": "каталог молчит"}
+                       for n in range(12)]})
+
+        self.assertEqual(said.count("каталог молчит"), 1)
+        self.quiet()
+
+    def test_a_check_that_went_through_says_nothing_extra(self):
+        """Красная строка там, где всё получилось, пугала бы на ровном
+        месте."""
+        said = self.checked_with({
+            "checked": ["проба"], "left": 0, "books": [], "state": {},
+            "missed": []})
+
+        self.assertNotIn("Не ответили", said)
+        self.assertEqual(
+            self.page.locator("#lbNote .lb-why").count(), 0)
+        self.quiet()
+
 
 class TestEveryBookHasItsOwnBar(PageTestCase):
     """Одна полоса на всю очередь не отвечала, кто чем занят.
