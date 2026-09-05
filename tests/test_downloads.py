@@ -1615,3 +1615,46 @@ class TestTheNightGoesTheWholeRound(unittest.TestCase):
 
         self.a_book_with_new_chapters()
         self.assertEqual(self.web._nightly_catch_up(), 0)
+
+
+class TestWhatGetsRefreshedInTheLibrary(unittest.TestCase):
+    """Что проверка обновлений дописывает в запись, а что трогать не смеет.
+
+    `remember` дополняет запись, а не заменяет, — но одноимённое поле он
+    перезапишет, и пустое значение отсюда стёрло бы уже накопленное.
+    """
+
+    def setUp(self):
+        from webapp import app as web
+
+        self.web = web
+
+    def novel(self, **fields):
+        said = {"about": "", "genres": [], "tags": [], "cover": "",
+                "status": "", "language": ""}
+        said.update(fields)
+        return SimpleNamespace(**said)
+
+    def test_the_cover_the_source_knows_is_written_down(self):
+        said = self.web._about_fields(self.novel(cover="https://x/6615.webp"),
+                                      {})
+
+        self.assertEqual(said["cover"], "https://x/6615.webp")
+
+    def test_a_source_that_knows_no_cover_does_not_erase_the_one_stored(self):
+        """У книги, заведённой из рейтинга, обложка была с самого начала,
+        а источник её может и не знать: пустая строка отсюда стёрла бы
+        картинку при первой же ночной проверке."""
+        said = self.web._about_fields(self.novel(), {})
+
+        self.assertNotIn("cover", said)
+
+    def test_the_russian_twins_still_never_come_from_here(self):
+        """Перевод, за который заплачено, уходить не должен."""
+        said = self.web._about_fields(
+            self.novel(about="About the hunters", genres=["Fantasy"]), {})
+
+        self.assertNotIn("about_ru", said)
+        self.assertNotIn("genres_ru", said)
+        self.assertNotIn("site_tags_ru", said)
+        self.assertNotIn("name_ru", said)

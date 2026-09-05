@@ -1696,7 +1696,12 @@ def _about_fields(novel, origin: dict) -> dict:
     бы при первой же проверке обновлений.
     """
     origin = origin or {}
+    cover = str(getattr(novel, "cover", "") or origin.get("cover") or "")
     return {
+        # Обложка — только когда она есть. Пустая строка отсюда стёрла бы
+        # ту, что уже лежит в записи: у книги, заведённой из рейтинга,
+        # обложка была с самого начала, а источник её может и не знать.
+        **({"cover": cover} if cover else {}),
         # Описание у рейтинга называется «about»: там его и показывают.
         "about": str(getattr(novel, "about", "") or origin.get("about") or ""),
         "genres": [str(one) for one in (getattr(novel, "genres", None) or [])

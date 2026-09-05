@@ -7,7 +7,16 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from core import wordpress
+
 from .client import API, BASE, SITE, Client, HttpError, chapter_url, novel_url
+
+#: Откуда берутся обложки MVLEMPYR. Отдельного поля под обложку в
+#: каталоге нет — картинка складывается из кода книги по одному правилу.
+#: Живёт здесь, а не в рейтинге, потому что нужна обоим, а рейтингу до
+#: этого модуля дотянуться проще, чем наоборот.
+COVER = "https://assets.mvlempyr.app/images/{size}/{code}.webp"
+COVER_SIZE = 600
 
 log = logging.getLogger(__name__)
 
@@ -155,6 +164,12 @@ def _novel_from_json(item: dict) -> Novel | None:
         total = int(str(item.get("total-chapters") or 0).strip())
     except (TypeError, ValueError):
         total = 0
+    # Описание, жанры и метки лежат в том же ответе, и рейтинг их отсюда
+    # доставал всегда. Качалка брала только имя, автора и число глав — и
+    # раскрытая карточка в библиотеке оставалась пустой, хотя данные
+    # приходили тем же запросом. Разбор один на обоих, чтобы не разошлись
+    # снова.
+    said = wordpress.about_of(item)
     return Novel(
         code=code,
         name=(item.get("name") or "").strip() or f"novel-{code}",
@@ -163,6 +178,12 @@ def _novel_from_json(item: dict) -> Novel | None:
         author=(item.get("author-name") or "").strip(),
         status=(item.get("status") or "").strip(),
         language=(item.get("language") or "").strip(),
+        # Обложка складывается из кода: отдельного поля под неё в
+        # каталоге нет, а картинки лежат по одному правилу.
+        cover=COVER.format(size=COVER_SIZE, code=code),
+        about=said["about"],
+        genres=said["genres"],
+        tags=said["tags"],
     )
 
 

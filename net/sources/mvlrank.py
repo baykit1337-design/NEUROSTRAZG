@@ -22,6 +22,12 @@ from __future__ import annotations
 
 import logging
 
+from core.wordpress import ABOUT_FIELDS, TAG_FIELDS, about_of
+from mvl.api import COVER, COVER_SIZE
+from core.wordpress import field as _field
+from core.wordpress import plain as _plain
+from core.wordpress import rows as _list
+from core.wordpress import text as _text
 from mvl.client import HttpError
 
 from .base import SourceBroken
@@ -39,9 +45,9 @@ SITE = "https://www.mvlempyr.app"
 #: Каталог. Это обычный WordPress REST: тип записи `mvl-novels`.
 CATALOGUE = "https://chap.heliosarchive.online/wp-json/wp/v2/mvl-novels"
 
-#: Обложки лежат отдельно и называются по коду книги.
-COVER = "https://assets.mvlempyr.app/images/{size}/{code}.webp"
-COVER_SIZE = 600
+#: Обложки лежат отдельно и называются по коду книги. Правило одно на
+#: рейтинг и на качалку, поэтому берётся оттуда, а не пишется здесь
+#: своей копией: разойдись они — и в библиотеке была бы битая картинка.
 
 #: Сколько записей просить за раз. Столько же просит сама витрина.
 PAGE = 1000
@@ -79,32 +85,6 @@ STATUS = {
 #: Язык оригинала — сайт помечает им книгу в списке.
 LANGUAGE = {"CN": "китайский", "EN": "английский", "JP": "японский",
             "KR": "корейский", "VN": "вьетнамский"}
-
-
-def _field(item: dict, name: str, default=None):
-    """Поле книги, где бы WordPress его ни положил.
-
-    Свои поля WordPress отдаёт то на верхнем уровне, то в `acf`, то в
-    `meta` — зависит от того, как настроен тип записи. Гадать нельзя:
-    ошибись — и вместо рейтинга получится список пустых строк.
-    """
-    for where in (item, item.get("acf"), item.get("meta")):
-        if isinstance(where, dict) and where.get(name) not in (None, ""):
-            return where[name]
-    return default
-
-
-def _text(value) -> str:
-    """Текст из того, что отдал WordPress.
-
-    Заголовок приходит объектом `{"rendered": "..."}`, остальное —
-    строкой или числом. Списки сайт кладёт как список названий.
-    """
-    if isinstance(value, dict):
-        value = value.get("rendered", "")
-    if isinstance(value, (list, tuple)):
-        value = ", ".join(str(v) for v in value if v)
-    return str(value or "").strip()
 
 
 def _number(value, default=0):
@@ -264,51 +244,6 @@ def fetch(client, board: str = "weekly", on_progress=None) -> dict:
     }
 
 
-#: Где у записи каталога лежит описание книги.
-#:
-#: Порядок не случайный. Сначала ищем именованное поле — так его кладут
-#: плагины произвольных полей, и там описание чистое. Последним стоит
-#: `content`, который у WordPress есть **всегда**: это тело записи, и
-#: если своё поле переименуют, описание всё равно найдётся. Точное имя
-#: своего поля живьём не проверялось: каталог из песочницы недоступен, —
-#: поэтому перебор, а не одно имя наугад.
-ABOUT_FIELDS = ("description", "synopsis", "summary", "novel-description",
-                "excerpt", "content")
-
-#: Всё, чем сайт описывает книгу словами, кроме жанров.
-TAG_FIELDS = ("tags", "novel-tags", "tag")
-
-
-def _plain(value) -> str:
-    """Описание без разметки.
-
-    WordPress отдаёт тело записи готовым HTML: абзацы, переносы, иногда
-    ссылки. В карточке оно показывается текстом, и теги там были бы
-    видны как есть.
-    """
-    text = _text(value)
-    if "<" not in text:
-        return text
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(text, "lxml")
-    # Абзацы разделяем пустой строкой, иначе описание слипается в
-    # одну простыню без единого разрыва.
-    for br in soup.find_all("br"):
-        br.replace_with("\n")
-    parts = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    if parts:
-        return "\n\n".join(part for part in parts if part)
-    return soup.get_text("\n", strip=True)
-
-
-def _list(value) -> list:
-    """Список названий из того, что положил WordPress."""
-    if value in (None, "", []):
-        return []
-    if isinstance(value, (list, tuple)):
-        return [_text(v) for v in value if _text(v)]
-    return [part.strip() for part in _text(value).split(",") if part.strip()]
 
 
 def book(client, code: str, slug: str = "",
@@ -355,15 +290,9 @@ def book(client, code: str, slug: str = "",
             f"В каталоге MVLEMPYR нет книги с кодом {code}. Возможно, её "
             "убрали с сайта — срез рейтинга снят раньше.")
 
-    abstract = ""
-    for name in ABOUT_FIELDS:
-        abstract = _plain(_field(item, name))
-        if abstract:
-            break
-
-    tags: list = []
-    for name in TAG_FIELDS:
-        tags.extend(_list(_field(item, name)))
+    # Описание, жанры и метки достаёт общий разбор: тот же ответ каталога
+    # читает и качалка, а держали мы это в двух местах — и разошлись.
+    said = about_of(item)
 
     got_slug = _text(_field(item, "slug")) or _text(item.get("slug")) or slug
     got_code = _text(_field(item, "novel-code")) or code
@@ -373,10 +302,10 @@ def book(client, code: str, slug: str = "",
         # Ключ называется как у Фанкью нарочно: карточку рисует один
         # и тот же код, и переключатель «原/RU» с кнопкой перевода
         # достаётся MVLEMPYR даром.
-        "abstract": abstract,
+        "abstract": said["about"],
         # Жанры — тоже метки, и в карточке им место рядом с остальными.
         # В строке рейтинга помещается только первый.
-        "tags": _list(_field(item, "genre")) + tags,
+        "tags": said["genres"] + said["tags"],
         "author": _text(_field(item, "author-name")),
         "chapters": _number(_field(item, "total-chapters")),
         "score": _score(_field(item, "average-review")),
