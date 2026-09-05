@@ -85,6 +85,29 @@ def api_history_undo():
                    **history_op.state())
 
 
+def _update_trouble(exc) -> str:
+    """Почему обновление не спросилось — так, чтобы было куда идти.
+
+    Прежняя надпись звучала «GitHub ответил None … проверьте, что
+    репозиторий существует». `None` тут значит, что до GitHub **не
+    дошли вовсе**: ответа с кодом не было, была сетевая беда. То есть
+    человека посылали проверять репозиторий там, где репозиторий ни при
+    чём, — и он проверял, потому что больше идти было некуда.
+
+    Код ответа есть — беда на стороне репозитория, и первое, что стоит
+    заподозрить, это имя: репозиторий переименовывают, а в настройках
+    остаётся прежнее. Ровно так и вышло.
+    """
+    where = f"{settings.update.owner}/{settings.update.repo}"
+    status = getattr(exc, "status", None)
+    if status is None:
+        return (f"До GitHub не дошли: {exc}. Репозиторий тут ни при чём — "
+                "это сеть: проверьте связь, DNS или посредника.")
+    return (f"GitHub ответил {status} на запрос о {where}. Чаще всего это "
+            "имя: репозиторий переименовали, а в настройках осталось "
+            "прежнее. Поправьте раздел update в config.json.")
+
+
 @tools.get("/api/update/look")
 def api_update_look():
     """Вышло ли новое. Один запрос примерно на триста байт.
@@ -97,10 +120,7 @@ def api_update_look():
     try:
         return jsonify(**update_op.look(client).as_dict())
     except HttpError as exc:
-        where = f"{settings.update.owner}/{settings.update.repo}"
-        return jsonify(error=f"GitHub ответил {exc.status} на запрос о "
-                             f"{where}. Проверьте, что репозиторий существует "
-                             "и открыт."), 400
+        return jsonify(error=_update_trouble(exc)), 400
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось спросить об обновлении: {exc}"), 400
     finally:

@@ -637,5 +637,53 @@ class TestTheHashIsTheSameOneGitUses(unittest.TestCase):
                 update.blob_sha(path).startswith("e69de29bb2d1d6434b8b29ae"))
 
 
+class TestWhyTheUpdateDidNotAsk(unittest.TestCase):
+    """Надпись об отказе должна говорить, куда идти.
+
+    Прежняя звучала «GitHub ответил None … проверьте, что репозиторий
+    существует». `None` тут значит, что до GitHub **не дошли вовсе**:
+    ответа с кодом не было, была сетевая беда. Человека посылали
+    проверять репозиторий там, где репозиторий ни при чём.
+    """
+
+    def setUp(self):
+        from webapp import tools_routes
+
+        self.said = tools_routes._update_trouble
+
+    def trouble(self, status=None):
+        from mvl.client import HttpError
+
+        return HttpError("не вышло", status=status)
+
+    def test_no_answer_at_all_is_called_a_network_trouble(self):
+        got = self.said(self.trouble(status=None))
+
+        self.assertIn("сеть", got)
+        self.assertNotIn("None", got)
+
+    def test_an_answer_with_a_code_points_at_the_name(self):
+        """Репозиторий переименовывают, а в настройках остаётся прежнее
+        имя — и кнопка упирается в отказ, хотя репозиторий на месте."""
+        got = self.said(self.trouble(status=404))
+
+        self.assertIn("404", got)
+        self.assertIn("config.json", got)
+
+    def test_the_code_is_not_swallowed(self):
+        self.assertIn("403", self.said(self.trouble(status=403)))
+
+
+class TestTheUpdaterLooksAtTheRealRepository(unittest.TestCase):
+    """Имя в настройках должно быть тем, под которым репозиторий лежит
+    сейчас. `git push` переезд переживает сам — идёт по переадресации, —
+    а GitHub API по ней не ведёт, и кнопка упиралась в отказ."""
+
+    def test_the_name_is_the_one_the_repository_has_now(self):
+        from config import Config
+
+        self.assertEqual(Config().update.repo, "NEUROSTRAZG")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
