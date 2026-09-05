@@ -1411,6 +1411,26 @@
       <p class="hint" style="flex:1">Формат строки: <code>ip:port:username:password</code>.
          Пароли никуда не показываются.</p>
     </div>
+
+    <!-- Куда спрашивать имена сайтов. Стоит рядом с прокси не случайно:
+         это тот же вопрос — как программа дотягивается до сети, — и
+         нужна эта ручка ровно тогда, когда ничего не открывается.
+         Поэтому и не в карточке книги: та спрятана, пока книга не
+         найдена, а не находится она как раз из-за этого. -->
+    <div style="margin-top:14px">
+      <label for="dlDns">адреса сайтов узнавать<i class="hint-icon" data-tip="Обычно имена сайтов узнаёт DNS провайдера. Не отдаёт он какой-то хост — программа до сайта не доходит, хотя сайт жив: в браузере вы этот адрес просто никогда не открывали, у сайта их несколько. Тогда имя можно спросить по HTTPS, мимо провайдера. Через посредника это ни на что не влияет: там имя разрешает сам посредник.">?</i></label>
+      <!-- Список свой, а не нативный: нативный на тёмной теме белый и
+           нечитаемый, и в проекте их не осталось ни одного. -->
+      <div class="row">
+        <div class="dropdown" id="dlDns" style="flex:1"
+             data-options='[]'></div>
+        <button id="dlDnsSave" class="ghost">Применить</button>
+      </div>
+      <input id="dlDnsOwn" type="text" hidden style="margin-top:8px"
+             placeholder="https://…/dns-query" autocomplete="off">
+      <p class="hint" id="dlDnsNote"></p>
+    </div>
+
     <div id="proxyTable"></div>
   </div>
 
@@ -5071,6 +5091,73 @@ document.querySelectorAll('.pickmode').forEach(btn => {
   };
 });
 $('dlModeNote').textContent = DL_MODE_NOTES.auto;
+
+/* Куда спрашивать имена сайтов.
+ *
+ * Настройка общая на программу, а не на прогон: тем же путём ходят
+ * рейтинг и проверка обновлений. Поэтому она не едет с кнопкой «Скачать»,
+ * а сохраняется отдельно и сразу.
+ *
+ * Готовых адресов два, третий пункт — свой. Свой нужен не для полноты:
+ * известные адреса иногда закрывают там же, где и всё остальное.
+ */
+const DNS_OWN = 'свой';
+
+//: Адрес каждого пункта. Список строит `makeDropdown`, а он знает только
+//: ключ и подпись — адрес держим рядом сами.
+let dnsUrls = {};
+let dnsMenu = null;
+
+function dnsFill(data){
+  const box = $('dlDns');
+  const rows = [...(data.choices || []),
+                {key: DNS_OWN, name: 'свой адрес', url: ''}];
+  dnsUrls = Object.fromEntries(rows.map(one => [one.key, one.url || '']));
+  box.dataset.options = JSON.stringify(rows.map(one => [one.key, one.name]));
+  box.innerHTML = '';
+  dnsMenu = makeDropdown(box, dnsShowOwn);
+
+  // Выбранным показываем то, что стоит на самом деле. Сохранённый адрес,
+  // которого нет среди готовых, — это «свой», и прятать его под «как в
+  // системе» значило бы соврать про рабочую настройку.
+  const found = rows.find(one => one.url && one.url === data.url);
+  dnsMenu.set(found ? found.key : (data.url ? DNS_OWN : ''));
+  $('dlDnsOwn').value = found ? '' : (data.url || '');
+  dnsShowOwn();
+  $('dlDnsNote').textContent = data.url
+    ? 'Имена сайтов спрашиваются по HTTPS, мимо DNS провайдера.'
+    : 'Имена сайтов узнаёт система, как обычно.';
+}
+
+function dnsShowOwn(){
+  $('dlDnsOwn').hidden = !dnsMenu || dnsMenu.value !== DNS_OWN;
+}
+
+$('dlDnsSave').onclick = async () => {
+  if(!dnsMenu) return;
+  const url = dnsMenu.value === DNS_OWN
+    ? $('dlDnsOwn').value.trim()
+    : (dnsUrls[dnsMenu.value] || '');
+  $('dlDnsSave').disabled = true;
+  try{
+    dnsFill(await call('/api/dns', {url}));
+    toast('Готово. Так будут узнаваться адреса всех сайтов.');
+  }catch(err){
+    showError(err.message);
+  }finally{
+    $('dlDnsSave').disabled = false;
+  }
+};
+
+// Без тела `call` уходит GET-ом. Спрашиваем после загрузки страницы:
+// список рисует `makeDropdown`, а он живёт в `tabs.js`, который
+// подключается следом за этим файлом.
+//
+// Отказ глотаем молча: настройка вспомогательная, и ошибкой во весь
+// экран при старте она быть не заслуживает — качать это не мешает.
+document.addEventListener('DOMContentLoaded', () => {
+  call('/api/dns').then(dnsFill).catch(() => {});
+});
 
 /* Замер многопоточности (часть 6 ТЗ).
  *

@@ -729,6 +729,55 @@ def api_proxies_state():
     return jsonify(pool=pool.to_dict(), default_path=PROXY_FILE)
 
 
+#: Готовые адреса DNS-over-HTTPS. Свой вписать тоже можно.
+#:
+#: Список короткий нарочно: выбирают тут не провайдера DNS, а «работает
+#: или нет». Два известных адреса покрывают этот вопрос, а длинный список
+#: заставлял бы человека выбирать там, где выбирать нечего.
+DOH_CHOICES = (
+    {"key": "", "name": "как в системе", "url": ""},
+    {"key": "cloudflare", "name": "Cloudflare",
+     "url": "https://cloudflare-dns.com/dns-query"},
+    {"key": "google", "name": "Google",
+     "url": "https://dns.google/dns-query"},
+)
+
+
+@app.get("/api/dns")
+def api_dns_state():
+    """Куда программа спрашивает имена хостов."""
+    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES))
+
+
+@app.post("/api/dns")
+def api_dns_save():
+    """Сменить путь для имён хостов и запомнить его.
+
+    Зачем это вообще нужно. Провайдер может не отдавать имя служебного
+    хоста источника — сайт при этом жив, а программа до него не доходит
+    вовсе, и выглядит это как «сайт лёг». Поле «адрес DNS-сервера» тут не
+    сделать: такие адреса libcurl принимает только собранный с c-ares, а
+    наш собран без него. DoH же — обычный HTTPS-запрос, и он проходит.
+
+    Через посредника это ни на что не влияет: имя там разрешает сам
+    посредник. Настройка чинит прямой путь — тот, которым программа
+    ходит первым.
+    """
+    payload = request.json or {}
+    url = str(payload.get("url") or "").strip()
+    if url and not url.lower().startswith("https://"):
+        return jsonify(error="Адрес должен начинаться с https:// — "
+                             "имена спрашиваются по HTTPS, иначе их "
+                             "видит тот же, кто их сейчас и не отдаёт."), 400
+
+    settings.network.doh_url = client_mod.use_doh(url)
+    try:
+        settings.save()
+    except OSError as exc:
+        return jsonify(error=f"Не удалось сохранить настройки: {exc}"), 500
+    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES))
+
+
 @app.post("/api/proxies/reload")
 def api_proxies_reload():
     """Перечитать файл со списком. Перезапуск программы не нужен."""

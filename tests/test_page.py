@@ -1754,6 +1754,114 @@ class TestEveryBookHasItsOwnBar(PageTestCase):
         self.quiet()
 
 
+class TestTheDnsKnob(PageTestCase):
+    """Куда спрашивать имена сайтов — выбором, а не правкой файла.
+
+    Настройка нужна ровно тогда, когда ничего не качается, и лезть в
+    этот момент в `config.json` человеку негде и некогда.
+    """
+
+    ANSWER = {"url": "", "choices": [
+        {"key": "", "name": "как в системе", "url": ""},
+        {"key": "cloudflare", "name": "Cloudflare",
+         "url": "https://cloudflare-dns.com/dns-query"}]}
+
+    def filled(self, answer=None):
+        """Нарисовать выбор так, как его рисует ответ сервера."""
+        self.page.evaluate("(data) => dnsFill(data)", answer or self.ANSWER)
+
+    def items(self) -> list:
+        """Пункты списка. Спрашиваем их, а не видимый текст: свёрнутый
+        список показывает одну выбранную строку, и по ней о содержимом
+        не судят."""
+        return self.page.evaluate(
+            """() => [...document.querySelectorAll('#dlDns .dropdown-item')]
+                     .map(one => one.textContent)""")
+
+    def test_the_choices_reach_the_list(self):
+        self.filled()
+        said = self.items()
+
+        self.assertIn("как в системе", said)
+        self.assertIn("Cloudflare", said)
+
+    def test_your_own_address_is_always_offered(self):
+        """Известные адреса закрывают там же, где и всё остальное."""
+        self.filled()
+        self.assertIn("свой адрес", self.items())
+
+    def chosen(self) -> str:
+        """Что выбрано в списке. Список свой, и `value` у него своё."""
+        return self.page.evaluate("() => dnsMenu && dnsMenu.value")
+
+    def pick(self, name: str) -> None:
+        """Выбрать пункт так, как это делает человек: нажать и нажать."""
+        self.page.click("#dlDns .dropdown-toggle")
+        self.page.click(f"#dlDns .dropdown-item:text-is('{name}')")
+
+    def test_the_field_for_your_own_shows_only_when_it_is_chosen(self):
+        self.filled()
+        self.assertTrue(self.page.evaluate(
+            "() => document.getElementById('dlDnsOwn').hidden"))
+
+        self.pick("свой адрес")
+        self.assertFalse(self.page.evaluate(
+            "() => document.getElementById('dlDnsOwn').hidden"))
+        self.quiet()
+
+    def test_a_saved_address_is_shown_as_chosen(self):
+        """Иначе рабочая настройка выглядит как «как в системе», и
+        человек меняет то, что уже работает."""
+        self.filled({**self.ANSWER,
+                     "url": "https://cloudflare-dns.com/dns-query"})
+
+        self.assertEqual(self.chosen(), "cloudflare")
+
+    def test_an_address_nobody_offers_is_shown_as_your_own(self):
+        """Спрячь мы его под «как в системе» — соврали бы про рабочую
+        настройку, и найти её было бы негде."""
+        self.filled({**self.ANSWER, "url": "https://свой.example/dns-query"})
+
+        self.assertEqual(self.chosen(), "свой")
+        self.assertIn("свой.example", self.page.evaluate(
+            "() => document.getElementById('dlDnsOwn').value"))
+
+    def sent_after(self, prepare: str) -> dict:
+        """Что уйдёт на сервер, если перед нажатием сделать вот это."""
+        return self.page.evaluate(
+            """async (prepare) => {
+                const server = window.call;
+                let body = null;
+                window.call = async (url, payload) => {
+                    body = payload;
+                    return {url: payload.url, choices: []};
+                };
+                try{
+                    eval(prepare);
+                    await document.getElementById('dlDnsSave').onclick();
+                }finally{ window.call = server; }
+                return body;
+            }""", prepare)
+
+    def test_the_chosen_address_is_what_gets_sent(self):
+        self.filled()
+        sent = self.sent_after("dnsMenu.set('cloudflare')")
+
+        self.assertEqual(sent["url"], "https://cloudflare-dns.com/dns-query")
+        self.quiet()
+
+    def test_your_own_address_is_what_gets_sent_when_chosen(self):
+        self.filled()
+        sent = self.sent_after(
+            "dnsMenu.set('свой');"
+            "document.getElementById('dlDnsOwn').value ="
+            " '  https://свой.example/dns-query  ';")
+
+        # Пробелы по краям человек вставляет вместе с адресом постоянно.
+        self.assertEqual(sent["url"], "https://свой.example/dns-query")
+        self.quiet()
+
+
 class TestTheCountersSayOutOfHowMany(PageTestCase):
     """«Скачано 9» не отвечало на единственный вопрос, который в это время
     и задают: сколько ещё ждать.

@@ -108,6 +108,40 @@ class NetworkError(HttpError):
     """Таймаут, connection reset/refused, DNS, ошибка авторизации на прокси."""
 
 
+#: Куда спрашивать имена хостов. Пусто — как в системе.
+#:
+#: Живёт переменной модуля, а не доводом каждого клиента: клиентов в
+#: программе создаётся с десяток — качалка, рейтинг, проверка обновлений,
+#: обложки, — и протащить настройку в каждый значило бы однажды забыть
+#: про один. Настройку кладёт сюда `use_doh`, читая `config.json`.
+DOH_URL = ""
+
+
+def use_doh(url: str) -> str:
+    """Куда спрашивать имена. Возвращает то, что в итоге установилось.
+
+    Пустая строка — как в системе; так же трактуется и мусор вместо
+    адреса: DoH — это обычный HTTPS-запрос, и не-HTTPS тут означало бы
+    спрашивать имена в открытом виде у неизвестно кого.
+    """
+    global DOH_URL
+    said = str(url or "").strip()
+    DOH_URL = said if said.lower().startswith("https://") else ""
+    return DOH_URL
+
+
+# Сохранённое применяем сразу, при загрузке модуля. Клиентов создают и
+# веб-морда, и командная строка; жди мы вызова снаружи — забыть его в
+# одном из входов было бы вопросом времени.
+try:
+    from config import settings as _settings
+
+    use_doh(_settings.network.doh_url)
+except Exception as _trouble:  # noqa: BLE001 — клиент обязан работать и так
+    log.warning("Настройку DNS прочитать не вышло, имена спрашиваем как в "
+                "системе: %s", _trouble)
+
+
 def _make_session(proxy_url: str | None = None):
     """Сессия curl_cffi, либо requests, либо тонкая обёртка над urllib."""
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
@@ -115,7 +149,11 @@ def _make_session(proxy_url: str | None = None):
     try:
         from curl_cffi import requests as curl_requests
 
-        session = curl_requests.Session(impersonate="chrome", proxies=proxies)
+        # Имя хоста спрашивается по HTTPS, мимо DNS провайдера. Нужно
+        # там, где провайдер служебный хост источника не отдаёт: сайт при
+        # этом жив, а программа до него не доходит вовсе.
+        session = curl_requests.Session(impersonate="chrome", proxies=proxies,
+                                        doh_url=DOH_URL or None)
         return session, "curl_cffi"
     except ImportError:
         pass
