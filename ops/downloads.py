@@ -352,6 +352,43 @@ BOOKS_AT_ONCE = 1
 MAX_AT_ONCE = 8
 
 
+#: «Считай сам». Ноль в настройке значит не «ни одной книги», а «раздай
+#: по прокси»: числа человек не знает, пока не проверит список.
+AUTO = 0
+
+
+def spread(proxies: int, threads: int, books: int) -> list[int]:
+    """Сколько потоков дать каждой книге, чтобы всем хватило прокси.
+
+    Правило простое: один поток занимает один прокси. Значит, пять
+    проверенных адресов при одном потоке — это пять книг разом, а при
+    трёх потоках — одна книга в три потока и вторая в два, потому что
+    больше адресов нет.
+
+    Остаток не выбрасываем. Считай мы честным делением, при пяти адресах
+    и трёх потоках качалась бы **одна** книга, а два проверенных адреса
+    простаивали бы без дела.
+
+    Прокси нет вовсе — значит, идём напрямую, и делить нечего: одна книга
+    во столько потоков, сколько попросили.
+    """
+    threads = max(1, int(threads or 1))
+    books = max(0, int(books or 0))
+    if books <= 0:
+        return []
+
+    # Прокси нет — цикл ниже не сделает ни одного шага, и книга получит
+    # свои потоки из последней строки. Отдельной ветки этому случаю не
+    # нужно: она делала бы ровно то же самое, только в двух местах.
+    left = max(0, int(proxies))
+    out: list[int] = []
+    while left > 0 and len(out) < min(books, MAX_AT_ONCE):
+        take = min(threads, left)
+        out.append(take)
+        left -= take
+    return out or [threads]
+
+
 def run(perform, on_change=None, cancel=None,
         workers: int = BOOKS_AT_ONCE) -> list[Item]:
     """Качает книги очереди. Упавшая книга не отменяет остальные.
@@ -446,7 +483,7 @@ def _save_locked(rows: list[Item]) -> None:
         _save(rows)
 
 
-__all__ = ["DONE", "FAILED", "Item", "KEEP", "NEEDS_LINK", "QUEUE_FILE",
-           "RUNNING", "SKIPPED", "WAITING", "add", "all_items", "clear",
-           "get", "move", "recover", "remove", "reset", "run", "state",
-           "update"]
+__all__ = ["AUTO", "BOOKS_AT_ONCE", "DONE", "FAILED", "Item", "KEEP",
+           "MAX_AT_ONCE", "NEEDS_LINK", "QUEUE_FILE", "RUNNING", "SKIPPED",
+           "WAITING", "add", "all_items", "clear", "get", "move", "recover",
+           "remove", "reset", "run", "spread", "state", "update"]

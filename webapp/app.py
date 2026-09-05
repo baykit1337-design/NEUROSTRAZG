@@ -1187,14 +1187,27 @@ def _downloads_start(payload: dict):
             "этот путь заблокирован. Обновите список и проверьте снова."
         ), 400
 
+    # Сколько книг вести разом и по сколько потоков каждой. Один поток
+    # занимает один прокси, поэтому пять проверенных адресов при одном
+    # потоке — это пять книг сразу, а при трёх потоках — одна книга в три
+    # потока и вторая в два: больше адресов нет.
+    ready_books = sum(1 for x in rows if x.ready)
+    usable = pool.usable_count if pool is not None and pool.checked else 0
+    if run.books == downloads_op.AUTO:
+        plan = downloads_op.spread(usable, run.threads, ready_books)
+    else:
+        plan = [run.threads] * max(1, min(run.books, ready_books or 1))
+
     job = Job(id=uuid.uuid4().hex[:12], kind="downloads",
-              meta={"books": sum(1 for x in rows if x.ready)})
+              meta={"books": ready_books, "at_once": len(plan),
+                    "proxies": usable})
     job.progress = {"stage": "queued", "message": "Запускаем очередь…",
                     "done": 0, "total": 0, "downloaded": 0, "skipped": 0,
                     "failed": 0, "switches": 0,
                     "queue": [x.as_dict() for x in rows],
                     "queue_done": 0,
-                    "queue_total": sum(1 for x in rows if x.ready)}
+                    "queue_total": ready_books,
+                    "at_once": len(plan)}
     job.log = joblog.JobLog()
 
     #: Доли прогресса по книгам. Общие числа — их сумма: при одной книге
@@ -1235,8 +1248,25 @@ def _downloads_start(payload: dict):
                 for name in COUNTED if any(name in one
                                            for one in parts.values())})
 
+    #: Доли потоков: книга берёт свою на время работы и возвращает,
+    #: закончив. Раздать их разом по книгам нельзя — книг тринадцать, а
+    #: долей две, и одиннадцать остались бы без ничего.
+    budgets = list(plan)
+    budget_lock = threading.Lock()
+
+    def take_threads() -> int:
+        with budget_lock:
+            return budgets.pop() if budgets else run.threads
+
+    def give_threads(count: int) -> None:
+        with budget_lock:
+            budgets.append(count)
+
     def one(item):
         """Скачать одну книгу очереди и вернуть текст итога."""
+        # В библиотеку — сразу, до первого запроса. Упади сайт, и запись
+        # всё равно останется: к ней и возвращаются, когда он оживёт.
+        _remember_item(item)
         source = sources.get(item.source)
         # Флаг остановки — самому клиенту, а не только качалке. Качалка
         # смотрит на него между главами, а лесенка повторов внутри
@@ -1244,6 +1274,7 @@ def _downloads_start(payload: dict):
         # уходила в повторы с задержками, и «Остановить» дожидалась конца
         # всей лесенки по каждой главе. На тринадцати книгах это
         # выглядело как намертво зависшая кнопка.
+        mine = take_threads()
         client = Client(timeout=run.read_timeout,
                         connect_timeout=run.connect_timeout,
                         cancel=job.cancel)
@@ -1276,7 +1307,7 @@ def _downloads_start(payload: dict):
                 on_progress=lambda p: share(item.id, **p.as_dict()),
                 on_event=job.log.add,
                 cancel_event=job.cancel, pause_event=job.paused,
-                threads=run.threads, probe=run.probe, source=source,
+                threads=mine, probe=run.probe, source=source,
                 timeout=run.read_timeout,
                 connect_timeout=run.connect_timeout,
             )
@@ -1288,6 +1319,7 @@ def _downloads_start(payload: dict):
             return (f"Скачано глав: {item.done}"
                     + (f", пропущено {skipped}" if skipped else ""))
         finally:
+            give_threads(mine)
             client.close()
 
     def changed(rows, item):
@@ -1298,7 +1330,7 @@ def _downloads_start(payload: dict):
 
     def work(job: Job):
         done = downloads_op.run(one, on_change=changed, cancel=job.cancel,
-                                workers=run.books)
+                                workers=len(plan))
         stopped = job.cancel.is_set()
         job.progress.update(stage="cancelled" if stopped else "done",
                             queue=[x.as_dict() for x in done],
@@ -1404,12 +1436,15 @@ def _run_settings(payload: dict) -> RunSettings:
 
     # Ручной режим пропускает пробу: пользователь сам увидит по времени,
     # работает многопоточность или нет, — это надёжнее любой эвристики.
+    # Ноль значит не «ни одной», а «считай сам по прокси»: сколько книг
+    # потянет список адресов, человек не знает, пока его не проверит.
     try:
-        books = int(payload.get("books") or downloads_op.BOOKS_AT_ONCE)
+        books = int(payload.get("books") or downloads_op.AUTO)
     except (TypeError, ValueError):
         raise ValueError("Книг разом должно быть числом") from None
-    if not 1 <= books <= downloads_op.MAX_AT_ONCE:
-        raise ValueError(f"Книг разом: от 1 до {downloads_op.MAX_AT_ONCE}")
+    if books and not 1 <= books <= downloads_op.MAX_AT_ONCE:
+        raise ValueError(f"Книг разом: от 1 до {downloads_op.MAX_AT_ONCE} "
+                         "или 0 — считать по прокси")
 
     # Ручной режим пропускает пробу: пользователь сам увидит по времени,
     # работает многопоточность или нет, — это надёжнее любой эвристики.
@@ -1434,6 +1469,44 @@ def _reached(output_dir) -> int:
     numbers = [int(n) for n in (state.data.get("downloaded") or {})
                if str(n).isdigit()]
     return max(numbers) if numbers else 0
+
+
+def _remember_item(item) -> None:
+    """Занести книгу очереди в библиотеку до того, как её качали.
+
+    Раньше запись делалась только после удачного прогона. Выглядело
+    разумно — пока у человека не упали все тринадцать книг разом (сайт
+    перестал разрешаться по имени): очередь опустела, в библиотеке не
+    осталось ничего, и «докачать» было нечего. А ведь ровно тогда список
+    и нужен: чтобы вернуться к нему, когда сайт оживёт.
+
+    Знает эта запись только то, что знает сама строка очереди: имя,
+    обложку, чем и откуда качать. Остальное — автора, число глав, путь —
+    допишет удачный прогон: `remember` дополняет, а не заменяет.
+
+    Ошибки наружу не выходят: заметка о работе не стоит того, чтобы из-за
+    неё падала сама работа.
+    """
+    try:
+        origin = item.origin or {}
+        library_op.remember(
+            library_op.key_of(str(origin.get("site") or ""),
+                              str(origin.get("book_id") or ""),
+                              item.source, item.address),
+            name=str(origin.get("name") or item.name or ""),
+            name_ru=str(origin.get("name_ru") or item.name_ru or ""),
+            cover=str(origin.get("cover") or item.cover or ""),
+            found_site=str(origin.get("site") or ""),
+            found_id=str(origin.get("book_id") or ""),
+            found_link=str(origin.get("link") or ""),
+            source=item.source,
+            address=item.address,
+            folder=str(Path(item.base).expanduser() / item.folder)
+            if item.base and item.folder else "",
+        )
+    except Exception as exc:  # noqa: BLE001 — заметка не стоит прогона
+        log.warning("Книга «%s» не записалась в библиотеку: %s",
+                    item.title, exc)
 
 
 def _remember_book(novel, source_key: str, output_dir, origin: dict,

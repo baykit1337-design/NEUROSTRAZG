@@ -20,7 +20,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ops import downloads  # noqa: E402
+from ops import downloads, library  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -883,15 +883,14 @@ class TestTheKnobReachesTheRun(unittest.TestCase):
     def test_the_number_of_books_is_read_from_the_request(self):
         self.assertEqual(self.settings(books=4).books, 4)
 
-    def test_without_it_the_old_behaviour_stands(self):
-        """Умолчание — одна книга: менять его молча нельзя."""
-        self.assertEqual(self.settings().books, downloads.BOOKS_AT_ONCE)
+    def test_zero_means_count_it_by_the_proxies(self):
+        """Ноль здесь не «ни одной книги», а «считай сам».
 
-    def test_an_unset_number_falls_back_to_the_default(self):
-        """Ноль здесь значит «не указали», ровно как у потоков: держи мы
-        два разных правила на два соседних поля — путались бы оба."""
-        self.assertEqual(self.settings(books=0).books,
-                         downloads.BOOKS_AT_ONCE)
+        Сколько книг потянет список адресов, человек не знает, пока его
+        не проверит, — и заставлять его считать в уме незачем.
+        """
+        self.assertEqual(self.settings(books=0).books, downloads.AUTO)
+        self.assertEqual(self.settings().books, downloads.AUTO)
 
     def test_a_silly_number_is_refused_with_words(self):
         for bad in (-3, downloads.MAX_AT_ONCE + 1, 500):
@@ -903,6 +902,34 @@ class TestTheKnobReachesTheRun(unittest.TestCase):
     def test_a_word_instead_of_a_number_is_refused_too(self):
         with self.assertRaises(ValueError):
             self.settings(books="много")
+
+    def test_never_more_workers_than_there_are_books(self):
+        """Пять потоков на одну книгу — это четыре пустых потока."""
+        from tempfile import TemporaryDirectory
+
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        was_file = downloads.QUEUE_FILE
+        downloads.QUEUE_FILE = Path(folder.name) / "downloads.json"
+        self.addCleanup(setattr, downloads, "QUEUE_FILE", was_file)
+
+        seen = {}
+        was = self.web.downloads_op.run
+        self.web.downloads_op.run = lambda perform, on_change=None, \
+            cancel=None, workers=1: seen.setdefault("workers", workers) or []
+        self.addCleanup(setattr, self.web.downloads_op, "run", was)
+
+        downloads.add(name="Одна", source="novelcms",
+                      address="https://x/read/1/", base=folder.name,
+                      folder="Одна")
+        with self.web.app.test_request_context():
+            self.web._downloads_start({"threads": 1, "books": 5})
+        for _ in range(200):
+            if "workers" in seen:
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(seen.get("workers"), 1)
 
     def test_the_number_reaches_the_runner(self):
         """Тот самый стык: из тела запроса — в аргумент прогона."""
@@ -921,9 +948,12 @@ class TestTheKnobReachesTheRun(unittest.TestCase):
         was_file = downloads.QUEUE_FILE
         downloads.QUEUE_FILE = Path(folder.name) / "downloads.json"
         self.addCleanup(setattr, downloads, "QUEUE_FILE", was_file)
-        downloads.add(name="Книга", source="novelcms",
-                      address="https://x/read/1/", base=folder.name,
-                      folder="Книга")
+        # Книг ровно столько, сколько просим вести разом: план считается
+        # и по ним тоже — гнать пять потоков на одну книгу незачем.
+        for number in range(5):
+            downloads.add(name=f"Книга {number}", source="novelcms",
+                          address=f"https://x/read/{number}/",
+                          base=folder.name, folder=f"Книга {number}")
 
         with self.web.app.test_request_context():
             self.web._downloads_start({"threads": 1, "books": 5})
@@ -961,8 +991,14 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         downloads.QUEUE_FILE = self.tmp / "downloads.json"
         self.addCleanup(setattr, downloads, "QUEUE_FILE", was)
 
+        was_lib = library.LIBRARY_FILE
+        library.LIBRARY_FILE = self.tmp / "library.json"
+        self.addCleanup(setattr, library, "LIBRARY_FILE", was_lib)
+
         self.said = []          # что качалка рассказала о себе
         self.clients = []       # с какими доводами создавали клиента
+        self.made = []          # с какими доводами создавали качалку
+        self.threads = 1        # сколько потоков просим с экрана
         self.reported = threading.Event()   # доклад сделан
         self.release = threading.Event()    # можно заканчивать книгу
         self.addCleanup(self.release.set)
@@ -992,6 +1028,7 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
 
         class FakeDownloader:
             def __init__(self, **kw):
+                outer.made.append(kw)
                 self.on_progress = kw.get("on_progress")
 
             def run(self, novel, output_dir, first=1, last=1):
@@ -1030,7 +1067,8 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
                       address="https://x/read/1/", base=str(self.tmp),
                       folder="Книга")
         with self.web.app.test_request_context():
-            answer = self.web._downloads_start({"threads": 1, "books": books})
+            answer = self.web._downloads_start(
+                {"threads": self.threads, "books": books})
 
         job = self.web.JOBS[answer.get_json()["job"]["id"]]
         self.assertTrue(self.reported.wait(timeout=20), "качалку не позвали")
@@ -1095,6 +1133,86 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         self.assertIs(self.clients[-1].get("cancel"), job.cancel)
         self.finish(job)
 
+    def test_a_book_lands_in_the_library_before_it_is_downloaded(self):
+        """У человека упали все тринадцать книг разом — сайт перестал
+        разрешаться по имени. Очередь опустела, в библиотеке не осталось
+        ничего, и «докачать» было нечего. А список нужен ровно тогда:
+        чтобы вернуться, когда сайт оживёт."""
+        self.said = []
+        job = self.start()
+
+        rows = library.all_books()
+        self.assertEqual([one.name for one in rows], ["Книга"])
+        self.assertEqual(rows[0].source, "novelcms")
+        self.assertEqual(rows[0].address, "https://x/read/1/")
+        self.finish(job)
+
+    def test_it_stays_there_even_when_the_download_falls(self):
+        was = self.web.sources.get
+
+        def broken(key):
+            raise RuntimeError("сайт не разрешается по имени")
+
+        self.web.sources.get = broken
+        self.addCleanup(setattr, self.web.sources, "get", was)
+
+        downloads.add(name="Книга", source="novelcms",
+                      address="https://x/read/1/", base=str(self.tmp),
+                      folder="Книга")
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start({"threads": 1, "books": 1})
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        job.thread.join(timeout=30)
+
+        self.assertEqual([one.name for one in library.all_books()], ["Книга"])
+
+    def with_proxies(self, usable: int):
+        """Проверенный список адресов — столько-то рабочих."""
+        pool = SimpleNamespace(checked=True, usable_count=usable)
+        was = self.web.POOL
+        self.web.POOL = pool
+        self.addCleanup(setattr, self.web, "POOL", was)
+
+    def test_the_book_gets_the_threads_the_plan_gave_it(self):
+        """Два адреса и три потока на экране — книге достаётся два.
+
+        Число с экрана тут нарочно расходится с расчётом: совпади они,
+        проверка не отличила бы одно от другого. Бери книга своё число
+        мимо расчёта — она пустила бы три потока на два адреса, и третий
+        пошёл бы напрямую, мимо прокси.
+        """
+        self.with_proxies(2)
+        self.threads = 3
+        self.said = []
+        job = self.start(books=downloads.AUTO)
+
+        self.assertTrue(self.made, "качалку не создавали")
+        self.assertEqual(self.made[0].get("threads"), 2)
+        self.finish(job)
+
+    def test_the_number_of_books_is_counted_from_the_proxies(self):
+        """Ноль на экране значит «посчитай сам»: пять адресов в один
+        поток — пять книг разом."""
+        self.with_proxies(5)
+        seen = {}
+        was = self.web.downloads_op.run
+        self.web.downloads_op.run = lambda perform, on_change=None, \
+            cancel=None, workers=1: seen.setdefault("workers", workers) or []
+        self.addCleanup(setattr, self.web.downloads_op, "run", was)
+
+        for number in range(6):
+            downloads.add(name=f"Книга {number}", source="novelcms",
+                          address=f"https://x/read/{number}/",
+                          base=str(self.tmp), folder=f"Книга {number}")
+        with self.web.app.test_request_context():
+            self.web._downloads_start({"threads": 1, "books": 0})
+        for _ in range(200):
+            if "workers" in seen:
+                break
+            time.sleep(0.02)
+
+        self.assertEqual(seen.get("workers"), 5)
+
     def test_the_client_is_told_about_the_stop_button(self):
         """Качалка смотрит на флаг между главами, а лесенка повторов
         внутри клиента про него не знала: на мёртвом адресе «Остановить»
@@ -1105,3 +1223,42 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         self.assertTrue(self.clients, "клиента не создавали")
         self.assertIs(self.clients[0].get("cancel"), job.cancel)
         self.finish(job)
+
+
+class TestHowManyBooksTheProxiesAllow(unittest.TestCase):
+    """Один поток занимает один прокси — отсюда и весь расчёт.
+
+    Человеку незачем считать это в уме: он проверил список адресов, и
+    программа сама знает, сколько книг потянет.
+    """
+
+    def test_five_proxies_in_one_thread_are_five_books(self):
+        self.assertEqual(downloads.spread(5, 1, 13), [1, 1, 1, 1, 1])
+
+    def test_five_proxies_in_three_threads_are_two_books(self):
+        """Одна книга в три потока и вторая в два: больше адресов нет."""
+        self.assertEqual(downloads.spread(5, 3, 13), [3, 2])
+
+    def test_the_leftover_proxies_do_not_idle(self):
+        """Честным делением вышла бы одна книга, а два проверенных
+        адреса простаивали бы без дела."""
+        self.assertEqual(sum(downloads.spread(5, 3, 13)), 5)
+
+    def test_fewer_proxies_than_threads_still_start_one_book(self):
+        self.assertEqual(downloads.spread(2, 3, 13), [2])
+
+    def test_without_proxies_we_go_straight_and_do_not_divide(self):
+        """Делить нечего: одна книга во столько потоков, сколько просили."""
+        self.assertEqual(downloads.spread(0, 3, 13), [3])
+
+    def test_never_more_books_than_there_are(self):
+        self.assertEqual(downloads.spread(5, 1, 2), [1, 1])
+
+    def test_an_empty_queue_needs_no_plan(self):
+        self.assertEqual(downloads.spread(5, 1, 0), [])
+
+    def test_the_ceiling_holds_even_with_a_hundred_proxies(self):
+        """Сотня книг разом — это сотни запросов в минуту с одного
+        адреса: сайт закроется, и виноват будет не он."""
+        plan = downloads.spread(100, 1, 100)
+        self.assertEqual(len(plan), downloads.MAX_AT_ONCE)
