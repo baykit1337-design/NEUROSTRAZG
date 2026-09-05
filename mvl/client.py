@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from typing import Any
@@ -43,7 +44,40 @@ INCOMPLETE_MARKERS = (
     "connection reset", "chunked", "recv failure",
 )
 
+#: Хост, который curl не смог превратить в адрес. Слова его собственные:
+#: «Could not resolve host: chap.heliosarchive.online».
+UNRESOLVED = re.compile(r"[Cc]ould not resolve host:?\s*([^\s,;]+)")
+
 log = logging.getLogger(__name__)
+
+
+def explain(trouble) -> str:
+    """Сетевую беду — человеческими словами, одной строкой впереди.
+
+    В очереди стояла стена английского текста от curl, и на главный
+    вопрос она не отвечала: почему по ссылке человек переходит, а
+    программа нет. Ответ в том, что хосты разные. Источник берёт списки
+    и главы со служебного хоста, и открывать его в браузере человеку
+    незачем — он о нём и не знает. Не отдаёт этот хост его DNS — беда
+    выглядит как «сайт лёг», хотя сайт жив.
+
+    Возвращает пустую строку, когда сказать нечего: приписывать к любой
+    ошибке одно и то же значит обесценить приписку.
+    """
+    found = UNRESOLVED.search(str(trouble))
+    if not found:
+        return ""
+    # Точка в конце предложения прилипает к имени хоста: curl пишет
+    # «Could not resolve host: chap.heliosarchive.online.» — и с ней имя
+    # выглядит как опечатка.
+    host = found.group(1).rstrip(".")
+    if not host:
+        return ""
+    return (f"Ваш компьютер не узнал адрес {host}. Программа ходит именно "
+            "туда, и это не обязательно та страница, которую открываете в "
+            "браузере вы: у сайта хостов бывает несколько, и то, что один "
+            "открывается, про другой ничего не говорит. Сам хост при этом "
+            "жив — так себя ведёт DNS. Помогает другой DNS или посредник. ")
 
 
 class HttpError(Exception):

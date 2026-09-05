@@ -572,6 +572,20 @@ def _found(novel) -> dict:
 #: сменой выхода.
 ROUTE_TROUBLE = (NetworkError, Blocked)
 
+#: Сколько посредников пробовать, прежде чем признать книгу недоступной.
+#:
+#: Был один — первый по списку. Человек проверял пять адресов, все пять
+#: проходили, а книга падала на первом же мёртвом: «после 1 попыток», и
+#: четыре проверенных адреса стояли рядом без дела. Список к этому
+#: времени уже отсортирован по замеренному времени ответа, так что идём
+#: сверху вниз.
+#:
+#: Потолок нужен, потому что мёртвый адрес отказывает мгновенно, а живой
+#: и медленный съедает ожидание соединения целиком; пять — это худший
+#: случай меньше полутора минут на книгу, и то после трёх неудачных
+#: прямых попыток.
+PROXIES_TO_TRY = 5
+
 
 def _find_via_proxy(source, query: str, direct):
     """Вторая попытка найти книгу — через прокси.
@@ -596,7 +610,14 @@ def _find_via_proxy(source, query: str, direct):
     большинства источников работает, а прокси до нажатия «проверить»
     никем не проверен: поставить его первым значит разменять работающее
     на непроверенное. И повторов у запасного клиента нет: до него дело
-    доходит после трёх неудачных, ждать ещё три минуты незачем.
+    доходит после трёх неудачных, ждать ещё три минуты на каждом адресе
+    незачем — вместо повторов берётся следующий адрес.
+
+    Адресов пробуется несколько, а не один. Один был ошибкой: человек
+    проверял пять, все пять проходили, а книга падала на первом же
+    мёртвом — «после 1 попыток», — и четыре проверенных стояли рядом без
+    дела. Мёртвый адрес отказывает мгновенно, так что обход обычно и не
+    заметен.
 
     Возвращает пару: найденную книгу и приписку к сообщению об ошибке.
     Книга пустая — приписка говорит, что ещё пробовали, чтобы человек не
@@ -606,22 +627,38 @@ def _find_via_proxy(source, query: str, direct):
         return None, ""
     with POOL_LOCK:
         pool = POOL
-    address = _any_proxy(pool)
-    if not address:
+    found = _working_proxies(pool)
+    if not found:
         return None, (" Посредника не пробовали: живых адресов нет — "
                       "проверьте список на вкладке «Качалка».")
-    log.info("«%s» не ответил напрямую (%s) — пробуем через %s",
-             source.name, direct, proxies_mod.safe(address))
-    spare = Client(proxy_url=address, max_attempts=1)
-    try:
-        return source.find(spare, query), ""
-    except HttpError as exc:
-        log.warning("«%s» не открылся и через %s: %s",
-                    source.name, proxies_mod.safe(address), exc)
-        return None, (f" Через посредника {proxies_mod.safe(address)} — "
-                      f"тоже не вышло: {exc}")
-    finally:
-        spare.close()
+
+    last = None
+    used = 0
+    for one in found[:PROXIES_TO_TRY]:
+        used += 1
+        log.info("«%s» не ответил напрямую (%s) — пробуем через %s",
+                 source.name, direct, proxies_mod.safe(one.url))
+        spare = Client(proxy_url=one.url, max_attempts=1)
+        try:
+            return source.find(spare, query), ""
+        except HttpError as exc:
+            last = (one.url, exc)
+            log.warning("«%s» не открылся и через %s: %s", source.name,
+                        proxies_mod.safe(one.url), proxies_mod.safe(exc))
+        finally:
+            spare.close()
+
+    address, exc = last
+    said = (f" Через посредника {proxies_mod.safe(address)} — "
+            f"тоже не вышло: {exc}")
+    if used > 1:
+        said += f" Всего адресов пробовали: {used}."
+    # Прячем пароль во всей строке, а не в одном адресе. Адрес мы
+    # заслоняли и раньше, но рядом стоит текст самой ошибки, а его пишет
+    # curl — и адрес прокси он вставляет туда как есть, вместе с логином
+    # и паролем. Строка уходит и на экран, и в журнал, а журнал человек
+    # присылает целиком.
+    return None, proxies_mod.safe(said)
 
 
 @app.post("/api/find")
@@ -658,7 +695,10 @@ def api_find():
     except (LookupError, ValueError) as exc:
         return jsonify(error=str(exc)), 404
     except HttpError as exc:
-        return jsonify(error=f"Сайт недоступен: {exc}{tried}"), 502
+        # Тем же порядком, что и в очереди: сперва по-человечески, потом
+        # слова curl. Одна беда — одно объяснение, где бы она ни всплыла.
+        return jsonify(error=f"Сайт недоступен: {client_mod.explain(exc)}"
+                             f"{exc}{tried}"), 502
     finally:
         client.close()
 
@@ -1404,7 +1444,14 @@ def _downloads_start(payload: dict):
             except (HttpError, NetworkError, Blocked) as direct:
                 novel, tried = _find_via_proxy(source, item.address, direct)
                 if novel is None:
-                    raise HttpError(f"{direct}{tried}") from direct
+                    # Человеческая строка впереди, curl следом. Строка в
+                    # очереди — единственное место, где человек эту беду
+                    # и увидит, а «Could not resolve host» на вопрос
+                    # «почему по ссылке я перехожу, а программа нет» не
+                    # отвечает.
+                    raise HttpError(
+                        f"{client_mod.explain(direct)}{direct}{tried}"
+                    ) from direct
 
             output_dir = job.keep(_prepare(item.base, item.folder,
                                            "download"))

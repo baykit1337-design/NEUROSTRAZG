@@ -1006,6 +1006,7 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         self.arrived = threading.Semaphore(0)
         self.release = threading.Event()    # можно заканчивать книгу
         self.raises = None                  # чем книга обрывается, если рвётся
+        self.breaks = None                  # чем обрывается поиск книги
         self.addCleanup(self.release.set)
         self._fake_world()
 
@@ -1024,6 +1025,8 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
             key = "novelcms"
 
             def find(self, client, address):
+                if outer.breaks is not None:
+                    raise outer.breaks
                 return FakeNovel()
 
         class FakeClient:
@@ -1408,6 +1411,30 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         for title, row in rows.items():
             self.assertEqual(row["stage"], "error", title)
             self.assertIn("не разрешается", row["message"], title)
+
+    def test_a_dns_failure_is_put_into_words_the_person_asked_for(self):
+        """Человек видит в строке стену английского от curl и спрашивает:
+        «я же могу перейти по ссылке, а парсер не может». Ответ в том, что
+        хосты разные, — и он должен стоять там же, в строке."""
+        from mvl.client import NetworkError
+
+        self.breaks = NetworkError(
+            "DNSError: Failed to perform, curl: (6) Could not resolve host: "
+            "chap.heliosarchive.online. See https://curl.se/ for more details.")
+
+        downloads.add(name="Книга А", source="novelcms",
+                      address="https://x/read/1/", base=str(self.tmp),
+                      folder="Книга А")
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start({"threads": 1, "books": 1})
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        job.thread.join(timeout=30)
+
+        said = self.rows_of(job)["Книга А"]["message"]
+        self.assertIn("chap.heliosarchive.online", said)
+        self.assertIn("браузере", said)
+        # Слова curl никуда не деваются: по ним и чинят.
+        self.assertIn("Could not resolve host", said)
 
     def test_a_finished_book_keeps_its_row(self):
         """Строка кончившейся книги — единственный след того, чем она

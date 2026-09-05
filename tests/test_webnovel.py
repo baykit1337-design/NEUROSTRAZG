@@ -17,6 +17,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -659,12 +660,23 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         #: дело до посредника.
         self.tried: list[str | None] = []
         self.was_get = sources.get
-        self.was_any = web._any_proxy
+        self.was_any = web._working_proxies
 
     def tearDown(self):
         sources.get = self.was_get
         self.web.sources.get = self.was_get
-        self.web._any_proxy = self.was_any
+        self.web._working_proxies = self.was_any
+
+    def with_proxies(self, *urls):
+        """Список адресов, который увидит запасной заход.
+
+        Подменяется именно отбор, а не «дай один адрес»: заход берёт из
+        списка столько, сколько понадобится. Спрашивал он раньше один —
+        и на первом же мёртвом останавливался, хотя рядом лежали
+        проверенные.
+        """
+        self.web._working_proxies = lambda pool: [
+            SimpleNamespace(url=one) for one in urls]
 
     def fake(self, needs_proxy=True, direct_works=False, trouble=None,
              proxy_works=True):
@@ -697,7 +709,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         источников прямой запрос проходит, и менять его на непроверенный
         прокси значило бы разменять рабочее на неизвестное."""
         self.fake(direct_works=True)
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 200)
         self.assertEqual(len(self.tried), 1)
@@ -705,7 +717,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
 
     def test_a_source_that_needs_a_proxy_gets_a_second_try(self):
         self.fake()
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 200)
         self.assertEqual(len(self.tried), 2)
@@ -718,7 +730,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         пятнадцатисекундным таймаутом, а проверенный прокси лежал рядом и
         не использовался, потому что пометки у источника не стояло."""
         self.fake(needs_proxy=False)
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 200)
         self.assertEqual(len(self.tried), 2)
@@ -729,7 +741,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         from mvl.client import HttpError
 
         self.fake(trouble=HttpError("HTTP 404 https://site/книга", status=404))
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 502)
         self.assertEqual(len(self.tried), 1)
@@ -739,7 +751,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         from mvl.client import Blocked
 
         self.fake(trouble=Blocked("HTTP 403 — доступ закрыт", status=403))
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 200)
         self.assertEqual(len(self.tried), 2)
@@ -748,7 +760,7 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         """Вторая ошибка про посредника не объясняет ничего, а первая
         говорит, что случилось на самом деле."""
         self.fake()
-        self.web._any_proxy = lambda pool: None
+        self.with_proxies()
         got = self.client.post("/api/find", json={"query": "k"})
         self.assertEqual(got.status_code, 502)
         self.assertIn("webnovel.com", got.get_json()["error"])
@@ -757,20 +769,20 @@ class TestFindingABookGoesThroughTheProxyToo(unittest.TestCase):
         """Иначе «сайт недоступен» не отличить от «посредник не помог», а
         чинится это по-разному."""
         self.fake()
-        self.web._any_proxy = lambda pool: None
+        self.with_proxies()
         said = self.client.post("/api/find", json={"query": "k"}).get_json()
         self.assertIn("живых адресов нет", said["error"])
 
     def test_the_message_says_the_proxy_did_not_help_either(self):
         self.fake(proxy_works=False)
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         said = self.client.post("/api/find", json={"query": "k"}).get_json()
         self.assertIn("посредника", said["error"].lower())
         self.assertIn("webnovel.com", said["error"])
 
     def test_the_password_of_the_proxy_never_shows_up(self):
         self.fake(proxy_works=False)
-        self.web._any_proxy = lambda pool: "http://user:pass@1.2.3.4:8080"
+        self.with_proxies("http://user:pass@1.2.3.4:8080")
         said = self.client.post("/api/find", json={"query": "k"}).get_json()
         self.assertNotIn("pass", said["error"])
 
