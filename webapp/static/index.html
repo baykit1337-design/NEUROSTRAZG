@@ -663,6 +663,34 @@
     100%{margin-left:100%}
   }
 
+  /* Полоса книги: та же полоса, только тоньше и со своей подписью.
+     Их на экране бывает тринадцать, и толщина общей превратила бы список
+     в стену. */
+  #pbList{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+  #pbList .pb{
+    padding:8px 10px;
+    border-radius:10px;
+    background:rgba(255,255,255,.03);
+    border:1px solid rgba(255,255,255,.06);
+  }
+  /* Книга, у которой всё кончилось, отходит на второй план: смотрят на
+     те, что идут сейчас. */
+  #pbList .pb.off{opacity:.6}
+  #pbList .pb-head{
+    display:flex;align-items:baseline;gap:10px;justify-content:space-between;
+  }
+  #pbList .pb-name{
+    font-size:13px;
+    /* Длинное название не должно расталкивать этап за край карточки. */
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  #pbList .pb-state{font-size:12px;color:var(--neon);flex:0 0 auto}
+  #pbList .pb.off .pb-state{color:var(--muted)}
+  #pbList .pb .bar{height:6px;margin:8px 0 6px}
+  #pbList .pb-foot{font-size:12px;color:var(--muted)}
+  #pbList .pb-msg{font-size:12px;margin-top:4px}
+  #pbList .pb-msg.bad{color:#ff9d9d}
+
   .bar > i{
     display:block;
     height:100%;
@@ -1536,6 +1564,10 @@
     <div class="pnow" id="sSource"></div>
     <!-- Способ скачивания, подобранный автопробой: «3 потока · 3 прокси». -->
     <div class="pnow" id="sMethod"></div>
+    <!-- По полосе на книгу. Полоса выше — сумма по всей очереди, и из неё
+         не видно, кто чем занят: «Глава 1823 из 1868» при тринадцати
+         книгах читается так, будто книга одна. -->
+    <div id="pbList" hidden></div>
     <div class="row" style="margin-top:16px">
       <!-- Пауза рядом с полосой: оборвалась сеть — прогон ждёт, а не
            заканчивается на середине. Скачанное остаётся, продолжение
@@ -4723,6 +4755,87 @@ const STAGES = {
 };
 const TERMINAL = ['done','error','cancelled','blocked'];
 
+/** Полосы по книгам: своя строка на каждую работу очереди.
+ *
+ *  Числа наверху — сумма по всей очереди, и кто чем занят, из них не
+ *  видно: «Глава 1823 из 1868» при тринадцати книгах читается так, будто
+ *  качается одна. Здесь у книги свой этап, свои главы, свой прокси и
+ *  свои потоки.
+ *
+ *  Книга одна — списка нет: он повторил бы полосу над собой слово в
+ *  слово.
+ */
+function pbDraw(rows){
+  const box = $('pbList');
+  rows = rows || [];
+  box.hidden = rows.length < 2;
+  box.innerHTML = '';
+  if(box.hidden) return;
+  for(const one of rows) box.append(pbRow(one));
+}
+
+function pbRow(one){
+  const row = document.createElement('div');
+  const busy = !TERMINAL.includes(one.stage);
+  row.className = 'pb' + (busy ? '' : ' off');
+
+  const head = document.createElement('div');
+  head.className = 'pb-head';
+  const name = document.createElement('span');
+  name.className = 'pb-name';
+  name.textContent = one.title || '';
+  name.title = one.title || '';
+  const state = document.createElement('span');
+  state.className = 'pb-state';
+  state.textContent = STAGES[one.stage] || one.stage || '';
+  head.append(name, state);
+  row.append(head);
+
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  const fill = document.createElement('i');
+  const total = Number(one.total) || 0;
+  const done = Number(one.done) || 0;
+  // Сколько глав всего — известно только после оглавления. До него
+  // процентов взять неоткуда, и бегущая полоса честнее нарисованного
+  // нуля: она отвечает на единственный вопрос, который тут и возникает.
+  if(total > 0){
+    fill.style.width = Math.min(100, Math.round(done / total * 100)) + '%';
+    if(busy) fill.classList.add('active');
+  }else if(busy){
+    bar.classList.add('waiting');
+  }
+  bar.append(fill);
+  row.append(bar);
+
+  const bits = [];
+  if(total > 0) bits.push(`глава ${done} из ${total}`);
+  if(one.downloaded) bits.push(`скачано ${one.downloaded}`);
+  if(one.skipped) bits.push(`пропущено ${one.skipped}`);
+  if(one.failed) bits.push(`ошибок ${one.failed}`);
+  if(one.threads){
+    bits.push(`${one.threads} `
+      + plural(one.threads, 'поток', 'потока', 'потоков'));
+  }
+  // Адрес — свой у каждой книги, и наверху его показать нельзя: там он
+  // принадлежал бы той, что отчиталась последней.
+  if(one.proxy) bits.push('через ' + one.proxy);
+  const foot = document.createElement('div');
+  foot.className = 'pb-foot';
+  foot.textContent = bits.join(' · ');
+  row.append(foot);
+
+  // Чем кончилось — только когда кончилось: пока книга идёт, эту строку
+  // занимает счёт глав, и дублировать его надписью незачем.
+  if(one.message && !busy){
+    const said = document.createElement('div');
+    said.className = 'pb-msg' + (one.stage === 'done' ? '' : ' bad');
+    said.textContent = one.message;
+    row.append(said);
+  }
+  return row;
+}
+
 async function tick(){
   try{
     const {job} = await call('/api/job/' + jobId);
@@ -4750,6 +4863,13 @@ async function tick(){
       ? `через ${p.proxy}` + (p.switches ? ` · переключений: ${p.switches}` : '')
       : '';
 
+    // По полосе на книгу. Сервер книг разом ведёт несколько, и адрес
+    // прокси наверх при этом не отдаёт вовсе: он у каждой свой, и одна
+    // строка на всех показывала бы адрес той книги, что отчиталась
+    // последней. Строки ниже говорят это за неё.
+    const each = p.each || [];
+    pbDraw(each);
+
     // Способ подобран — сообщаем один раз за прогон и работаем дальше.
     if(p.probe?.message && !probeShown){
       probeShown = true;
@@ -4761,7 +4881,15 @@ async function tick(){
     // показывала вердикт автопробы и только в авторежиме: в ручном она
     // оставалась пустой, а после отката пробы на один поток —
     // устаревшей. Теперь берётся из самого прогона на каждом опросе.
-    if(busy || p.threads){
+    // Книг разом несколько — эта строка про них, а не про потоки: потоки
+    // у каждой книги свои, и раздают их по плану, а не поровну.
+    if((p.at_once || 1) > 1){
+      const going = each.filter(one => !TERMINAL.includes(one.stage)).length;
+      $('sMethod').textContent = going
+        ? `${going} ${plural(going, 'книга', 'книги', 'книг')} разом`
+        : '';
+      $('sMethod').classList.remove('warn');
+    }else if(busy || p.threads){
       const many = (p.threads || 1) > 1;
       $('sMethod').textContent = many
         ? `${p.threads} ${plural(p.threads, 'поток', 'потока', 'потоков')}`

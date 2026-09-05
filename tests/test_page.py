@@ -1557,3 +1557,150 @@ class TestTheLibraryCardOpens(PageTestCase):
         self.open_library()
         self.page.click("#lbList .lb-name")
         self.quiet()
+
+
+class TestEveryBookHasItsOwnBar(PageTestCase):
+    """Одна полоса на всю очередь не отвечала, кто чем занят.
+
+    «Глава 1823 из 1868» при тринадцати книгах читается так, будто
+    качается одна: по какой из них идёт эта глава, из строки не узнать.
+    """
+
+    def draw(self, rows) -> None:
+        self.page.evaluate("(rows) => pbDraw(rows)", rows)
+
+    def book(self, **fields) -> dict:
+        """Строка книги — такая же, какую отдаёт задача."""
+        row = {"id": fields.get("title", "к"), "title": "Книга",
+               "stage": "download", "total": 10, "done": 4}
+        row.update(fields)
+        return row
+
+    def test_each_book_gets_a_line_with_its_own_name_and_count(self):
+        self.draw([self.book(title="Книга А", done=2, total=10),
+                   self.book(title="Книга Б", done=9, total=10)])
+
+        rows = self.page.locator("#pbList .pb")
+        self.assertEqual(rows.count(), 2)
+        first = rows.nth(0).inner_text()
+        self.assertIn("Книга А", first)
+        self.assertIn("глава 2 из 10", first)
+        self.assertIn("Книга Б", rows.nth(1).inner_text())
+        self.quiet()
+
+    def test_the_bar_of_each_book_stands_where_that_book_stands(self):
+        """Иначе полосы одинаковые, и список ничего не добавляет к
+        одной полосе наверху."""
+        self.draw([self.book(title="Книга А", done=2, total=10),
+                   self.book(title="Книга Б", done=9, total=10)])
+
+        got = self.page.evaluate(
+            """() => [...document.querySelectorAll('#pbList .pb .bar > i')]
+                     .map(one => one.style.width)""")
+        self.assertEqual(got, ["20%", "90%"])
+        self.quiet()
+
+    def folded(self) -> bool:
+        """Убран ли список.
+
+        Спрашиваем именно про `hidden`, а не про видимость: вся карточка
+        прогресса до запуска спрятана, и «не видно» там ответило бы «да»
+        на любой вопрос — проверка вышла бы пустой.
+        """
+        return self.page.evaluate("() => document.getElementById('pbList').hidden")
+
+    def test_one_book_needs_no_list(self):
+        """Список из одной строки повторил бы полосу над собой слово в
+        слово."""
+        self.draw([self.book(title="Книга А")])
+        self.assertTrue(self.folded())
+        self.quiet()
+
+    def test_two_books_do_need_it(self):
+        """Иначе «убрать лишнее» легко превращается в «не показывать
+        никогда»."""
+        self.draw([self.book(title="Книга А"), self.book(title="Книга Б")])
+        self.assertFalse(self.folded())
+        self.quiet()
+
+    def test_a_book_that_has_no_count_yet_gets_a_running_bar(self):
+        """Сколько глав всего — известно только после оглавления. До него
+        процентов взять неоткуда, и нарисованный ноль был бы враньём."""
+        self.draw([self.book(title="Книга А", stage="search", total=0,
+                             done=0),
+                   self.book(title="Книга Б")])
+
+        self.assertEqual(
+            self.page.locator("#pbList .pb").nth(0)
+                .locator(".bar.waiting").count(), 1)
+        self.quiet()
+
+    def test_a_book_that_fell_says_why_right_there(self):
+        """Строка упавшей книги — единственный след того, чем она
+        кончилась: очередь к тому времени показывает уже следующую."""
+        self.draw([self.book(title="Книга А", stage="error",
+                             message="сайт не разрешается по имени"),
+                   self.book(title="Книга Б")])
+
+        bad = self.page.locator("#pbList .pb").nth(0)
+        self.assertIn("сайт не разрешается", bad.inner_text())
+        self.assertEqual(bad.locator(".pb-msg.bad").count(), 1)
+        self.quiet()
+
+    def test_a_book_that_finished_is_not_called_broken(self):
+        """Цвет тут — половина сообщения: красная строка у пройденной
+        книги отправила бы человека чинить исправное."""
+        self.draw([self.book(title="Книга А", stage="done",
+                             message="Скачано глав: 10", done=10),
+                   self.book(title="Книга Б")])
+
+        good = self.page.locator("#pbList .pb").nth(0)
+        self.assertIn("Скачано глав: 10", good.inner_text())
+        self.assertEqual(good.locator(".pb-msg.bad").count(), 0)
+        self.quiet()
+
+    def tick_with(self, progress) -> str:
+        """Один опрос задачи с подменённым сервером — и что вышло в строке
+        под полосой."""
+        return self.page.evaluate(
+            """async (progress) => {
+                const server = window.call;
+                window.call = async () => ({job: {id: 'проверка', progress}});
+                try{ await tick(); }finally{ window.call = server; }
+                return document.getElementById('sMethod').textContent;
+            }""", progress)
+
+    def test_the_line_about_threads_gives_way_to_the_count_of_books(self):
+        """Потоки при нескольких книгах у каждой свои, и раздают их по
+        расчёту, а не поровну: одна строка на всех врала бы."""
+        said = self.tick_with({
+            "stage": "download", "at_once": 2, "threads": 1,
+            "each": [self.book(title="Книга А"),
+                     self.book(title="Книга Б")]})
+        self.assertIn("2 книги разом", said)
+
+        # Пройденная книга не «разом»: она уже никуда не идёт, а список
+        # её строку держит — он же и история прогона.
+        said = self.tick_with({
+            "stage": "download", "at_once": 2, "threads": 1,
+            "each": [self.book(title="Книга А"),
+                     self.book(title="Книга Б", stage="done")]})
+        self.assertIn("1 книга разом", said)
+        self.quiet()
+
+    def test_one_book_still_gets_the_line_about_threads(self):
+        """Книга одна — считать нечего, и старая строка остаётся той же:
+        ради неё этот расчёт когда-то и делали."""
+        said = self.tick_with({
+            "stage": "download", "at_once": 1, "threads": 3, "proxies": 3})
+        self.assertIn("3 потока", said)
+        self.quiet()
+
+    def test_the_list_goes_away_when_the_run_does(self):
+        """Полосы прошлого прогона над новым — хуже, чем ничего."""
+        self.draw([self.book(title="Книга А"), self.book(title="Книга Б")])
+        self.draw([])
+
+        self.assertTrue(self.folded())
+        self.assertEqual(self.page.locator("#pbList .pb").count(), 0)
+        self.quiet()

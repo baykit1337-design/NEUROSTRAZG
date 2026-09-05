@@ -21,6 +21,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ops import downloads, library  # noqa: E402
+from ops.base import Cancelled as OpCancelled  # noqa: E402
 
 
 class Base(unittest.TestCase):
@@ -1000,7 +1001,11 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         self.made = []          # с какими доводами создавали качалку
         self.threads = 1        # сколько потоков просим с экрана
         self.reported = threading.Event()   # доклад сделан
+        # Книг разом бывает несколько, и одного флага на всех мало:
+        # дождаться надо каждую, иначе проверка смотрит на полусобранное.
+        self.arrived = threading.Semaphore(0)
         self.release = threading.Event()    # можно заканчивать книгу
+        self.raises = None                  # чем книга обрывается, если рвётся
         self.addCleanup(self.release.set)
         self._fake_world()
 
@@ -1040,7 +1045,10 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
                 # после конца очереди надпись законно перетирается итогом,
                 # и проверять там было бы нечего.
                 outer.reported.set()
+                outer.arrived.release()
                 outer.release.wait(timeout=20)
+                if outer.raises is not None:
+                    raise outer.raises
                 return SimpleNamespace(as_dict=lambda: {"downloaded": 1})
 
         for name, value in (("Client", FakeClient),
@@ -1253,6 +1261,167 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         self.assertTrue(self.clients, "клиента не создавали")
         self.assertIs(self.clients[0].get("cancel"), job.cancel)
         self.finish(job)
+
+    def start_many(self, titles):
+        """Поставить несколько книг и дождаться, пока возьмут каждую."""
+        for number, title in enumerate(titles, 1):
+            downloads.add(name=title, source="novelcms",
+                          address=f"https://x/read/{number}/",
+                          base=str(self.tmp), folder=title)
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start(
+                {"threads": self.threads, "books": len(titles)})
+
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        for _ in titles:
+            self.assertTrue(self.arrived.acquire(timeout=20),
+                            "качалку позвали не на все книги")
+        return job
+
+    def rows_of(self, job) -> dict:
+        """Строки книг, разложенные по названию."""
+        return {one["title"]: one for one in job.progress["each"]}
+
+    def test_every_book_says_its_own_numbers(self):
+        """Наверху — сумма по всей очереди, и кто чем занят, из неё не
+        видно: «Глава 1823 из 1868» при тринадцати книгах читается так,
+        будто качается одна."""
+        self.said = [self.step(stage="download", done=2, total=5,
+                               proxy="1.1.1.1:80", threads=1)]
+        job = self.start_many(["Книга А", "Книга Б"])
+
+        rows = self.rows_of(job)
+        self.assertEqual(sorted(rows), ["Книга А", "Книга Б"])
+        for title, row in rows.items():
+            self.assertEqual((row["done"], row["total"]), (2, 5), title)
+            self.assertEqual(row["proxy"], "1.1.1.1:80", title)
+        self.finish(job)
+
+    def test_the_sum_of_the_rows_is_what_stands_on_top(self):
+        """Обе стороны нужны разом: строки говорят, кто где, а сумма —
+        сколько осталось всего."""
+        self.said = [self.step(stage="download", done=2, total=5,
+                               downloaded=2)]
+        job = self.start_many(["Книга А", "Книга Б"])
+
+        self.assertEqual(job.progress["done"], 4)
+        self.assertEqual(job.progress["total"], 10)
+        self.assertEqual(job.progress["downloaded"], 4)
+        self.finish(job)
+
+    def test_nothing_of_one_book_is_passed_off_as_the_whole_queue(self):
+        """Ровно та жалоба: наверху висело «Качаем главы — Глава 1823 из
+        1868» и один адрес прокси, будто книга одна. Этап, надпись и
+        адрес принадлежат книге — наверху они принадлежали бы той, что
+        отчиталась последней, то есть никому."""
+        self.said = [self.step(stage="toc", message="Глава 1823 из 1868",
+                               proxy="1.1.1.1:80")]
+        job = self.start_many(["Книга А", "Книга Б"])
+
+        self.assertNotEqual(job.progress["message"], "Глава 1823 из 1868")
+        self.assertEqual(job.progress["stage"], "download")
+        self.assertFalse(job.progress.get("proxy"))
+        # А в своей строке книга это же и говорит.
+        row = self.rows_of(job)["Книга А"]
+        self.assertEqual(row["message"], "Глава 1823 из 1868")
+        self.assertEqual(row["stage"], "toc")
+        self.finish(job)
+
+    def test_the_only_book_still_speaks_from_the_top(self):
+        """Книга одна — говорить наверху больше некому, и молчание там
+        вернуло бы «Запускаем…» на полчаса и мёртвую «Остановить»."""
+        self.said = [self.step(stage="toc", message="Оглавление… 3 из 5",
+                               proxy="1.1.1.1:80")]
+        job = self.start()
+
+        self.assertEqual(job.progress["stage"], "toc")
+        self.assertEqual(job.progress["message"], "Оглавление… 3 из 5")
+        self.assertEqual(job.progress["proxy"], "1.1.1.1:80")
+        self.finish(job)
+
+    def test_a_book_still_being_looked_for_already_has_a_row(self):
+        """Искать книгу можно долго. Заведись строка только после
+        находки — всё это время не было бы видно, что книгу вообще
+        взяли: полоса появлялась бы из ниоткуда."""
+        looking = threading.Event()
+        holding = threading.Event()
+        self.addCleanup(holding.set)
+
+        class Slow:
+            key = "novelcms"
+
+            def find(self, client, address):
+                looking.set()
+                holding.wait(timeout=20)
+                raise RuntimeError("искали-искали и не нашли")
+
+        was = self.web.sources.get
+        self.web.sources.get = lambda key: Slow()
+        self.addCleanup(setattr, self.web.sources, "get", was)
+
+        downloads.add(name="Книга А", source="novelcms",
+                      address="https://x/read/1/", base=str(self.tmp),
+                      folder="Книга А")
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start({"threads": 1, "books": 1})
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        self.assertTrue(looking.wait(timeout=20), "книгу не искали")
+
+        row = self.rows_of(job)["Книга А"]
+        self.assertEqual(row["stage"], "search")
+        holding.set()
+        job.thread.join(timeout=30)
+
+    def test_a_stopped_book_says_stopped_and_not_broken(self):
+        """«Остановлено» и «сломалось» — разные вещи. Скажи строка
+        «ошибка» на нажатую человеком кнопку, он полез бы чинить
+        исправное."""
+        self.said = []
+        self.raises = OpCancelled()
+        job = self.start_many(["Книга А", "Книга Б"])
+        self.finish(job)
+
+        for title, row in self.rows_of(job).items():
+            self.assertEqual(row["stage"], "cancelled", title)
+
+    def test_a_fallen_book_says_so_in_its_own_row(self):
+        """Иначе упавшая книга навсегда осталась бы на «Качаем главы»:
+        полоса идёт, а работа давно оборвалась."""
+        was = self.web.sources.get
+        self.web.sources.get = lambda key: (_ for _ in ()).throw(
+            RuntimeError("сайт не разрешается по имени"))
+        self.addCleanup(setattr, self.web.sources, "get", was)
+
+        downloads.add(name="Книга А", source="novelcms",
+                      address="https://x/read/1/", base=str(self.tmp),
+                      folder="Книга А")
+        downloads.add(name="Книга Б", source="novelcms",
+                      address="https://x/read/2/", base=str(self.tmp),
+                      folder="Книга Б")
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start({"threads": 1, "books": 2})
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        job.thread.join(timeout=30)
+
+        rows = self.rows_of(job)
+        self.assertEqual(sorted(rows), ["Книга А", "Книга Б"])
+        for title, row in rows.items():
+            self.assertEqual(row["stage"], "error", title)
+            self.assertIn("не разрешается", row["message"], title)
+
+    def test_a_finished_book_keeps_its_row(self):
+        """Строка кончившейся книги — единственный след того, чем она
+        кончилась: очередь к тому времени показывает уже следующую."""
+        self.said = [self.step(stage="download", done=5, total=5,
+                               downloaded=5)]
+        job = self.start_many(["Книга А", "Книга Б"])
+        self.finish(job)
+
+        rows = self.rows_of(job)
+        self.assertEqual(sorted(rows), ["Книга А", "Книга Б"])
+        for title, row in rows.items():
+            self.assertEqual(row["stage"], "done", title)
+            self.assertIn("Скачано глав", row["message"], title)
 
 
 class TestHowManyBooksTheProxiesAllow(unittest.TestCase):

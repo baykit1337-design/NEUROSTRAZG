@@ -1278,8 +1278,18 @@ def _downloads_start(payload: dict):
     #: Доли прогресса по книгам. Общие числа — их сумма: при одной книге
     #: это ровно то же, что было, при нескольких — «скачано столько-то из
     #: стольких-то по всем сразу».
+    #:
+    #: Каждая доля едет наверх и своей строкой, в `each`. Сумма отвечает
+    #: только на «сколько осталось всего»: «Глава 1823 из 1868» над одной
+    #: полосой читается так, будто книга одна, и чья это глава из
+    #: тринадцати — из неё не узнать.
     parts: dict[str, dict] = {}
     parts_lock = threading.Lock()
+    #: Книг ведём несколько разом. Тогда этап, надпись и адрес прокси
+    #: наверху принадлежали бы той книге, что отчиталась последней, —
+    #: то есть никому. Наверху в этом случае только суммы и слово
+    #: очереди, а всё своё книга говорит в своей строке.
+    many = len(plan) > 1
     #: Этапы, на которых работа кончена. Те же, что и у страницы: она по
     #: ним решает, продолжать ли опрос.
     DONE_STAGES = frozenset({"done", "error", "cancelled", "blocked"})
@@ -1294,24 +1304,51 @@ def _downloads_start(payload: dict):
     COUNTED = ("total", "done", "downloaded", "skipped", "failed",
                "switches")
 
-    def share(book_id: str, **numbers) -> None:
+    def share(item, **numbers) -> None:
         with parts_lock:
-            mine = parts.setdefault(book_id, {})
+            mine = parts.setdefault(item.id, {"id": item.id,
+                                              "title": item.title})
             mine.update(numbers)
             rest = {name: value for name, value in numbers.items()
                     if name not in COUNTED}
+            if many:
+                # Своё книга говорит в своей строке. Наверх из этого не
+                # идёт ничего: чей там этап и чей адрес — не видно, а
+                # надпись про очередь ставит `changed`, она одна и знает,
+                # какая книга по счёту.
+                for name in ("stage", "message", "proxy"):
+                    rest.pop(name, None)
             # Конец одной книги — не конец очереди. Страница смотрит на
             # этап, и приди сюда «done» после первой из тринадцати, она
             # перестала бы опрашивать задачу и показала бы готово при
             # двенадцати неначатых. Итоговый этап ставит сам прогон, в
             # `work`, когда очередь и правда кончилась.
-            if rest.get("stage") in DONE_STAGES:
+            elif rest.get("stage") in DONE_STAGES:
                 rest.pop("stage")
             job.progress.update(rest)
             job.progress.update({
                 name: sum(int(one.get(name) or 0) for one in parts.values())
                 for name in COUNTED if any(name in one
                                            for one in parts.values())})
+            job.progress["each"] = [dict(one) for one in parts.values()]
+
+    def begin(item) -> None:
+        """Завести книге строку до первого запроса о ней.
+
+        Иначе полоса появлялась бы только после того, как книга нашлась,
+        а искать её можно долго — и всё это время на экране не было бы
+        видно, что книгу вообще взяли в работу.
+        """
+        share(item, stage="search", total=0, done=0,
+              downloaded=0, skipped=0, failed=0)
+
+    def finish(item, stage: str, message: str = "") -> None:
+        """Чем у книги кончилось — в её же строке.
+
+        Без этого упавшая книга навсегда оставалась бы на своём последнем
+        этапе: полоса «Качаем главы» у работы, которая давно оборвалась.
+        """
+        share(item, stage=stage, message=message)
 
     #: Доли потоков: книга берёт свою на время работы и возвращает,
     #: закончив. Раздать их разом по книгам нельзя — книг тринадцать, а
@@ -1328,10 +1365,28 @@ def _downloads_start(payload: dict):
             budgets.append(count)
 
     def one(item):
-        """Скачать одну книгу очереди и вернуть текст итога."""
+        """Скачать одну книгу очереди и вернуть текст итога.
+
+        Здесь только учёт: строка книги заводится до первого запроса и
+        закрывается, чем бы дело ни кончилось. Сама работа — в `dig`.
+        Без этого упавшая книга навсегда оставалась бы на своём последнем
+        этапе: полоса «Качаем главы» у работы, которая давно оборвалась.
+        """
         # В библиотеку — сразу, до первого запроса. Упади сайт, и запись
         # всё равно останется: к ней и возвращаются, когда он оживёт.
         _remember_item(item)
+        begin(item)
+        try:
+            return dig(item)
+        except Cancelled:
+            finish(item, "cancelled", "Остановлено")
+            raise
+        except BaseException as exc:  # noqa: BLE001 — итог книги её строке
+            finish(item, "error", str(exc))
+            raise
+
+    def dig(item):
+        """Найти книгу и скачать её. Всё, что тут падает, ловит `one`."""
         source = sources.get(item.source)
         # Флаг остановки — самому клиенту, а не только качалке. Качалка
         # смотрит на него между главами, а лесенка повторов внутри
@@ -1359,17 +1414,19 @@ def _downloads_start(payload: dict):
             first = item.first or (_reached(output_dir) + 1)
             last = item.last or novel.total_chapters or first
             if last < first:
-                return "Новых глав нет — качать нечего"
+                said = "Новых глав нет — качать нечего"
+                finish(item, "done", said)
+                return said
 
             # Своя доля прогресса у каждой книги. Пиши они в общие
             # счётчики, как раньше, — при нескольких книгах разом полоса
             # прыгала бы взад-вперёд: каждая ставила бы туда своё «из
             # скольких».
-            share(item.id, total=last - first + 1, done=0,
+            share(item, total=last - first + 1, done=0,
                   downloaded=0, skipped=0, failed=0)
             downloader = Downloader(
                 client=client, pool=pool,
-                on_progress=lambda p: share(item.id, **p.as_dict()),
+                on_progress=lambda p: share(item, **p.as_dict()),
                 on_event=job.log.add,
                 cancel_event=job.cancel, pause_event=job.paused,
                 threads=mine, probe=run.probe, source=source,
@@ -1382,8 +1439,10 @@ def _downloads_start(payload: dict):
             _remember_book(novel, source.key, output_dir, item.origin,
                            report, address=item.address)
             skipped = int(report.get("skipped") or 0)
-            return (f"Скачано глав: {item.done}"
+            said = (f"Скачано глав: {item.done}"
                     + (f", пропущено {skipped}" if skipped else ""))
+            finish(item, "done", said)
+            return said
         finally:
             give_threads(mine)
             client.close()
@@ -1395,6 +1454,12 @@ def _downloads_start(payload: dict):
             message=_queue_note(rows, item))
 
     def work(job: Job):
+        # Этап у очереди свой и один на всё время. Книг несколько, этап у
+        # каждой меняется по-своему, и брать его у той, что отчиталась
+        # последней, значит показывать «Ищем книгу», пока остальные
+        # двенадцать качаются.
+        if many:
+            job.progress.update(stage="download")
         done = downloads_op.run(one, on_change=changed, cancel=job.cancel,
                                 workers=len(plan))
         stopped = job.cancel.is_set()
