@@ -1434,6 +1434,51 @@
     <div id="proxyTable"></div>
   </div>
 
+  <!-- Настройки прогона: таймауты, потоки, книги разом, режим.
+       ------------------------------------------------------------------
+       Своя карточка, и она видна всегда. Раньше эти поля лежали в
+       карточке «куда сохранять», а та показывается только после того, как
+       книгу нашли поиском. Кто качает очередью — а очередь и есть главный
+       способ, когда книг много, — до них не добирался вовсе: числа
+       применялись, но менять их было негде. Настройки прогона к найденной
+       книге отношения не имеют: они про то, как ходить в сеть, и стоят
+       рядом с прокси. -->
+  <div class="card" id="runCard">
+    <label>Как качать</label>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1">
+        <label for="tmRead">таймаут чтения, с<i class="hint-icon" data-tip="Сколько ждать, пока сервер отдаст страницу главы целиком. Страница весит около 220 КБ; при 30 секундах она не успевала дойти и обрывалась. Рабочее значение — 120.">?</i></label>
+        <input id="tmRead" type="number" value="120" min="5" max="600">
+      </div>
+      <div style="flex:1">
+        <label for="tmConnect">таймаут соединения, с<i class="hint-icon" data-tip="Сколько ждать установки связи с сервером. Если он не отвечает за это время, адрес считается недоступным.">?</i></label>
+        <input id="tmConnect" type="number" value="15" min="1" max="300">
+      </div>
+      <div style="flex:1">
+        <label for="dlThreads">потоков<i class="hint-icon" data-tip="Сколько глав качать одновременно. 3 — безопасное значение. Больше — быстрее, но выше риск, что сайт временно перестанет отвечать.">?</i></label>
+        <input id="dlThreads" type="number" value="3" min="1" max="6">
+      </div>
+      <!-- Книги очереди независимы, и ждать первую, чтобы начать вторую,
+           незачем. Сколько их потянуть — считается от прокси: один
+           поток занимает один адрес. Считать это в уме человеку
+           незачем, поэтому ноль значит «посчитай сам». -->
+      <div style="flex:1">
+        <label for="dlBooks">книг разом<i class="hint-icon" data-tip="0 — посчитать по прокси: один поток занимает один адрес. 5 проверенных адресов в 1 поток — 5 книг разом; в 3 потока — одна книга в три потока и вторая в два. Своё число перебивает расчёт.">?</i></label>
+        <input id="dlBooks" type="number" value="0" min="0" max="8"
+               placeholder="0 — по прокси">
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <label>режим многопоточности</label>
+      <div class="row">
+        <button class="pick2 pickmode on" data-mode="auto">Автоматически</button>
+        <button class="pick2 pickmode" data-mode="manual">Всегда N потоков</button>
+      </div>
+      <p class="hint" id="dlModeNote"></p>
+    </div>
+  </div>
+
   <!-- 1. Поиск книги -->
   <div class="card lit">
     <label>Источник</label>
@@ -1511,38 +1556,6 @@
       <button id="links" class="ghost" title="Список ссылок для WebToEpub">Ссылки</button>
     </div>
     <p class="hint" id="finalPath"></p>
-    <div class="row" style="margin-top:14px">
-      <div style="flex:1">
-        <label for="tmRead">таймаут чтения, с<i class="hint-icon" data-tip="Сколько ждать, пока сервер отдаст страницу главы целиком. Страница весит около 220 КБ; при 30 секундах она не успевала дойти и обрывалась. Рабочее значение — 120.">?</i></label>
-        <input id="tmRead" type="number" value="120" min="5" max="600">
-      </div>
-      <div style="flex:1">
-        <label for="tmConnect">таймаут соединения, с<i class="hint-icon" data-tip="Сколько ждать установки связи с сервером. Если он не отвечает за это время, адрес считается недоступным.">?</i></label>
-        <input id="tmConnect" type="number" value="15" min="1" max="300">
-      </div>
-      <div style="flex:1">
-        <label for="dlThreads">потоков<i class="hint-icon" data-tip="Сколько глав качать одновременно. 3 — безопасное значение. Больше — быстрее, но выше риск, что сайт временно перестанет отвечать.">?</i></label>
-        <input id="dlThreads" type="number" value="3" min="1" max="6">
-      </div>
-      <!-- Книги очереди независимы, и ждать первую, чтобы начать вторую,
-           незачем. Сколько их потянуть — считается от прокси: один
-           поток занимает один адрес. Считать это в уме человеку
-           незачем, поэтому ноль значит «посчитай сам». -->
-      <div style="flex:1">
-        <label for="dlBooks">книг разом<i class="hint-icon" data-tip="0 — посчитать по прокси: один поток занимает один адрес. 5 проверенных адресов в 1 поток — 5 книг разом; в 3 потока — одна книга в три потока и вторая в два. Своё число перебивает расчёт.">?</i></label>
-        <input id="dlBooks" type="number" value="0" min="0" max="8"
-               placeholder="0 — по прокси">
-      </div>
-    </div>
-
-    <div style="margin-top:14px">
-      <label>режим многопоточности</label>
-      <div class="row">
-        <button class="pick2 pickmode on" data-mode="auto">Автоматически</button>
-        <button class="pick2 pickmode" data-mode="manual">Всегда N потоков</button>
-      </div>
-      <p class="hint" id="dlModeNote"></p>
-    </div>
 
     <!-- Часть 6: убедиться, что параллельность работает на живом сайте,
          не прогоняя книгу целиком. -->
@@ -6232,6 +6245,14 @@ async function dqFill(){
 function dqRunSettings(){
   return {
     threads: Number($('dlThreads').value) || 1,
+    // Сколько книг вести разом. Очередь его не слала вовсе — ручку
+    // добавили, а сюда вписать забыли, — и своё число человека на
+    // очереди не работало: сервер каждый раз считал сам. Обиднее всего,
+    // что очередь и есть то место, ради которого эта ручка сделана.
+    //
+    // Ноль тут значащий: он и означает «посчитай сам», поэтому берём
+    // число как есть, а не подставляем единицу вместо пустого.
+    books: Math.max(0, Number($('dlBooks').value) || 0),
     mode: dlMode,
     timeout: Number($('tmRead').value) || 120,
     connect_timeout: Number($('tmConnect').value) || 15,

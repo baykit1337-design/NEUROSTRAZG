@@ -1932,3 +1932,57 @@ class TestTheCountersSayOutOfHowMany(PageTestCase):
 
         self.assertIn("из 41", got["of"])
         self.quiet()
+
+
+class TestTheRunSettingsAreAlwaysReachable(PageTestCase):
+    """Потоки, таймауты и «книг разом» лежали в карточке «куда сохранять».
+
+    А та показывается только после того, как книгу нашли поиском. Кто
+    качает очередью — а очередь и есть главный способ, когда книг много, —
+    до этих полей не добирался вовсе: числа применялись, но менять их
+    было негде.
+    """
+
+    def visible(self, name: str) -> bool:
+        return self.page.evaluate(
+            "(id) => { const e = document.getElementById(id);"
+            " return !!e && e.offsetParent !== null; }", name)
+
+    def test_they_are_visible_without_finding_a_book_first(self):
+        for name in ("dlThreads", "dlBooks", "tmRead", "tmConnect"):
+            self.assertTrue(self.visible(name), name)
+        self.quiet()
+
+    def test_the_multithreading_mode_is_reachable_too(self):
+        """Без него «всегда N потоков» не выбрать, а он и есть ответ на
+        «почему качает в один поток»."""
+        self.assertTrue(self.page.evaluate(
+            "() => { const b = document.querySelector('#runCard .pickmode');"
+            " return !!b && b.offsetParent !== null; }"))
+        self.quiet()
+
+    def test_the_queue_sends_how_many_books_at_once(self):
+        """Ручку добавили, а в запрос очереди вписать забыли: своё число
+        не работало, сервер каждый раз считал сам."""
+        sent = self.page.evaluate("() => dqRunSettings()")
+
+        self.assertIn("books", sent)
+        self.quiet()
+
+    def test_zero_books_stays_zero_and_does_not_become_one(self):
+        """Ноль тут значащий: он и означает «посчитай сам по прокси».
+        Подставь мы вместо него единицу — расчёт бы никогда не включился."""
+        sent = self.page.evaluate(
+            """() => { document.getElementById('dlBooks').value = '0';
+                       return dqRunSettings(); }""")
+
+        self.assertEqual(sent["books"], 0)
+        self.quiet()
+
+    def test_a_number_typed_by_hand_reaches_the_queue(self):
+        sent = self.page.evaluate(
+            """() => { document.getElementById('dlBooks').value = '4';
+                       return dqRunSettings(); }""")
+
+        self.assertEqual(sent["books"], 4)
+        self.quiet()
