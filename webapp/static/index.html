@@ -1548,9 +1548,12 @@
     <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="status"></span></div>
     <div class="bar"><i id="fill"></i></div>
     <div class="stats">
-      <span>скачано <b id="sDone">0</b></span>
+      <!-- «Скачано 9» без «из скольки» не отвечает на единственный
+           вопрос, который в это время и задают: сколько ещё ждать. -->
+      <span>скачано <b id="sDone">0</b><span id="sOf"></span></span>
       <span>пропущено <b id="sSkip">0</b></span>
       <span>ошибок <b id="sFail">0</b></span>
+      <span id="sLeft"></span>
       <span id="sPct"></span>
         <span class="timers" id="sTimers"></span>
     </div>
@@ -4809,7 +4812,10 @@ function pbRow(one){
   row.append(bar);
 
   const bits = [];
-  if(total > 0) bits.push(`глава ${done} из ${total}`);
+  if(total > 0){
+    bits.push(`глава ${done} из ${total}`);
+    bits.push(`осталось ${Math.max(0, total - done)}`);
+  }
   if(one.downloaded) bits.push(`скачано ${one.downloaded}`);
   if(one.skipped) bits.push(`пропущено ${one.skipped}`);
   if(one.failed) bits.push(`ошибок ${one.failed}`);
@@ -4859,6 +4865,21 @@ async function tick(){
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
     $('sFail').textContent = p.failed || 0;
+
+    // «Из скольки» и «сколько осталось». Всего — это главы прогона, а не
+    // книги: качаем мы отрезок, и «из 1868» у книги, с которой берут
+    // сорок одну последнюю главу, было бы враньём.
+    //
+    // Осталось считается по пройденным, а не по скачанным: пропущенные
+    // и упавшие тоже уже позади, и ждать их незачем.
+    const whole = Number(p.total) || 0;
+    const passed = Number(p.done) || 0;
+    $('sOf').textContent = whole ? ` из ${whole}` : '';
+    // Именно «осталось глав»: рядом стоит секундомер со своим
+    // «осталось 02:12», и два одинаковых слова про разное на одной
+    // строке путали бы сильнее, чем отсутствие второго.
+    $('sLeft').textContent = whole
+      ? `осталось глав ${Math.max(0, whole - passed)}` : '';
     $('sProxy').textContent = p.proxy
       ? `через ${p.proxy}` + (p.switches ? ` · переключений: ${p.switches}` : '')
       : '';

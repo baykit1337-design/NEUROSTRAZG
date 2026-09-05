@@ -1585,6 +1585,7 @@ class TestEveryBookHasItsOwnBar(PageTestCase):
         first = rows.nth(0).inner_text()
         self.assertIn("Книга А", first)
         self.assertIn("глава 2 из 10", first)
+        self.assertIn("осталось 8", first)
         self.assertIn("Книга Б", rows.nth(1).inner_text())
         self.quiet()
 
@@ -1703,4 +1704,76 @@ class TestEveryBookHasItsOwnBar(PageTestCase):
 
         self.assertTrue(self.folded())
         self.assertEqual(self.page.locator("#pbList .pb").count(), 0)
+        self.quiet()
+
+
+class TestTheCountersSayOutOfHowMany(PageTestCase):
+    """«Скачано 9» не отвечало на единственный вопрос, который в это время
+    и задают: сколько ещё ждать.
+
+    Ни «из скольки», ни «сколько осталось» на экране не было — только
+    проценты, а из них главы в уме не считают.
+    """
+
+    def stats(self, progress) -> dict:
+        """Один опрос задачи с подменённым сервером — и что вышло в
+        строке счётчиков."""
+        return self.page.evaluate(
+            """async (progress) => {
+                const server = window.call;
+                window.call = async () => ({job: {id: 'проверка', progress}});
+                try{ await tick(); }finally{ window.call = server; }
+                return {
+                    line: document.querySelector('#progress .stats').textContent,
+                    of: document.getElementById('sOf').textContent,
+                    left: document.getElementById('sLeft').textContent};
+            }""", progress)
+
+    def test_it_says_out_of_how_many_and_how_many_are_left(self):
+        got = self.stats({"stage": "download", "downloaded": 9,
+                          "done": 9, "total": 41})
+
+        self.assertIn("скачано 9 из 41", got["line"])
+        self.assertIn("осталось глав 32", got["line"])
+        self.quiet()
+
+    def test_the_skipped_and_the_fallen_are_not_still_awaited(self):
+        """Пропущенная глава и упавшая — тоже позади. Считай мы остаток
+        по одним скачанным, он застрял бы и до нуля не дошёл."""
+        got = self.stats({"stage": "download", "downloaded": 5,
+                          "skipped": 3, "failed": 2, "done": 10,
+                          "total": 41})
+
+        self.assertIn("осталось глав 31", got["line"])
+        self.quiet()
+
+    def test_the_word_is_not_the_same_as_the_stopwatch_uses(self):
+        """Рядом идёт секундомер со своим «осталось 02:12». Два
+        одинаковых слова про разное на одной строке путали бы сильнее,
+        чем отсутствие второго."""
+        got = self.stats({"stage": "download", "downloaded": 9,
+                          "done": 9, "total": 41})
+
+        self.assertNotIn("осталось 32", got["left"])
+        self.assertIn("глав", got["left"])
+        self.quiet()
+
+    def test_before_the_table_of_contents_there_is_nothing_to_say(self):
+        """Сколько глав в отрезке — известно только после оглавления.
+        «Из 0» и «осталось глав 0» до него были бы враньём."""
+        got = self.stats({"stage": "toc", "downloaded": 0, "done": 0,
+                          "total": 0})
+
+        self.assertFalse(got["of"])
+        self.assertFalse(got["left"])
+        self.quiet()
+
+    def test_the_count_is_of_this_run_not_of_the_whole_book(self):
+        """Качаем мы отрезок. У книги в 1868 глав, с которой берут сорок
+        одну последнюю, «из 1868» было бы враньём — а взять это число
+        задача никуда и не даёт: в `total` лежат главы прогона."""
+        got = self.stats({"stage": "download", "downloaded": 9, "done": 9,
+                          "total": 41, "message": "Глава 1832 из 1868"})
+
+        self.assertIn("из 41", got["of"])
         self.quiet()
