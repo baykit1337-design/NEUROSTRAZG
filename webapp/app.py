@@ -1202,21 +1202,51 @@ def _downloads_start(payload: dict):
     #: стольких-то по всем сразу».
     parts: dict[str, dict] = {}
     parts_lock = threading.Lock()
-    counted = ("total", "done", "downloaded", "skipped", "failed")
+    #: Этапы, на которых работа кончена. Те же, что и у страницы: она по
+    #: ним решает, продолжать ли опрос.
+    DONE_STAGES = frozenset({"done", "error", "cancelled", "blocked"})
+
+    #: Что складывается. Всё остальное из отчёта качалки — этап, надпись,
+    #: адрес прокси, число потоков — идёт наверх как есть.
+    #:
+    #: Забыть про «всё остальное» уже случилось, и стоило это дорого: на
+    #: экране полчаса висело «Запускаем…», хотя книга давно читала
+    #: оглавление, а «Остановить» выглядела мёртвой — этап не доезжал, и
+    #: страница не знала, что работа кончилась.
+    COUNTED = ("total", "done", "downloaded", "skipped", "failed",
+               "switches")
 
     def share(book_id: str, **numbers) -> None:
         with parts_lock:
             mine = parts.setdefault(book_id, {})
             mine.update(numbers)
+            rest = {name: value for name, value in numbers.items()
+                    if name not in COUNTED}
+            # Конец одной книги — не конец очереди. Страница смотрит на
+            # этап, и приди сюда «done» после первой из тринадцати, она
+            # перестала бы опрашивать задачу и показала бы готово при
+            # двенадцати неначатых. Итоговый этап ставит сам прогон, в
+            # `work`, когда очередь и правда кончилась.
+            if rest.get("stage") in DONE_STAGES:
+                rest.pop("stage")
+            job.progress.update(rest)
             job.progress.update({
                 name: sum(int(one.get(name) or 0) for one in parts.values())
-                for name in counted})
+                for name in COUNTED if any(name in one
+                                           for one in parts.values())})
 
     def one(item):
         """Скачать одну книгу очереди и вернуть текст итога."""
         source = sources.get(item.source)
+        # Флаг остановки — самому клиенту, а не только качалке. Качалка
+        # смотрит на него между главами, а лесенка повторов внутри
+        # клиента про него не знала вовсе: на мёртвом адресе книга
+        # уходила в повторы с задержками, и «Остановить» дожидалась конца
+        # всей лесенки по каждой главе. На тринадцати книгах это
+        # выглядело как намертво зависшая кнопка.
         client = Client(timeout=run.read_timeout,
-                        connect_timeout=run.connect_timeout)
+                        connect_timeout=run.connect_timeout,
+                        cancel=job.cancel)
         try:
             try:
                 novel = source.find(client, item.address)
@@ -1511,7 +1541,10 @@ def api_start():
     job.keep(made)
 
     def work(job: Job):
-        client = Client(timeout=read_timeout, connect_timeout=connect_timeout)
+        # Тот же флаг, что и у очереди: одна книга или тринадцать —
+        # «Остановить» должна доходить до повторов одинаково.
+        client = Client(timeout=read_timeout, connect_timeout=connect_timeout,
+                        cancel=job.cancel)
         downloader = Downloader(
             client=client,
             pool=pool,

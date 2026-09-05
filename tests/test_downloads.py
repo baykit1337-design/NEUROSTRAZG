@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -933,3 +934,174 @@ class TestTheKnobReachesTheRun(unittest.TestCase):
                 break
             time.sleep(0.02)
         self.assertEqual(seen.get("workers"), 5)
+
+
+class TestTheProgressReachesTheScreen(unittest.TestCase):
+    """Что качалка рассказывает о себе — должно доезжать до страницы.
+
+    Беда была тихая и оттого злая: наверх уходили только счётчики, а этап
+    и надпись терялись. На экране полчаса висело «Запускаем…», хотя книга
+    давно читала оглавление, — и «Остановить» выглядела мёртвой, потому
+    что страница по этапу решает, кончилась работа или нет.
+    """
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        from webapp import app as web
+
+        self.web = web
+        web.app.config["TESTING"] = True
+
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+        was = downloads.QUEUE_FILE
+        downloads.QUEUE_FILE = self.tmp / "downloads.json"
+        self.addCleanup(setattr, downloads, "QUEUE_FILE", was)
+
+        self.said = []          # что качалка рассказала о себе
+        self.clients = []       # с какими доводами создавали клиента
+        self.reported = threading.Event()   # доклад сделан
+        self.release = threading.Event()    # можно заканчивать книгу
+        self.addCleanup(self.release.set)
+        self._fake_world()
+
+    def _fake_world(self):
+        """Источник, клиент и качалка — поддельные, стык — настоящий."""
+        web = self.web
+        outer = self
+
+        class FakeNovel:
+            name, slug, author, cover = "Книга", "kniga", "Автор", ""
+            code, total_chapters = 1, 5
+
+        class FakeSource:
+            key = "novelcms"
+
+            def find(self, client, address):
+                return FakeNovel()
+
+        class FakeClient:
+            def __init__(self, **kw):
+                outer.clients.append(kw)
+
+            def close(self):
+                pass
+
+        class FakeDownloader:
+            def __init__(self, **kw):
+                self.on_progress = kw.get("on_progress")
+
+            def run(self, novel, output_dir, first=1, last=1):
+                for one in outer.said:
+                    self.on_progress(one)
+                # Держим книгу недокачанной, пока проверка не посмотрит:
+                # после конца очереди надпись законно перетирается итогом,
+                # и проверять там было бы нечего.
+                outer.reported.set()
+                outer.release.wait(timeout=20)
+                return SimpleNamespace(as_dict=lambda: {"downloaded": 1})
+
+        for name, value in (("Client", FakeClient),
+                            ("Downloader", FakeDownloader)):
+            was = getattr(web, name)
+            setattr(web, name, value)
+            self.addCleanup(setattr, web, name, was)
+
+        was_get = web.sources.get
+        web.sources.get = lambda key: FakeSource()
+        self.addCleanup(setattr, web.sources, "get", was_get)
+
+        was_keep = web._prepare
+        web._prepare = lambda base, folder, op, only=None: web.Made(
+            dir=self.tmp / "вывод")
+        self.addCleanup(setattr, web, "_prepare", was_keep)
+        (self.tmp / "вывод").mkdir(exist_ok=True)
+
+    def step(self, **fields):
+        """Один доклад качалки о себе — как её настоящий `Progress`."""
+        return SimpleNamespace(as_dict=lambda: fields)
+
+    def start(self, books: int = 1):
+        """Запустить очередь и дождаться доклада качалки о себе."""
+        downloads.add(name="Книга", source="novelcms",
+                      address="https://x/read/1/", base=str(self.tmp),
+                      folder="Книга")
+        with self.web.app.test_request_context():
+            answer = self.web._downloads_start({"threads": 1, "books": books})
+
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        self.assertTrue(self.reported.wait(timeout=20), "качалку не позвали")
+        return job
+
+    def finish(self, job):
+        self.release.set()
+        job.thread.join(timeout=30)
+        return job
+
+    def test_the_stage_and_the_words_reach_the_job(self):
+        """Без них на экране остаётся «Запускаем…» до самого конца."""
+        self.said = [self.step(stage="toc", message="Оглавление… 3 из 5",
+                               done=3, total=5)]
+        job = self.start()
+
+        self.assertEqual(job.progress["message"], "Оглавление… 3 из 5")
+        self.assertEqual(job.progress["stage"], "toc")
+        self.assertEqual(job.progress["done"], 3)
+        self.finish(job)
+
+    def test_the_proxy_and_the_threads_reach_it_too(self):
+        """Строка «через такой-то, переключений N» бралась оттуда же."""
+        self.said = [self.step(stage="download", proxy="1.2.3.4:8080",
+                               switches=2, threads=3)]
+        job = self.start()
+
+        self.assertEqual(job.progress["proxy"], "1.2.3.4:8080")
+        self.assertEqual(job.progress["threads"], 3)
+        self.assertEqual(job.progress["switches"], 2)
+        self.finish(job)
+
+    def test_the_end_of_one_book_is_not_the_end_of_the_queue(self):
+        """Иначе страница перестанет опрашивать задачу на первой из
+        тринадцати и покажет «готово» при двенадцати неначатых."""
+        self.said = [self.step(stage="download", done=5, total=5),
+                     self.step(stage="done", done=5, total=5)]
+        job = self.start()
+
+        # Книга уже сказала «done», а очередь ещё идёт — и на экране это
+        # не должно выглядеть законченной работой.
+        self.assertEqual(job.progress["stage"], "download")
+        self.finish(job)
+        # Итоговый этап ставит сам прогон — и только когда очередь вся.
+        self.assertEqual(job.progress["stage"], "done")
+
+    def test_one_book_alone_tells_the_client_about_it_too(self):
+        """Одна книга или тринадцать — «Остановить» должна доходить до
+        повторов одинаково. Путь у них разный, и правку легко внести
+        только в один."""
+        self.said = []
+        # Зовём маршрут тем же способом, каким его зовёт страница.
+        answer = self.web.app.test_client().post("/api/start", json={
+            "novel": {"code": 1, "name": "Книга", "total_chapters": 3},
+            "base": str(self.tmp), "folder": "Книга",
+            "threads": 1, "timeout": 30, "connect_timeout": 10})
+        self.assertEqual(answer.status_code, 200, answer.get_data(as_text=True))
+
+        job = self.web.JOBS[answer.get_json()["job"]["id"]]
+        self.assertTrue(self.reported.wait(timeout=20), "качалку не позвали")
+        self.assertTrue(self.clients, "клиента не создавали")
+        self.assertIs(self.clients[-1].get("cancel"), job.cancel)
+        self.finish(job)
+
+    def test_the_client_is_told_about_the_stop_button(self):
+        """Качалка смотрит на флаг между главами, а лесенка повторов
+        внутри клиента про него не знала: на мёртвом адресе «Остановить»
+        дожидалась конца всех повторов по каждой главе."""
+        self.said = []
+        job = self.start()
+
+        self.assertTrue(self.clients, "клиента не создавали")
+        self.assertIs(self.clients[0].get("cancel"), job.cancel)
+        self.finish(job)
