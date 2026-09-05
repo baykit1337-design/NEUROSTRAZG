@@ -5124,9 +5124,12 @@ function dnsFill(data){
   dnsMenu.set(found ? found.key : (data.url ? DNS_OWN : ''));
   $('dlDnsOwn').value = found ? '' : (data.url || '');
   dnsShowOwn();
-  $('dlDnsNote').textContent = data.url
+  // Сборка постарше этого не умеет вовсе, и молчать об этом нельзя:
+  // человек выберет адрес, ничего не изменится, и искать он будет не там.
+  $('dlDnsNote').textContent = data.note || (data.url
     ? 'Имена сайтов спрашиваются по HTTPS, мимо DNS провайдера.'
-    : 'Имена сайтов узнаёт система, как обычно.';
+    : 'Имена сайтов узнаёт система, как обычно.');
+  $('dlDnsNote').classList.toggle('err', !!data.note);
 }
 
 function dnsShowOwn(){

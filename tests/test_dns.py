@@ -98,6 +98,162 @@ class TestTheSettingReachesTheSession(DnsTestCase):
         self.assertEqual(session.doh_url, CLOUDFLARE)
 
 
+class TestAnOlderCurlCffiKeepsWorking(DnsTestCase):
+    """Тот самый провал, и он стоил человеку рабочей качалки.
+
+    Довод `doh_url` передавался всегда — и с адресом, и без. Сборка
+    постарше спотыкается о **само имя** довода, а не о значение: сессия
+    не собиралась вовсе, и сеть отваливалась целиком, даже у того, кто
+    эту настройку не трогал ни разу.
+    """
+
+    def with_old_curl(self, knows: bool = False) -> list:
+        """Подменить curl_cffi на сборку, которая про doh_url не знает.
+
+        Возвращает список доводов каждой попытки собрать сессию. По нему и
+        видно главное: тревожили ли старую сборку доводом, которого она не
+        понимает, — а не только «собралась ли она в итоге».
+        """
+        from curl_cffi import requests as curl_requests
+
+        tries: list = []
+
+        class Old:
+            def __init__(self, **kw):
+                tries.append(kw)
+                if "doh_url" in kw:
+                    raise TypeError(
+                        "BaseSession.__init__() got an unexpected keyword "
+                        "argument 'doh_url'")
+
+        was = curl_requests.Session
+        curl_requests.Session = Old
+        self.addCleanup(setattr, curl_requests, "Session", was)
+
+        was_known = client_mod._DOH_WORKS
+        self.addCleanup(setattr, client_mod, "_DOH_WORKS", was_known)
+        client_mod._DOH_WORKS = knows
+        return tries
+
+    def test_an_old_build_is_never_handed_the_argument(self):
+        """Главная проверка этого файла.
+
+        Смотрим не на «собралась ли сессия» — её спасает запасной заход, —
+        а на то, с чем к сборке пришли. Приди мы к ней с `doh_url`, и на
+        живой машине это стоило бы человеку всей качалки: сессия не
+        собиралась вовсе, ни напрямую, ни через посредника.
+        """
+        tries = self.with_old_curl()
+        client_mod.use_doh(CLOUDFLARE)
+        client_mod._make_session()
+
+        self.assertEqual(len(tries), 1, f"пробовали дважды: {tries}")
+        self.assertNotIn("doh_url", tries[0])
+
+    def test_nobody_who_left_the_setting_alone_is_touched(self):
+        """Настройку не трогал — пострадать не должен тем более."""
+        tries = self.with_old_curl()
+        client_mod.use_doh("")
+        session, kind = client_mod._make_session()
+
+        self.assertEqual(kind, "curl_cffi")
+        self.assertIsNotNone(session)
+        self.assertNotIn("doh_url", tries[0])
+
+    def test_the_session_survives_a_wrong_guess_about_the_build(self):
+        """Пояс поверх подтяжек: ошибись разбор подписи — сессия всё
+        равно обязана собраться. Молча остаться без сети хуже, чем
+        остаться без настройки."""
+        tries = self.with_old_curl(knows=True)
+        client_mod.use_doh(CLOUDFLARE)
+
+        session, kind = client_mod._make_session()
+        self.assertEqual(kind, "curl_cffi")
+        self.assertIsNotNone(session)
+        # Первая попытка с доводом, вторая — без него.
+        self.assertEqual(len(tries), 2)
+        self.assertNotIn("doh_url", tries[-1])
+
+
+class TestHowTheBuildIsAskedAboutItself(DnsTestCase):
+    """Спрашиваем сборку, а не гадаем по версии: версий много, а вопрос
+    один — есть ли у неё такой довод."""
+
+    def with_signature(self, **params):
+        """Подменить сборку на такую, чья подпись — вот эта."""
+        from curl_cffi.requests import session as sess
+
+        class Fake:
+            def __init__(self, **kw):
+                pass
+
+        Fake.__init__.__signature__ = __import__("inspect").Signature(
+            [__import__("inspect").Parameter(
+                "self", __import__("inspect").Parameter.POSITIONAL_OR_KEYWORD)]
+            + [__import__("inspect").Parameter(
+                name, __import__("inspect").Parameter.KEYWORD_ONLY,
+                default=None) for name in params])
+
+        was = sess.BaseSession
+        sess.BaseSession = Fake
+        self.addCleanup(setattr, sess, "BaseSession", was)
+
+        was_known = client_mod._DOH_WORKS
+        self.addCleanup(setattr, client_mod, "_DOH_WORKS", was_known)
+        client_mod._DOH_WORKS = None
+
+    def test_a_build_without_the_argument_is_called_out(self):
+        self.with_signature(headers=None, proxies=None, impersonate=None)
+        self.assertFalse(client_mod.doh_works())
+
+    def test_a_build_with_the_argument_is_recognised(self):
+        self.with_signature(headers=None, proxies=None, doh_url=None)
+        self.assertTrue(client_mod.doh_works())
+
+    def test_the_answer_is_counted_once_and_kept(self):
+        """Вопрос задаётся на каждую сессию, а сессий за прогон тысячи."""
+        self.with_signature(doh_url=None)
+        self.assertTrue(client_mod.doh_works())
+
+        from curl_cffi.requests import session as sess
+        sess.BaseSession = None          # спросить второй раз было бы нечем
+        self.assertTrue(client_mod.doh_works())
+
+
+class TestWhatTheOldBuildIsToldToTheHuman(DnsTestCase):
+    """Выбор, который молча ничего не делает, хуже отказа."""
+
+    def not_supported(self):
+        was = client_mod.doh_works
+        client_mod.doh_works = lambda: False
+        self.addCleanup(setattr, client_mod, "doh_works", was)
+
+    def test_the_page_is_told_the_build_cannot_do_it(self):
+        self.not_supported()
+        said = self.client.get("/api/dns").get_json()
+
+        self.assertFalse(said["supported"])
+        self.assertIn("curl_cffi", said["note"])
+
+    def test_choosing_an_address_is_refused_with_words(self):
+        self.not_supported()
+        answer = self.client.post("/api/dns", json={"url": CLOUDFLARE})
+
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("curl_cffi", answer.get_json()["error"])
+        self.assertEqual(self.saved, [])
+
+    def test_going_back_to_the_system_way_is_still_allowed(self):
+        """Иначе человек с такой сборкой не смог бы даже вернуть всё
+        как было, если адрес уже сохранён."""
+        client_mod.use_doh(CLOUDFLARE)
+        self.not_supported()
+        answer = self.client.post("/api/dns", json={"url": ""})
+
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(client_mod.DOH_URL, "")
+
+
 class TestTheKnobOnThePage(DnsTestCase):
 
     def test_it_says_what_is_set_now_and_what_can_be_chosen(self):

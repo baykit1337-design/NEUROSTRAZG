@@ -743,10 +743,19 @@ DOH_CHOICES = (
 )
 
 
+#: Что сказать, когда установленный curl_cffi спрашивать имена по HTTPS
+#: не умеет. Умение появилось не сразу, а программу ставят кто когда.
+DOH_OLD = ("Установленный curl_cffi спрашивать имена по HTTPS не умеет — "
+           "это умеют сборки поновее. Обновите его: "
+           "pip install -U curl_cffi. Пока имена узнаёт система.")
+
+
 @app.get("/api/dns")
 def api_dns_state():
     """Куда программа спрашивает имена хостов."""
-    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES))
+    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES),
+                   supported=client_mod.doh_works(),
+                   note="" if client_mod.doh_works() else DOH_OLD)
 
 
 @app.post("/api/dns")
@@ -770,12 +779,18 @@ def api_dns_save():
                              "имена спрашиваются по HTTPS, иначе их "
                              "видит тот же, кто их сейчас и не отдаёт."), 400
 
+    # Выбор, который молча ничего не делает, хуже отказа: человек уверен,
+    # что настроил, и ищет беду в другом месте.
+    if url and not client_mod.doh_works():
+        return jsonify(error=DOH_OLD), 400
+
     settings.network.doh_url = client_mod.use_doh(url)
     try:
         settings.save()
     except OSError as exc:
         return jsonify(error=f"Не удалось сохранить настройки: {exc}"), 500
-    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES))
+    return jsonify(url=client_mod.DOH_URL, choices=list(DOH_CHOICES),
+                   supported=client_mod.doh_works(), note="")
 
 
 @app.post("/api/proxies/reload")

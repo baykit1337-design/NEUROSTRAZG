@@ -10,6 +10,7 @@ Chrome — обычный requests Cloudflare отсекает по TLS-отпе
 
 from __future__ import annotations
 
+import inspect
 import logging
 import random
 import re
@@ -130,6 +131,34 @@ def use_doh(url: str) -> str:
     return DOH_URL
 
 
+def doh_works() -> bool:
+    """Умеет ли установленный curl_cffi спрашивать имена по HTTPS.
+
+    Умение это появилось не сразу, а программу ставят кто когда. Спросить
+    надо **до** запроса: старая сборка спотыкается о само имя довода, а не
+    о его значение, — передай мы его всегда, и сеть отвалится целиком у
+    того, кто эту настройку даже не трогал. Ровно так и вышло.
+
+    Ответ не меняется за время работы, поэтому считается один раз.
+    """
+    global _DOH_WORKS
+    if _DOH_WORKS is None:
+        try:
+            from curl_cffi.requests.session import BaseSession
+
+            _DOH_WORKS = "doh_url" in inspect.signature(
+                BaseSession.__init__).parameters
+        except Exception:  # noqa: BLE001 — не знаем наверняка, значит нет
+            log.info("Умеет ли curl_cffi спрашивать имена по HTTPS — "
+                     "выяснить не вышло; считаем, что нет")
+            _DOH_WORKS = False
+    return _DOH_WORKS
+
+
+#: Ответ `doh_works`, посчитанный один раз. None — ещё не спрашивали.
+_DOH_WORKS: bool | None = None
+
+
 # Сохранённое применяем сразу, при загрузке модуля. Клиентов создают и
 # веб-морда, и командная строка; жди мы вызова снаружи — забыть его в
 # одном из входов было бы вопросом времени.
@@ -152,8 +181,23 @@ def _make_session(proxy_url: str | None = None):
         # Имя хоста спрашивается по HTTPS, мимо DNS провайдера. Нужно
         # там, где провайдер служебный хост источника не отдаёт: сайт при
         # этом жив, а программа до него не доходит вовсе.
-        session = curl_requests.Session(impersonate="chrome", proxies=proxies,
-                                        doh_url=DOH_URL or None)
+        #
+        # Довод передаётся, только когда он и задан, и понятен этой сборке
+        # curl_cffi. Передавать его всегда было ошибкой, и дорогой:
+        # старые сборки спотыкаются о само имя довода, а не о значение, —
+        # и качалка легла целиком, даже у тех, кто DNS не трогал вовсе.
+        extra = {"doh_url": DOH_URL} if DOH_URL and doh_works() else {}
+        try:
+            session = curl_requests.Session(impersonate="chrome",
+                                            proxies=proxies, **extra)
+        except TypeError:
+            # Пояс поверх подтяжек: ошибись мы в разборе подписи — сессия
+            # всё равно соберётся, просто без DoH. Молча остаться без
+            # сети куда хуже, чем остаться без настройки.
+            log.warning("Этой сборке curl_cffi довод doh_url незнаком — "
+                        "имена спрашиваем как в системе")
+            session = curl_requests.Session(impersonate="chrome",
+                                            proxies=proxies)
         return session, "curl_cffi"
     except ImportError:
         pass
