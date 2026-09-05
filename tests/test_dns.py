@@ -176,48 +176,61 @@ class TestAnOlderCurlCffiKeepsWorking(DnsTestCase):
 
 
 class TestHowTheBuildIsAskedAboutItself(DnsTestCase):
-    """Спрашиваем сборку, а не гадаем по версии: версий много, а вопрос
-    один — есть ли у неё такой довод."""
+    """Спрашиваем сборку пробой, а не чтением подписи.
 
-    def with_signature(self, **params):
-        """Подменить сборку на такую, чья подпись — вот эта."""
-        from curl_cffi.requests import session as sess
+    Подпись врёт: обёртки берут `**kwargs` и передают их дальше, а
+    внутренности между версиями переезжают. Собранная на выброс сессия
+    отвечает ровно так, как ответит настоящая, — и ошибиться тут нельзя,
+    ошибка здесь стоит человеку всей сети.
+    """
 
-        class Fake:
+    def with_build(self, knows: bool):
+        """Подменить curl_cffi на сборку, которая умеет или не умеет."""
+        from curl_cffi import requests as curl_requests
+
+        class Build:
             def __init__(self, **kw):
+                if "doh_url" in kw and not knows:
+                    raise TypeError(
+                        "BaseSession.__init__() got an unexpected keyword "
+                        "argument 'doh_url'")
+
+            def close(self):
                 pass
 
-        Fake.__init__.__signature__ = __import__("inspect").Signature(
-            [__import__("inspect").Parameter(
-                "self", __import__("inspect").Parameter.POSITIONAL_OR_KEYWORD)]
-            + [__import__("inspect").Parameter(
-                name, __import__("inspect").Parameter.KEYWORD_ONLY,
-                default=None) for name in params])
-
-        was = sess.BaseSession
-        sess.BaseSession = Fake
-        self.addCleanup(setattr, sess, "BaseSession", was)
+        was = curl_requests.Session
+        curl_requests.Session = Build
+        self.addCleanup(setattr, curl_requests, "Session", was)
 
         was_known = client_mod._DOH_WORKS
         self.addCleanup(setattr, client_mod, "_DOH_WORKS", was_known)
         client_mod._DOH_WORKS = None
 
-    def test_a_build_without_the_argument_is_called_out(self):
-        self.with_signature(headers=None, proxies=None, impersonate=None)
+    def test_a_build_that_refuses_the_argument_is_called_out(self):
+        self.with_build(knows=False)
         self.assertFalse(client_mod.doh_works())
 
-    def test_a_build_with_the_argument_is_recognised(self):
-        self.with_signature(headers=None, proxies=None, doh_url=None)
+    def test_a_build_that_takes_it_is_recognised(self):
+        self.with_build(knows=True)
         self.assertTrue(client_mod.doh_works())
 
     def test_the_answer_is_counted_once_and_kept(self):
-        """Вопрос задаётся на каждую сессию, а сессий за прогон тысячи."""
-        self.with_signature(doh_url=None)
+        """Вопрос встал бы на каждую сессию, а сессий за прогон тысячи."""
+        self.with_build(knows=True)
         self.assertTrue(client_mod.doh_works())
 
-        from curl_cffi.requests import session as sess
-        sess.BaseSession = None          # спросить второй раз было бы нечем
+        from curl_cffi import requests as curl_requests
+        curl_requests.Session = None     # спросить второй раз было бы нечем
         self.assertTrue(client_mod.doh_works())
+
+    def test_the_note_for_the_log_says_what_it_can(self):
+        """Первый вопрос при «ничего не работает» — какая сборка на диске.
+        Без ответа разговор идёт вслепую; это уже стоило вечера."""
+        self.with_build(knows=False)
+        said = client_mod.about()
+
+        self.assertIn("curl_cffi", said)
+        self.assertIn("не умеет", said)
 
 
 class TestWhatTheOldBuildIsToldToTheHuman(DnsTestCase):

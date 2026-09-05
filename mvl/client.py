@@ -10,7 +10,6 @@ Chrome — обычный requests Cloudflare отсекает по TLS-отпе
 
 from __future__ import annotations
 
-import inspect
 import logging
 import random
 import re
@@ -139,20 +138,47 @@ def doh_works() -> bool:
     о его значение, — передай мы его всегда, и сеть отвалится целиком у
     того, кто эту настройку даже не трогал. Ровно так и вышло.
 
+    Проверяем пробой, а не чтением подписи. Подпись врёт: обёртки берут
+    `**kwargs` и передают их дальше, внутренности между версиями переезжают, и
+    прочитанное имя ничего не гарантирует. Собранная на выброс сессия
+    отвечает на вопрос ровно так, как ответит настоящая.
+
     Ответ не меняется за время работы, поэтому считается один раз.
     """
     global _DOH_WORKS
     if _DOH_WORKS is None:
+        _DOH_WORKS = False
         try:
-            from curl_cffi.requests.session import BaseSession
+            from curl_cffi import requests as curl_requests
 
-            _DOH_WORKS = "doh_url" in inspect.signature(
-                BaseSession.__init__).parameters
-        except Exception:  # noqa: BLE001 — не знаем наверняка, значит нет
+            probe = curl_requests.Session(doh_url="https://example.invalid/q")
+            probe.close()
+            _DOH_WORKS = True
+        except TypeError:
+            log.info("curl_cffi постарше: имена по HTTPS спрашивать не умеет")
+        except Exception as trouble:  # noqa: BLE001 — не знаем, значит нет
             log.info("Умеет ли curl_cffi спрашивать имена по HTTPS — "
-                     "выяснить не вышло; считаем, что нет")
-            _DOH_WORKS = False
+                     "выяснить не вышло (%s); считаем, что нет", trouble)
     return _DOH_WORKS
+
+
+def about() -> str:
+    """Строка для журнала: чем ходим в сеть и что оно умеет.
+
+    Нужна не для красоты. Когда у человека «ничего не работает», первый
+    вопрос — какая сборка у него на диске; без ответа на него разговор
+    идёт вслепую, и это уже стоило рабочего вечера.
+    """
+    try:
+        import curl_cffi
+
+        which = getattr(curl_cffi, "__version__", "?")
+    except Exception as trouble:  # noqa: BLE001 — нет его, так и скажем
+        log.warning("curl_cffi не читается: %s", trouble)
+        return f"curl_cffi недоступен ({trouble})"
+    return (f"curl_cffi {which}, имена по HTTPS "
+            + ("умеет" if doh_works() else "не умеет")
+            + (f", спрашиваем через {DOH_URL}" if DOH_URL else ""))
 
 
 #: Ответ `doh_works`, посчитанный один раз. None — ещё не спрашивали.
