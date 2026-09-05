@@ -37,6 +37,17 @@ class Novel:
     #: открыли. Источник, у которого обложек нет, оставляет пустым.
     cover: str = ""
 
+    #: Описание, жанры и теги сайта. Нужны библиотеке: карточка книги
+    #: собирается один раз, при скачивании, и потом её уже не у кого
+    #: спросить — сайт может лечь, а книга остаётся.
+    #:
+    #: Теги здесь не те, что в библиотеке: там метки, которые ставит
+    #: человек, и путать их нельзя — сайт бы их затирал при каждом
+    #: обновлении.
+    about: str = ""
+    genres: list = field(default_factory=list)
+    tags: list = field(default_factory=list)
+
     @property
     def read_link(self) -> str:
         return chapter_url(self.code, 1)
@@ -60,6 +71,9 @@ class Novel:
             "status": self.status,
             "language": self.language,
             "cover": self.cover,
+            "about": self.about,
+            "genres": list(self.genres or []),
+            "tags": list(self.tags or []),
         }
 
 

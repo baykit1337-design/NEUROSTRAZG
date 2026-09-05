@@ -1012,6 +1012,8 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
         class FakeNovel:
             name, slug, author, cover = "Книга", "kniga", "Автор", ""
             code, total_chapters = 1, 5
+            about, status, language = "Про охотниц", "выходит", "ru"
+            genres, tags = ["Фэнтези"], ["Гарем"]
 
         class FakeSource:
             key = "novelcms"
@@ -1213,6 +1215,34 @@ class TestTheProgressReachesTheScreen(unittest.TestCase):
 
         self.assertEqual(seen.get("workers"), 5)
 
+    def test_what_the_site_says_about_the_book_is_kept(self):
+        """Описание собирается один раз, при скачивании: потом спросить
+        будет не у кого — сайт ляжет, а книга в библиотеке останется."""
+        self.said = []
+        job = self.start()
+        self.finish(job)
+
+        book = library.all_books()[0]
+        self.assertEqual(book.about, "Про охотниц")
+        self.assertEqual(book.genres, ["Фэнтези"])
+        self.assertEqual(book.site_tags, ["Гарем"])
+
+    def test_the_book_lands_in_the_library_once_not_twice(self):
+        """Запись до качания и запись после должны попасть в одну строку.
+
+        Ключ считается по адресу, а у строки очереди он свой — тот, что
+        человек вставил, — тогда как у найденной книги свой слаг. Разойдись
+        они, и одна книга легла бы в библиотеку дважды: раз пустой, раз с
+        описанием.
+        """
+        self.said = []
+        job = self.start()
+        self.finish(job)
+
+        rows = library.all_books()
+        self.assertEqual(len(rows), 1, [one.key for one in rows])
+        self.assertEqual(rows[0].about, "Про охотниц")
+
     def test_the_client_is_told_about_the_stop_button(self):
         """Качалка смотрит на флаг между главами, а лесенка повторов
         внутри клиента про него не знала: на мёртвом адресе «Остановить»
@@ -1262,3 +1292,130 @@ class TestHowManyBooksTheProxiesAllow(unittest.TestCase):
         адреса: сайт закроется, и виноват будет не он."""
         plan = downloads.spread(100, 1, 100)
         self.assertEqual(len(plan), downloads.MAX_AT_ONCE)
+
+
+class TestTheNightGoesTheWholeRound(unittest.TestCase):
+    """Ночь должна спросить, добрать и только потом качать.
+
+    Раньше она начиналась сразу с прогона — и гнала пустую очередь: число
+    глав записывает прогон, а спросить, вышли ли новые, было некому. Так
+    «постоянно качать обновления» работало ровно до тех пор, пока человек
+    сам не нажимал две кнопки перед сном.
+    """
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        from webapp import app as web
+
+        self.web = web
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+
+        for module, name in ((downloads, "QUEUE_FILE"),
+                             (library, "LIBRARY_FILE")):
+            was = getattr(module, name)
+            setattr(module, name, self.tmp / f"{name.lower()}.json")
+            self.addCleanup(setattr, module, name, was)
+
+    def a_book_with_new_chapters(self):
+        library.remember("k", name="Книга", source="novelcms",
+                         address="https://x/read/1/",
+                         folder=str(self.tmp / "Книга"),
+                         chapters=10, last=5)
+
+    def test_the_sites_are_asked_before_anything_is_downloaded(self):
+        asked = []
+        was = self.web._check_updates
+        self.web._check_updates = lambda keys, cancel=None: (
+            asked.extend(keys) or ([], []))
+        self.addCleanup(setattr, self.web, "_check_updates", was)
+
+        self.a_book_with_new_chapters()
+        self.web._nightly_catch_up()
+
+        self.assertEqual(asked, ["k"])
+
+    def test_a_book_with_new_chapters_lands_in_the_queue(self):
+        was = self.web._check_updates
+        self.web._check_updates = lambda keys, cancel=None: (list(keys), [])
+        self.addCleanup(setattr, self.web, "_check_updates", was)
+
+        self.a_book_with_new_chapters()
+        added = self.web._nightly_catch_up()
+
+        self.assertEqual(added, 1)
+        self.assertEqual([one.name for one in downloads.all_items()],
+                         ["Книга"])
+
+    def test_a_book_without_new_chapters_is_left_alone(self):
+        was = self.web._check_updates
+        self.web._check_updates = lambda keys, cancel=None: (list(keys), [])
+        self.addCleanup(setattr, self.web, "_check_updates", was)
+
+        library.remember("k", name="Книга", source="novelcms",
+                         address="https://x/read/1/",
+                         folder=str(self.tmp / "Книга"),
+                         chapters=5, last=5)
+        self.assertEqual(self.web._nightly_catch_up(), 0)
+
+    def test_a_book_nobody_knows_how_to_download_is_not_asked_about(self):
+        """Спрашивать не у кого: источник у неё не записан."""
+        asked = []
+        was = self.web._check_updates
+        self.web._check_updates = lambda keys, cancel=None: (
+            asked.extend(keys) or ([], []))
+        self.addCleanup(setattr, self.web, "_check_updates", was)
+
+        library.remember("руками", name="Вписана руками")
+        self.web._nightly_catch_up()
+
+        self.assertEqual(asked, [])
+
+    def test_the_tick_catches_up_before_it_starts_the_run(self):
+        """Порядок и есть вся суть: спросить, добрать, потом качать.
+
+        Убери первый шаг — очередь останется пустой, и ночь пройдёт
+        впустую, ничем себя не выдав.
+        """
+        order = []
+        for name, mark in (("_nightly_catch_up", "добрали"),
+                           ("_downloads_start", "погнали")):
+            was = getattr(self.web, name)
+            setattr(self.web, name, lambda *a, _m=mark, **kw:
+                    order.append(_m) or 0)
+            self.addCleanup(setattr, self.web, name, was)
+
+        was_due = self.web.schedule_op.due
+        was_mark = self.web.schedule_op.mark
+        was_get = self.web.schedule_op.get
+        self.web.schedule_op.due = lambda: True
+        self.web.schedule_op.mark = lambda: None
+        self.web.schedule_op.get = lambda: SimpleNamespace(payload={})
+        for name, value in (("due", was_due), ("mark", was_mark),
+                            ("get", was_get)):
+            self.addCleanup(setattr, self.web.schedule_op, name, value)
+
+        self.assertTrue(self.web._schedule_tick())
+        self.assertEqual(order, ["добрали", "погнали"])
+
+    def test_nothing_happens_when_the_hour_has_not_come(self):
+        was = self.web.schedule_op.due
+        self.web.schedule_op.due = lambda: False
+        self.addCleanup(setattr, self.web.schedule_op, "due", was)
+
+        self.assertFalse(self.web._schedule_tick())
+
+    def test_one_silent_site_does_not_cost_the_whole_night(self):
+        """Прогон всё равно заберёт то, что уже стоит в очереди."""
+        was = self.web._check_updates
+
+        def broken(keys, cancel=None):
+            raise RuntimeError("сайт молчит")
+
+        self.web._check_updates = broken
+        self.addCleanup(setattr, self.web, "_check_updates", was)
+
+        self.a_book_with_new_chapters()
+        self.assertEqual(self.web._nightly_catch_up(), 0)

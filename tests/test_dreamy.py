@@ -174,6 +174,21 @@ class TestTheBookCard(unittest.TestCase):
         self.assertEqual(book.total_chapters, 97)
         self.assertEqual(book.cover, "https://s.example/cover.jpg")
 
+    def test_the_description_and_the_genres_come_along(self):
+        """Спросить их потом будет не у кого: сайт может лечь, а книга в
+        библиотеке останется."""
+        book = self.source.find(self.client, NOVEL_URL)
+
+        self.assertEqual(book.about, BOOK["synopsis"])
+        self.assertEqual(book.genres, ["Fantasy", "Drama"])
+        self.assertEqual(book.tags, ["Male Protagonist"])
+
+    def test_the_site_tags_are_kept_apart_from_our_own(self):
+        """В библиотеке теги — метки человека. Складывай мы туда же
+        чужие, сайт затирал бы их при каждом обновлении."""
+        book = self.source.find(self.client, NOVEL_URL)
+        self.assertNotIn("genres", book.tags)
+
     def test_the_book_is_marked_as_english_not_guessed_later(self):
         """Оттуда книга приходит уже переведённой, и это её свойство."""
         self.assertEqual(self.source.find(self.client, NOVEL_URL).language,

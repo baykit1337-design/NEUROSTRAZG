@@ -1005,6 +1005,24 @@
      и цвет здесь говорит именно об этом. */
   #lbList .lb-where a{color:#c9a6ff}
   #lbList .lb-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  /* Заголовок, по которому раскрывается описание. Курсор — единственная
+     примета, что по нему вообще можно нажать. */
+  #lbList .lb-name.lb-open{cursor:pointer}
+  #lbList .lb-name.lb-open:hover{color:#c9a6ff}
+  #lbList .lb-more{
+    margin-top:8px;
+    padding:8px 10px;
+    border-radius:10px;
+    background:rgba(255,255,255,.03);
+    border:1px solid rgba(255,255,255,.06);
+  }
+  #lbList .lb-about{
+    margin:6px 0 0;
+    font-size:13px;
+    line-height:1.55;
+    white-space:pre-wrap;
+    color:var(--muted);
+  }
   #lbList .lb-note{margin-top:8px;font-size:13px;padding:6px 10px}
   #lbList .lb-deeds{
     display:flex;flex-direction:column;gap:6px;flex:0 0 auto;min-width:132px;
@@ -5422,6 +5440,77 @@ function libWhere(box, label, site, link){
   }
 }
 
+/** Что сайт рассказал о книге: описание, жанры, теги.
+ *
+ *  Показываем перевод, если он есть, — и говорим, что это перевод.
+ *  «Показано по-русски» и «показан оригинал» — разные вещи, и человек
+ *  вправе видеть, что именно перед ним, а не гадать.
+ *
+ *  Пусто — блока нет вовсе: пустая раскрывашка обещает то, чего внутри
+ *  не окажется.
+ */
+function libAbout(book){
+  const about = book.about_shown || '';
+  const genres = book.genres_shown || [];
+  const tags = book.site_tags_shown || [];
+  if(!about && !genres.length && !tags.length && !book.status) return null;
+
+  const box = document.createElement('div');
+  box.className = 'lb-more';
+  box.hidden = true;
+
+  const head = [];
+  if(book.status) head.push(book.status);
+  if(book.language) head.push(book.language);
+  head.push(book.translated ? 'по-русски' : 'как на сайте');
+  const mark = document.createElement('div');
+  mark.className = 'lb-where';
+  mark.textContent = head.join(' · ');
+  box.append(mark);
+
+  if(about){
+    const text = document.createElement('p');
+    text.className = 'lb-about';
+    text.textContent = about;
+    box.append(text);
+
+    // Оригинал под рукой: перевод бывает вольным, и сверить хочется, не
+    // уходя со страницы.
+    if(book.about_ru && book.about && book.about !== book.about_ru){
+      const swap = document.createElement('button');
+      swap.className = 'lbchip';
+      let shown = true;
+      swap.textContent = 'показать оригинал';
+      swap.onclick = () => {
+        shown = !shown;
+        text.textContent = shown ? book.about_ru : book.about;
+        swap.textContent = shown ? 'показать оригинал' : 'показать перевод';
+      };
+      box.append(swap);
+    }
+  }
+
+  for(const [label, rows] of [['жанры', genres], ['теги сайта', tags]]){
+    if(!rows.length) continue;
+    const line = document.createElement('div');
+    line.className = 'lb-chips';
+    const title = document.createElement('span');
+    title.className = 'lb-where';
+    title.textContent = label + ': ';
+    line.append(title);
+    for(const one of rows){
+      const chip = document.createElement('span');
+      // Не кнопка: это чужие слова, снимать их человеку нечего — сайт
+      // вернёт их при первой же проверке обновлений.
+      chip.className = 'lbchip auto';
+      chip.textContent = one;
+      line.append(chip);
+    }
+    box.append(line);
+  }
+  return box;
+}
+
 function libCard(book){
   const card = document.createElement('div');
   card.className = 'lb';
@@ -5484,6 +5573,16 @@ function libCard(book){
     news.className = 'lb-where lb-new';
     news.textContent = `Вышло новых глав: ${book.fresh}`;
     side.append(news);
+  }
+
+  // То, что сайт рассказал о книге. Свёрнуто: в списке на две сотни книг
+  // описания превратили бы его в простыню, а нужны они по одному.
+  const more = libAbout(book);
+  if(more){
+    name.classList.add('lb-open');
+    name.title = 'Показать описание, жанры и теги';
+    name.onclick = () => { more.hidden = !more.hidden; };
+    side.append(more);
   }
 
   const chips = document.createElement('div');

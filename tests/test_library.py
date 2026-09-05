@@ -700,3 +700,102 @@ class TestOwnTags(Base):
         many = ",".join(f"тег{n}" for n in range(library.MAX_TAGS + 10))
         self.assertEqual(len(library.split_tags(many)), library.MAX_TAGS)
 
+
+
+class TestWhatTheSiteSaysAboutTheBook(unittest.TestCase):
+    """Описание, жанры и теги сайта — та самая «история для библиотеки».
+
+    Собирается один раз, при скачивании: потом спросить будет не у кого —
+    сайт ляжет, а книга останется.
+    """
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        was = library.LIBRARY_FILE
+        library.LIBRARY_FILE = Path(self.dir.name) / "library.json"
+        self.addCleanup(setattr, library, "LIBRARY_FILE", was)
+
+    def test_the_site_words_are_kept(self):
+        library.remember("k", name="Книга", about="Про охотниц",
+                         genres=["Фэнтези", "Драма"],
+                         site_tags=["Гарем"], status="выходит")
+        book = library.get("k")
+
+        self.assertEqual(book.about, "Про охотниц")
+        self.assertEqual(book.genres, ["Фэнтези", "Драма"])
+        self.assertEqual(book.site_tags, ["Гарем"])
+
+    def test_the_site_tags_do_not_touch_the_ones_a_human_put(self):
+        """Складывай мы их в одно место, обновление затирало бы то, что
+        человек расставил руками."""
+        library.remember("k", name="Книга", tags=["читать зимой"])
+        library.remember("k", site_tags=["Гарем", "R19"])
+        book = library.get("k")
+
+        self.assertEqual(book.tags, ["читать зимой"])
+        self.assertEqual(book.site_tags, ["Гарем", "R19"])
+
+    def test_a_translation_survives_the_next_update(self):
+        """Перевод стоит денег и времени. Затри его свежий оригинал при
+        очередной проверке обновлений — и обиднее не придумаешь."""
+        library.remember("k", name="Book", about="About hunters")
+        library.remember("k", about_ru="Про охотниц",
+                         genres_ru=["Фэнтези"], name_ru="Книга")
+
+        # Проверка обновлений приносит оригинал заново — и только его.
+        library.remember("k", about="About hunters, updated",
+                         genres=["Fantasy", "Drama"])
+        book = library.get("k")
+
+        self.assertEqual(book.about_ru, "Про охотниц")
+        self.assertEqual(book.genres_ru, ["Фэнтези"])
+        self.assertEqual(book.name_ru, "Книга")
+        # Оригинал при этом обновился: он для того и приходил.
+        self.assertEqual(book.about, "About hunters, updated")
+
+    def test_the_card_shows_russian_when_there_is_russian(self):
+        library.remember("k", name="Book", about="About hunters",
+                         genres=["Fantasy"], site_tags=["Harem"])
+        self.assertEqual(library.get("k").about_shown, "About hunters")
+
+        library.remember("k", about_ru="Про охотниц", genres_ru=["Фэнтези"],
+                         site_tags_ru=["Гарем"])
+        book = library.get("k")
+
+        self.assertEqual(book.about_shown, "Про охотниц")
+        self.assertEqual(book.genres_shown, ["Фэнтези"])
+        self.assertEqual(book.site_tags_shown, ["Гарем"])
+
+    def test_the_card_says_whether_it_is_translated_at_all(self):
+        """«Показано по-русски» и «показан оригинал» — разные вещи, и
+        человек вправе видеть, что именно перед ним."""
+        library.remember("k", name="Book", about="About hunters")
+        self.assertFalse(library.get("k").translated)
+
+        library.remember("k", about_ru="Про охотниц")
+        self.assertTrue(library.get("k").translated)
+
+    def test_all_of_it_survives_a_restart(self):
+        """Библиотека живёт в файле: не переживи это перезапуск — вся
+        затея с историей была бы напрасной."""
+        library.remember("k", name="Book", about="About hunters",
+                         about_ru="Про охотниц", genres=["Fantasy"],
+                         genres_ru=["Фэнтези"], site_tags=["Harem"],
+                         status="выходит", language="en")
+
+        again = library.get("k")
+        self.assertEqual(again.about_ru, "Про охотниц")
+        self.assertEqual(again.genres_ru, ["Фэнтези"])
+        self.assertEqual(again.status, "выходит")
+        self.assertEqual(again.language, "en")
+
+    def test_the_page_gets_both_the_original_and_what_to_show(self):
+        library.remember("k", name="Book", about="About hunters",
+                         about_ru="Про охотниц")
+        data = library.get("k").as_dict()
+
+        self.assertEqual(data["about"], "About hunters")
+        self.assertEqual(data["about_ru"], "Про охотниц")
+        self.assertEqual(data["about_shown"], "Про охотниц")
+        self.assertTrue(data["translated"])

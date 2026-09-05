@@ -117,6 +117,26 @@ class Book:
     last: int = 0
     skipped: int = 0
 
+    #: Что сайт рассказывает о книге. Собирается один раз, при
+    #: скачивании: потом спросить будет не у кого — сайт ляжет, а книга
+    #: в библиотеке останется.
+    #:
+    #: У каждого поля есть русский двойник. Перевод, однажды сделанный,
+    #: стоит денег и времени, и затирать его свежим оригиналом при
+    #: очередной проверке обновлений было бы обиднее всего.
+    about: str = ""
+    about_ru: str = ""
+    genres: list = field(default_factory=list)
+    genres_ru: list = field(default_factory=list)
+    #: Теги **сайта**, а не человека. Свои лежат в `tags` и сайту не
+    #: принадлежат: складывай мы их в одно место, обновление затирало бы
+    #: то, что человек расставил руками.
+    site_tags: list = field(default_factory=list)
+    site_tags_ru: list = field(default_factory=list)
+    #: Выходит или закончена, и на каком языке лежит у источника.
+    status: str = ""
+    language: str = ""
+
     marks: list = field(default_factory=list)
     tags: list = field(default_factory=list)
     note: str = ""
@@ -149,6 +169,29 @@ class Book:
         """Как книгу называть человеку: перевод, если он есть."""
         return self.name_ru or self.name or self.key
 
+    @property
+    def about_shown(self) -> str:
+        """Описание, которое показывают: перевод, если он есть."""
+        return self.about_ru or self.about
+
+    @property
+    def genres_shown(self) -> list:
+        return list(self.genres_ru or self.genres or [])
+
+    @property
+    def site_tags_shown(self) -> list:
+        return list(self.site_tags_ru or self.site_tags or [])
+
+    @property
+    def translated(self) -> bool:
+        """Переведено ли хоть что-то из описания.
+
+        Нужно карточке: «показано по-русски» и «показан оригинал» —
+        разные вещи, и человек вправе видеть, что именно перед ним.
+        """
+        return bool(self.about_ru or self.genres_ru or self.site_tags_ru
+                    or self.name_ru)
+
     def as_dict(self) -> dict:
         data = {
             "key": self.key, "name": self.name, "name_ru": self.name_ru,
@@ -161,12 +204,21 @@ class Book:
             "skipped": self.skipped,
             "marks": list(self.marks), "tags": list(self.tags),
             "note": self.note,
+            "about": self.about, "about_ru": self.about_ru,
+            "genres": list(self.genres), "genres_ru": list(self.genres_ru),
+            "site_tags": list(self.site_tags),
+            "site_tags_ru": list(self.site_tags_ru),
+            "status": self.status, "language": self.language,
             "first_seen": self.first_seen, "last_run": self.last_run,
         }
         # Считаемые поля отдаём наружу, но не пишем в файл: сохранённое
         # «есть новые главы» через день соврало бы.
         data.update(title=self.title, downloaded=self.downloaded,
-                    fresh=self.fresh, auto=self.auto)
+                    fresh=self.fresh, auto=self.auto,
+                    about_shown=self.about_shown,
+                    genres_shown=self.genres_shown,
+                    site_tags_shown=self.site_tags_shown,
+                    translated=self.translated)
         return data
 
     @classmethod
@@ -195,6 +247,14 @@ class Book:
             marks=rows("marks"),
             tags=rows("tags"),
             note=str(data.get("note") or ""),
+            about=str(data.get("about") or ""),
+            about_ru=str(data.get("about_ru") or ""),
+            genres=rows("genres"),
+            genres_ru=rows("genres_ru"),
+            site_tags=rows("site_tags"),
+            site_tags_ru=rows("site_tags_ru"),
+            status=str(data.get("status") or ""),
+            language=str(data.get("language") or ""),
             first_seen=str(data.get("first_seen") or ""),
             last_run=str(data.get("last_run") or ""),
         )

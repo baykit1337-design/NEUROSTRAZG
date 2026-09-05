@@ -310,6 +310,15 @@ class DreamySource(Source):
             status="завершена" if book.get("completed") else "выходит",
             language="en",
             cover=found.group(1) if found else "",
+            # Описание, жанры и теги забираем сразу: спросить их потом
+            # будет не у кого — сайт может лечь, а книга в библиотеке
+            # останется.
+            about=str(book.get("synopsis")
+                      or book.get("short_synopsis") or "").strip(),
+            genres=[str(one).strip() for one in (book.get("genres") or [])
+                    if str(one).strip()],
+            tags=[str(one).strip() for one in (book.get("tags") or [])
+                  if str(one).strip()],
         )
 
     def toc(self, client, novel: Novel, first: int = 1, last: int | None = None,

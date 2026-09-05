@@ -838,8 +838,25 @@ def api_library_check():
     if payload.get("key"):
         keys.append(str(payload["key"]))
 
+    checked, missed = _check_updates(keys)
+    return jsonify(
+        checked=checked, missed=missed,
+        left=max(0, len(keys) - CHECK_AT_ONCE),
+        books=[_book_out(b) for b in library_op.all_books()],
+        state=library_op.state(),
+    )
+
+
+def _check_updates(keys, cancel=None) -> tuple[list, list]:
+    """Спросить у сайтов, сколько глав в этих книгах сейчас.
+
+    Тело отдельно от маршрута по той же причине, что и наполнение
+    очереди: ночью спрашивают то же самое и теми же словами.
+    """
     checked, missed = [], []
-    for key in keys[:CHECK_AT_ONCE]:
+    for key in list(keys)[:CHECK_AT_ONCE]:
+        if cancel is not None and cancel.is_set():
+            break
         book = library_op.get(key)
         if book is None or not book.source or not book.address:
             # Книга, которую вставили руками и не качали, спрашивать не у
@@ -860,19 +877,18 @@ def api_library_check():
                 novel, _ = _find_via_proxy(source, book.address, direct)
                 if novel is None:
                     raise
-            library_op.remember(key, chapters=int(novel.total_chapters or 0))
+            # Заодно освежаем описание и жанры: сайт мог их дополнить, а
+            # спрашивать книгу второй раз только ради этого — лишний
+            # запрос. Русские двойники сюда не приходят и потому целы.
+            library_op.remember(key, chapters=int(novel.total_chapters or 0),
+                                **_about_fields(novel, {}))
             checked.append(key)
         except (HttpError, sources.SourceBroken, LookupError, ValueError) as exc:
             missed.append({"key": key, "why": str(exc)})
         finally:
             client.close()
 
-    return jsonify(
-        checked=checked, missed=missed,
-        left=max(0, len(keys) - CHECK_AT_ONCE),
-        books=[_book_out(b) for b in library_op.all_books()],
-        state=library_op.state(),
-    )
+    return checked, missed
 
 
 @app.post("/api/library/tags")
@@ -993,7 +1009,17 @@ def api_downloads_fill():
     берёт источник и адрес у каждой книги свои.
     """
     payload = request.json or {}
-    keys = {str(k) for k in (payload.get("keys") or []) if str(k)}
+    added, missed = _fill_queue(payload.get("keys") or [])
+    return jsonify(added=added, missed=missed, **_queue_out())
+
+
+def _fill_queue(keys=()) -> tuple[int, list]:
+    """Тело наполнения отдельно от маршрута: тем же путём ходит ночь.
+
+    Иначе ночной обход повторял бы двадцать строк и разошёлся бы с
+    кнопкой на второй же правке — ровно как это уже было с запуском.
+    """
+    keys = {str(k) for k in (keys or []) if str(k)}
     books = [b for b in library_op.all_books()
              if (b.key in keys if keys else b.fresh)]
 
@@ -1013,7 +1039,7 @@ def api_downloads_fill():
                     "name": book.name, "name_ru": book.name_ru},
         )
         added += 1
-    return jsonify(added=added, missed=missed, **_queue_out())
+    return added, missed
 
 
 def _source_for(address: str) -> str:
@@ -1103,6 +1129,26 @@ def api_schedule_save():
 SCHEDULE_TICK = 30.0
 
 
+def _nightly_catch_up() -> int:
+    """Обойти библиотеку и добрать в очередь всё, где вышли главы.
+
+    Возвращает, сколько книг добавилось. Ошибки наружу не выходят: ночь
+    не должна срываться из-за одного молчащего сайта, а прогон всё равно
+    заберёт то, что уже стоит в очереди.
+    """
+    try:
+        keys = [book.key for book in library_op.all_books()
+                if book.source and book.address]
+        checked, missed = _check_updates(keys)
+        if missed:
+            log.info("Расписание: не ответили по %s книгам", len(missed))
+        added, _ = _fill_queue()
+        return added
+    except Exception as exc:  # noqa: BLE001 — ночь важнее одной ошибки
+        log.warning("Расписание: обход библиотеки не вышел: %s", exc)
+        return 0
+
+
 def _watch_schedule() -> None:
     """Ночной сторож: наступило время — запускает очередь книг.
 
@@ -1112,21 +1158,40 @@ def _watch_schedule() -> None:
     while True:
         time.sleep(SCHEDULE_TICK)
         try:
-            if not schedule_op.due():
-                continue
-            # Очередь уже качается — второй запуск ей ни к чему.
-            with JOBS_LOCK:
-                busy = any(job.running and job.kind == "downloads"
-                           for job in JOBS.values())
-            if busy:
-                continue
-            plan = schedule_op.get()
-            schedule_op.mark()
-            log.info("Расписание: запускаем очередь книг")
-            with app.test_request_context():
-                _downloads_start(plan.payload)
+            _schedule_tick()
         except Exception as exc:  # noqa: BLE001 — сторож не должен падать
             log.warning("Расписание не сработало: %s", exc)
+
+
+def _schedule_tick() -> bool:
+    """Один взгляд на часы. True — ночная работа началась.
+
+    Отдельно от вечного цикла затем, что проверить цикл нечем: он спит
+    полминуты и не кончается. А проверять тут есть что — порядок трёх
+    шагов, из-за которого ночь однажды и проходила впустую.
+    """
+    if not schedule_op.due():
+        return False
+    # Очередь уже качается — второй запуск ей ни к чему.
+    with JOBS_LOCK:
+        busy = any(job.running and job.kind == "downloads"
+                   for job in JOBS.values())
+    if busy:
+        return False
+
+    plan = schedule_op.get()
+    schedule_op.mark()
+    log.info("Расписание: спрашиваем сайты про новые главы")
+    # Сперва спросить, потом добрать, и только потом качать. Раньше ночь
+    # начиналась сразу с прогона — и гнала пустую очередь: число глав
+    # записывает прогон, а спросить, вышли ли новые, было некому. Так
+    # «постоянно качать обновления» работало ровно до тех пор, пока
+    # человек сам не нажимал две кнопки перед сном.
+    fresh = _nightly_catch_up()
+    log.info("Расписание: запускаем очередь книг (добрано %s)", fresh)
+    with app.test_request_context():
+        _downloads_start(plan.payload)
+    return True
 
 
 @app.post("/api/downloads/clear")
@@ -1314,7 +1379,8 @@ def _downloads_start(payload: dict):
             report = downloader.run(novel, output_dir,
                                     first=first, last=last).as_dict()
             item.done = int(report.get("downloaded") or 0)
-            _remember_book(novel, source.key, output_dir, item.origin, report)
+            _remember_book(novel, source.key, output_dir, item.origin,
+                           report, address=item.address)
             skipped = int(report.get("skipped") or 0)
             return (f"Скачано глав: {item.done}"
                     + (f", пропущено {skipped}" if skipped else ""))
@@ -1509,8 +1575,29 @@ def _remember_item(item) -> None:
                     item.title, exc)
 
 
+def _about_fields(novel, origin: dict) -> dict:
+    """Описание, жанры и теги сайта — из книги и из строки рейтинга.
+
+    Русские двойники сюда не попадают вовсе, и это главное: `remember`
+    дополняет запись, а не заменяет, но одноимённое поле он бы перезаписал.
+    Приди отсюда пустой `about_ru` — перевод, за который заплачено, ушёл
+    бы при первой же проверке обновлений.
+    """
+    origin = origin or {}
+    return {
+        # Описание у рейтинга называется «about»: там его и показывают.
+        "about": str(getattr(novel, "about", "") or origin.get("about") or ""),
+        "genres": [str(one) for one in (getattr(novel, "genres", None) or [])
+                   if str(one).strip()],
+        "site_tags": [str(one) for one in (getattr(novel, "tags", None) or [])
+                      if str(one).strip()],
+        "status": str(getattr(novel, "status", "") or ""),
+        "language": str(getattr(novel, "language", "") or ""),
+    }
+
+
 def _remember_book(novel, source_key: str, output_dir, origin: dict,
-                   report: dict) -> None:
+                   report: dict, address: str = "") -> None:
     """Положить прогон в библиотеку и паспорт — в папку книги.
 
     Ошибки здесь наружу не выходят намеренно. Книга уже скачана; уронить
@@ -1521,7 +1608,12 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
         origin = origin or {}
         site = str(origin.get("site") or "")
         code = str(origin.get("book_id") or "")
-        key = library_op.key_of(site, code, source_key, novel.slug or str(novel.code))
+        # Адрес — тот же, которым книгу заводили в очередь, если он
+        # известен. Ключ считается по нему, и разойдись он со слагом —
+        # одна книга легла бы в библиотеку дважды: раз до качания, раз
+        # после. Ровно это и случилось, когда запись перенесли вперёд.
+        where = str(address or "").strip() or novel.slug or str(novel.code)
+        key = library_op.key_of(site, code, source_key, where)
         book = library_op.remember(
             key,
             name=str(origin.get("name") or novel.name or ""),
@@ -1532,9 +1624,10 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
             found_id=code,
             found_link=str(origin.get("link") or ""),
             source=source_key,
-            address=novel.slug or str(novel.code),
+            address=where,
             folder=str(output_dir),
             chapters=int(novel.total_chapters or 0),
+            **_about_fields(novel, origin),
             last=_reached(output_dir),
             skipped=int(report.get("unavailable") or 0),
             last_run=library_op.stamp(),

@@ -1472,3 +1472,88 @@ class TestNoFieldFallsOutOfTheTheme(PageTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheLibraryCardOpens(PageTestCase):
+    """Нажал на работу — развернулось описание, жанры и теги.
+
+    Библиотека здесь временная: настоящую трогать нельзя, а без книги
+    проверять нечего.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from tempfile import TemporaryDirectory
+
+        from ops import library
+
+        cls.store = TemporaryDirectory()
+        cls.was_file = library.LIBRARY_FILE
+        library.LIBRARY_FILE = Path(cls.store.name) / "library.json"
+        cls.library = library
+
+        library.remember(
+            "проба", name="Hunter Counselor", name_ru="Советник охотниц",
+            author="국거리장단", source="dreamy", address="ibatcffhwusd",
+            about="About the hunters", about_ru="Про охотниц и их беды",
+            genres=["Fantasy"], genres_ru=["Фэнтези", "Драма"],
+            site_tags=["Harem"], site_tags_ru=["Гарем"],
+            status="выходит", chapters=97, last=97,
+            folder=str(Path(cls.store.name) / "книга"))
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls.library.LIBRARY_FILE = cls.was_file
+        cls.store.cleanup()
+
+    def open_library(self):
+        self.page.click('[data-tab="library"]')
+        self.page.wait_for_selector("#lbList .lb", timeout=10000)
+
+    def test_the_description_is_hidden_until_it_is_asked_for(self):
+        """В списке на две сотни книг описания превратили бы его в
+        простыню, а нужны они по одному."""
+        self.open_library()
+        self.assertFalse(self.page.locator("#lbList .lb-more").is_visible())
+
+    def test_clicking_the_name_opens_the_card(self):
+        self.open_library()
+        self.page.click("#lbList .lb-name")
+
+        more = self.page.locator("#lbList .lb-more")
+        self.assertTrue(more.is_visible())
+        self.assertIn("Про охотниц", more.inner_text())
+
+    def test_the_russian_is_shown_when_there_is_russian(self):
+        """Ради этого перевод и хранится: чтобы не переводить заново."""
+        self.open_library()
+        self.page.click("#lbList .lb-name")
+        said = self.page.locator("#lbList .lb-more").inner_text()
+
+        self.assertIn("Фэнтези", said)
+        self.assertIn("Гарем", said)
+        self.assertIn("по-русски", said)
+
+    def test_the_original_is_one_click_away(self):
+        """Перевод бывает вольным, и сверить хочется, не уходя со
+        страницы."""
+        self.open_library()
+        self.page.click("#lbList .lb-name")
+        self.page.click("#lbList .lb-more .lbchip")
+
+        said = self.page.locator("#lbList .lb-about").inner_text()
+        self.assertIn("About the hunters", said)
+
+    def test_it_folds_back(self):
+        self.open_library()
+        self.page.click("#lbList .lb-name")
+        self.page.click("#lbList .lb-name")
+
+        self.assertFalse(self.page.locator("#lbList .lb-more").is_visible())
+
+    def test_the_console_stays_quiet(self):
+        self.open_library()
+        self.page.click("#lbList .lb-name")
+        self.quiet()
