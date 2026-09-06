@@ -17,6 +17,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from config import settings
 
@@ -664,13 +665,49 @@ def autoprobe(chapters, make_client, fetch, threads: int | None = None,
     return report
 
 
+#: Как записываем время подтверждения способа.
+WHEN = "%Y-%m-%d %H:%M:%S"
+
+
 def remember(method: str) -> None:
-    """Запоминает рабочий способ: в следующий раз он пробуется первым."""
-    if method == settings.last_download_method:
+    """Запоминает рабочий способ и когда его подтвердили.
+
+    Время нужно, чтобы пробу можно было не гонять вовсе: она качает по
+    пять глав на каждую книгу, и на очереди из тринадцати это шестьдесят
+    пять лишних запросов при каждом запуске — ради ответа, который вчера
+    уже получили.
+    """
+    now = datetime.now().strftime(WHEN)
+    if method == settings.last_download_method \
+            and settings.last_download_at == now:
         return
     settings.last_download_method = method
+    settings.last_download_at = now
     try:
         settings.save()
     except OSError as exc:
         # Не смогли записать настройки — это не повод ронять скачивание.
         log.warning("Не удалось запомнить способ скачивания: %s", exc)
+
+
+def recent(within_hours: int | None = None) -> str:
+    """Способ, подтверждённый недавно. Пусто — пробовать заново.
+
+    «Недавно» — сутки по умолчанию. Сайт меняет повадки не каждый час, а
+    проба стоит пяти глав на книгу; но и верить прошлогоднему ответу
+    нельзя: то, что работало месяц назад, сегодня может не работать.
+    """
+    method = str(settings.last_download_method or "")
+    stamp = str(settings.last_download_at or "")
+    if not method or not stamp:
+        return ""
+    try:
+        when = datetime.strptime(stamp, WHEN)
+    except ValueError:
+        # Прежние настройки времени не хранили — значит и верить нечему.
+        return ""
+    hours = settings.threads.remember_hours if within_hours is None \
+        else within_hours
+    if datetime.now() - when > timedelta(hours=max(0, int(hours))):
+        return ""
+    return method

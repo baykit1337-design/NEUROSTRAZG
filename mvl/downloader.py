@@ -469,7 +469,7 @@ class Downloader:
         last = last or novel.total_chapters
         self._emit(stage="toc", message="Собираем оглавление…", done=0, total=last - first + 1)
 
-        toc = self._toc(novel, first, last)
+        toc = self._toc(novel, first, last, state, output_dir)
         self._check_cancel()
 
         state.data["missing_in_toc"] = toc.missing
@@ -778,7 +778,54 @@ class Downloader:
 
     # ------------------------------------------------------------ вспомогательное
 
-    def _toc(self, novel: api.Novel, first: int, last: int):
+    def _known_toc(self, state: State, output_dir: Path, first: int,
+                   last: int) -> dict:
+        """Главы оглавления, которые заведомо не надо спрашивать заново.
+
+        Только те, чей файл уже лежит на диске. Это не осторожность ради
+        осторожности: запись оглавления хранит `post_id`, по которому
+        качается текст, и устарей он — мы скачали бы не ту главу. У
+        скачанной главы это ничем не грозит: её всё равно пропустят.
+
+        Отсюда и вся выгода. Книга на тысячу триста глав — это тринадцать
+        запросов с паузами между ними, и так при каждом запуске, хотя
+        менялся у неё только хвост.
+        """
+        cached = state.data.get("toc")
+        if not isinstance(cached, dict):
+            return {}
+
+        known = {}
+        for key, row in cached.items():
+            try:
+                number = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not first <= number <= last or not isinstance(row, dict):
+                continue
+            if not state.is_done(number, output_dir):
+                continue
+            try:
+                known[number] = api.Chapter(number=number, **row)
+            except TypeError as exc:
+                # Запись прежнего образца: поля разошлись. Не беда —
+                # просто спросим эту главу заново.
+                log.debug("Запись оглавления не разобралась: %s", exc)
+        return known
+
+    def _keep_toc(self, state: State, chapters) -> None:
+        """Запомнить оглавление, чтобы в следующий раз брать только хвост."""
+        rows = state.data.get("toc")
+        if not isinstance(rows, dict):
+            rows = {}
+        for chapter in chapters:
+            row = asdict(chapter)
+            row.pop("number", None)
+            rows[str(chapter.number)] = row
+        state.data["toc"] = rows
+
+    def _toc(self, novel: api.Novel, first: int, last: int,
+             state: State | None = None, output_dir: Path | None = None):
         """Оглавление — прямо, а не вышло, так через рабочий прокси.
 
         У глав запасной выход был всегда: не ответил адрес — берём
@@ -788,14 +835,46 @@ class Downloader:
         шесть минут тишины, пока клиент молча доедал свои три попытки.
 
         Заход прямой остаётся первым: он быстрее и не тратит адрес.
+
+        Спрашиваем только то, чего нет в памяти прогона: главы, уже
+        лежащие на диске, второй раз в оглавлении не нужны. У книги на
+        тысячу триста глав это тринадцать запросов с паузами при каждом
+        запуске — ради хвоста в пять глав.
         """
+        known = ({} if state is None or output_dir is None
+                 else self._known_toc(state, output_dir, first, last))
+        need = [n for n in range(first, last + 1) if n not in known]
+        if known and not need:
+            self._emit(done=last - first + 1, total=last - first + 1,
+                       message="Оглавление уже собрано — берём из памяти")
+            return api.Toc(chapters=[known[n] for n in sorted(known)],
+                           missing=[])
+
+        # Спрашиваем сплошным куском от первой недостающей до последней:
+        # источники отдают оглавление диапазоном, а не выборкой номеров.
+        low, high = (min(need), max(need)) if need else (first, last)
+        if known:
+            self._emit(message=f"Оглавление: берём главы {low}–{high}, "
+                               f"остальные уже собраны")
+
         def walk(client):
             return self.source.toc(
-                client, novel, first=first, last=last,
+                client, novel, first=low, last=high,
                 on_progress=lambda d, t: self._emit(done=d, total=t))
 
+        def merged(found):
+            """Свежее поверх запомненного — и всё в память прогона."""
+            rows = dict(known)
+            for chapter in found.chapters:
+                rows[chapter.number] = chapter
+            if state is not None:
+                self._keep_toc(state, found.chapters)
+            gone = [n for n in found.missing if n not in known]
+            return api.Toc(chapters=[rows[n] for n in sorted(rows)],
+                           missing=gone)
+
         try:
-            return walk(self.client)
+            return merged(walk(self.client))
         except (HttpError, OSError) as direct:
             spares = working_proxies(self.pool)
             if not spares:
@@ -817,7 +896,7 @@ class Downloader:
                 finally:
                     spare.close()
                 log.info("Оглавление собралось через прокси %s", proxy.label)
-                return found
+                return merged(found)
             raise
 
     def _new_session(self, novel: api.Novel) -> SiteClient:
@@ -949,6 +1028,19 @@ class Downloader:
         proxies = working_proxies(self.pool)
 
         make_client = self._make_site_client(novel)
+
+        # Способ, подтверждённый недавно, пробуем не пробуя. Проба качает
+        # по пять глав на каждую книгу, и на очереди из тринадцати это
+        # шестьдесят пять лишних запросов при каждом запуске — ради
+        # ответа, который вчера уже получили.
+        known = netpool.recent()
+        if known:
+            self._emit(message=f"Способ известен: {netpool.NAMES.get(known, known)}")
+            log.info("Пробу пропускаем, способ подтверждён недавно: %s", known)
+            if known == netpool.SEQUENTIAL:
+                self.threads = 1
+                return None
+            return netpool.Fetcher(known, make_client, proxies)
 
         def fetch(client, chapter):
             return self.source.chapter(client, chapter)[1]

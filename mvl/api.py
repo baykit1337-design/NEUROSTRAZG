@@ -319,7 +319,10 @@ def fetch_toc(
         if on_progress:
             on_progress(min((index + 1) * TOC_BATCH, len(numbers)), len(numbers))
         if index < len(batches) - 1:
-            polite_pause()
+            # Пауза через флажок клиента: «Остановить» должно доходить и
+            # до сбора оглавления, а не только до самих глав.
+            if polite_pause(getattr(client, "cancel", None)):
+                break
 
     chapters = [found[n] for n in numbers if n in found]
     missing = [n for n in numbers if n not in found]

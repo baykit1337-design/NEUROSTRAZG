@@ -734,9 +734,18 @@ def novel_url(slug: str) -> str:
     return f"{SITE}/novel/{slug}"
 
 
-def polite_pause():
-    """Пауза между пачками запросов к API."""
-    time.sleep(random.uniform(*PAUSE_RANGE))
+def polite_pause(cancel=None) -> bool:
+    """Пауза между пачками запросов к API. `True` — попросили остановиться.
+
+    Флажок нужен не для красоты. Оглавление книги на тысячу триста глав
+    это тринадцать пачек, и между ними столько же пауз: обычный `sleep`
+    держал прогон до конца лесенки, и «Остановить» замечалось не сразу.
+    """
+    seconds = random.uniform(*PAUSE_RANGE)
+    if cancel is not None:
+        return bool(cancel.wait(seconds))
+    time.sleep(seconds)
+    return False
 
 
 def site_pause():

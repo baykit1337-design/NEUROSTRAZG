@@ -58,6 +58,8 @@ class Threads:
     #: 1.7 отбраковывал рабочие способы: сеть шумит, и разброс времени
     #: между главами сам по себе съедает часть выигрыша.
     probe_speedup: float = 1.3
+    #: Сколько часов верить подтверждённому способу без новой пробы.
+    remember_hours: int = 24
 
 
 @dataclass
@@ -204,6 +206,10 @@ class Config:
     translator: Translator = field(default_factory=Translator)
     #: Метод многопоточности, сработавший в прошлый раз, — пробуем первым.
     last_download_method: str = ""
+    #: Когда его подтвердила проба. Пока свежо — пробу не гоняем вовсе:
+    #: она качает по пять глав на каждую книгу, и на очереди из тринадцати
+    #: это шестьдесят пять лишних запросов при каждом запуске.
+    last_download_at: str = ""
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:
@@ -220,8 +226,8 @@ class Config:
             return config
 
         for section, values in data.items():
-            if section == "last_download_method":
-                config.last_download_method = str(values or "")
+            if section in ("last_download_method", "last_download_at"):
+                setattr(config, section, str(values or ""))
                 continue
             target = getattr(config, section, None)
             if target is None or not isinstance(values, dict):
