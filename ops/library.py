@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from core import ru
+
 from .history import DATA_DIR
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,17 @@ KEEP_BOOKS = 2000
 #: Метки, которые ставит человек. Список закрыт нарочно: свободные метки
 #: расходятся в написании («потенц», «потенциальное», «потенциальная»), и
 #: одно и то же оказывается в трёх разных кучах.
+#: Поля, которые считаются, а не хранятся. Наружу они уходят, в файл —
+#: нет. Держать их на диске значило бы однажды показать вчерашний ответ:
+#: «есть новые главы» протухает за сутки, а словарный перевод не
+#: обновился бы от пополнения словаря.
+#:
+#: Список один на запись и на чтение: разойдись они, лишнее поле тихо
+#: осело бы в файле и жило там вечно.
+MADE = ("title", "downloaded", "fresh", "auto", "about_shown",
+        "genres_shown", "site_tags_shown", "status_shown", "language_shown",
+        "translated")
+
 MARKS = {
     "want": "Потенциальная",
     "reading": "Читаю",
@@ -176,11 +189,27 @@ class Book:
 
     @property
     def genres_shown(self) -> list:
-        return list(self.genres_ru or self.genres or [])
+        """Перевод модели, а без него — словарь.
+
+        Словарный перевод не хранится: он ничего не стоит и считается
+        заново. Пополнится словарь — станут русскими все книги разом, а
+        не только те, что скачают после.
+        """
+        return list(self.genres_ru or ru.genres(self.genres))
 
     @property
     def site_tags_shown(self) -> list:
-        return list(self.site_tags_ru or self.site_tags or [])
+        return list(self.site_tags_ru or ru.tags(self.site_tags))
+
+    @property
+    def status_shown(self) -> str:
+        """«Ongoing» → «выходит»."""
+        return ru.status(self.status)
+
+    @property
+    def language_shown(self) -> str:
+        """«Chinese» → «китайский»."""
+        return ru.language(self.language)
 
     @property
     def translated(self) -> bool:
@@ -211,13 +240,17 @@ class Book:
             "status": self.status, "language": self.language,
             "first_seen": self.first_seen, "last_run": self.last_run,
         }
-        # Считаемые поля отдаём наружу, но не пишем в файл: сохранённое
-        # «есть новые главы» через день соврало бы.
+        # Считаемые поля отдаём наружу, но не пишем в файл (см. `_save` и
+        # `MADE`): сохранённое «есть новые главы» через день соврало бы, а
+        # сохранённый словарный перевод не обновился бы от пополнения
+        # словаря.
         data.update(title=self.title, downloaded=self.downloaded,
                     fresh=self.fresh, auto=self.auto,
                     about_shown=self.about_shown,
                     genres_shown=self.genres_shown,
                     site_tags_shown=self.site_tags_shown,
+                    status_shown=self.status_shown,
+                    language_shown=self.language_shown,
                     translated=self.translated)
         return data
 
@@ -387,7 +420,7 @@ def _save(books: dict) -> None:
     plain = []
     for book in keep:
         data = book.as_dict()
-        for made in ("title", "downloaded", "fresh", "auto"):
+        for made in MADE:
             data.pop(made, None)
         plain.append(data)
 

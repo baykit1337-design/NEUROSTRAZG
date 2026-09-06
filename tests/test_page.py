@@ -1534,7 +1534,10 @@ class TestTheLibraryCardOpens(PageTestCase):
 
         self.assertIn("Фэнтези", said)
         self.assertIn("Гарем", said)
-        self.assertIn("по-русски", said)
+        # Пометка говорит именно про описание, а не про карточку вообще.
+        # Прежнее «по-русски» появлялось и от одного переведённого
+        # названия — при английском описании прямо под ним.
+        self.assertIn("описание переведено", said)
 
     def test_the_original_is_one_click_away(self):
         """Перевод бывает вольным, и сверить хочется, не уходя со

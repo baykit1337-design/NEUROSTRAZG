@@ -5738,9 +5738,11 @@ function libAbout(book){
   box.hidden = true;
 
   const head = [];
-  if(book.status) head.push(book.status);
-  if(book.language) head.push(book.language);
-  head.push(book.translated ? 'по-русски' : 'как на сайте');
+  // Статус и язык переводит словарь на сервере: список слов у каталога
+  // закрытый, и «Ongoing · Chinese» в русской карточке читать незачем.
+  if(book.status) head.push(book.status_shown || book.status);
+  if(book.language) head.push(book.language_shown || book.language);
+  head.push(book.about_ru ? 'описание переведено' : 'описание как на сайте');
   const mark = document.createElement('div');
   mark.className = 'lb-where';
   mark.textContent = head.join(' · ');
@@ -5765,6 +5767,30 @@ function libAbout(book){
         swap.textContent = shown ? 'показать оригинал' : 'показать перевод';
       };
       box.append(swap);
+    }
+
+    // Описание у каждой книги своё, словарём его не возьмёшь — нужна
+    // модель. По кнопке, а не само: запрос платный, и решать, тратить ли
+    // его, должен человек. Перевод хранится: второй раз не платим.
+    if(!book.about_ru){
+      const ask = document.createElement('button');
+      ask.className = 'lbchip';
+      ask.textContent = 'перевести описание';
+      ask.title = 'Один запрос к модели. Перевод сохранится.';
+      ask.onclick = async () => {
+        ask.disabled = true;
+        ask.textContent = 'переводим…';
+        try{
+          const got = await call('/api/library/translate', {key: book.key});
+          Object.assign(book, got.book || {});
+          await libLoad();
+        }catch(err){
+          showError(err.message);
+          ask.disabled = false;
+          ask.textContent = 'перевести описание';
+        }
+      };
+      box.append(ask);
     }
   }
 

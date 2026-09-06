@@ -50,6 +50,7 @@ from ops import convert as convert_op  # noqa: E402
 from llm.client import (  # noqa: E402
     BadKey, LlmClient, LlmError, NoKeysLeft, looks_exhausted, mask, short)
 from llm import keys as keys_mod  # noqa: E402
+from llm.cache import parse_json  # noqa: E402
 from llm.keys import store as keystore  # noqa: E402
 from ops import analyze as analyze_op  # noqa: E402
 from ops import checkup as checkup_op  # noqa: E402
@@ -1031,6 +1032,66 @@ def _check_updates(keys, cancel=None) -> tuple[list, list]:
             client.close()
 
     return checked, missed
+
+
+#: Чем просим перевести описание. Отдельно от промптов перевода глав:
+#: там художественный текст, здесь — аннотация магазина, и просить её
+#: «сохранить авторский стиль» не надо.
+ABOUT_PROMPT = (
+    "Переведи на русский язык описание книги с сайта. Это аннотация, а не "
+    "художественный текст: переводи по смыслу, не дословно, и не добавляй "
+    "ничего от себя. Имена и названия оставь узнаваемыми. Верни JSON вида "
+    '{{"about": "<перевод>"}} и ничего больше.\n\nОписание:\n{text}')
+
+#: Схема ответа. С ней модель не вернёт ни пояснений вокруг, ни
+#: оборванной структуры — просьбами этого не добиться.
+ABOUT_SCHEMA = {"type": "object", "properties": {"about": {"type": "string"}},
+                "required": ["about"]}
+
+
+@app.post("/api/library/translate")
+def api_library_translate():
+    """Перевести описание книги на русский — моделью.
+
+    Жанры, статус и теги переводит словарь: список слов у каталога
+    закрытый, и гонять его через платную модель на каждой книге значило бы
+    платить за один и тот же перевод сто раз. А описание у каждой книги
+    своё, словарём его не возьмёшь.
+
+    По кнопке, а не само: это платный запрос, и решать, тратить ли его,
+    должен человек. Перевод хранится — второй раз за него не платим.
+    """
+    payload = request.json or {}
+    book = library_op.get((payload.get("key") or "").strip())
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    if not book.about.strip():
+        return jsonify(error="Переводить нечего: описания у книги нет"), 400
+    if book.about_ru.strip() and not payload.get("again"):
+        return jsonify(book=_book_out(book), message="Перевод уже есть")
+
+    client = _llm_client(payload)
+    try:
+        answer = client.generate(
+            ABOUT_PROMPT.format(text=book.about),
+            json_only=True, schema=ABOUT_SCHEMA,
+            model=(payload.get("model") or settings.llm.model or "").strip())
+    except LlmError as exc:
+        return _llm_failed(exc)
+    finally:
+        client.close()
+
+    try:
+        # Через общий разбор, а не `json.loads`: модель нет-нет да
+        # обернёт ответ в ```json, и на этом всё бы и кончалось.
+        said = str(parse_json(answer).get("about") or "").strip()
+    except (TypeError, ValueError) as exc:
+        log.warning("Модель ответила не JSON: %s", exc)
+        said = ""
+    if not said:
+        return jsonify(error="Модель вернула пустой перевод"), 502
+
+    return jsonify(book=_book_out(library_op.remember(book.key, about_ru=said)))
 
 
 @app.post("/api/library/tags")
