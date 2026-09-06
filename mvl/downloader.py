@@ -32,6 +32,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings  # noqa: E402
+from core import online as online_mod  # noqa: E402
 from ops.base import Cancelled as OpCancelled  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,22 @@ STATE_VERSION = 1
 # 429 — «слишком часто»: ждём столько секунд и повторяем на том же прокси.
 RATE_LIMIT_COOLDOWN = 60
 MAX_RATE_LIMIT_STREAK = 3
+
+#: Сколько ждать возвращения связи — шагами, в секундах.
+#:
+#: Растёт нарочно. Связь возвращается либо через несколько секунд (моргнул
+#: Wi-Fi), либо после долгой возни с роутером и провайдером; спрашивать
+#: каждые десять секунд полчаса подряд во втором случае бессмысленно.
+#: Всего выходит около получаса — столько прогон стоит и ждёт, а не
+#: заканчивает книгу на середине. Не дождались — дальше как раньше:
+#: останавливаемся и говорим почему.
+OFFLINE_WAITS = (10, 20, 40, 60, 120, 180, 300, 300, 300)
+
+#: Сколько раз за прогон соглашаемся переждать обрыв. Мигающая связь
+#: иначе крутила бы книгу по кругу без конца: каждый раз «связь вернулась»,
+#: каждый раз глава не берётся. Полсотни спасений — это заведомо больше,
+#: чем бывает при живой сети, и заведомо не бесконечность.
+MAX_OFFLINE_RESCUES = 50
 
 
 @dataclass
@@ -236,6 +253,11 @@ class Downloader:
         self.probe_report = None
         #: state.json пишут все потоки — доступ к нему только под замком.
         self._state_lock = threading.Lock()
+        #: Прогон стоял — на паузе или в ожидании связи. Читается один раз
+        #: (`_take_stood`) и означает «сессию завести заново».
+        self._stood = False
+        #: Сколько раз уже пережидали обрыв связи. См. MAX_OFFLINE_RESCUES.
+        self._offline_rescues = 0
 
     # ------------------------------------------------------------- служебное
 
@@ -272,7 +294,71 @@ class Downloader:
             # «Остановить» замечается сразу, а не через долю секунды.
             if self.cancel.wait(0.2):
                 raise Cancelled()
+        # Стояли — значит сессию надо завести заново. Пауза для того и
+        # нужна, чтобы чинить связь: пока прогон стоял, интернет успели
+        # выдернуть и вернуть, и прежнее соединение к тому моменту мертво.
+        # Без этого «нажал продолжить» упиралось в сетевой отказ на первой
+        # же главе — при живом интернете.
+        self._stood = True
         self._emit(stage="download", message=was or "Продолжаем…")
+
+    def _take_stood(self) -> bool:
+        """Стоял ли прогон с прошлого раза. Спрашивают один раз."""
+        stood, self._stood = self._stood, False
+        return stood
+
+    def _probe_addresses(self):
+        """Кого спрашивать про связь в первую очередь — наш прокси.
+
+        Он и есть наша связь с миром: качаем через него, и если молчит
+        он, публичные адреса ничего не решают. Отвечает он обычно сразу,
+        так что до них дело и не доходит.
+        """
+        if self.pool is None:
+            return ()
+        try:
+            proxy = self.pool.current()
+        except NoProxiesLeft:
+            return ()
+        return ((proxy.host, proxy.port),)
+
+    def _wait_for_network(self, why: str) -> bool:
+        """Связь пропала — стоим и ждём её. `True`, если дождались.
+
+        Отличить «сайт лёг» от «у меня выдернули кабель» по тексту ошибки
+        нельзя, а делать надо противоположное: в первом случае прогон
+        останавливают, во втором — ждут. Поэтому спрашиваем не текст, а
+        связь: `core.online`.
+
+        Связь на месте — возвращаем `False` сразу и не ждём ни секунды:
+        значит беда не наша, и решает её тот, кто позвал.
+        """
+        if self._offline_rescues >= MAX_OFFLINE_RESCUES:
+            log.warning("Обрыв пережидали уже %s раз — дальше как обычная "
+                        "сетевая беда", self._offline_rescues)
+            return False
+        if not online_mod.offline(self._probe_addresses()):
+            return False
+
+        was = self.progress.message
+        for wait in OFFLINE_WAITS:
+            # Ручная пауза во время ожидания работает как обычно: связь
+            # чинят руками, и «стоп» на это время — законное желание.
+            self._hold()
+            self._emit(
+                stage="offline",
+                message=(f"Связи нет ({why}). Ждём {wait} с и пробуем снова — "
+                         "прогон продолжится сам, как только сеть вернётся."),
+            )
+            if self.cancel.wait(wait):
+                raise Cancelled()
+            if not online_mod.offline(self._probe_addresses()):
+                self._stood = True
+                self._offline_rescues += 1
+                self._emit(stage="download",
+                           message=was or "Связь вернулась — продолжаем")
+                return True
+        return False
 
     def _log_error(self, output_dir: Path, number: int, reason: str) -> None:
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -414,6 +500,12 @@ class Downloader:
         try:
             for index, chapter in enumerate(pending):
                 self._check_cancel()
+                if self._take_stood():
+                    # Стояли — на паузе или в ожидании связи. Прежняя
+                    # сессия за это время могла умереть вместе с сетью.
+                    if site is not self.site_client:
+                        site.close()
+                    site = self._new_session(novel)
                 outcome = "ok"
 
                 # Одну и ту же главу повторяем при смене прокси и при 429.
@@ -456,6 +548,16 @@ class Downloader:
                         # занимал минуты и заканчивался неправдой
                         # «рабочих прокси не осталось» — при том, что ни
                         # один из них даже не использовался.
+                        #
+                        # Но сперва смотрим, не у нас ли пропала связь: со
+                        # стороны это выглядит ровно так же, а делать надо
+                        # обратное — не останавливать книгу на середине, а
+                        # подождать. Связь на месте — идём вниз как раньше.
+                        if self._wait_for_network(scrub(str(exc))):
+                            if site is not self.site_client:
+                                site.close()
+                            site = self._new_session(novel)
+                            continue
                         stopped_reason = scrub(str(exc))
                         self._log_error(output_dir, chapter.number,
                                         stopped_reason)
@@ -465,6 +567,18 @@ class Downloader:
 
                     except (Blocked, NetworkError) as exc:
                         reason = scrub(str(exc))
+                        # Пропавшая связь выглядит как мёртвый прокси — и
+                        # выкашивала весь список: каждый следующий адрес
+                        # молчал по той же причине, а кончалось «рабочих
+                        # прокси не осталось» при полностью живом списке.
+                        # Поэтому сперва вопрос к себе, и только потом к
+                        # адресам. Отказ сайта (403) сюда не попадает: он
+                        # к связи отношения не имеет.
+                        if _is_dead_address(exc) and self._wait_for_network(reason):
+                            if site is not self.site_client:
+                                site.close()
+                            site = self._new_session(novel)
+                            continue
                         if self.pool is None:
                             # Без прокси менять нечего — останавливаемся.
                             blocked_at = chapter.number
@@ -816,6 +930,10 @@ class Downloader:
             #: сбавить обороты.
             batch_ok = 0
             batch_bad = 0
+            #: Номера, записанные в «не скачано» этой пачкой. Нужны, чтобы
+            #: вернуть их обратно, если окажется, что виновата не книга и
+            #: не сайт, а пропавшая у нас связь.
+            batch_failed: list[int] = []
 
             with ThreadPoolExecutor(max_workers=self.threads) as pool:
                 futures = {
@@ -855,6 +973,7 @@ class Downloader:
                             state.mark_failed(chapter.number, reason)
                         self._log_error(output_dir, chapter.number, reason)
                         failed.append(chapter.number)
+                        batch_failed.append(chapter.number)
                         batch_bad += 1
 
                     self._emit(
@@ -874,8 +993,24 @@ class Downloader:
                 self.threads = 1
                 return downloaded, failed, blocked_at, stopped_reason, True, paid
 
-            # Пачка не принесла ни одной главы, и все её главы отвалились
-            # по сети. Продолжать в том же темпе бессмысленно: чаще всего
+            # Пачка не принесла ни одной главы — и первый вопрос тут не к
+            # сайту, а к себе. При обрыве связи отваливается вся пачка
+            # разом, и записать её в «не скачано» значит потерять главы
+            # там, где надо было просто подождать. Дождались — возвращаем
+            # номера обратно и качаем ту же пачку заново.
+            if batch_ok == 0 and batch_failed:
+                reason = f"пачка с главы {batch[0].number} не прошла целиком"
+                if self._wait_for_network(reason):
+                    for number in batch_failed:
+                        failed.remove(number)
+                    start -= len(batch)
+                    self._emit(done=downloaded + len(failed) + paid,
+                               downloaded=downloaded, failed=len(failed),
+                               message="Связь вернулась — повторяем пачку")
+                    continue
+
+            # Все её главы отвалились по сети. Продолжать в том же темпе
+            # бессмысленно: чаще всего
             # это значит, что сайт не тянет столько одновременных
             # запросов, — а раньше прогон так и шёл до конца книги,
             # исправно складывая каждую главу в «не скачано». Сбавляем до
