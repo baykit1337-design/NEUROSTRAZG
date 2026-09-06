@@ -66,6 +66,11 @@ OFFLINE_WAITS = (10, 20, 40, 60, 120, 180, 300, 300, 300)
 #: чем бывает при живой сети, и заведомо не бесконечность.
 MAX_OFFLINE_RESCUES = 50
 
+#: Сколько прокси пробовать под оглавление, если прямой заход не вышел.
+#: Больше трёх — это минуты ожидания там, где книга, скорее всего, просто
+#: недоступна; меньше — и один невезучий адрес снова роняет книгу.
+TOC_PROXIES = 3
+
 
 @dataclass
 class Progress:
@@ -204,6 +209,11 @@ class Downloader:
         connect_timeout: int | None = None,
     ):
         self.client = client or Client()
+        # Клиенту сказать некому: он свои повторы писал в debug и молчал.
+        # Прицепляем сюда, а не заводим свой клиент — этот пришёл снаружи
+        # и живёт дольше прогона.
+        if getattr(self.client, "on_retry", None) is None:
+            self.client.on_retry = self._retold
         #: Сроки ожидания, выставленные человеком в интерфейсе. Раньше их
         #: получал только клиент оглавления, а главы качал клиент витрины,
         #: который качалка заводит сама — и заводила с умолчаниями. В
@@ -301,6 +311,18 @@ class Downloader:
         # же главе — при живом интернете.
         self._stood = True
         self._emit(stage="download", message=was or "Продолжаем…")
+
+    def _retold(self, said: str) -> None:
+        """Клиент ждёт перед повтором — говорим об этом на экран.
+
+        Раньше повторы были не видны нигде: журнал писал их в debug, а на
+        экран не уходило ничего. Мёртвый адрес при трёх попытках и сроке
+        ожидания в две минуты — это шесть с лишним минут, за которые не
+        меняется ни строка, ни цифра. Человек читает это как «зависло» и
+        закрывает программу — что и произошло.
+        """
+        self._emit(message=said)
+        self._say(said, "warn")
 
     def _take_stood(self) -> bool:
         """Стоял ли прогон с прошлого раза. Спрашивают один раз."""
@@ -418,13 +440,7 @@ class Downloader:
         last = last or novel.total_chapters
         self._emit(stage="toc", message="Собираем оглавление…", done=0, total=last - first + 1)
 
-        toc = self.source.toc(
-            self.client,
-            novel,
-            first=first,
-            last=last,
-            on_progress=lambda d, t: self._emit(done=d, total=t),
-        )
+        toc = self._toc(novel, first, last)
         self._check_cancel()
 
         state.data["missing_in_toc"] = toc.missing
@@ -730,6 +746,48 @@ class Downloader:
 
     # ------------------------------------------------------------ вспомогательное
 
+    def _toc(self, novel: api.Novel, first: int, last: int):
+        """Оглавление — прямо, а не вышло, так через рабочий прокси.
+
+        У глав запасной выход был всегда: не ответил адрес — берём
+        следующий. У оглавления не было ничего, и книга на этом месте
+        вставала намертво. Со стороны это выглядело хуже любой ошибки:
+        строка «Собираем оглавление», счётчик замер на трёхсотой главе и
+        шесть минут тишины, пока клиент молча доедал свои три попытки.
+
+        Заход прямой остаётся первым: он быстрее и не тратит адрес.
+        """
+        def walk(client):
+            return self.source.toc(
+                client, novel, first=first, last=last,
+                on_progress=lambda d, t: self._emit(done=d, total=t))
+
+        try:
+            return walk(self.client)
+        except (HttpError, OSError) as direct:
+            spares = working_proxies(self.pool)
+            if not spares:
+                raise
+            said = scrub(str(direct))
+            for proxy in spares[:TOC_PROXIES]:
+                self._check_cancel()
+                self._emit(message=f"Оглавление не собралось ({said}) — "
+                                   f"пробуем через прокси {proxy.label}")
+                self._say(f"Оглавление через прокси {proxy.label}", "proxy")
+                spare = Client(proxy_url=proxy.url, cancel=self.cancel,
+                               on_retry=self._retold, **self._timeouts())
+                try:
+                    found = walk(spare)
+                except (HttpError, OSError) as exc:
+                    log.info("Оглавление через %s не собралось: %s",
+                             proxy.label, scrub(str(exc)))
+                    continue
+                finally:
+                    spare.close()
+                log.info("Оглавление собралось через прокси %s", proxy.label)
+                return found
+            raise
+
     def _new_session(self, novel: api.Novel) -> SiteClient:
         """Новая сессия на текущий прокси."""
         proxy = self.pool.current() if self.pool else None
@@ -737,7 +795,7 @@ class Downloader:
             log.info("Работаем через прокси %s", proxy.label)
         return SiteClient(
             referer=novel.page_url, proxy_url=proxy.url if proxy else None,
-            cancel=self.cancel, **self._timeouts(),
+            cancel=self.cancel, on_retry=self._retold, **self._timeouts(),
         )
 
     def _timeouts(self) -> dict:

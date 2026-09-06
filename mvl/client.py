@@ -423,7 +423,16 @@ class Client:
         connect_timeout: int = CONNECT_TIMEOUT,
         shared_session: bool = False,
         cancel: threading.Event | None = None,
+        on_retry=None,
     ):
+        #: Куда сказать, что запрос не прошёл и мы ждём перед повтором.
+        #:
+        #: Без этого повторы были не видны вовсе: журнал писал их в debug,
+        #: а на экран не уходило ничего. Мёртвый адрес при трёх попытках и
+        #: сроке ожидания в две минуты — это шесть с лишним минут полной
+        #: тишины, и всё это время программа выглядит зависшей. Ровно так
+        #: она и выглядела: «стоит всё, не качается».
+        self.on_retry = on_retry
         #: Флажок остановки прогона. Между попытками клиент ждёт секунды —
         #: при трёх попытках это шесть, а с подменой прокси и того больше.
         #: Без этого флажка «Остановить» замечалось только на следующей
@@ -600,7 +609,18 @@ class Client:
 
             if attempt < self.max_attempts:
                 delay = (2**attempt) + random.uniform(0, 0.5)
-                log.debug("retry %s/%s in %.1fs (%s)", attempt, self.max_attempts, delay, last_error)
+                # Вслух, а не в debug. Молчащий адрес при трёх попытках и
+                # сроке ожидания в две минуты — это шесть минут тишины, и
+                # всё это время программа выглядит зависшей намертво.
+                said = (f"Сайт не ответил ({last_error}). Попытка "
+                        f"{attempt + 1} из {self.max_attempts} через "
+                        f"{delay:.0f} с")
+                log.info("%s — %s", said, url)
+                if self.on_retry:
+                    try:
+                        self.on_retry(said)
+                    except Exception as exc:  # noqa: BLE001 — весть не роняет запрос
+                        log.debug("Про повтор сказать не вышло: %s", exc)
                 if self._wait(delay):
                     break
 
