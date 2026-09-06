@@ -23,6 +23,17 @@ PROXY_FILE = "proxies.txt"
 #: Таймаут проверки прокси. Десяти секунд не хватало — в таблице
 #: висело «10.01 с — таймаут». Значение настраивается в интерфейсе.
 CHECK_TIMEOUT = 60
+
+#: Через сколько секунд отключённому адресу дают второй шанс.
+#:
+#: Адрес отваливается не навсегда: у общих прокси это обычное дело —
+#: минуту не отвечает, потом работает. А лежал он отключённым до
+#: перезапуска программы, и очередь из тринадцати книг успевала
+#: похоронить весь список: «Рабочих прокси не осталось» при живом списке.
+#:
+#: Пять минут — чтобы не долбиться в мёртвый адрес каждую главу и не
+#: держать живой в отставке до вечера.
+REVIVE_AFTER = 300
 #: Потолок для любых таймаутов, задаваемых из интерфейса.
 MAX_TIMEOUT = 300
 CHECK_CONCURRENCY = 5  # разовая процедура; к скачиванию глав отношения не имеет
@@ -77,6 +88,10 @@ class Proxy:
     # Состояние во время прогона.
     disabled: bool = False
     disabled_reason: str = ""
+    #: Когда его отключили, по внутренним часам. Нужно, чтобы дать адресу
+    #: второй шанс: отвалившийся минуту назад мог уже ожить, а до сих пор
+    #: он лежал отключённым до перезапуска программы.
+    disabled_at: float = 0.0
 
     @classmethod
     def parse(cls, line: str) -> Proxy | None:
@@ -472,15 +487,51 @@ class ProxyPool:
     def usable_count(self) -> int:
         return sum(1 for p in self.proxies if p.usable)
 
+    def revive(self, after: float = REVIVE_AFTER) -> int:
+        """Вернуть в строй адреса, отдыхавшие дольше срока.
+
+        Адрес отваливается не навсегда: у общих прокси это обычное дело —
+        минуту молчит, потом работает. А лежал он отключённым до
+        перезапуска программы, и очередь из тринадцати книг успевала
+        похоронить весь список. Кончалось это неправдой «рабочих прокси не
+        осталось» при полностью живом списке.
+
+        Возвращает, скольких подняли. Замок не берём: зовут изнутри уже
+        под ним.
+        """
+        now = time.monotonic()
+        raised = 0
+        for proxy in self._order:
+            if not proxy.disabled or not proxy.disabled_at:
+                continue
+            if now - proxy.disabled_at < after:
+                continue
+            proxy.disabled = False
+            proxy.disabled_reason = ""
+            proxy.disabled_at = 0.0
+            raised += 1
+        if raised:
+            log.info("Прокси отдохнули и вернулись в строй: %s", raised)
+        return raised
+
+    def _usable(self) -> Proxy | None:
+        """Первый пригодный по порядку. Никого — сперва будим отдохнувших."""
+        for proxy in self._order:
+            if not proxy.disabled:
+                return proxy
+        if not self.revive():
+            return None
+        return next((p for p in self._order if not p.disabled), None)
+
     def current(self) -> Proxy:
         """Текущий прокси. Если не выбран — берёт самый быстрый пригодный."""
         with self._lock:
             if self._current is not None and not self._current.disabled:
                 return self._current
-            for proxy in self._order:
-                if not proxy.disabled:
-                    self._current = proxy
-                    return proxy
+            found = self._usable()
+            if found is not None:
+                self._current = found
+                return found
         raise NoProxiesLeft(self.failure_report())
 
     def switch(self, reason: str) -> Proxy:
@@ -494,12 +545,9 @@ class ProxyPool:
             if previous is not None:
                 previous.disabled = True
                 previous.disabled_reason = scrub(reason)
+                previous.disabled_at = time.monotonic()
 
-            following = None
-            for proxy in self._order:
-                if not proxy.disabled:
-                    following = proxy
-                    break
+            following = self._usable()
             self._current = following
 
         if following is None:

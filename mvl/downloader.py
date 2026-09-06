@@ -208,7 +208,16 @@ class Downloader:
         timeout: int | None = None,
         connect_timeout: int | None = None,
         spare=None,
+        proxy=None,
     ):
+        #: С какого адреса начинать этой книге. Пусто — общий текущий.
+        #:
+        #: Очередь качает по три книги разом, и все три брали у пула один
+        #: и тот же `current()`. Один адрес на троих он и не тянул: в
+        #: журнале «Работаем через прокси 31.58.9.4» повторялось для
+        #: каждой книги, а книги вставали. Теперь очередь раздаёт каждой
+        #: свой, а пул остаётся общим — смена по отказу работает как была.
+        self.proxy = proxy
         #: Кто бережёт главу перед тем, как написать поверх неё. Пусто —
         #: не бережём: докачка в свою папку ничего не перезаписывает, а
         #: копировать книгу целиком «на всякий случай» — это тысячи файлов
@@ -335,6 +344,20 @@ class Downloader:
         stood, self._stood = self._stood, False
         return stood
 
+    def _my_proxy(self):
+        """Адрес этой книги. Свой, пока жив; иначе — общий текущий.
+
+        Отвалившийся свой адрес не держим: пул его уже пометил, и сидеть
+        на нём значило бы качать в никуда.
+        """
+        if self.proxy is not None and not getattr(self.proxy, "disabled", False):
+            return self.proxy
+        if self.pool is None:
+            return None
+        chosen = self.pool.current()
+        self.proxy = chosen
+        return chosen
+
     def _probe_addresses(self):
         """Кого спрашивать про связь в первую очередь — наш прокси.
 
@@ -342,11 +365,11 @@ class Downloader:
         он, публичные адреса ничего не решают. Отвечает он обычно сразу,
         так что до них дело и не доходит.
         """
-        if self.pool is None:
-            return ()
         try:
-            proxy = self.pool.current()
+            proxy = self._my_proxy()
         except NoProxiesLeft:
+            return ()
+        if proxy is None:
             return ()
         return ((proxy.host, proxy.port),)
 
@@ -611,6 +634,9 @@ class Downloader:
 
                         try:
                             new_proxy = self.pool.switch(reason)
+                            # Свой адрес книги тоже переезжает: иначе она
+                            # осталась бы на том, который пул уже похоронил.
+                            self.proxy = new_proxy
                         except NoProxiesLeft as exhausted:
                             blocked_at = chapter.number
                             stopped_reason = scrub(str(exhausted))
@@ -795,8 +821,8 @@ class Downloader:
             raise
 
     def _new_session(self, novel: api.Novel) -> SiteClient:
-        """Новая сессия на текущий прокси."""
-        proxy = self.pool.current() if self.pool else None
+        """Новая сессия на свой прокси, а без него — на текущий общий."""
+        proxy = self._my_proxy()
         if proxy is not None:
             log.info("Работаем через прокси %s", proxy.label)
         return SiteClient(
@@ -818,12 +844,12 @@ class Downloader:
         return chosen
 
     def _proxy_label(self) -> str:
-        if self.pool is None:
-            return ""
+        """Через что качает **эта** книга, а не очередь вообще."""
         try:
-            return self.pool.current().label
+            proxy = self._my_proxy()
         except NoProxiesLeft:
             return ""
+        return proxy.label if proxy is not None else ""
 
     def _switch_count(self) -> int:
         return len(self.pool.switches) if self.pool else 0

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import shutil
@@ -1567,6 +1568,20 @@ def _downloads_start(payload: dict):
         with budget_lock:
             budgets.append(count)
 
+    #: Адреса по кругу — свой каждой книге очереди.
+    #:
+    #: Прежде все книги брали у пула один и тот же `current()`, и в
+    #: журнале «Работаем через прокси 31.58.9.4» повторялось для каждой.
+    #: Один адрес на трёх книгах не тянул: книги вставали на оглавлении,
+    #: а список из десяти адресов простаивал.
+    spread = itertools.cycle(working_proxies(pool)) if pool else None
+
+    def take_proxy():
+        if spread is None:
+            return None
+        with budget_lock:
+            return next(spread, None)
+
     def one(item):
         """Скачать одну книгу очереди и вернуть текст итога.
 
@@ -1655,6 +1670,7 @@ def _downloads_start(payload: dict):
                 timeout=run.read_timeout,
                 connect_timeout=run.connect_timeout,
                 spare=spare,
+                proxy=take_proxy(),
             )
             report = downloader.run(novel, output_dir,
                                     first=first, last=last).as_dict()

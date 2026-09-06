@@ -37,6 +37,15 @@ TIMEOUT = 120
 #: столько же, сколько тело ответа, незачем.
 CONNECT_TIMEOUT = 15
 
+#: Срок для лёгкого ответа — оглавления, каталога, списка глав.
+#:
+#: Двух минут они не стоят. Оглавление это JSON на несколько килобайт: он
+#: приходит за секунду или не приходит вовсе. А стоял на нём тот же срок,
+#: что и у страницы главы в 220 КБ, — и молчащий адрес обходился в три
+#: попытки по две минуты. Шесть минут тишины на пустом месте: книга
+#: замирала на «Собираем оглавление» и выглядела зависшей.
+LIGHT_TIMEOUT = 30
+
 #: Признаки того, что ответ оборвался на середине, а не «сайт не ответил».
 #: Диагноз другой, поэтому и в лог пишется другое.
 INCOMPLETE_MARKERS = (
@@ -424,7 +433,13 @@ class Client:
         shared_session: bool = False,
         cancel: threading.Event | None = None,
         on_retry=None,
+        light_timeout: int | None = None,
     ):
+        #: Срок для лёгкого ответа — оглавления и каталога. Не больше
+        #: общего: снизил человек чтение до двадцати секунд — значит и
+        #: лёгкий ответ ждём не дольше, а не «зато у нас своё число».
+        self.light_timeout = min(int(light_timeout or LIGHT_TIMEOUT),
+                                 int(timeout))
         #: Куда сказать, что запрос не прошёл и мы ждём перед повтором.
         #:
         #: Без этого повторы были не видны вовсе: журнал писал их в debug,
@@ -486,7 +501,8 @@ class Client:
         return self.cancel.wait(seconds)
 
     def get(self, url: str, params=None, headers: dict[str, str] | None = None,
-            cookies: dict[str, str] | None = None) -> Any:
+            cookies: dict[str, str] | None = None,
+            timeout: int | None = None) -> Any:
         """GET с ретраями. Возвращает объект ответа; кидает HttpError.
 
         Куки передаются отдельно от заголовков не для красоты. Заголовок
@@ -497,7 +513,8 @@ class Client:
         лежит его собственная кука с заглушки, и первой уходит она.
         Через `cookies` строка получается одна, и в ней наше значение.
         """
-        return self._ask(url, params=params, headers=headers, cookies=cookies)
+        return self._ask(url, params=params, headers=headers, cookies=cookies,
+                         timeout=timeout)
 
     def post(self, url: str, data: dict | None = None,
              headers: dict[str, str] | None = None,
@@ -514,8 +531,13 @@ class Client:
 
     def _ask(self, url: str, params=None, headers: dict[str, str] | None = None,
              cookies: dict[str, str] | None = None,
-             data: dict | None = None) -> Any:
-        """Один запрос со всеми повторами. `data` не пусто — это POST."""
+             data: dict | None = None, timeout: int | None = None) -> Any:
+        """Один запрос со всеми повторами. `data` не пусто — это POST.
+
+        `timeout` — срок именно этого запроса. Пусто — общий: страница
+        главы весит 220 КБ и двух минут стоит, а оглавление не стоит.
+        """
+        waiting = int(timeout or self.timeout)
         last_error = "unknown"
         last_status: int | None = None
         network_failure = False
@@ -548,7 +570,7 @@ class Client:
                     full_url,
                     # (на соединение, на чтение) — обрыв тела и недоступный
                     # адрес это разные беды с разными сроками ожидания.
-                    timeout=(self.connect_timeout, self.timeout),
+                    timeout=(self.connect_timeout, waiting),
                     headers=request_headers or None,
                     **extra,
                 )
@@ -636,8 +658,15 @@ class Client:
         raise HttpError(message, status=last_status)
 
     def get_json(self, path: str, params=None) -> Any:
+        """Лёгкий ответ — и срок ему лёгкий.
+
+        Оглавление и каталог это JSON на несколько килобайт: он приходит
+        за секунду или не приходит вовсе. Ждать его столько же, сколько
+        страницу главы в 220 КБ, значит платить шестью минутами тишины за
+        один молчащий адрес.
+        """
         url = path if path.startswith("http") else f"{API}{path}"
-        resp = self.get(url, params)
+        resp = self.get(url, params, timeout=self.light_timeout)
         try:
             return resp.json()
         except Exception as exc:
