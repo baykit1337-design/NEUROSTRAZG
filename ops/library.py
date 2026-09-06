@@ -314,6 +314,37 @@ def get(key: str) -> Book | None:
         return _load().get(str(key or ""))
 
 
+def by_folder(folder) -> Book | None:
+    """Книга, лежащая в этой папке. Нужна починке.
+
+    Осмотр и починка работают с папкой: человек ткнул в неё на «Проверке»
+    и ничего больше о книге не сказал. А чтобы главу перекачать, надо
+    знать, чем её качали и по какому адресу, — и это знает только
+    библиотека.
+
+    Сравниваем разрешённые пути, а не строки: «C:/Книги/Х» и
+    «C:\\Книги\\Х\\» — одна и та же папка, и разойдись они написанием,
+    книга бы «не нашлась» при живой записи о ней.
+    """
+    try:
+        where = Path(str(folder or "")).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+    if not str(folder or "").strip():
+        return None
+
+    for book in all_books():
+        if not book.folder:
+            continue
+        try:
+            mine = Path(book.folder).expanduser().resolve()
+        except (OSError, ValueError):
+            continue
+        if mine == where:
+            return book
+    return None
+
+
 def remember(key: str = "", **fields) -> Book:
     """Завести книгу или дополнить уже заведённую.
 

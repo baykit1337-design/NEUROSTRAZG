@@ -6825,6 +6825,29 @@ async function cuStart(targets){
   }
 }
 
+/* Что можно починить, не уходя с карточки осмотра.
+ *
+ * Осмотр говорил, что не так, и на этом обрывался: дальше человек
+ * оставался с папкой в несколько сотен файлов и списком имён.
+ *
+ * Находки разного рода чинятся по-разному, и разбор этот держится
+ * здесь, а не на сервере: сервер отвечает на «сделай», а на вопрос
+ * «что показать кнопкой» отвечает экран.
+ *
+ * Шапка — это две строки, которые пишет сама качалка: название книги и
+ * заголовок главы. Осмотр об них спотыкается, а в тексте, который потом
+ * переводят, они лишние.
+ */
+const CU_HEAD = ['cut', 'short', 'same', 'empty'];
+//: Дыры в нумерации: этих глав нет вовсе, и чинятся они только качалкой.
+const CU_AGAIN = ['missing', 'parts', 'cut', 'short', 'empty', 'unreadable'];
+
+/** Что осмотр показал в находке — списком строк без «и ещё N».
+ *  Чиним ровно то, что человек видит: обещать починку скрытого нельзя. */
+function cuWhere(trouble){
+  return trouble.where || [];
+}
+
 /** Находки осмотра — списком. Общая на оба осмотра: подписи и порядок
  *  приходят с сервера, и рисовать их двумя способами не за чем. */
 function cuShow(report, boxId){
@@ -6854,11 +6877,80 @@ function cuShow(report, boxId){
     // целиком, и своя копия того же цвета из подсветки бы выпала.
     where.className = 'hint';
     where.style.margin = '2px 10px 8px';
-    where.textContent = (trouble.where || []).join(' · ')
+    where.textContent = cuWhere(trouble).join(' · ')
       + (trouble.more ? ` … и ещё ${trouble.more}` : '');
     box.append(where);
+
+    const fixes = document.createElement('div');
+    fixes.className = 'row';
+    fixes.style.margin = '0 10px 10px';
+    if(CU_HEAD.includes(trouble.kind)){
+      fixes.append(cuButton('Убрать шапку', 'cu-head',
+        'Снимает первые две строки — название книги и заголовок главы. '
+        + 'Копия «как было» уходит в корзину.',
+        () => cuCutHead(trouble)));
+    }
+    if(CU_AGAIN.includes(trouble.kind)){
+      fixes.append(cuButton('Скачать заново', 'cu-again',
+        'Убирает эти главы и ставит книгу в очередь на их докачку. '
+        + 'Чем качать, берётся из библиотеки.',
+        () => cuAgain(trouble)));
+    }
+    if(fixes.children.length) box.append(fixes);
   }
   box.hidden = false;
+}
+
+/** Кнопка починки. Заводится здесь, а не в разметке: находок заранее
+ *  неизвестно сколько, и своего id у каждой быть не может. */
+function cuButton(text, mark, tip, run){
+  const button = document.createElement('button');
+  button.className = 'ghost ' + mark;
+  button.style.flex = '0 0 auto';
+  button.textContent = text;
+  button.title = tip;
+  button.onclick = async () => {
+    button.disabled = true;
+    try{ await run(); }
+    finally{ button.disabled = false; }
+  };
+  return button;
+}
+
+/** Куда смотрел осмотр. Починка идёт по тому же выбору — иначе она
+ *  правила бы не то, что показала. */
+function cuTargets(){
+  return CHOSEN.ckList || [];
+}
+
+async function cuCutHead(trouble){
+  showError('');
+  const targets = cuTargets();
+  if(!targets.length){ showError('Сначала выберите папку книги'); return; }
+  try{
+    const done = await call('/api/checkup/cuthead',
+                            {targets, where: cuWhere(trouble)});
+    $('cuStatus').textContent = done.summary || 'Готово';
+    // Что осталось не тронутым — говорим вслух: «поправлено 12» при
+    // двадцати находках человек прочитает как «поправлено всё».
+    if((done.skipped || []).length || (done.failures || []).length){
+      showError([...(done.failures || []), ...(done.skipped || [])].join('; '),
+                $('cuCard'));
+    }
+    cuStart(targets);
+  }catch(err){ showError(err.message, $('cuCard')); }
+}
+
+async function cuAgain(trouble){
+  showError('');
+  const targets = cuTargets();
+  if(!targets.length){ showError('Сначала выберите папку книги'); return; }
+  try{
+    const done = await call('/api/checkup/redownload',
+                            {targets, where: cuWhere(trouble)});
+    $('cuStatus').textContent = done.message || 'Поставлено в очередь';
+    toast(done.message || 'Книга поставлена в очередь');
+  }catch(err){ showError(err.message, $('cuCard')); }
 }
 
 $('cuStart').onclick = () => cuStart();

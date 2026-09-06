@@ -1986,3 +1986,55 @@ class TestTheRunSettingsAreAlwaysReachable(PageTestCase):
 
         self.assertEqual(sent["books"], 4)
         self.quiet()
+
+
+class TestTheCheckupOffersToFixWhatItFound(PageTestCase):
+    """Осмотр говорил, что не так, и на этом обрывался.
+
+    Дальше человек оставался с папкой в несколько сотен файлов и списком
+    имён — без единой кнопки, которая бы что-нибудь с ними сделала.
+    """
+
+    def draw(self, kind, where=("0042 - Имя.txt",)):
+        """Рисуем находку того рода, что интересует, и смотрим на кнопки."""
+        return self.page.evaluate(
+            """([kind, where]) => {
+                 cuShow({troubles: [{kind, kind_name: 'Находка',
+                                     where, count: where.length}]});
+                 const box = document.getElementById('cuFound');
+                 return [...box.querySelectorAll('button')]
+                        .map(b => b.className + '|' + b.textContent);
+               }""", [kind, list(where)])
+
+    def test_a_cut_chapter_can_have_its_head_taken_off(self):
+        """То самое: осмотр спотыкается о название книги и заголовок."""
+        self.assertTrue(any("cu-head" in one for one in self.draw("cut")))
+        self.quiet()
+
+    def test_a_cut_chapter_can_be_downloaded_again(self):
+        self.assertTrue(any("cu-again" in one for one in self.draw("cut")))
+        self.quiet()
+
+    def test_missing_chapters_are_offered_a_download(self):
+        """«Ну и типа если пропущены главы пусть они скачиваются»."""
+        said = self.draw("missing", ["7–9"])
+        self.assertTrue(any("cu-again" in one for one in said))
+        self.quiet()
+
+    def test_missing_chapters_are_not_offered_a_head_cut(self):
+        """Снимать шапку с главы, которой нет, не с чего."""
+        said = self.draw("missing", ["7–9"])
+        self.assertFalse(any("cu-head" in one for one in said))
+        self.quiet()
+
+    def test_a_finding_about_names_gets_no_buttons(self):
+        """«Общий хвост имён» ни докачкой, ни шапкой не чинится, и кнопка
+        под ним обещала бы починку, которой нет."""
+        self.assertEqual(self.draw("tail", ["- глава"]), [])
+        self.quiet()
+
+    def test_the_buttons_say_what_they_do(self):
+        """Кнопка без слов — это кнопка, которую боятся нажать."""
+        for one in self.draw("cut"):
+            self.assertTrue(one.split("|", 1)[1].strip(), one)
+        self.quiet()

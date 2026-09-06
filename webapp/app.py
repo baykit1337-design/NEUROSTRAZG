@@ -71,6 +71,7 @@ from ops import session as session_op  # noqa: E402
 from ops import speech as speech_op  # noqa: E402
 from ops import queue as queue_op  # noqa: E402
 from ops import reader as reader_op  # noqa: E402
+from ops import repair as repair_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
 from ops import sides as sides_op  # noqa: E402
 from ops import signature as signature_op  # noqa: E402
@@ -5032,6 +5033,101 @@ def api_checkup_names():
     except (ValueError, OSError) as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(report=found.as_dict())
+
+
+# ------------------------------- починка находок осмотра
+#
+# Осмотр говорил, что не так, и на этом обрывался: дальше человек
+# оставался с папкой в несколько сотен файлов и списком имён. Здесь то,
+# что можно починить, не уходя с той же карточки.
+
+
+@app.post("/api/checkup/cuthead")
+def api_checkup_cuthead():
+    """Снять с названных глав шапку — название книги и заголовок.
+
+    Качалка пишет её в каждый файл нарочно: без неё непонятно, что за
+    книга лежит в папке. Но в тексте, который потом переводят и
+    склеивают, эти две строки лишние — и осмотр на них спотыкается.
+
+    Сразу ответом, а не задачей: правится ровно то, что нашёл осмотр, —
+    десятки файлов, а не тысячи.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    where = payload.get("where") or []
+    if not targets:
+        return jsonify(error="Выберите папку книги"), 400
+    if not where:
+        return jsonify(error="Нечего править: находка пуста"), 400
+
+    lines = int(payload.get("lines") or repair_op.HEAD_LINES)
+    try:
+        done = repair_op.cut_head(targets, where, lines)
+    except (OSError, ValueError) as exc:
+        return jsonify(error=f"Не вышло убрать шапку: {exc}"), 400
+    return jsonify(**done.as_dict())
+
+
+@app.post("/api/checkup/redownload")
+def api_checkup_redownload():
+    """Убрать названные главы и поставить книгу в очередь на их докачку.
+
+    Своей качалки здесь нет намеренно: она уже есть — с прокси, потоками,
+    паузой на обрыв связи и полосой прогресса. Починка только готовит
+    место (уносит испорченные файлы и вычёркивает их из `state.json`) и
+    ставит книгу в очередь с нужным диапазоном глав.
+
+    Чем качать эту папку, знает библиотека, и только она. Не нашлась
+    книга — так и говорим: гадать по имени папки было бы хуже отказа.
+    """
+    payload = request.json or {}
+    targets = _targets(payload)
+    where = payload.get("where") or []
+    if not targets:
+        return jsonify(error="Выберите папку книги"), 400
+
+    folder = Path(str(targets[0])).expanduser()
+    if not folder.is_dir():
+        return jsonify(error="Докачивать можно в папку книги, "
+                             "а выбран отдельный файл"), 400
+
+    numbers = repair_op.numbers_of(where)
+    if not numbers:
+        return jsonify(error="Не удалось понять, о каких главах речь"), 400
+
+    book = library_op.by_folder(folder)
+    if book is None:
+        return jsonify(error=(
+            f"Папка {folder.name} в библиотеке не числится, и чем качать "
+            "эти главы — неизвестно. Скачайте книгу через качалку хотя бы "
+            "раз: тогда источник и адрес запомнятся.")), 400
+    if not book.source or not book.address:
+        return jsonify(error=(f"У книги «{book.title}» не записано, чем и "
+                              "откуда её качали. Докачивать нечем.")), 400
+
+    base, name = _split_folder(book.folder)
+    if not name:
+        return jsonify(error="У книги в библиотеке не записана папка"), 400
+
+    dropped = repair_op.drop(folder, where)
+    downloads_op.add(
+        name=book.name, name_ru=book.name_ru, cover=book.cover,
+        source=book.source, address=book.address,
+        base=base, folder=name,
+        first=min(numbers), last=max(numbers),
+        origin={"site": book.found_site, "book_id": book.found_id,
+                "link": book.found_link, "cover": book.cover,
+                "name": book.name, "name_ru": book.name_ru},
+    )
+    return jsonify(
+        queued=len(numbers), first=min(numbers), last=max(numbers),
+        title=book.title, **dropped.as_dict(),
+        message=(f"«{book.title}» поставлена в очередь: главы "
+                 f"{min(numbers)}–{max(numbers)}"
+                 + (f", убрано файлов {len(dropped.removed)}"
+                    if dropped.removed else "")
+                 + ". Нажмите «Качать очередь» на вкладке «Скачать»."))
 
 
 # ------------------------------- журнал, корзина и сравнение версий
