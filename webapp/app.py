@@ -869,8 +869,37 @@ def api_links():
 # ------------------------------------------------- библиотека книг
 
 
-def _book_out(book) -> dict:
-    """Книга наружу: своё плюс подписи меток.
+def _queue_state(book, rows) -> str:
+    """Стоит ли эта книга в очереди и что с ней там.
+
+    Библиотека и очередь жили порознь: карточка предлагала «в качалку»
+    книге, которая в качалке уже стояла и качалась прямо сейчас.
+
+    Сверяем по папке: у книги и у строки очереди она одна, а ключи у них
+    считаются по-разному и совпасть не обязаны.
+    """
+    where = str(book.folder or "").strip()
+    if not where:
+        return ""
+    try:
+        mine = Path(where).expanduser().resolve()
+    except (OSError, ValueError):
+        return ""
+
+    for row in rows:
+        if not row.base or not row.folder:
+            continue
+        try:
+            theirs = (Path(row.base).expanduser() / row.folder).resolve()
+        except (OSError, ValueError):
+            continue
+        if theirs == mine:
+            return row.state or downloads_op.WAITING
+    return ""
+
+
+def _book_out(book, rows=()) -> dict:
+    """Книга наружу: своё плюс подписи меток и место в очереди.
 
     Подписи считает сервер, а не страница: список меток закрытый и живёт
     в `ops/library`, и держать его вторым экземпляром в разметке значило
@@ -881,14 +910,16 @@ def _book_out(book) -> dict:
                           if m in library_op.MARKS]
     data["auto_names"] = [library_op.AUTO[m] for m in book.auto
                           if m in library_op.AUTO]
+    data["queued"] = _queue_state(book, rows)
     return data
 
 
 @app.get("/api/library")
 def api_library():
     """Вся библиотека и сводка по ней."""
+    rows = downloads_op.all_items()
     return jsonify(
-        books=[_book_out(b) for b in library_op.all_books()],
+        books=[_book_out(b, rows) for b in library_op.all_books()],
         state=library_op.state(),
         marks=[{"key": k, "name": n} for k, n in library_op.MARKS.items()],
         auto=[{"key": k, "name": n} for k, n in library_op.AUTO.items()],
@@ -944,10 +975,11 @@ def api_library_check():
         keys.append(str(payload["key"]))
 
     checked, missed = _check_updates(keys)
+    rows = downloads_op.all_items()
     return jsonify(
         checked=checked, missed=missed,
         left=max(0, len(keys) - CHECK_AT_ONCE),
-        books=[_book_out(b) for b in library_op.all_books()],
+        books=[_book_out(b, rows) for b in library_op.all_books()],
         state=library_op.state(),
     )
 
@@ -1525,6 +1557,12 @@ def _downloads_start(payload: dict):
 
             output_dir = job.keep(_prepare(item.base, item.folder,
                                            "download"))
+            # Каталог уже ответил — значит про книгу известно всё:
+            # обложка, описание, жанры, теги. Записываем их сейчас, а не
+            # в конце прогона: книга на две тысячи глав качается часами, и
+            # всё это время карточка в библиотеке стояла пустой.
+            _remember_about(novel, source.key, output_dir, item.origin,
+                            address=item.address)
             # «С какой главы» считается сейчас, а не при постановке в
             # очередь: за ночь вышло бы ещё три главы, а очередь качала
             # бы вчерашний остаток.
@@ -1785,6 +1823,42 @@ def _about_fields(novel, origin: dict) -> dict:
     }
 
 
+def _remember_about(novel, source_key: str, output_dir, origin: dict,
+                    address: str = "") -> None:
+    """Записать в библиотеку то, что каталог уже рассказал о книге.
+
+    Отдельно от `_remember_book` и раньше него. Прогон книги на две
+    тысячи глав идёт часами, и всё это время карточка стояла пустой:
+    обложка с описанием приходили тем же первым запросом, а записывались
+    только после последней главы.
+
+    Про сам прогон здесь не пишется ни слова — ни «докуда дошли», ни
+    «когда качали». Их знает конец прогона, и подставь мы сюда нули,
+    книга на середине выглядела бы нескачанной вовсе.
+    """
+    try:
+        origin = origin or {}
+        where = str(address or "").strip() or novel.slug or str(novel.code)
+        library_op.remember(
+            library_op.key_of(str(origin.get("site") or ""),
+                              str(origin.get("book_id") or ""),
+                              source_key, where),
+            name=str(origin.get("name") or novel.name or ""),
+            name_ru=str(origin.get("name_ru") or ""),
+            author=novel.author or "",
+            found_site=str(origin.get("site") or ""),
+            found_id=str(origin.get("book_id") or ""),
+            found_link=str(origin.get("link") or ""),
+            source=source_key,
+            address=where,
+            folder=str(output_dir),
+            chapters=int(novel.total_chapters or 0),
+            **_about_fields(novel, origin),
+        )
+    except Exception as exc:  # noqa: BLE001 — заметка не стоит прогона
+        log.warning("Сведения о книге не записались: %s", exc)
+
+
 def _remember_book(novel, source_key: str, output_dir, origin: dict,
                    report: dict, address: str = "") -> None:
     """Положить прогон в библиотеку и паспорт — в папку книги.
@@ -1901,6 +1975,9 @@ def api_start():
     job.keep(made)
 
     def work(job: Job):
+        # Обложка с описанием — сразу, а не после последней главы: книга
+        # качается часами, и всё это время карточка стояла пустой.
+        _remember_about(novel, source.key, output_dir, origin)
         # Тот же флаг, что и у очереди: одна книга или тринадцать —
         # «Остановить» должна доходить до повторов одинаково.
         client = Client(timeout=read_timeout, connect_timeout=connect_timeout,

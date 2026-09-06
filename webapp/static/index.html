@@ -456,6 +456,17 @@
   .pick,.pick2,.pick3{flex:1;font-size:14px;border-color:var(--stroke-soft)}
   .pick.on,.pick2.on,.pick3.on{border-color:var(--neon);background:rgba(176,108,255,.16)}
 
+  /* Ряд полей с подписями разной длины.
+     «Таймаут соединения, с» в четверть ширины не помещается и
+     переносится на вторую строку, а вопросик — на третью. Колонка от
+     этого становится выше остальных, и поля разъезжаются по высоте:
+     два стоят наверху, два ниже на строку. Читается это как поломка.
+     Подписи выравниваем по высоте (две строки отводим всем), а сами
+     поля прижимаем к низу — на случай, когда подпись займёт и три. */
+  .runrow{align-items:flex-end}
+  .runrow > div{flex:1 1 0;min-width:0}
+  .runrow > div > label{min-height:2.6em}
+
   .checks{display:flex;gap:14px;flex-wrap:wrap}
   .hint-inline{text-transform:none;letter-spacing:0}
 
@@ -1445,16 +1456,16 @@
        рядом с прокси. -->
   <div class="card" id="runCard">
     <label>Как качать</label>
-    <div class="row" style="margin-top:10px">
-      <div style="flex:1">
+    <div class="row runrow" style="margin-top:10px">
+      <div>
         <label for="tmRead">таймаут чтения, с<i class="hint-icon" data-tip="Сколько ждать, пока сервер отдаст страницу главы целиком. Страница весит около 220 КБ; при 30 секундах она не успевала дойти и обрывалась. Рабочее значение — 120.">?</i></label>
         <input id="tmRead" type="number" value="120" min="5" max="600">
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tmConnect">таймаут соединения, с<i class="hint-icon" data-tip="Сколько ждать установки связи с сервером. Если он не отвечает за это время, адрес считается недоступным.">?</i></label>
         <input id="tmConnect" type="number" value="15" min="1" max="300">
       </div>
-      <div style="flex:1">
+      <div>
         <label for="dlThreads">потоков<i class="hint-icon" data-tip="Сколько глав качать одновременно. 3 — безопасное значение. Больше — быстрее, но выше риск, что сайт временно перестанет отвечать.">?</i></label>
         <input id="dlThreads" type="number" value="3" min="1" max="6">
       </div>
@@ -1462,7 +1473,7 @@
            незачем. Сколько их потянуть — считается от прокси: один
            поток занимает один адрес. Считать это в уме человеку
            незачем, поэтому ноль значит «посчитай сам». -->
-      <div style="flex:1">
+      <div>
         <label for="dlBooks">книг разом<i class="hint-icon" data-tip="0 — посчитать по прокси: один поток занимает один адрес. 5 проверенных адресов в 1 поток — 5 книг разом; в 3 потока — одна книга в три потока и вторая в два. Своё число перебивает расчёт.">?</i></label>
         <input id="dlBooks" type="number" value="0" min="0" max="8"
                placeholder="0 — по прокси">
@@ -5778,6 +5789,45 @@ function libAbout(book){
   return box;
 }
 
+/** Что предложить книге кнопкой — и какими словами.
+ *
+ * Библиотека и очередь жили порознь: карточка звала «в качалку» книгу,
+ * которая в качалке уже стояла и качалась прямо сейчас. Теперь кнопка
+ * знает про очередь и говорит по делу.
+ *
+ * `queued` приходит с сервера: он сверяет папку книги с папками строк
+ * очереди — ключи у них считаются по-разному и совпасть не обязаны.
+ */
+function libDeed(book){
+  const standing = !!book.queued && book.queued !== 'done';
+  if(book.queued === 'running'){
+    return {text: 'Качается сейчас', tip: 'Показать в очереди',
+            strong: false, standing: true};
+  }
+  if(standing){
+    return {text: 'Уже в очереди', tip: 'Показать в очереди',
+            strong: false, standing: true};
+  }
+  if(book.fresh){
+    return {text: `Докачать ${book.fresh}`,
+            tip: `Поставить в очередь: вышло новых глав ${book.fresh}`,
+            strong: true, standing: false};
+  }
+  if(book.last > 0 && book.chapters && book.last < book.chapters){
+    // Скачана не до конца — и это не «вышли новые главы», а прерванный
+    // прогон. Слово тут другое, и человек ждёт именно его.
+    return {text: 'Продолжить',
+            tip: `Поставить в очередь: скачано ${book.last} из ${book.chapters}`,
+            strong: true, standing: false};
+  }
+  if(!book.last){
+    return {text: 'Скачать', tip: 'Поставить в очередь',
+            strong: true, standing: false};
+  }
+  return {text: 'Скачать заново', tip: 'Поставить в очередь ещё раз',
+          strong: false, standing: false};
+}
+
 function libCard(book){
   const card = document.createElement('div');
   card.className = 'lb';
@@ -5927,13 +5977,23 @@ function libCard(book){
 
   if(book.source && book.address){
     const more = document.createElement('button');
-    more.className = book.fresh ? 'primary' : 'ghost';
-    more.textContent = book.fresh ? `Докачать ${book.fresh}` : 'В качалку';
-    more.title = 'Заполнить форму скачивания по этой записи';
-    more.onclick = async () => {
-      goTab('download');
-      await histFill(book);
-    };
+    const said = libDeed(book);
+    more.className = said.strong ? 'primary' : 'ghost';
+    more.textContent = said.text;
+    more.title = said.tip;
+    // Книга уже в очереди — туда и ведём, а не ставим её второй раз.
+    more.onclick = said.standing
+      ? () => goTab('download')
+      : async () => {
+          try{
+            await call('/api/downloads/fill', {keys: [book.key]});
+            goTab('download');
+            await dqLoad();
+            toast(`«${book.name_ru || book.name}» — в очереди. `
+                  + 'Нажмите «Качать очередь».');
+            await libLoad();
+          }catch(err){ showError(err.message); }
+        };
     deeds.append(more);
   }
 

@@ -279,7 +279,103 @@ def _load() -> dict:
         book = Book.from_dict(item)
         if book.key:
             found[book.key] = book
-    return found
+    return _merge_twins(found)
+
+
+def _folder_key(book: Book) -> str:
+    """Папка книги в сравнимом виде. Пусто — сравнивать не с чем.
+
+    Строки сравнивать нельзя: «C:/Книги/Х» и «C:\\Книги\\Х\\» — одна и
+    та же папка. Регистр на Windows тоже не считается.
+    """
+    if not str(book.folder or "").strip():
+        return ""
+    try:
+        return str(Path(book.folder).expanduser().resolve()).rstrip("/\\").lower()
+    except (OSError, ValueError):
+        return str(book.folder).strip().rstrip("/\\").lower()
+
+
+def _richer(one: Book, two: Book) -> Book:
+    """Чей ключ оставить, когда книга завелась дважды.
+
+    Ключ от места находки (`mvl:6615`) сильнее ключа от адреса
+    (`mvlempyr:https://…`): книгу находят на одном сайте, а качают с
+    другого, и сменись источник — ключ от адреса разъедется, а этот нет.
+
+    При равных ключах берём ту запись, которую трогали позже: она знает
+    про книгу больше.
+    """
+    mine = bool(one.found_site and one.found_id)
+    yours = bool(two.found_site and two.found_id)
+    if mine != yours:
+        return one if mine else two
+    return one if (one.last_run or one.first_seen) >= \
+        (two.last_run or two.first_seen) else two
+
+
+def _fold(winner: Book, loser: Book) -> None:
+    """Переливает в оставшуюся запись всё, чего в ней нет.
+
+    Проигравшая — не мусор: обычно как раз в ней лежит то, чего нет в
+    победившей. Ровно так это и выглядело у человека: одна запись с
+    обложкой и описанием, вторая — с прогоном и папкой.
+    """
+    for spot in Book.__dataclass_fields__:
+        if spot in ("key", "first_seen"):
+            continue
+        here, there = getattr(winner, spot), getattr(loser, spot)
+        if isinstance(here, list):
+            # Метки и теги складываем: человек мог расставить их на обеих
+            # половинах, и выбрасывать половину его работы нельзя.
+            setattr(winner, spot, here + [x for x in there if x not in here])
+        elif isinstance(here, int) and not isinstance(here, bool):
+            # Глав и «докуда дошли» — больше из двух: меньшее число тут
+            # значит «эта запись просто не знала», а не «стало меньше».
+            setattr(winner, spot, max(here, there))
+        elif not here and there:
+            setattr(winner, spot, there)
+
+    # Заведена книга тогда, когда её завели впервые.
+    stamps = [s for s in (winner.first_seen, loser.first_seen) if s]
+    winner.first_seen = min(stamps) if stamps else winner.first_seen
+
+
+def _merge_twins(books: dict) -> dict:
+    """Одна папка — одна книга.
+
+    Ключ у книги, найденной в рейтинге, и у неё же, заведённой вставленной
+    ссылкой, получается разный: `mvl:6615` против `mvlempyr:https://…`.
+    Книга при этом одна, качается в одну папку — а в библиотеке лежала
+    дважды: одна половина с обложкой и описанием, вторая с прогоном.
+
+    Сводим при чтении, а не только при записи: развестись они успели
+    раньше, чем нашлась причина, и ждать следующего прогона, чтобы
+    увидеть библиотеку в порядке, человеку незачем.
+    """
+    by_folder: dict[str, str] = {}
+    twins: list[str] = []
+
+    for key, book in list(books.items()):
+        spot = _folder_key(book)
+        if not spot:
+            continue
+        first = by_folder.get(spot)
+        if first is None:
+            by_folder[spot] = key
+            continue
+
+        winner = _richer(books[first], book)
+        loser = book if winner is books[first] else books[first]
+        _fold(winner, loser)
+        by_folder[spot] = winner.key
+        twins.append(loser.key)
+
+    for key in twins:
+        books.pop(key, None)
+    if twins:
+        log.info("Библиотека: сведено записей-двойников: %s", len(twins))
+    return books
 
 
 def _save(books: dict) -> None:
@@ -345,6 +441,25 @@ def by_folder(folder) -> Book | None:
     return None
 
 
+def _twin_by_folder(books: dict, key: str, fields: dict) -> Book | None:
+    """Уже заведённая книга с той же папкой — если она есть.
+
+    Ключ у новой записи сильнее только тогда, когда он от места находки;
+    в остальном пишем в ту запись, что уже лежит, и не плодим вторую.
+    """
+    want = str(fields.get("folder") or "").strip()
+    if not want:
+        return None
+    probe = Book(key=key, folder=want)
+    spot = _folder_key(probe)
+    if not spot:
+        return None
+    for book in books.values():
+        if _folder_key(book) == spot:
+            return book
+    return None
+
+
 def remember(key: str = "", **fields) -> Book:
     """Завести книгу или дополнить уже заведённую.
 
@@ -362,7 +477,19 @@ def remember(key: str = "", **fields) -> Book:
     now = datetime.now().strftime(STAMP)
     with _LOCK:
         books = _load()
-        book = books.get(key) or Book(key=key, first_seen=now)
+        book = books.get(key)
+        if book is None:
+            # Та же папка — та же книга, под каким бы ключом её ни
+            # заводили. Иначе рейтинг и вставленная ссылка разводят одну
+            # работу на две записи: у одной обложка с описанием, у другой
+            # прогон с папкой, и обе неполные.
+            book = _twin_by_folder(books, key, fields)
+            # Ключ у найденной записи остаётся её собственный. Смени мы
+            # его — запись легла бы в список дважды: под старым именем и
+            # под новым, потому что предмет один и тот же.
+            key = book.key if book is not None else key
+        if book is None:
+            book = Book(key=key, first_seen=now)
         for name, value in fields.items():
             if not hasattr(book, name):
                 continue

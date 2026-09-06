@@ -835,3 +835,257 @@ class TestWhatTheSiteSaysAboutTheBook(unittest.TestCase):
         self.assertEqual(data["about_ru"], "Про охотниц")
         self.assertEqual(data["about_shown"], "Про охотниц")
         self.assertTrue(data["translated"])
+
+
+class TestOneFolderIsOneBook(Base):
+    """Одна работа лежала в библиотеке дважды.
+
+    Ключ у книги, найденной в рейтинге, и у неё же, заведённой вставленной
+    ссылкой, получается разный: `mvl:6615` против `mvlempyr:https://…`.
+    Книга при этом одна и качается в одну папку — а в списке было две
+    карточки: одна с обложкой и описанием, вторая с прогоном и папкой.
+    Обе неполные, и человек это увидел.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.folder = str(Path(self.dir.name) / "Insect Tamers Ascension")
+
+    def twins(self):
+        """Те самые две записи: с рейтинга и по вставленной ссылке."""
+        library.remember("mvl:6615", name="Insect Tamer's Ascension",
+                         found_site="mvl", found_id="6615",
+                         cover="https://assets/600/6615.webp",
+                         about="Жуки.", folder=self.folder)
+        library.remember("mvlempyr:https://x/y", name="Insect Tamer's Ascension",
+                         source="mvlempyr", address="https://x/y",
+                         folder=self.folder, chapters=546, last=546)
+
+    def test_the_list_shows_one_card(self):
+        self.twins()
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_nothing_from_either_half_is_lost(self):
+        """Проигравшая запись не мусор: обычно в ней и лежит то, чего нет
+        в победившей."""
+        self.twins()
+        book = library.all_books()[0]
+        self.assertEqual(book.cover, "https://assets/600/6615.webp")
+        self.assertEqual(book.about, "Жуки.")
+        self.assertEqual(book.last, 546)
+        self.assertEqual(book.source, "mvlempyr")
+
+    def lying_in_the_file(self, first, second):
+        """Две записи прямо в файле — как они у человека и лежат.
+
+        Через `remember` двойник больше не заводится вовсе, и свести уже
+        разошедшееся этим путём не проверить: сводится оно при чтении, и
+        читать надо то, что уже разошлось.
+        """
+        library.LIBRARY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        library.LIBRARY_FILE.write_text(json.dumps([first, second]),
+                                        encoding="utf-8")
+        return library.all_books()
+
+    def test_the_key_from_the_rating_wins(self):
+        """Книгу находят на одном сайте, а качают с другого: ключ от
+        места находки этот переезд переживает, ключ от адреса — нет."""
+        books = self.lying_in_the_file(
+            {"key": "mvlempyr:https://x/y", "name": "Книга",
+             "folder": self.folder, "last_run": "2026-09-06 12:00"},
+            {"key": "mvl:6615", "name": "Книга", "folder": self.folder,
+             "found_site": "mvl", "found_id": "6615",
+             "last_run": "2026-09-05 21:00"})
+        self.assertEqual(books[0].key, "mvl:6615")
+
+    def test_the_bigger_number_of_chapters_wins(self):
+        """Меньшее число тут значит «эта запись не знала», а не «стало
+        меньше»: спрятать за нулём уже скачанные главы нельзя."""
+        books = self.lying_in_the_file(
+            {"key": "mvl:6615", "name": "Книга", "folder": self.folder,
+             "found_site": "mvl", "found_id": "6615", "chapters": 0, "last": 0},
+            {"key": "mvlempyr:https://x/y", "name": "Книга",
+             "folder": self.folder, "chapters": 546, "last": 540})
+        self.assertEqual(books[0].chapters, 546)
+        self.assertEqual(books[0].last, 540)
+
+    def test_the_earlier_of_two_first_seens_survives(self):
+        """Заведена книга тогда, когда её завели впервые, — и «в
+        библиотеке с» не должна прыгать вперёд от сведения двойников."""
+        books = self.lying_in_the_file(
+            {"key": "mvl:6615", "name": "Книга", "folder": self.folder,
+             "found_site": "mvl", "found_id": "6615",
+             "first_seen": "2026-09-06 12:00"},
+            {"key": "mvlempyr:https://x/y", "name": "Книга",
+             "folder": self.folder, "first_seen": "2026-08-01 09:00"})
+        self.assertEqual(books[0].first_seen, "2026-08-01 09:00")
+
+    def test_marks_from_both_halves_are_kept(self):
+        """Человек мог расставить их на обеих половинах: выбрасывать
+        половину его работы нельзя.
+
+        Записи кладём прямо в файл: именно так они у человека и лежат —
+        разошлись раньше, чем нашлась причина, и каждая со своими метками.
+        """
+        library.LIBRARY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        library.LIBRARY_FILE.write_text(json.dumps([
+            {"key": "mvl:6615", "name": "Книга", "folder": self.folder,
+             "found_site": "mvl", "found_id": "6615", "marks": ["reading"],
+             "tags": ["жуки"]},
+            {"key": "mvlempyr:https://x/y", "name": "Книга",
+             "folder": self.folder, "marks": ["want"], "tags": ["культивация"]},
+        ]), encoding="utf-8")
+
+        book = library.all_books()[0]
+        self.assertEqual(sorted(book.marks), ["reading", "want"])
+        self.assertEqual(sorted(book.tags), ["жуки", "культивация"])
+
+    def test_a_second_key_does_not_make_a_second_card(self):
+        """Не только сводим уже разошедшееся, но и не разводим заново."""
+        library.remember("mvl:6615", name="Книга", found_site="mvl",
+                         found_id="6615", folder=self.folder)
+        library.remember("mvlempyr:https://x/y", name="Книга",
+                         source="mvlempyr", address="https://x/y",
+                         folder=self.folder)
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_different_folders_stay_apart(self):
+        library.remember("mvl:1", name="Одна", folder=self.folder)
+        library.remember("mvl:2", name="Другая",
+                         folder=str(Path(self.dir.name) / "вторая"))
+        self.assertEqual(len(library.all_books()), 2)
+
+    def test_books_without_a_folder_are_not_merged(self):
+        """Пустая папка — это «папку не знаем», а не «папка одна»."""
+        library.remember("mvl:1", name="Одна")
+        library.remember("mvl:2", name="Другая")
+        self.assertEqual(len(library.all_books()), 2)
+
+    def test_a_trailing_slash_is_the_same_folder(self):
+        library.remember("mvl:1", name="Книга", folder=self.folder)
+        library.remember("mvlempyr:https://x/y", name="Книга",
+                         folder=self.folder + "/")
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_the_earliest_first_seen_survives(self):
+        """Заведена книга тогда, когда её завели впервые."""
+        library.remember("mvl:6615", name="Книга", folder=self.folder)
+        first = library.all_books()[0].first_seen
+        library.remember("mvlempyr:https://x/y", name="Книга",
+                         source="mvlempyr", address="https://x/y",
+                         folder=self.folder)
+        self.assertEqual(library.all_books()[0].first_seen, first)
+
+    def test_the_merge_survives_a_write(self):
+        """Свели при чтении — значит и на диск ложится сведённое."""
+        self.twins()
+        library.remember("mvl:6615", note="проверка")
+        kept = json.loads(library.LIBRARY_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(len(kept), 1)
+
+
+class TestTheCardFillsBeforeTheRunEnds(Base):
+    """Книга на две тысячи глав качается часами.
+
+    Всё это время карточка стояла пустой: обложка с описанием приходили
+    самым первым запросом — тем, которым книгу находят, — а записывались
+    только после последней главы.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from mvl.api import Novel
+        from webapp import app as web
+
+        self.web = web
+        self.novel = Novel(code=6615, name="Insect Tamer's Ascension",
+                           slug="insect-tamers-ascension", total_chapters=546,
+                           author="sahejRocks",
+                           cover="https://assets/600/6615.webp",
+                           about="Жуки и приручение.",
+                           genres=["Action"], tags=["Magic"])
+        self.folder = Path(self.dir.name) / "книга"
+        self.folder.mkdir()
+
+    def test_the_cover_is_there_before_a_single_chapter(self):
+        self.web._remember_about(self.novel, "mvlempyr", self.folder, {},
+                                 address="https://x/y")
+        book = library.all_books()[0]
+        self.assertEqual(book.cover, "https://assets/600/6615.webp")
+        self.assertEqual(book.about, "Жуки и приручение.")
+
+    def test_the_run_itself_is_not_claimed_yet(self):
+        """«Докуда дошли» знает конец прогона. Подставь мы сюда ноль —
+        книга на середине выглядела бы нескачанной вовсе."""
+        self.web._remember_about(self.novel, "mvlempyr", self.folder, {},
+                                 address="https://x/y")
+        self.assertEqual(library.all_books()[0].last, 0)
+        self.assertFalse(library.all_books()[0].last_run)
+
+    def test_the_run_writes_into_the_same_card(self):
+        """Не в соседнюю: ключ у обеих записей считается одинаково."""
+        self.web._remember_about(self.novel, "mvlempyr", self.folder, {},
+                                 address="https://x/y")
+        self.web._remember_book(self.novel, "mvlempyr", self.folder, {},
+                                {}, address="https://x/y")
+        self.assertEqual(len(library.all_books()), 1)
+
+    def test_the_early_note_does_not_erase_what_a_run_left(self):
+        """Вторую книгу качают в ту же папку поверх первой — «докуда
+        дошли» от этого не должно обнулиться."""
+        self.web._remember_book(self.novel, "mvlempyr", self.folder, {},
+                                {}, address="https://x/y")
+        was = library.all_books()[0].last_run
+        self.web._remember_about(self.novel, "mvlempyr", self.folder, {},
+                                 address="https://x/y")
+        self.assertEqual(library.all_books()[0].last_run, was)
+
+
+class TestWhatTheCardOffersToDo(Base):
+    """Библиотека и очередь жили порознь.
+
+    Карточка звала «в качалку» книгу, которая в качалке уже стояла и
+    качалась прямо сейчас, — человек это и написал.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from ops import downloads as downloads_op
+        from webapp import app as web
+
+        self.web = web
+        self.Item = downloads_op.Item
+        self.folder = Path(self.dir.name) / "книга"
+
+    def book(self, **more):
+        fields = dict(name="Книга", folder=str(self.folder),
+                      source="mvlempyr", address="https://x/y")
+        fields.update(more)
+        return library.remember("mvl:1", **fields)
+
+    def row(self, state="waiting"):
+        return self.Item(id="a", source="mvlempyr", address="https://x/y",
+                         base=str(self.dir.name), folder="книга", state=state)
+
+    def test_a_book_standing_in_the_queue_is_seen(self):
+        said = self.web._book_out(self.book(), [self.row("running")])
+        self.assertEqual(said["queued"], "running")
+
+    def test_a_book_nobody_queued_is_not_claimed_to_be(self):
+        said = self.web._book_out(self.book(), [])
+        self.assertEqual(said["queued"], "")
+
+    def test_the_folder_decides_and_not_the_key(self):
+        """Ключи у книги и у строки очереди считаются по-разному и
+        совпасть не обязаны, а папка у них одна."""
+        said = self.web._book_out(self.book(), [self.row()])
+        self.assertEqual(said["queued"], "waiting")
+
+    def test_a_book_without_a_folder_matches_nothing(self):
+        book = library.remember("mvl:2", name="Без папки", source="s",
+                                address="https://z/z")
+        self.assertEqual(self.web._book_out(book, [self.row()])["queued"], "")
+
+    def test_another_book_in_the_queue_is_not_mine(self):
+        other = self.Item(id="b", base=str(self.dir.name), folder="чужая")
+        self.assertEqual(self.web._book_out(self.book(), [other])["queued"], "")

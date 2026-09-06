@@ -2038,3 +2038,105 @@ class TestTheCheckupOffersToFixWhatItFound(PageTestCase):
         for one in self.draw("cut"):
             self.assertTrue(one.split("|", 1)[1].strip(), one)
         self.quiet()
+
+
+class TestTheRunSettingsLineUp(PageTestCase):
+    """Подписи полей разной длины, и поля от этого разъезжались.
+
+    «Таймаут соединения, с» в четверть ширины не помещается: подпись
+    переносится на вторую строку, вопросик — на третью, колонка растёт, а
+    соседние поля остаются наверху. Два поля на одной высоте, два ниже на
+    строку — читается как поломка, и человек об этом написал.
+    """
+
+    FIELDS = ("tmRead", "tmConnect", "dlThreads", "dlBooks")
+
+    def tops(self):
+        return self.page.evaluate(
+            "(ids) => ids.map(id => Math.round("
+            " document.getElementById(id).getBoundingClientRect().top))",
+            list(self.FIELDS))
+
+    def widths(self):
+        return self.page.evaluate(
+            "(ids) => ids.map(id => Math.round("
+            " document.getElementById(id).getBoundingClientRect().width))",
+            list(self.FIELDS))
+
+    def test_all_four_fields_stand_at_one_height(self):
+        tops = self.tops()
+        self.assertEqual(len(set(tops)), 1, tops)
+        self.quiet()
+
+    def test_the_fields_are_of_one_width(self):
+        """Четыре ручки в ряд, и одна вдвое шире соседки — та же
+        небрежность, только по горизонтали."""
+        wide = self.widths()
+        self.assertLessEqual(max(wide) - min(wide), 2, wide)
+        self.quiet()
+
+    def test_the_long_label_really_does_wrap(self):
+        """Иначе проверка выше ничего не проверяет: подписи в одну строку
+        выровнялись бы и без нас."""
+        rows = self.page.evaluate(
+            """() => { const l = document.querySelector(
+                         '#runCard label[for=tmConnect]');
+                       const one = parseFloat(
+                         getComputedStyle(l).lineHeight) || 16;
+                       return l.getBoundingClientRect().height / one; }""")
+        self.assertGreater(rows, 1.5)
+        self.quiet()
+
+
+class TestTheLibraryCardTalksToTheQueue(PageTestCase):
+    """Карточка звала «в качалку» книгу, которая в качалке уже стояла.
+
+    Библиотека и очередь жили порознь: кнопка заполняла форму поиска,
+    книга при этом качалась прямо сейчас, и человек спросил, взаимодействуют
+    ли они вообще.
+    """
+
+    def deed(self, **book):
+        row = dict(key="k", name="Книга", source="mvlempyr",
+                   address="https://x/y", folder="/книги/тут",
+                   chapters=0, last=0, fresh=0, queued="")
+        row.update(book)
+        return self.page.evaluate("(b) => libDeed(b)", row)
+
+    def test_a_book_being_downloaded_says_so(self):
+        said = self.deed(queued="running", last=100, chapters=500)
+        self.assertIn("качается", said["text"].lower())
+        self.assertTrue(said["standing"])
+
+    def test_a_book_waiting_in_the_queue_says_so(self):
+        said = self.deed(queued="waiting")
+        self.assertIn("очеред", said["text"].lower())
+        self.assertTrue(said["standing"])
+
+    def test_a_half_downloaded_book_is_offered_to_continue(self):
+        """Это не «вышли новые главы», а прерванный прогон, и слово тут
+        другое — человек ждёт именно его."""
+        said = self.deed(last=300, chapters=530)
+        self.assertIn("продолжить", said["text"].lower())
+        self.assertFalse(said["standing"])
+
+    def test_new_chapters_are_offered_by_their_number(self):
+        said = self.deed(last=789, chapters=794, fresh=5)
+        self.assertIn("5", said["text"])
+        self.assertFalse(said["standing"])
+
+    def test_a_book_never_downloaded_is_offered_a_download(self):
+        said = self.deed(chapters=530)
+        self.assertIn("скачать", said["text"].lower())
+
+    def test_a_finished_book_is_not_called_unfinished(self):
+        """Скачана целиком — «продолжить» на ней было бы неправдой."""
+        said = self.deed(last=546, chapters=546)
+        self.assertNotIn("продолжить", said["text"].lower())
+        self.assertFalse(said["standing"])
+
+    def test_a_queued_book_is_never_offered_a_second_go(self):
+        """Поставить её второй раз — это то, на что человек и жаловался."""
+        for state in ("waiting", "running"):
+            said = self.deed(queued=state, fresh=5, last=789, chapters=794)
+            self.assertTrue(said["standing"], state)
