@@ -871,6 +871,42 @@ def api_links():
 # ------------------------------------------------- библиотека книг
 
 
+#: Этапы, на которых книга ждёт, а не качает. Порядок важен: чем раньше
+#: этап в списке, тем тревожнее — его и показываем.
+STANDING = ("offline", "paused", "probe", "toc", "search", "queued")
+
+
+def _why_standing(rows) -> str:
+    """Почему счётчик глав не двигается — одной строкой на всю качалку.
+
+    При тринадцати книгах разом общая цифра замирает, и понять, чего
+    ждут, по ней нельзя: своё состояние есть у каждой книги, а наверху
+    его не видно. Человек читает замерший счётчик как «зависло» — так и
+    вышло, и он про это написал.
+
+    Показываем самое тревожное из того, что происходит. Качается хоть
+    одна книга — молчим: значит работа идёт, и объяснять нечего.
+    """
+    rows = list(rows)
+    if not rows:
+        return ""
+    if any(str(one.get("stage") or "") == "download" for one in rows):
+        return ""
+
+    for stage in STANDING:
+        mine = [one for one in rows if str(one.get("stage") or "") == stage]
+        if not mine:
+            continue
+        said = next((str(one.get("message") or "") for one in mine
+                     if one.get("message")), "")
+        name = {"offline": "Ждём связь", "paused": "Пауза",
+                "probe": "Подбираем способ", "toc": "Собираем оглавление",
+                "search": "Ищем книги", "queued": "Запускаем"}[stage]
+        count = f" ({len(mine)})" if len(mine) > 1 else ""
+        return f"{name}{count}" + (f" — {said}" if said else "")
+    return ""
+
+
 def _queue_state(book, rows) -> str:
     """Стоит ли эта книга в очереди и что с ней там.
 
@@ -1506,7 +1542,12 @@ def _downloads_start(payload: dict):
     #: оглавление, а «Остановить» выглядела мёртвой — этап не доезжал, и
     #: страница не знала, что работа кончилась.
     COUNTED = ("total", "done", "downloaded", "skipped", "failed",
-               "switches")
+               "switches", "bytes", "retries")
+
+    #: Этапы, на которых книга не качает, а ждёт. Из них и складывается
+    #: строка «почему стоим»: при тринадцати книгах общий счётчик глав
+    #: замирает, и понять, чего ждут, по нему нельзя.
+    WAITING = ("offline", "paused", "probe", "toc", "search", "queued")
 
     def share(item, **numbers) -> None:
         with parts_lock:
@@ -1535,6 +1576,7 @@ def _downloads_start(payload: dict):
                 for name in COUNTED if any(name in one
                                            for one in parts.values())})
             job.progress["each"] = [dict(one) for one in parts.values()]
+            job.progress["why"] = _why_standing(parts.values())
 
     def begin(item) -> None:
         """Завести книге строку до первого запроса о ней.
@@ -1664,7 +1706,11 @@ def _downloads_start(payload: dict):
             downloader = Downloader(
                 client=client, pool=pool,
                 on_progress=lambda p: share(item, **p.as_dict()),
-                on_event=job.log.add,
+                # Строку журнала подписываем книгой: очередь из
+                # тринадцати книг пишет вперемешку, и без подписи не
+                # понять, чья это беда.
+                on_event=lambda text, kind="info", who=item.title: (
+                    job.log.add(text, kind, book=who)),
                 cancel_event=job.cancel, pause_event=job.paused,
                 threads=mine, probe=run.probe, source=source,
                 timeout=run.read_timeout,
@@ -3419,7 +3465,10 @@ def api_format_halve():
         parts = max(2, min(_whole(payload, "parts", HALVE_PARTS), MAX_PARTS))
         base = (payload.get("base") or "").strip()
         if not base:
-            raise ValueError("Выберите, куда сохранить")
+            raise ValueError(
+                "Не заполнено «куда сохранить» — поле под списком книг. "
+                "Исходники мы не трогаем, поэтому поделённые книги "
+                "кладутся в другую папку.")
         folder = Path(base).expanduser()
         if not folder.is_dir():
             raise ValueError(f"Папка не найдена: {folder}")

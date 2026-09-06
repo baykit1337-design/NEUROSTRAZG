@@ -2143,3 +2143,211 @@ class TestTheLibraryCardTalksToTheQueue(PageTestCase):
         for state in ("waiting", "running"):
             said = self.deed(queued=state, fresh=5, last=789, chapters=794)
             self.assertTrue(said["standing"], state)
+
+
+class TestTheRunSaysHowFastAndWhy(PageTestCase):
+    """Счётчик глав замирает — и по нему не понять, работа идёт или встала.
+
+    При тринадцати книгах разом общая цифра не отвечает ни на «быстро или
+    медленно», ни на «чего ждём»: своё состояние есть у каждой книги, а
+    наверху его не видно. Замерший счётчик читается как «зависло».
+    """
+
+    def draw(self, **one):
+        """Текст первой строки. Книг всегда две: при одной список строк
+        не рисуется вовсе — там всё говорит общая полоса."""
+        row = dict(id="a", title="Книга", stage="download", total=100,
+                   done=40, downloaded=40)
+        row.update(one)
+        other = dict(id="b", title="Соседка", stage="download", total=10,
+                     done=1)
+        return self.page.evaluate(
+            "(rows) => { pbDraw(rows);"
+            " return document.querySelector('#pbList .pb').innerText; }",
+            [row, other])
+
+    def test_the_speed_is_shown(self):
+        self.assertIn("глав/мин", self.draw(speed=12.5))
+        self.quiet()
+
+    def test_how_long_is_left_for_this_book(self):
+        """Общее «осталось» складывает книгу, которая летит, с той, что
+        стоит на повторах."""
+        said = self.draw(eta=600)
+        self.assertRegex(said, r"~\s*10 мин")
+        self.quiet()
+
+    def test_what_it_weighed(self):
+        self.assertIn("МБ", self.draw(bytes=5 * 1024 * 1024))
+        self.quiet()
+
+    def test_a_finished_book_is_not_told_it_has_speed(self):
+        """У законченной книги «12 глав/мин» — вчерашняя правда."""
+        said = self.draw(stage="done", speed=12.5, eta=600)
+        self.assertNotIn("глав/мин", said)
+        self.quiet()
+
+    def test_switches_and_retries_hide_in_the_tip(self):
+        """В строке они шум, а при разборе беды — первое, что нужно."""
+        tip = self.page.evaluate(
+            """(rows) => { pbDraw(rows);
+                 const via = document.querySelector('#pbList .pb-via');
+                 return via ? via.title : ''; }""",
+            [dict(id="a", title="Книга", stage="download", total=100, done=40,
+                  proxy="10.0.0.1:8080", switches=2, retries=7),
+             dict(id="b", title="Соседка", stage="download")])
+        self.assertIn("2", tip)
+        self.assertIn("7", tip)
+        self.quiet()
+
+    def test_a_clean_address_says_so_plainly(self):
+        tip = self.page.evaluate(
+            """(rows) => { pbDraw(rows);
+                 const via = document.querySelector('#pbList .pb-via');
+                 return via ? via.title : ''; }""",
+            [dict(id="a", title="Книга", stage="download",
+                  proxy="10.0.0.1:8080"),
+             dict(id="b", title="Соседка", stage="download")])
+        self.assertNotIn("повторов", tip)
+        self.quiet()
+
+
+class TestTheLogIsOnTheScreen(PageTestCase):
+    """Журнал писался всегда, но на экран не выходил.
+
+    Чтобы узнать, через что качалась книга и почему встала, надо было
+    лезть в файл. А очередь из тринадцати книг пишет вперемешку.
+    """
+
+    def load(self, lines):
+        return self.page.evaluate(
+            """(lines) => { DG_LINES = lines; DG_ONLY = ''; dgLogDraw();
+                 return document.getElementById('dgLog').innerText; }""",
+            lines)
+
+    def rows(self):
+        return [
+            {"at": "10:00", "kind": "info", "book": "Одна", "text": "первая"},
+            {"at": "10:01", "kind": "warn", "book": "Другая", "text": "вторая"},
+            {"at": "10:02", "kind": "info", "book": "Одна", "text": "третья"},
+        ]
+
+    def test_all_the_books_are_shown_at_first(self):
+        said = self.load(self.rows())
+        self.assertIn("первая", said)
+        self.assertIn("вторая", said)
+        self.quiet()
+
+    def test_a_click_leaves_one_book(self):
+        self.load(self.rows())
+        said = self.page.evaluate(
+            """(who) => { dgLogOnly(who);
+                 return document.getElementById('dgLog').innerText; }""",
+            "Одна")
+        self.assertIn("первая", said)
+        self.assertNotIn("вторая", said)
+        self.quiet()
+
+    def test_clicking_the_same_book_again_shows_everything(self):
+        """Иначе снять отбор было бы нечем."""
+        self.load(self.rows())
+        said = self.page.evaluate(
+            """(who) => { dgLogOnly(who); dgLogOnly(who);
+                 return document.getElementById('dgLog').innerText; }""",
+            "Одна")
+        self.assertIn("вторая", said)
+        self.quiet()
+
+    def test_the_book_name_is_not_repeated_in_a_filtered_list(self):
+        """Там оно стояло бы в каждой строке и мешало читать."""
+        self.load(self.rows())
+        count = self.page.evaluate(
+            """(who) => { dgLogOnly(who);
+                 return document.querySelectorAll('#dgLog .ln-book').length; }""",
+            "Одна")
+        self.assertEqual(count, 0)
+        self.quiet()
+
+    def test_whose_line_it_is_shows_when_everything_is_shown(self):
+        self.load(self.rows())
+        count = self.page.evaluate(
+            "() => document.querySelectorAll('#dgLog .ln-book').length")
+        self.assertEqual(count, 3)
+        self.quiet()
+
+
+class TestTheRunEndsWithAnAnswer(PageTestCase):
+    """«Скачано книг: 10 из 13» не говорит, какие три и почему."""
+
+    def sum(self, each):
+        return self.page.evaluate(
+            """(each) => { dgSummary({each});
+                 const box = document.getElementById('dgSum');
+                 return box.hidden ? '' : box.innerText; }""", each)
+
+    def test_the_books_that_failed_are_named(self):
+        said = self.sum([
+            {"title": "Одна", "stage": "done"},
+            {"title": "Другая", "stage": "error", "message": "сайт не ответил"},
+        ])
+        self.assertIn("Другая", said)
+        self.assertIn("сайт не ответил", said)
+        self.quiet()
+
+    def test_a_clean_run_does_not_invent_troubles(self):
+        said = self.sum([{"title": "Одна", "stage": "done"},
+                         {"title": "Другая", "stage": "done"}])
+        self.assertNotIn("Не вышло", said)
+        self.quiet()
+
+    def test_it_says_what_to_do_next(self):
+        """Список бед без ответа «и что теперь» — половина ответа."""
+        said = self.sum([{"title": "Одна", "stage": "error", "message": "беда"}])
+        self.assertIn("очередь", said.lower())
+        self.quiet()
+
+    def test_nothing_at_all_shows_nothing(self):
+        self.assertEqual(self.sum([]), "")
+        self.quiet()
+
+
+class TestWhereTheHalvedBooksGo(PageTestCase):
+    """«Поделить главы» отвечало «Выберите, куда сохранить».
+
+    Человек выбирал книгу, жал кнопку и получал отказ — и читал его как
+    «не работает». Поле «куда сохранить» стояло пустым, и заполнить его
+    было неоткуда: рядом с исходником писать нельзя, а куда ещё —
+    программа не подсказывала.
+    """
+
+    def fill(self, chosen, was=""):
+        return self.page.evaluate(
+            """([chosen, was]) => {
+                 CHOSEN.fmCutList = chosen;
+                 document.getElementById('fmCutBase').value = was;
+                 fmCutFill();
+                 return document.getElementById('fmCutBase').value;
+               }""", [chosen, was])
+
+    def test_the_folder_is_filled_in_from_the_book(self):
+        said = self.fill(["/книги/Работа/книга.md"])
+        self.assertTrue(said.startswith("/книги/Работа/"))
+        self.assertNotEqual(said, "/книги/Работа")
+
+    def test_it_is_not_the_folder_of_the_book_itself(self):
+        """Писать поверх исходника нельзя: не понравится — сверять будет
+        не с чем, а работа необратима."""
+        self.assertNotEqual(self.fill(["/книги/Работа/книга.md"]),
+                            "/книги/Работа")
+
+    def test_a_windows_path_stays_windows(self):
+        said = self.fill(["C:\\Книги\\Работа\\книга.md"])
+        self.assertIn("\\", said)
+        self.assertNotIn("/", said)
+
+    def test_what_the_person_typed_is_not_overwritten(self):
+        self.assertEqual(self.fill(["/книги/Работа/книга.md"], "/своё/место"),
+                         "/своё/место")
+
+    def test_nothing_chosen_fills_nothing(self):
+        self.assertEqual(self.fill([]), "")

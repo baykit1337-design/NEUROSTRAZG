@@ -1733,3 +1733,42 @@ class TestWhyTheCheckDidNotGoThrough(unittest.TestCase):
 
         self.assertEqual((checked, missed), (["k"], []))
         self.assertEqual(library.get("k").chapters, 12)
+
+
+class TestWhyTheCountStandsStill(unittest.TestCase):
+    """При тринадцати книгах общая цифра замирает, и по ней не понять,
+    работа идёт или встала. Замерший счётчик читается как «зависло» —
+    так и вышло, и человек про это написал."""
+
+    def setUp(self):
+        from webapp import app as web
+
+        self.why = web._why_standing
+
+    def test_a_working_queue_explains_nothing(self):
+        """Качается хоть одна книга — значит работа идёт, и объяснять
+        нечего. Лишняя строка тут была бы шумом."""
+        self.assertEqual(self.why([{"stage": "download"},
+                                    {"stage": "toc"}]), "")
+
+    def test_waiting_for_the_network_is_said_first(self):
+        """Из всего, чего можно ждать, это самое тревожное."""
+        said = self.why([{"stage": "toc"},
+                         {"stage": "offline", "message": "ждём 20 с"}])
+        self.assertIn("связь", said.lower())
+        self.assertIn("ждём 20 с", said)
+
+    def test_how_many_books_are_waiting(self):
+        said = self.why([{"stage": "toc"}, {"stage": "toc"}])
+        self.assertIn("2", said)
+
+    def test_one_book_is_not_counted_out_loud(self):
+        """«Собираем оглавление (1)» — счёт ради счёта."""
+        self.assertNotIn("(1)", self.why([{"stage": "toc"}]))
+
+    def test_an_empty_queue_says_nothing(self):
+        self.assertEqual(self.why([]), "")
+
+    def test_a_finished_queue_says_nothing(self):
+        """Конечные этапы не ждут — им нечего объяснять."""
+        self.assertEqual(self.why([{"stage": "done"}, {"stage": "error"}]), "")

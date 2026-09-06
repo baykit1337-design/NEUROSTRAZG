@@ -93,6 +93,19 @@ class Progress:
     #: Итог автопробы способа скачивания — интерфейс показывает его
     #: уведомлением внизу справа.
     probe: dict = field(default_factory=dict)
+    #: Глав в минуту у **этой** книги. Общая цифра на очереди из
+    #: тринадцати книг не отвечает на вопрос «быстро или медленно»: она
+    #: складывает быструю книгу с той, что стоит на повторах.
+    speed: float = 0.0
+    #: Сколько секунд осталось этой книге по её же скорости. Ноль — пока
+    #: не по чему считать: ни одной главы ещё не скачано.
+    eta: int = 0
+    #: Сколько байт утянула эта книга. Общий счётчик трафика есть, но он
+    #: один на всё, и «кто съел гигабайт» по нему не узнать.
+    bytes: int = 0
+    #: Сколько раз пришлось повторять запрос. Ноль — всё шло гладко;
+    #: большое число объясняет, почему книга ползёт.
+    retries: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -229,6 +242,8 @@ class Downloader:
         # и живёт дольше прогона.
         if getattr(self.client, "on_retry", None) is None:
             self.client.on_retry = self._retold
+        if getattr(self.client, "on_bytes", None) is None:
+            self.client.on_bytes = self._grew
         #: Сроки ожидания, выставленные человеком в интерфейсе. Раньше их
         #: получал только клиент оглавления, а главы качал клиент витрины,
         #: который качалка заводит сама — и заводила с умолчаниями. В
@@ -283,6 +298,13 @@ class Downloader:
         self._stood = False
         #: Сколько раз уже пережидали обрыв связи. См. MAX_OFFLINE_RESCUES.
         self._offline_rescues = 0
+        #: Когда пошли главы — от этого считается скорость и «осталось».
+        #: Не от начала прогона: поиск книги и оглавление занимают минуты,
+        #: и включи мы их в счёт, скорость выходила бы вдвое ниже правды.
+        self._since = 0.0
+        #: Сколько байт утянула эта книга и сколько было повторов.
+        self._bytes = 0
+        self._retries = 0
 
     # ------------------------------------------------------------- служебное
 
@@ -327,6 +349,32 @@ class Downloader:
         self._stood = True
         self._emit(stage="download", message=was or "Продолжаем…")
 
+    def _pace(self, done: int, left: int) -> dict:
+        """Скорость и «осталось» — по этой книге, а не по очереди.
+
+        Общая цифра на тринадцати книгах не отвечает на вопрос «быстро
+        или медленно»: она складывает книгу, которая летит, с той, что
+        стоит на повторах.
+
+        Считаем от первой главы, а не от начала прогона: поиск и
+        оглавление занимают минуты, и включи мы их — скорость выходила бы
+        вдвое ниже правды.
+        """
+        if not self._since or done <= 0:
+            return {"bytes": self._bytes, "retries": self._retries}
+        spent = max(0.001, time.monotonic() - self._since)
+        per_minute = done / spent * 60
+        return {
+            "speed": round(per_minute, 1),
+            "eta": int(left / done * spent) if left > 0 else 0,
+            "bytes": self._bytes,
+            "retries": self._retries,
+        }
+
+    def _grew(self, size: int) -> None:
+        """Клиент принёс столько-то байт — считаем их этой книге."""
+        self._bytes += max(0, int(size or 0))
+
     def _retold(self, said: str) -> None:
         """Клиент ждёт перед повтором — говорим об этом на экран.
 
@@ -336,7 +384,8 @@ class Downloader:
         меняется ни строка, ни цифра. Человек читает это как «зависло» и
         закрывает программу — что и произошло.
         """
-        self._emit(message=said)
+        self._retries += 1
+        self._emit(message=said, retries=self._retries)
         self._say(said, "warn")
 
     def _take_stood(self) -> bool:
@@ -499,6 +548,7 @@ class Downloader:
         # Одна сессия на весь прогон и на один прокси: кука Cloudflare
         # привязана к IP, при смене адреса нужна новая сессия.
         site = self.site_client or self._new_session(novel)
+        self._since = time.monotonic()
         self._emit(proxy=self._proxy_label(), switches=self._switch_count())
 
         downloaded = 0
@@ -695,6 +745,7 @@ class Downloader:
                     failed=len(failed),
                     message=(f"Глава {chapter.number} из {last}"
                              + (f" · пропущено {paid}" if paid else "")),
+                    **self._pace(downloaded, len(pending) - index - 1),
                 )
                 state.save()
 
@@ -906,7 +957,8 @@ class Downloader:
             log.info("Работаем через прокси %s", proxy.label)
         return SiteClient(
             referer=novel.page_url, proxy_url=proxy.url if proxy else None,
-            cancel=self.cancel, on_retry=self._retold, **self._timeouts(),
+            cancel=self.cancel, on_retry=self._retold, on_bytes=self._grew,
+            **self._timeouts(),
         )
 
     def _timeouts(self) -> dict:
@@ -1165,6 +1217,9 @@ class Downloader:
                         failed=len(failed),
                         message=(f"Глава {chapter.number} из {last}"
                                  + (f" · платных пропущено {paid}" if paid else "")),
+                        **self._pace(downloaded,
+                                     len(pending) - downloaded - len(failed)
+                                     - paid),
                     )
 
             with self._state_lock:

@@ -31,7 +31,12 @@ class JobLog:
         #: Сколько строк было всего — не только тех, что уместились.
         self.total = 0
 
-    def add(self, text: str, kind: str = "info") -> None:
+    def add(self, text: str, kind: str = "info", book: str = "") -> None:
+        """Строка журнала. `book` — чья она, когда книг в работе много.
+
+        Без этой пометки журнал очереди из тринадцати книг читается как
+        одна каша: строки перемешаны, и чья беда — не понять.
+        """
         if not str(text or "").strip():
             return
         with self._lock:
@@ -40,6 +45,7 @@ class JobLog:
                 "at": datetime.now().strftime(STAMP),
                 "text": str(text).strip(),
                 "kind": kind,
+                "book": str(book or ""),
             })
             if len(self._lines) > self.keep:
                 del self._lines[:-self.keep]

@@ -434,7 +434,12 @@ class Client:
         cancel: threading.Event | None = None,
         on_retry=None,
         light_timeout: int | None = None,
+        on_bytes=None,
     ):
+        #: Кому сказать, сколько байт принёс ответ. Общий счётчик трафика
+        #: есть, но он один на всё: «кто съел гигабайт» по нему не узнать,
+        #: а при тринадцати книгах разом это первый вопрос.
+        self.on_bytes = on_bytes
         #: Срок для лёгкого ответа — оглавления и каталога. Не больше
         #: общего: снизил человек чтение до двадцати секунд — значит и
         #: лёгкий ответ ждём не дольше, а не «зато у нас своё число».
@@ -578,7 +583,13 @@ class Client:
                 network_failure = False
                 # Трафик считаем до разбора кода: байты потрачены и на
                 # отказ, и на заглушку, а пакет у человека один.
-                traffic.note(len(getattr(resp, "content", b"") or b""))
+                size = len(getattr(resp, "content", b"") or b"")
+                traffic.note(size)
+                if self.on_bytes and size:
+                    try:
+                        self.on_bytes(size)
+                    except Exception as exc:  # noqa: BLE001 — счёт не роняет запрос
+                        log.debug("Байты не посчитались: %s", exc)
 
                 # Успех — весь второй десяток, а не одна двухсотка.
                 #

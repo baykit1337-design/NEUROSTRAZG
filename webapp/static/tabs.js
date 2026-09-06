@@ -3996,6 +3996,33 @@ async function fmCutRun(){
 
 $('fmCutGo').onclick = fmCutRun;
 
+/** Папка, в которой лежит файл. Пусто — сказать нечего. */
+function folderOf(path){
+  const at = Math.max(String(path).lastIndexOf('/'),
+                      String(path).lastIndexOf('\\'));
+  return at > 0 ? String(path).slice(0, at) : '';
+}
+
+/** Куда класть поделённые книги — подставляем сами, рядом с исходником.
+ *
+ * Поле было пустым, кнопка отвечала «Выберите, куда сохранить», и это
+ * читалось как «не работает»: человек выбрал книгу, нажал «Поделить» и
+ * получил отказ. Теперь путь виден сразу и его можно поправить — молча
+ * писать в место, которого человек не видел, мы не станем.
+ *
+ * Своё не трогаем: заполняем только пустое поле.
+ */
+function fmCutFill(){
+  const chosen = CHOSEN.fmCutList || [];
+  const box = $('fmCutBase');
+  if(!chosen.length || box.value.trim()) return;
+  const where = folderOf(chosen[0]);
+  if(!where) return;
+  const slash = where.includes('\\') ? '\\' : '/';
+  box.value = where + slash + 'поделено';
+}
+$('fmCutList').dataset.onchange = 'fmCutFill';
+
 $('fmJunkLook').onclick = fmJunkLook;
 $('fmJunkClean').onclick = fmJunkClean;
 $('fmStop').onclick = () => cancelTab('format');

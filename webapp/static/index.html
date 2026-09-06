@@ -853,6 +853,22 @@
   /* «В один поток» — не поломка, но и не то, чего просили: строка
      должна отличаться от обычной, иначе её не заметят. */
   .pnow.warn{color:#ffc86b}
+  /* «Почему стоим»: строка тревожная по смыслу, но не ошибка — счёт
+     просто не двигается, и человек должен прочитать, чего ждут. */
+  .pwhy{
+    color:#ffc86b;font-size:13px;margin-top:10px;
+    padding:8px 12px;border-radius:8px;
+    border:1px solid rgba(255,200,107,.28);
+    background:rgba(255,200,107,.07);
+  }
+  /* Смены адреса и повторы — в подсказке, а не в строке: там они шум.
+     Но то, что подсказка есть, видно должно быть. */
+  .pb-via.warned{color:#ffc86b;cursor:help;border-bottom:1px dotted}
+  /* Выбранная в журнале книга — чтобы было видно, чей отбор сейчас. */
+  .pb.picked{border-color:var(--neon);background:rgba(176,108,255,.08)}
+  /* Чья строка журнала. В отфильтрованном списке подпись не рисуется —
+     там она повторялась бы в каждой строке. */
+  .ln-book{color:#9a6dd7;margin-right:6px}
   .spin{display:inline-block;width:11px;height:11px;border-radius:50%;
     border:2px solid rgba(176,108,255,.25);border-top-color:var(--neon);
     animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
@@ -1608,6 +1624,11 @@
       <summary style="cursor:pointer;color:var(--neon);font-size:13px">Подробности пробы</summary>
       <div class="table" id="probeTable" style="margin-top:10px"></div>
     </details>
+    <!-- Почему счётчик не двигается. При тринадцати книгах разом общая
+         цифра замирает, и понять, чего ждут, по ней нельзя: своё
+         состояние есть у каждой книги, а наверху его не видно. Замерший
+         счётчик читается как «зависло» — так и вышло. -->
+    <div class="pwhy" id="sWhy" hidden></div>
     <div class="pnow" id="sProxy"></div>
     <!-- Каким источником качали. Способов у Фанкью два, и по итогу должно
          быть видно, какой сработал: результат у них разный. -->
@@ -1618,6 +1639,24 @@
          не видно, кто чем занят: «Глава 1823 из 1868» при тринадцати
          книгах читается так, будто книга одна. -->
     <div id="pbList" hidden></div>
+    <!-- Журнал прогона. Он писался всегда, но на экран не выходил: чтобы
+         узнать, через что качалась книга и почему встала, надо было
+         лезть в файл. Щелчок по строке книги оставляет здесь только её
+         строки — очередь из тринадцати книг пишет вперемешку. -->
+    <details id="dgLogBox" hidden style="margin-top:12px">
+      <summary class="hint" style="cursor:pointer">Журнал прогона</summary>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <span class="hint" id="dgLogWho" style="flex:1"></span>
+        <button id="dgLogAll" class="ghost" style="flex:0 0 auto"
+                hidden>Все книги</button>
+        <button id="dgLogSave" class="ghost" style="flex:0 0 auto">Сохранить
+          в файл</button>
+      </div>
+      <div class="joblog" id="dgLog"></div>
+    </details>
+    <!-- Чем кончилась очередь. «Скачано книг: 10 из 13» не отвечает на
+         главный вопрос — с какими тремя не вышло и что теперь делать. -->
+    <div id="dgSum" hidden style="margin-top:12px"></div>
     <div class="row" style="margin-top:16px">
       <!-- Пауза рядом с полосой: оборвалась сеть — прогон ждёт, а не
            заканчивается на середине. Скачанное остаётся, продолжение
@@ -4819,9 +4858,12 @@ const TERMINAL = ['done','error','cancelled','blocked'];
  *  Книга одна — списка нет: он повторил бы полосу над собой слово в
  *  слово.
  */
+let PB_ROWS = [];
+
 function pbDraw(rows){
   const box = $('pbList');
-  rows = rows || [];
+  rows = rows || PB_ROWS;
+  PB_ROWS = rows;
   box.hidden = rows.length < 2;
   box.innerHTML = '';
   if(box.hidden) return;
@@ -4831,7 +4873,13 @@ function pbDraw(rows){
 function pbRow(one){
   const row = document.createElement('div');
   const busy = !TERMINAL.includes(one.stage);
-  row.className = 'pb' + (busy ? '' : ' off');
+  row.className = 'pb' + (busy ? '' : ' off')
+    + (DG_ONLY === one.title ? ' picked' : '');
+  // Щелчок оставляет в журнале одну книгу. Очередь из тринадцати пишет
+  // вперемешку, и «чья это беда» по такой каше не понять.
+  row.style.cursor = 'pointer';
+  row.title = 'Показать в журнале только эту книгу';
+  row.onclick = () => { dgLogOnly(one.title); pbDraw(); };
 
   const head = document.createElement('div');
   head.className = 'pb-head';
@@ -4874,12 +4922,31 @@ function pbRow(one){
     bits.push(`${one.threads} `
       + plural(one.threads, 'поток', 'потока', 'потоков'));
   }
-  // Адрес — свой у каждой книги, и наверху его показать нельзя: там он
-  // принадлежал бы той, что отчиталась последней.
-  if(one.proxy) bits.push('через ' + one.proxy);
+  // Скорость и «осталось» — у книги свои. Общая цифра на тринадцати
+  // книгах складывает ту, что летит, с той, что стоит на повторах, и на
+  // вопрос «быстро или медленно» не отвечает.
+  if(busy && one.speed) bits.push(`${one.speed} глав/мин`);
+  if(busy && one.eta) bits.push('~' + tookText(one.eta));
+  if(one.bytes) bits.push(weigh(one.bytes));
   const foot = document.createElement('div');
   foot.className = 'pb-foot';
   foot.textContent = bits.join(' · ');
+
+  // Адрес — свой у каждой книги, и наверху его показать нельзя: там он
+  // принадлежал бы той, что отчиталась последней. Смены и повторы держим
+  // в подсказке: в строке они шум, а при разборе беды — первое, что
+  // хочется знать.
+  if(one.proxy){
+    const via = document.createElement('span');
+    via.className = 'pb-via';
+    via.textContent = ' · через ' + one.proxy;
+    const why = [];
+    if(one.switches) why.push(`смен адреса: ${one.switches}`);
+    if(one.retries) why.push(`повторов запроса: ${one.retries}`);
+    via.title = why.length ? why.join(', ') : 'адрес этой книги';
+    if(why.length) via.classList.add('warned');
+    foot.append(via);
+  }
   row.append(foot);
 
   // Чем кончилось — только когда кончилось: пока книга идёт, эту строку
@@ -4891,6 +4958,110 @@ function pbRow(one){
     row.append(said);
   }
   return row;
+}
+
+/* Журнал прогона: все строки держим у себя, рисуем отфильтрованными.
+ *
+ * Общий `logWatch` дописывает строки по мере прихода и фильтровать не
+ * умеет — а тут это главное: очередь из тринадцати книг пишет вперемешку,
+ * и «чья это беда» по такой каше не понять.
+ */
+let DG_LINES = [];
+let DG_SEEN = 0;
+let DG_ONLY = '';
+
+function dgLogDraw(){
+  const box = $('dgLog');
+  const rows = DG_ONLY
+    ? DG_LINES.filter(one => (one.book || '') === DG_ONLY)
+    : DG_LINES;
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  box.innerHTML = '';
+  for(const line of rows){
+    const row = document.createElement('div');
+    row.className = 'ln ' + (line.kind || 'info');
+    const at = document.createElement('span');
+    at.className = 'at';
+    at.textContent = line.at;
+    row.append(at);
+    // Имя книги — только когда показываем всё: в отфильтрованном списке
+    // оно повторялось бы в каждой строке.
+    if(!DG_ONLY && line.book){
+      const who = document.createElement('span');
+      who.className = 'ln-book';
+      who.textContent = line.book + ': ';
+      row.append(who);
+    }
+    row.append(document.createTextNode(line.text));
+    box.append(row);
+  }
+  $('dgLogWho').textContent = DG_ONLY
+    ? `только «${DG_ONLY}» — строк ${rows.length}`
+    : `все книги — строк ${rows.length}`;
+  $('dgLogAll').hidden = !DG_ONLY;
+  if(stick) box.scrollTop = box.scrollHeight;
+}
+
+/** Оставить в журнале одну книгу. Повторный щелчок снимает отбор. */
+function dgLogOnly(title){
+  DG_ONLY = (DG_ONLY === title) ? '' : (title || '');
+  $('dgLogBox').open = true;
+  dgLogDraw();
+}
+
+async function dgLogTick(){
+  if(!jobId) return;
+  try{
+    const data = await call(`/api/job/${jobId}/log?since=${DG_SEEN}`);
+    if(data.lines?.length){
+      DG_LINES = DG_LINES.concat(data.lines);
+      DG_SEEN = data.total;
+      $('dgLogBox').hidden = false;
+      dgLogDraw();
+    }
+  }catch(err){ /* журнал не повод ронять экран */ }
+}
+
+/** Чем кончилась очередь: сколько вышло, с чем не вышло и что делать.
+ *
+ * «Скачано книг: 10 из 13» не отвечает на главный вопрос — какие три и
+ * почему. Ответ есть в строках книг, но они к этому времени свёрнуты и
+ * уехали вниз.
+ */
+function dgSummary(p){
+  const box = $('dgSum');
+  const each = p.each || [];
+  if(!each.length){ box.hidden = true; return; }
+
+  const bad = each.filter(one => one.stage && one.stage !== 'done');
+  const good = each.length - bad.length;
+  box.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'pnow' + (bad.length ? ' warn' : '');
+  head.textContent = bad.length
+    ? `Готово: ${good} из ${each.length}. Не вышло: ${bad.length}.`
+    : `Готово: все ${each.length} `
+      + plural(each.length, 'книга', 'книги', 'книг') + '.';
+  box.append(head);
+
+  for(const one of bad){
+    const row = document.createElement('div');
+    row.className = 'hint';
+    row.style.margin = '4px 0 0 10px';
+    row.textContent = `${one.title || '—'}: `
+      + (one.message || STAGES[one.stage] || one.stage);
+    box.append(row);
+  }
+  if(bad.length){
+    const how = document.createElement('div');
+    how.className = 'hint';
+    how.style.margin = '8px 0 0';
+    how.textContent = 'Скачанное на месте — эти книги можно поставить в '
+      + 'очередь заново, докачается только недостающее.';
+    box.append(how);
+  }
+  box.hidden = false;
 }
 
 async function tick(){
@@ -4916,6 +5087,15 @@ async function tick(){
     $('sDone').textContent = p.downloaded || 0;
     $('sSkip').textContent = p.skipped || 0;
     $('sFail').textContent = p.failed || 0;
+
+    // Почему счёт не двигается. Пока хоть одна книга качает — молчим:
+    // работа идёт, и объяснять нечего.
+    const why = busy ? (p.why || '') : '';
+    $('sWhy').textContent = why;
+    $('sWhy').hidden = !why;
+
+    dgLogTick();
+    if(!busy) dgSummary(p);
 
     // «Из скольки» и «сколько осталось». Всего — это главы прогона, а не
     // книги: качаем мы отрезок, и «из 1868» у книги, с которой берут
@@ -6433,6 +6613,10 @@ $('dqClear').onclick = async () => {
 document.addEventListener('DOMContentLoaded', dqLoad);
 
 $('hold').onclick = hold;
+$('dgLogAll').onclick = () => { DG_ONLY = ''; dgLogDraw(); pbDraw(); };
+$('dgLogSave').onclick = () => {
+  if(jobId) window.location = `/api/job/${jobId}/log.txt`;
+};
 $('again').onclick = reset;
 </script>
 <!-- Вкладки «Разбить», «Объединить», «Переименовать» и «Проверка» —
