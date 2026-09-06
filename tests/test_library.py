@@ -390,6 +390,42 @@ class TestTheRunLandsInTheLibrary(Base):
         self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
         self.assertTrue((folder / library.PASSPORT).is_file())
 
+    def test_a_book_with_a_cover_still_lands(self):
+        """Тот самый обвал: обложку клали дважды — и книга не клалась вовсе.
+
+        `_about_fields` начал возвращать `cover`, а строка `cover=` осталась
+        и в самом вызове. Python на два одноимённых довода отвечает
+        `TypeError`, и его глотал `except` ниже: в журнале строчка, в
+        библиотеке пусто. Проверять `_about_fields` отдельно тут
+        бесполезно — сам по себе он был исправен, ломался стык.
+        """
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(
+            self.novel(cover="https://assets/600/6615.webp"),
+            "novelcms", folder, {}, {})
+        books = library.all_books()
+        self.assertEqual(len(books), 1)
+        self.assertEqual(books[0].cover, "https://assets/600/6615.webp")
+
+    def test_the_cover_from_the_rating_row_wins(self):
+        """У книги из рейтинга обложка была с самого начала."""
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(
+            self.novel(cover="https://источник/своя.webp"), "novelcms", folder,
+            {"site": "mvl", "book_id": "6615", "cover": "https://рейтинг/та.webp"},
+            {})
+        self.assertEqual(library.all_books()[0].cover, "https://рейтинг/та.webp")
+
+    def test_the_description_reaches_the_library(self):
+        """Из-за того же обвала в библиотеке не было и описаний."""
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(
+            self.novel(cover="https://assets/600/6615.webp",
+                       about="Гостиница на перекрёстке миров."),
+            "novelcms", folder, {}, {})
+        self.assertEqual(library.all_books()[0].about,
+                         "Гостиница на перекрёстке миров.")
+
     def test_a_broken_library_does_not_break_the_run(self):
         """Книга уже скачана. Ронять прогон из-за незаписанной заметки о
         нём — обмен сделанной работы на удобство."""

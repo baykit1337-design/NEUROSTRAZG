@@ -1765,7 +1765,9 @@ def _about_fields(novel, origin: dict) -> dict:
     бы при первой же проверке обновлений.
     """
     origin = origin or {}
-    cover = str(getattr(novel, "cover", "") or origin.get("cover") or "")
+    # Обложка строки рейтинга идёт первой: её собрали из каталога, где
+    # картинка заведомо есть, а источник качания знает её не всегда.
+    cover = str(origin.get("cover") or getattr(novel, "cover", "") or "")
     return {
         # Обложка — только когда она есть. Пустая строка отсюда стёрла бы
         # ту, что уже лежит в записи: у книги, заведённой из рейтинга,
@@ -1805,7 +1807,12 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
             name=str(origin.get("name") or novel.name or ""),
             name_ru=str(origin.get("name_ru") or ""),
             author=novel.author or "",
-            cover=str(origin.get("cover") or novel.cover or ""),
+            # Обложку кладёт `_about_fields` — она же решает, когда её не
+            # трогать вовсе. Строка `cover=` была и здесь, и там: Python
+            # на такое отвечает «got multiple values for keyword argument»,
+            # `except` ниже это глотал, и в библиотеку не попадала ни одна
+            # книга, у которой обложка нашлась. Отсюда и «скачал, а не
+            # показывается», и пустые описания.
             found_site=site,
             found_id=code,
             found_link=str(origin.get("link") or ""),
