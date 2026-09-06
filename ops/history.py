@@ -16,11 +16,25 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from core.longpath import wide
+
 log = logging.getLogger(__name__)
+
+
+def _copy(source, target) -> None:
+    """Копирует файл, не спотыкаясь о длину имени.
+
+    Через `wide`, а не напрямую: у книги с длинным названием и главой в
+    полторы строки путь переступает виндовый предел в 260 знаков, и
+    копирование падает с «Системе не удается найти указанный путь» —
+    хотя файл на месте.
+    """
+    shutil.copy2(wide(source), wide(target))
 
 
 def _under_test() -> bool:
@@ -210,7 +224,10 @@ def backup(folder: Path, operation: str = "") -> str:
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(folder, target, dirs_exist_ok=True)
+        # `copy_function` свой: у `copytree` внутри тот же `copy2`, и на
+        # длинном имени он спотыкается ровно так же.
+        shutil.copytree(folder, target, dirs_exist_ok=True,
+                        copy_function=_copy)
     except OSError as exc:
         log.warning("Не удалось сделать копию %s: %s", folder, exc)
         return ""
@@ -238,7 +255,7 @@ def backup_files(paths, operation: str = "") -> str:
     try:
         target.mkdir(parents=True, exist_ok=True)
         for one in found:
-            shutil.copy2(one, target / one.name)
+            _copy(one, target / one.name)
     except OSError as exc:
         log.warning("Не удалось скопировать файлы из %s: %s",
                     found[0].parent, exc)
@@ -275,13 +292,76 @@ def backup_tree(root, paths, operation: str = "") -> str:
                 where = Path(one.name)
             destination = target / where
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(one, destination)
+            _copy(one, destination)
     except OSError as exc:
         log.warning("Не удалось скопировать файлы из %s: %s", root, exc)
         return ""
 
     trim()
     return str(target)
+
+
+class Sparing:
+    """Копия по мере надобности: папка заводится на первом же файле.
+
+    Качалка копировала книгу целиком перед каждым прогоном. У книги на две
+    тысячи глав это две тысячи файлов ради пяти новых — минуты ожидания
+    перед стартом, и всё это впустую: перезаписывать в обычном прогоне
+    нечего, готовые главы качалка пропускает.
+
+    Здесь наоборот: копируем ровно тот файл, поверх которого сейчас
+    напишем, и только в тот миг, когда собрались писать. Прогон в чистую
+    папку не копирует ничего и папки в корзине не заводит вовсе.
+
+    Потоков у прогона несколько, а папка одна — заводим её под замком.
+    """
+
+    def __init__(self, operation: str = ""):
+        self.operation = operation
+        self._where: Path | None = None
+        self._lock = threading.Lock()
+        #: Сколько файлов правда уберегли. Ноль — папки нет.
+        self.kept = 0
+
+    @property
+    def where(self) -> str:
+        """Где лежит копия. Пусто — копировать было нечего."""
+        return str(self._where) if self._where else ""
+
+    def _folder(self) -> Path | None:
+        """Папка копии, заведённая при первой надобности."""
+        if self._where is not None:
+            return self._where
+        stamp = datetime.now().strftime(STAMP)
+        name = f"{stamp}_{self.operation}".strip("_") or stamp
+        target = BACKUP_DIR / name
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("Папка копии не завелась: %s", exc)
+            return None
+        self._where = target
+        # Место освобождаем сразу: старые копии мешают писать новую.
+        trim()
+        return target
+
+    def keep(self, path) -> None:
+        """Уберечь файл, если он есть. Нет файла — писать не поверх чего."""
+        path = Path(path)
+        if not path.is_file():
+            return
+        with self._lock:
+            target = self._folder()
+            if target is None:
+                return
+            try:
+                _copy(path, target / path.name)
+            except OSError as exc:
+                # Копия — страховка, а не работа. Ронять из-за неё главу,
+                # которая уже скачана, было бы обменом дела на страховку.
+                log.warning("Не удалось уберечь %s: %s", path.name, exc)
+                return
+            self.kept += 1
 
 
 def backup_file(path: Path, operation: str = "") -> str:
@@ -301,7 +381,7 @@ def backup_file(path: Path, operation: str = "") -> str:
 
     try:
         target.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target / path.name)
+        _copy(path, target / path.name)
     except OSError as exc:
         log.warning("Не удалось скопировать %s: %s", path, exc)
         return ""
@@ -388,7 +468,7 @@ def restore(backup_path: Path, target: Path) -> int:
                 continue
             destination = target / item.relative_to(source)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, destination)
+            _copy(item, destination)
             count += 1
     except OSError as exc:
         raise RestoreError(f"Не удалось восстановить: {exc}") from exc

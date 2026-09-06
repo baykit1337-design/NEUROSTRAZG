@@ -207,7 +207,13 @@ class Downloader:
         on_event=None,
         timeout: int | None = None,
         connect_timeout: int | None = None,
+        spare=None,
     ):
+        #: Кто бережёт главу перед тем, как написать поверх неё. Пусто —
+        #: не бережём: докачка в свою папку ничего не перезаписывает, а
+        #: копировать книгу целиком «на всякий случай» — это тысячи файлов
+        #: ради пяти новых при каждом запуске.
+        self.spare = spare
         self.client = client or Client()
         # Клиенту сказать некому: он свои повторы писал в debug и молчал.
         # Прицепляем сюда, а не заводим свой клиент — этот пришёл снаружи
@@ -1153,7 +1159,14 @@ class Downloader:
             raise ValueError("пустой текст главы")
 
         filename = chapter_filename(chapter.number, title or chapter.title)
-        write_chapter(output_dir / filename, novel.name, title or chapter.title, chapter.number, text)
+        target = output_dir / filename
+        # Бережём ровно тот файл, поверх которого сейчас напишем, и ровно
+        # в этот миг. Обычно его нет — готовые главы качалка пропускает, —
+        # и тогда не копируется ничего.
+        if self.spare is not None:
+            self.spare.keep(target)
+        write_chapter(target, novel.name, title or chapter.title,
+                      chapter.number, text)
         with self._state_lock:
             state.mark_done(chapter.number, filename)
 

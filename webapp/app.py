@@ -1616,8 +1616,14 @@ def _downloads_start(payload: dict):
                         f"{client_mod.explain(direct)}{direct}{tried}"
                     ) from direct
 
+            # `only=()` — «перезаписывать нечего»: докачка кладёт новые
+            # главы, а готовые пропускает. Что всё-таки придётся заменить,
+            # бережёт `Sparing` — по одному файлу и в тот миг, когда
+            # собрались писать поверх. Прежде здесь копировалась вся папка
+            # книги при каждом запуске: две тысячи файлов ради пяти новых.
+            spare = history_op.Sparing("download")
             output_dir = job.keep(_prepare(item.base, item.folder,
-                                           "download"))
+                                           "download", only=()))
             # Каталог уже ответил — значит про книгу известно всё:
             # обложка, описание, жанры, теги. Записываем их сейчас, а не
             # в конце прогона: книга на две тысячи глав качается часами, и
@@ -1648,6 +1654,7 @@ def _downloads_start(payload: dict):
                 threads=mine, probe=run.probe, source=source,
                 timeout=run.read_timeout,
                 connect_timeout=run.connect_timeout,
+                spare=spare,
             )
             report = downloader.run(novel, output_dir,
                                     first=first, last=last).as_dict()
@@ -1987,7 +1994,7 @@ def api_start():
     origin = payload.get("origin") or {}
 
     try:
-        made = _prepare(base, folder, "download")
+        made = _prepare(base, folder, "download", only=())
         output_dir = made.dir
     except (OSError, ValueError) as exc:
         return jsonify(error=f"Не удалось создать папку: {exc}"), 400
@@ -2035,6 +2042,8 @@ def api_start():
 
     job.keep(made)
 
+    spare = history_op.Sparing("download")
+
     def work(job: Job):
         # Обложка с описанием — сразу, а не после последней главы: книга
         # качается часами, и всё это время карточка стояла пустой.
@@ -2058,11 +2067,16 @@ def api_start():
             # выставленное на экране число не влияло ни на что.
             timeout=read_timeout,
             connect_timeout=connect_timeout,
+            spare=spare,
         )
         try:
             job.report = downloader.run(novel, output_dir, first=first, last=last).as_dict()
             _remember_book(novel, source.key, output_dir, origin, job.report)
         finally:
+            # Куда легла копия, известно только теперь: папка заводится
+            # на первом же перезаписанном файле, а его могло и не быть.
+            if spare.where:
+                job.backup = spare.where
             client.close()
 
     return jsonify(job=start_job(job, work).snapshot())
