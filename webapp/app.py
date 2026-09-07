@@ -1155,6 +1155,63 @@ def api_library_forget():
     return jsonify(gone=library_op.forget(key))
 
 
+#: Что можно сделать сразу многим книгам.
+#:
+#: Забыть — тоже здесь, и это самое опасное из четырёх; но именно его
+#: делают пачкой чаще всего, разбирая библиотеку после ночного прогона.
+#: Файлы на диске при этом не трогаются, и в этом вся разница между
+#: «забыть» и «удалить».
+LIBRARY_DEEDS = ("mark", "unmark", "queue", "forget")
+
+
+@app.post("/api/library/batch")
+def api_library_batch():
+    """Одно и то же — сразу многим книгам.
+
+    Отдельным маршрутом, а не двадцатью запросами со страницы: двадцать
+    запросов — это двадцать чтений и записей файла библиотеки, и половина
+    из них разъедется с другой половиной, если в это же время идёт
+    прогон.
+
+    Отвечаем всей библиотекой целиком: после такой правки на странице
+    меняются и метки, и сводка, и списки отбора, и собирать это из
+    двадцати ответов по кусочку значило бы собирать заново.
+    """
+    payload = request.json or {}
+    deed = (payload.get("deed") or "").strip()
+    keys = [str(k) for k in (payload.get("keys") or []) if str(k)]
+    if deed not in LIBRARY_DEEDS:
+        return jsonify(error=f"Неизвестное действие: {deed or '—'}"), 400
+    if not keys:
+        return jsonify(error="Ни одна книга не отмечена"), 400
+
+    done, missed = 0, []
+    if deed == "queue":
+        # Тем же путём, что и «Докачать всё новое»: у книги свой источник
+        # и своя папка, и второй такой сборки нам не надо.
+        done, missed = _fill_queue(keys)
+    else:
+        name = (payload.get("mark") or "").strip()
+        for key in keys:
+            try:
+                if deed == "forget":
+                    got = library_op.forget(key)
+                else:
+                    got = library_op.mark(key, name, deed == "mark")
+            except ValueError as exc:
+                missed.append({"key": key, "why": str(exc)})
+                continue
+            if got:
+                done += 1
+            else:
+                missed.append({"key": key, "why": "такой книги уже нет"})
+
+    rows = downloads_op.all_items()
+    return jsonify(done=done, missed=missed,
+                   books=[_book_out(b, rows) for b in library_op.all_books()],
+                   state=library_op.state())
+
+
 @app.post("/api/library/passport")
 def api_library_passport():
     """Переписать паспорт в папке книги."""

@@ -1124,6 +1124,22 @@
   .lbchip.auto:hover{color:#9be8c0;border-color:rgba(155,232,192,.45)}
   .lbchip.tag{cursor:default}
   .lbchip.tag:hover{color:var(--muted);border-color:var(--stroke-soft)}
+  /* Список жанров бывает на полсотни кружков — держим его в своих
+     берегах, а не отдаём ему полэкрана. */
+  #lbKinds{max-height:150px;overflow-y:auto}
+  /* Подпись группы. Разделитель, а не заголовок карточки: он про то,
+     где кончилось одно и началось другое. */
+  #lbList .lb-group{
+    margin:14px 0 8px;font-size:12px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--muted);
+    border-bottom:1px solid var(--stroke-soft);padding-bottom:4px;
+  }
+  #lbList .lb-group:first-child{margin-top:0}
+  /* Галочка отметки. Стоит первой в строке — там, где её ищут. */
+  #lbList .lb-tick{flex:0 0 auto;margin-top:4px;width:16px;height:16px}
+  #lbList .lb.ticked{
+    border-color:#8c54ff;background:rgba(140,84,255,.08);
+  }
   #rkTable .place{width:34px;color:var(--muted);font-variant-numeric:tabular-nums}
   /* 2.3: миниатюра обложки. Пока картинка не пришла — заготовка в стиле
      интерфейса: пустое место на её месте выглядит как поломка. */
@@ -4045,13 +4061,51 @@
          вторым экземпляром в разметке значило бы однажды разойтись. -->
     <div class="lb-filters" id="lbFilters" style="margin-top:12px"></div>
 
+    <!-- Отбор по жанрам и тегам сайта. Списки собираются из самих книг:
+         жанры у каждого сайта свои, и заранее их не перечислить. -->
+    <div class="row" id="lbKindRow" hidden
+         style="margin-top:8px;gap:8px;align-items:center">
+      <button id="lbKindToggle" class="ghost" style="flex:0 0 auto">Жанры и теги</button>
+      <span class="hint" id="lbKindNote" style="flex:1"></span>
+    </div>
+    <div class="lb-filters" id="lbKinds" hidden style="margin-top:8px"></div>
+
     <div class="row" style="margin-top:10px">
       <input id="lbFilter" type="text"
-             placeholder="фильтр по названию, автору, папке или метке"
+             placeholder="фильтр по названию, автору, описанию, жанру или метке"
              autocomplete="off">
       <button id="lbCheck" class="ghost" style="flex:0 0 auto"
               title="Спросить у сайтов, не вышли ли новые главы">Проверить обновления</button>
     </div>
+
+    <!-- Как разложить список. Сотня книг в порядке скачивания — это
+         сотня книг в случайном порядке. -->
+    <div class="row" id="lbSortRow" style="margin-top:8px;gap:10px;align-items:center">
+      <span class="hint" style="flex:0 0 auto">по порядку</span>
+      <div id="lbSort" class="dropdown" style="flex:0 0 auto;min-width:190px"
+           data-options='[["fresh","сначала с новыми главами"],["title","по названию"],["chapters","по числу глав"],["last_run","по последнему прогону"],["first_seen","по времени добавления"]]'></div>
+      <span class="hint" style="flex:0 0 auto">вместе</span>
+      <div id="lbGroup" class="dropdown" style="flex:0 0 auto;min-width:170px"
+           data-options='[["none","одним списком"],["status","по состоянию книги"],["source","по источнику"],["author","по автору"],["language","по языку"]]'></div>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="lbPickOn"> отмечать книги
+      </label>
+    </div>
+
+    <!-- Действия пачкой. Полоса появляется, только когда есть что
+         делать: пустая она была бы обещанием без повода. -->
+    <div class="row" id="lbDeeds" hidden style="margin-top:8px;gap:8px;flex-wrap:wrap">
+      <span class="hint" id="lbPicked" style="flex:1 1 100%"></span>
+      <button id="lbPickAll" class="ghost">Отметить показанные</button>
+      <button id="lbPickNone" class="ghost">Снять отметки</button>
+      <div id="lbMark" class="dropdown" style="flex:0 0 auto;min-width:160px"
+           data-options='[]'></div>
+      <button id="lbMarkOn" class="ghost">Поставить метку</button>
+      <button id="lbMarkOff" class="ghost">Снять метку</button>
+      <button id="lbQueue" class="ghost">В очередь</button>
+      <button id="lbForget" class="ghost">Забыть</button>
+    </div>
+
     <p class="hint" id="lbNote"></p>
     <div id="lbList" style="margin-top:10px"></div>
   </div>
@@ -5938,12 +5992,53 @@ document.addEventListener('DOMContentLoaded', libLoad);
  */
 let libMarks = [], libAuto = [], libPick = '', libState = {};
 
+//: Выбранные жанры и теги — по-русски, в нижнем регистре: сравнивать их
+//: с книгой приходится в том же виде, в каком они с неё и собраны.
+let libKinds = new Set();
+
+//: Отмеченные книги — ключами. Не индексами: список пересортируется, и
+//: отметка уехала бы на соседнюю книгу.
+let libTicked = new Set();
+
+let libSort = 'fresh', libGroup = 'none';
+let libSortMenu = null, libGroupMenu = null, libMarkMenu = null;
+
 /** Принять ответ сервера: списки меток и сводку. */
 function libTook(data){
   if(data.marks) libMarks = data.marks;
   if(data.auto) libAuto = data.auto;
   libState = data.state || libState;
+  libMarkFill();
   libShow();
+}
+
+/** Выпадающие списки вкладки. Заводятся один раз, при первом ответе.
+ *
+ * Не сразу при разборе страницы: `makeDropdown` живёт в `tabs.js`, а он
+ * подключается ниже — на этом месте его ещё нет. К первому ответу
+ * сервера он уже здесь.
+ *
+ * Метки берутся оттуда же, откуда их знает сервер: второй их экземпляр
+ * в разметке однажды разошёлся бы с первым. Программные («Скачана»,
+ * «Есть новые главы») в список не попадают — их ставит и снимает сама
+ * программа, и рукам там делать нечего.
+ */
+function libMarkFill(){
+  if(typeof makeDropdown !== 'function') return;
+  if(!libSortMenu){
+    libSortMenu = makeDropdown($('lbSort'),
+                               value => { libSort = value; libShow(); });
+  }
+  if(!libGroupMenu){
+    libGroupMenu = makeDropdown($('lbGroup'),
+                                value => { libGroup = value; libShow(); });
+  }
+  const box = $('lbMark');
+  if(!libMarks.length || libMarkMenu) return;
+  box.dataset.options = JSON.stringify(
+    libMarks.map(one => [one.key, one.name]));
+  box.innerHTML = '';
+  libMarkMenu = makeDropdown(box);
 }
 
 /** Сколько книг под меткой. Считаем по книгам, а не по сводке с
@@ -5954,19 +6049,72 @@ function libCount(key){
                            || (b.auto || []).includes(key)).length;
 }
 
-/** Подходит ли книга под выбранную метку и текстовый фильтр. */
+/** Всё, по чему книгу ищут словом.
+ *
+ * Описание и жанры здесь не для полноты: название китайское, автор
+ * незнакомый, папка названа как придётся — а «культивация» человек
+ * помнит. Искать по тому, что о книге написано, — единственный способ
+ * найти её в сотне, не листая.
+ */
+function libWords(book){
+  return [book.title, book.name, book.name_ru, book.author, book.folder,
+          book.source, book.found_site, book.note, book.status_shown,
+          book.about_ru || book.about,
+          ...(book.mark_names || []), ...(book.auto_names || []),
+          ...(book.tags || []),
+          ...libKindsOf(book)];
+}
+
+/** Жанры и теги сайта — по-русски, если перевод есть. */
+function libKindsOf(book){
+  return [...(book.genres_shown || book.genres || []),
+          ...(book.site_tags_shown || book.site_tags || [])];
+}
+
+/** Подходит ли книга под выбранную метку, жанры и текстовый фильтр. */
 function libFits(book){
   if(libPick && !(book.marks || []).includes(libPick)
              && !(book.auto || []).includes(libPick)) return false;
 
+  // Жанров можно выбрать несколько, и книга должна подойти под все:
+  // «боевые искусства» и «романтика» вместе — это просьба показать то,
+  // где есть и то и другое, а не свалить два списка в один.
+  if(libKinds.size){
+    const has = new Set(libKindsOf(book).map(one => String(one).toLowerCase()));
+    for(const want of libKinds) if(!has.has(want)) return false;
+  }
+
   const word = ($('lbFilter').value || '').trim().toLowerCase();
   if(!word) return true;
-  return [book.title, book.name, book.name_ru, book.author, book.folder,
-          book.source, book.found_site, book.note,
-          ...(book.mark_names || []), ...(book.auto_names || []),
-          ...(book.tags || [])]
-    .some(x => String(x || '').toLowerCase().includes(word));
+  return libWords(book).some(
+    x => String(x || '').toLowerCase().includes(word));
 }
+
+/* ---- порядок ----
+ *
+ * Сотня книг в порядке скачивания — это сотня книг в случайном порядке.
+ */
+const LB_SORTS = {
+  // Свежие главы первыми: ради них в библиотеку и заходят.
+  fresh: (a, b) => (b.fresh || 0) - (a.fresh || 0)
+                || String(a.title || '').localeCompare(String(b.title || ''), 'ru'),
+  title: (a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'ru'),
+  chapters: (a, b) => (b.chapters || 0) - (a.chapters || 0),
+  // Строки времени приходят видом «2026-09-07 03:14» — они и сравниваются
+  // как строки, без разбора в даты. Пустая уезжает вниз: «неизвестно
+  // когда» не то же самое, что «давно».
+  last_run: (a, b) => String(b.last_run || '').localeCompare(String(a.last_run || '')),
+  first_seen: (a, b) => String(b.first_seen || '').localeCompare(String(a.first_seen || '')),
+};
+
+/* ---- по какому признаку класть вместе ---- */
+const LB_GROUPS = {
+  none: null,
+  status: book => book.status_shown || book.status || 'состояние не записано',
+  source: book => book.source || 'источник не записан',
+  author: book => book.author || 'автор не записан',
+  language: book => book.language_shown || book.language || 'язык не записан',
+};
 
 function libFilters(){
   const box = $('lbFilters');
@@ -5984,13 +6132,82 @@ function libFilters(){
   }
 }
 
+/** Жанры и теги всех книг разом, от частых к редким.
+ *
+ * Список собирается из самих книг: жанры у каждого сайта свои, и
+ * заранее их не перечислить. Редкие уходят вниз — не выбрасываются:
+ * ради единственной книги с «детективом» отбор и заводят.
+ */
+function libAllKinds(){
+  const tally = new Map();
+  for(const book of libBooks){
+    for(const kind of new Set(libKindsOf(book))){
+      const name = String(kind || '').trim();
+      if(name) tally.set(name, (tally.get(name) || 0) + 1);
+    }
+  }
+  return [...tally.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
+}
+
+function libKindChips(){
+  const box = $('lbKinds');
+  const all = libAllKinds();
+  $('lbKindRow').hidden = !all.length;
+  box.innerHTML = '';
+  for(const [name, count] of all){
+    const low = name.toLowerCase();
+    const chip = document.createElement('button');
+    chip.className = 'lbchip' + (libKinds.has(low) ? ' on' : '');
+    chip.textContent = `${name} · ${count}`;
+    chip.onclick = () => {
+      if(libKinds.has(low)) libKinds.delete(low); else libKinds.add(low);
+      libShow();
+    };
+    box.append(chip);
+  }
+  $('lbKindNote').textContent = libKinds.size
+    ? `выбрано: ${libKinds.size}` : `всего: ${all.length}`;
+}
+
+/** Заголовок группы: подпись и сколько книг под ней. */
+function libGroupHead(name, count){
+  const head = document.createElement('div');
+  head.className = 'lb-group';
+  head.textContent = `${name} · ${count}`;
+  return head;
+}
+
 function libShow(){
   libFilters();
+  libKindChips();
   const box = $('lbList');
   box.innerHTML = '';
   $('lbCheck').hidden = !libBooks.length;
 
   const rows = libBooks.filter(libFits);
+  rows.sort(LB_SORTS[libSort] || LB_SORTS.fresh);
+
+  const bunch = LB_GROUPS[libGroup];
+  if(!bunch){
+    for(const book of rows) box.append(libCard(book));
+  }else{
+    // Группы идут в том же порядке, что и книги в них: сортировка
+    // выбрана человеком, и перекладывать её алфавитом групп значило бы
+    // отменить его выбор.
+    const seen = new Map();
+    for(const book of rows){
+      const name = String(bunch(book) || '').trim() || '—';
+      if(!seen.has(name)) seen.set(name, []);
+      seen.get(name).push(book);
+    }
+    for(const [name, books] of seen){
+      box.append(libGroupHead(name, books.length));
+      for(const book of books) box.append(libCard(book));
+    }
+  }
+
+  libDeeds(rows);
   $('lbNote').textContent = !libBooks.length
     ? 'Пока пусто. Скачанные книги появятся здесь сами, а метку можно '
       + 'поставить любой из них.'
@@ -5998,7 +6215,66 @@ function libShow(){
         ? `Книг: ${libBooks.length}. Скачано: ${libState.downloaded || 0}. `
           + `С новыми главами: ${libState.updatable || 0}.`
         : `Показано ${rows.length} из ${libBooks.length}.`);
-  for(const book of rows) box.append(libCard(book));
+}
+
+/* ---- действия пачкой ----
+ *
+ * Разбирая библиотеку после ночного прогона, одно и то же делают
+ * двадцати книгам подряд: поставить метку, забыть, отправить в очередь.
+ * По одной это двадцать раскрытых карточек.
+ */
+
+/** Полоса действий: видна, только когда есть что делать. */
+function libDeeds(rows){
+  const on = $('lbPickOn').checked;
+  const shown = new Set(rows.map(one => one.key));
+  // Отметки книг, ушедших из отбора, не теряем: человек мог отметить
+  // десяток, а потом сузить список, чтобы добрать одиннадцатую.
+  const picked = [...libTicked].filter(key =>
+    libBooks.some(one => one.key === key));
+  libTicked = new Set(picked);
+
+  $('lbDeeds').hidden = !on;
+  if(!on) return;
+
+  const here = picked.filter(key => shown.has(key)).length;
+  $('lbPicked').textContent = picked.length
+    ? `Отмечено книг: ${picked.length}`
+      + (here < picked.length ? ` (из них видно ${here})` : '')
+    : 'Отметьте книги галочками — действие применится ко всем сразу.';
+  for(const id of ['lbMarkOn', 'lbMarkOff', 'lbQueue', 'lbForget']){
+    $(id).disabled = !picked.length;
+  }
+}
+
+/** Сделать отмеченным одно и то же. */
+async function libBatch(deed, button){
+  const keys = [...libTicked];
+  if(!keys.length) return;
+  if(deed === 'forget'
+     && !confirm(`Забыть книг: ${keys.length}? Файлы на диске останутся.`)){
+    return;
+  }
+
+  const spot = $(button);
+  spot.disabled = true;
+  try{
+    const got = await call('/api/library/batch', {
+      keys, deed, mark: libMarkMenu ? libMarkMenu.value : '',
+    });
+    libBooks = got.books || [];
+    libState = got.state || libState;
+    if(deed === 'forget' || deed === 'queue') libTicked = new Set();
+    libShow();
+    const missed = (got.missed || []).length;
+    $('lbNote').textContent = `Сделано: ${got.done}. `
+      + (missed ? `Не вышло: ${missed}. ` : '') + $('lbNote').textContent;
+    if(deed === 'queue') await dqLoad();
+  }catch(err){
+    showError(err.message, $('lbNote'));
+  }finally{
+    spot.disabled = false;
+  }
 }
 
 /** «нашли: цидянь» со ссылкой, если ссылка и правда ссылка.
@@ -6161,6 +6437,24 @@ function libCard(book){
   const card = document.createElement('div');
   card.className = 'lb';
   card.dataset.book = book.key;
+
+  // Галочка только когда отмечают: в обычной жизни она была бы шестым
+  // предметом в строке, который ничего не делает.
+  if($('lbPickOn').checked){
+    const tick = document.createElement('input');
+    tick.type = 'checkbox';
+    tick.className = 'lb-tick';
+    tick.checked = libTicked.has(book.key);
+    tick.title = 'Отметить для действия пачкой';
+    tick.onclick = ev => ev.stopPropagation();
+    tick.onchange = () => {
+      if(tick.checked) libTicked.add(book.key); else libTicked.delete(book.key);
+      card.classList.toggle('ticked', tick.checked);
+      libDeeds(libBooks.filter(libFits));
+    };
+    if(tick.checked) card.classList.add('ticked');
+    card.append(tick);
+  }
 
   if(book.cover){
     const cover = document.createElement('img');
@@ -6393,6 +6687,27 @@ async function libMark(book, name, on){
 
 $('lbFilter').addEventListener('input', libShow);
 $('lbCheck').onclick = () => libCheck('lbNote', 'lbCheck');
+
+/* ---- разбор списка: порядок, группы, отметки ---- */
+$('lbKindToggle').onclick = () => {
+  const box = $('lbKinds');
+  box.hidden = !box.hidden;
+};
+$('lbPickOn').onchange = () => {
+  // Сняли режим отметок — снимаем и сами отметки: невидимая отметка
+  // сработала бы при следующем включении, спустя полчаса.
+  if(!$('lbPickOn').checked) libTicked = new Set();
+  libShow();
+};
+$('lbPickAll').onclick = () => {
+  for(const book of libBooks.filter(libFits)) libTicked.add(book.key);
+  libShow();
+};
+$('lbPickNone').onclick = () => { libTicked = new Set(); libShow(); };
+$('lbMarkOn').onclick = () => libBatch('mark', 'lbMarkOn');
+$('lbMarkOff').onclick = () => libBatch('unmark', 'lbMarkOff');
+$('lbQueue').onclick = () => libBatch('queue', 'lbQueue');
+$('lbForget').onclick = () => libBatch('forget', 'lbForget');
 // Открыли вкладку — перечитываем: книгу могли скачать минуту назад.
 document.querySelector('.tabs button[data-tab="library"]')
   ?.addEventListener('click', libLoad);

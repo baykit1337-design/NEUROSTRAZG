@@ -1089,3 +1089,110 @@ class TestWhatTheCardOffersToDo(Base):
     def test_another_book_in_the_queue_is_not_mine(self):
         other = self.Item(id="b", base=str(self.dir.name), folder="чужая")
         self.assertEqual(self.web._book_out(self.book(), [other])["queued"], "")
+
+
+class TestDoingOneThingToManyBooks(Base):
+    """Разбирая библиотеку после ночного прогона, одно и то же делают
+    двадцати книгам подряд. По одной это двадцать раскрытых карточек."""
+
+    def setUp(self):
+        super().setUp()
+        from ops import downloads
+        from webapp import app as web
+
+        kept = downloads.QUEUE_FILE
+        downloads.QUEUE_FILE = Path(self.dir.name) / "downloads.json"
+        self.addCleanup(setattr, downloads, "QUEUE_FILE", kept)
+        self.downloads = downloads
+
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+
+    def three(self):
+        return [self.qidian(found_id=str(100 + n), name=f"Книга {n}",
+                            folder=f"/книги/{n}", source="novelcms",
+                            address=f"https://x/{n}/", chapters=10, last=10)
+                for n in range(3)]
+
+    def batch(self, **body):
+        return self.client.post("/api/library/batch", json=body)
+
+    def test_a_mark_lands_on_all_of_them(self):
+        books = self.three()
+        said = self.batch(deed="mark", mark="want",
+                          keys=[b.key for b in books]).get_json()
+
+        self.assertEqual(said["done"], 3)
+        for book in library.all_books():
+            with self.subTest(book=book.key):
+                self.assertIn("want", book.marks)
+
+    def test_the_mark_comes_off_all_of_them(self):
+        books = self.three()
+        keys = [b.key for b in books]
+        self.batch(deed="mark", mark="want", keys=keys)
+        self.batch(deed="unmark", mark="want", keys=keys)
+
+        for book in library.all_books():
+            with self.subTest(book=book.key):
+                self.assertNotIn("want", book.marks)
+
+    def test_they_are_forgotten_together(self):
+        books = self.three()
+        said = self.batch(deed="forget",
+                          keys=[b.key for b in books]).get_json()
+        self.assertEqual(said["done"], 3)
+        self.assertEqual(library.all_books(), [])
+
+    def test_they_go_into_the_queue_together(self):
+        """Тем же путём, что и «Докачать всё новое»: у книги свой
+        источник и своя папка."""
+        books = self.three()
+        said = self.batch(deed="queue",
+                          keys=[b.key for b in books]).get_json()
+
+        self.assertEqual(said["done"], 3)
+        self.assertEqual(len(self.downloads.all_items()), 3)
+
+    def test_the_whole_library_comes_back(self):
+        """После такой правки меняются и метки, и сводка, и списки
+        отбора: собирать это по кусочку из двадцати ответов — то же
+        самое, что собрать заново."""
+        books = self.three()
+        said = self.batch(deed="mark", mark="want",
+                          keys=[b.key for b in books]).get_json()
+        self.assertEqual(len(said["books"]), 3)
+        self.assertIn("state", said)
+
+    def test_a_book_that_is_gone_is_named_not_swallowed(self):
+        books = self.three()
+        said = self.batch(deed="mark", mark="want",
+                          keys=[books[0].key, "выдумка"]).get_json()
+        self.assertEqual(said["done"], 1)
+        self.assertEqual(said["missed"][0]["key"], "выдумка")
+
+    def test_an_invented_mark_does_not_pass(self):
+        books = self.three()
+        said = self.batch(deed="mark", mark="выдумка",
+                          keys=[b.key for b in books]).get_json()
+        self.assertEqual(said["done"], 0)
+        self.assertEqual(len(said["missed"]), 3)
+
+    def test_an_unknown_deed_is_a_refusal(self):
+        books = self.three()
+        res = self.batch(deed="сжечь", keys=[b.key for b in books])
+        self.assertEqual(res.status_code, 400)
+
+    def test_nothing_picked_is_a_refusal(self):
+        """Молча ничего не сделать — читается как «сделано»."""
+        res = self.batch(deed="forget", keys=[])
+        self.assertEqual(res.status_code, 400)
+
+    def test_one_book_that_fails_does_not_stop_the_rest(self):
+        books = self.three()
+        keys = [books[0].key, "выдумка", books[2].key]
+        said = self.batch(deed="forget", keys=keys).get_json()
+
+        self.assertEqual(said["done"], 2)
+        self.assertEqual([b.key for b in library.all_books()],
+                         [books[1].key])

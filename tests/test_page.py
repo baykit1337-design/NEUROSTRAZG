@@ -2640,3 +2640,208 @@ class TestTheQueueRowsSpeakForThemselves(PageTestCase):
         self.page.evaluate("() => { pbDraw(); pbDraw(); pbDraw(); }")
         self.assertEqual(self.sparks(), 0)
         self.quiet()
+
+
+class TestSortingOutTheLibrary(PageTestCase):
+    """Сотня книг в порядке скачивания — сотня книг в случайном порядке."""
+
+    def show(self, books, **more):
+        """Рисуем библиотеку так, как её отдал бы сервер."""
+        return self.page.evaluate(
+            """([books, more]) => {
+                 libBooks = books;
+                 libState = {};
+                 libPick = '';
+                 libKinds = new Set(more.kinds || []);
+                 libTicked = new Set(more.ticked || []);
+                 libSort = more.sort || 'fresh';
+                 libGroup = more.group || 'none';
+                 document.getElementById('lbFilter').value = more.word || '';
+                 document.getElementById('lbPickOn').checked = !!more.picking;
+                 libShow();
+                 return [...document.querySelectorAll('#lbList .lb')]
+                        .map(one => one.dataset.book);
+               }""", [books, more])
+
+    def book(self, key, **fields):
+        row = {"key": key, "title": key, "name": key, "author": "",
+               "folder": "/книги/" + key, "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 0, "last": 0, "fresh": 0}
+        row.update(fields)
+        return row
+
+    def test_the_ones_with_new_chapters_come_first(self):
+        """Ради них в библиотеку и заходят."""
+        got = self.show([self.book("А"), self.book("Б", fresh=5),
+                         self.book("В", fresh=1)])
+        self.assertEqual(got[:2], ["Б", "В"])
+        self.quiet()
+
+    def test_by_name_is_by_name(self):
+        got = self.show([self.book("Ярость"), self.book("Астра"),
+                         self.book("Небо")], sort="title")
+        self.assertEqual(got, ["Астра", "Небо", "Ярость"])
+        self.quiet()
+
+    def test_by_chapters_is_the_longest_first(self):
+        got = self.show([self.book("А", chapters=10),
+                         self.book("Б", chapters=900),
+                         self.book("В", chapters=100)], sort="chapters")
+        self.assertEqual(got, ["Б", "В", "А"])
+        self.quiet()
+
+    def test_a_book_that_never_ran_goes_last(self):
+        """«Неизвестно когда» — не то же самое, что «давно»."""
+        got = self.show([self.book("А"),
+                         self.book("Б", last_run="2026-01-01 10:00"),
+                         self.book("В", last_run="2026-09-01 10:00")],
+                        sort="last_run")
+        self.assertEqual(got, ["В", "Б", "А"])
+        self.quiet()
+
+    def groups(self):
+        return self.page.evaluate(
+            """() => [...document.querySelectorAll('#lbList .lb-group')]
+                     .map(one => one.textContent)""")
+
+    def test_books_are_laid_out_in_groups(self):
+        self.show([self.book("А", source="mvl"),
+                   self.book("Б", source="fanqie"),
+                   self.book("В", source="mvl")], group="source")
+        said = self.groups()
+        self.assertEqual(len(said), 2)
+        self.assertTrue(any("mvl · 2" in one for one in said))
+        self.quiet()
+
+    def test_a_book_without_the_field_still_gets_a_group(self):
+        """Иначе она пропала бы из списка вовсе."""
+        got = self.show([self.book("А", author="Автор"), self.book("Б")],
+                        group="author")
+        self.assertEqual(sorted(got), ["А", "Б"])
+        self.assertEqual(len(self.groups()), 2)
+        self.quiet()
+
+    def test_no_grouping_means_no_headings(self):
+        self.show([self.book("А"), self.book("Б")])
+        self.assertEqual(self.groups(), [])
+        self.quiet()
+
+    def test_the_word_reaches_the_description(self):
+        """Название китайское, автор незнакомый, а «культивация» человек
+        помнит."""
+        got = self.show([self.book("А", about_ru="история про культивацию"),
+                         self.book("Б", about_ru="жизнь в городе")],
+                        word="культивац")
+        self.assertEqual(got, ["А"])
+        self.quiet()
+
+    def test_the_word_reaches_the_genres(self):
+        got = self.show([self.book("А", genres_shown=["боевые искусства"]),
+                         self.book("Б", genres_shown=["романтика"])],
+                        word="боев")
+        self.assertEqual(got, ["А"])
+        self.quiet()
+
+    def test_several_genres_mean_all_of_them(self):
+        """«Боевые искусства» и «романтика» вместе — это просьба показать
+        то, где есть и то и другое, а не свалить два списка в один."""
+        got = self.show([
+            self.book("А", genres_shown=["боевые искусства", "романтика"]),
+            self.book("Б", genres_shown=["боевые искусства"]),
+        ], kinds=["боевые искусства", "романтика"])
+        self.assertEqual(got, ["А"])
+        self.quiet()
+
+    def test_the_genre_list_is_built_from_the_books(self):
+        """Жанры у каждого сайта свои, заранее их не перечислить."""
+        self.show([self.book("А", genres_shown=["меч"]),
+                   self.book("Б", genres_shown=["меч", "магия"])])
+        chips = self.page.locator("#lbKinds .lbchip")
+        self.assertEqual(chips.count(), 2)
+        self.assertIn("меч · 2", chips.nth(0).inner_text())
+        self.quiet()
+
+
+class TestDoingOneThingToManyBooksOnScreen(PageTestCase):
+    """Полоса действий: видна, только когда есть что делать."""
+
+    def show(self, books, **more):
+        return self.page.evaluate(
+            """([books, more]) => {
+                 libBooks = books;
+                 libState = {};
+                 libPick = '';
+                 libKinds = new Set();
+                 libTicked = new Set(more.ticked || []);
+                 libSort = 'title';
+                 libGroup = 'none';
+                 document.getElementById('lbFilter').value = more.word || '';
+                 document.getElementById('lbPickOn').checked = !!more.picking;
+                 libShow();
+                 return {
+                   deeds: !document.getElementById('lbDeeds').hidden,
+                   said: document.getElementById('lbPicked').innerText,
+                   ticks: document.querySelectorAll('#lbList .lb-tick').length,
+                   off: document.getElementById('lbForget').disabled,
+                   picked: libTicked.size,
+                 };
+               }""", [books, more])
+
+    def book(self, key, **fields):
+        row = {"key": key, "title": key, "name": key, "author": "",
+               "folder": "/книги/" + key, "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 0, "last": 0, "fresh": 0}
+        row.update(fields)
+        return row
+
+    def test_without_the_tick_there_is_no_bar(self):
+        """Пустая полоса — обещание без повода."""
+        said = self.show([self.book("А")])
+        self.assertFalse(said["deeds"])
+        self.assertEqual(said["ticks"], 0)
+        self.quiet()
+
+    def test_ticking_shows_the_boxes(self):
+        said = self.show([self.book("А"), self.book("Б")], picking=True)
+        self.assertTrue(said["deeds"])
+        self.assertEqual(said["ticks"], 2)
+        self.quiet()
+
+    def test_nothing_picked_leaves_the_deeds_locked(self):
+        """Иначе кнопка «Забыть» обещает сделать что-то ни с чем."""
+        said = self.show([self.book("А")], picking=True)
+        self.assertTrue(said["off"])
+        self.quiet()
+
+    def test_it_counts_what_is_picked(self):
+        said = self.show([self.book("А"), self.book("Б")],
+                         picking=True, ticked=["А", "Б"])
+        self.assertIn("2", said["said"])
+        self.assertFalse(said["off"])
+        self.quiet()
+
+    def test_a_picked_book_outside_the_filter_is_not_lost(self):
+        """Человек мог отметить десяток, а потом сузить список, чтобы
+        добрать одиннадцатую."""
+        said = self.show([self.book("Астра"), self.book("Небо")],
+                         picking=True, ticked=["Астра", "Небо"],
+                         word="небо")
+        self.assertIn("2", said["said"])
+        self.assertIn("1", said["said"])
+        self.quiet()
+
+    def test_a_book_that_is_gone_stops_being_picked(self):
+        """Забытая книга не должна попасть в следующее действие пачкой.
+
+        Считаем сами отметки, а не подпись: в подписи «Отмечено книг: 2
+        (из них видно 1)» единица есть и тогда, когда пропавшая книга
+        осталась отмеченной.
+        """
+        said = self.show([self.book("А")], picking=True,
+                         ticked=["А", "которой-нет"])
+        self.assertEqual(said["picked"], 1)
+        self.quiet()
