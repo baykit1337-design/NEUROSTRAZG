@@ -75,6 +75,7 @@ from ops import queue as queue_op  # noqa: E402
 from ops import reader as reader_op  # noqa: E402
 from ops import repair as repair_op  # noqa: E402
 from ops import replace as replace_op  # noqa: E402
+from ops import shelf as shelf_op  # noqa: E402
 from ops import sides as sides_op  # noqa: E402
 from ops import signature as signature_op  # noqa: E402
 from ops import spelling as spelling_op  # noqa: E402
@@ -1210,6 +1211,46 @@ def api_library_batch():
     return jsonify(done=done, missed=missed,
                    books=[_book_out(b, rows) for b in library_op.all_books()],
                    state=library_op.state())
+
+
+#: Сколько папок осматривать за один запрос.
+#:
+#: Осмотр папки — это обход диска, а книг в библиотеке бывают сотни, и
+#: половина из них на внешнем диске, который ещё надо разбудить.
+#: Остальные посмотрятся следующим нажатием: страница помнит, какие уже
+#: смотрели. То же правило, что и у проверки обновлений.
+SHELF_AT_ONCE = 40
+
+
+@app.post("/api/library/shelf")
+def api_library_shelf():
+    """Что у книг на самом деле лежит на диске.
+
+    Библиотека помнит, сколько глав она скачала, — это память о прогоне,
+    а не о диске. Папку могли переименовать, перенести или вычистить
+    руками, и «скачано 402» продолжает говорить о книге, которой нет.
+
+    Ничего не чинит и ничего не трогает: только смотрит.
+    """
+    payload = request.json or {}
+    want = [str(k) for k in (payload.get("keys") or []) if str(k)]
+    books = library_op.all_books()
+    if want:
+        picked = {k: True for k in want}
+        books = [b for b in books if b.key in picked]
+
+    looked, seen, left = [], {}, 0
+    for book in books:
+        if len(looked) >= SHELF_AT_ONCE:
+            left += 1
+            continue
+        found = shelf_op.look(book.folder)
+        looked.append(found)
+        # Записанное число глав кладём рядом с найденным: расхождение и
+        # есть ответ на вопрос, ради которого сюда пришли.
+        seen[book.key] = {**found.as_dict(), "said": book.last}
+
+    return jsonify(shelves=seen, left=left, total=shelf_op.weigh(looked))
 
 
 @app.post("/api/library/passport")

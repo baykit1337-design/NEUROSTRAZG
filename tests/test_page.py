@@ -2845,3 +2845,84 @@ class TestDoingOneThingToManyBooksOnScreen(PageTestCase):
                          ticked=["А", "которой-нет"])
         self.assertEqual(said["picked"], 1)
         self.quiet()
+
+
+class TestWhatIsReallyOnDisk(PageTestCase):
+    """«Скачано 402» — это память о прогоне, а не о диске."""
+
+    def show(self, book, shelf):
+        return self.page.evaluate(
+            """([book, shelf]) => {
+                 libBooks = [book];
+                 libState = {};
+                 libPick = '';
+                 libKinds = new Set();
+                 libTicked = new Set();
+                 libSort = 'title';
+                 libGroup = 'none';
+                 libShelves = shelf ? {[book.key]: shelf} : {};
+                 document.getElementById('lbFilter').value = '';
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+                 const line = document.querySelector('#lbList .lb-shelf');
+                 return line ? {text: line.innerText,
+                                bad: line.classList.contains('bad'),
+                                warn: line.classList.contains('warn')} : null;
+               }""", [book, shelf])
+
+    def book(self, **fields):
+        row = {"key": "к", "title": "Книга", "name": "Книга", "author": "",
+               "folder": "/книги/Книга", "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 0, "last": 0, "fresh": 0}
+        row.update(fields)
+        return row
+
+    def shelf(self, **fields):
+        row = {"folder": "/книги/Книга", "exists": True, "files": 5,
+               "bytes": 10240, "first": 1, "last": 5, "gaps": [],
+               "gaps_count": 0, "empty": [], "empty_count": 0,
+               "trouble": "", "whole": True, "said": 5}
+        row.update(fields)
+        return row
+
+    def test_a_folder_never_looked_at_says_nothing(self):
+        """Показывать «неизвестно» на каждой карточке — шум."""
+        self.assertIsNone(self.show(self.book(), None))
+        self.quiet()
+
+    def test_it_says_how_many_files_and_how_much_space(self):
+        said = self.show(self.book(), self.shelf())
+        self.assertIn("5", said["text"])
+        self.assertIn("КБ", said["text"])
+        self.assertFalse(said["bad"])
+        self.quiet()
+
+    def test_a_folder_that_is_gone_is_red(self):
+        said = self.show(self.book(),
+                         self.shelf(exists=False, files=0,
+                                    trouble="папки нет на месте"))
+        self.assertTrue(said["bad"])
+        self.assertIn("папки нет", said["text"])
+        self.quiet()
+
+    def test_fewer_files_than_written_down_is_yellow(self):
+        """Записано 400, на диске две — за этим сюда и приходят."""
+        said = self.show(self.book(last=400), self.shelf(files=2, said=400))
+        self.assertTrue(said["warn"])
+        self.assertIn("400", said["text"])
+        self.quiet()
+
+    def test_holes_in_the_numbering_are_red(self):
+        said = self.show(self.book(), self.shelf(gaps=["3–4"], gaps_count=2))
+        self.assertTrue(said["bad"])
+        self.assertIn("3–4", said["text"])
+        self.quiet()
+
+    def test_a_book_that_matches_is_not_shouted_about(self):
+        """Совпало — значит, всё хорошо, и цвет тут ни при чём."""
+        said = self.show(self.book(last=5), self.shelf(files=5, said=5))
+        self.assertFalse(said["bad"])
+        self.assertFalse(said["warn"])
+        self.quiet()

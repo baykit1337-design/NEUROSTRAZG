@@ -1137,6 +1137,12 @@
   #lbList .lb-group:first-child{margin-top:0}
   /* Галочка отметки. Стоит первой в строке — там, где её ищут. */
   #lbList .lb-tick{flex:0 0 auto;margin-top:4px;width:16px;height:16px}
+  /* Что лежит на диске. Спокойная строка, пока всё сходится; жёлтая,
+     когда файлов не столько, сколько записано; красная, когда папки
+     нет или в номерах дыры. */
+  #lbList .lb-shelf{font-size:12px;margin-top:4px;color:var(--muted)}
+  #lbList .lb-shelf.warn{color:#e0a458}
+  #lbList .lb-shelf.bad{color:#ff9d9d}
   #lbList .lb.ticked{
     border-color:#8c54ff;background:rgba(140,84,255,.08);
   }
@@ -4076,7 +4082,10 @@
              autocomplete="off">
       <button id="lbCheck" class="ghost" style="flex:0 0 auto"
               title="Спросить у сайтов, не вышли ли новые главы">Проверить обновления</button>
+      <button id="lbShelf" class="ghost" style="flex:0 0 auto"
+              title="Посмотреть, что у книг на самом деле лежит на диске">Осмотреть папки</button>
     </div>
+    <p class="hint" id="lbShelfNote" style="margin-top:6px"></p>
 
     <!-- Как разложить список. Сотня книг в порядке скачивания — это
          сотня книг в случайном порядке. -->
@@ -6217,6 +6226,83 @@ function libShow(){
         : `Показано ${rows.length} из ${libBooks.length}.`);
 }
 
+/* ---- что лежит на диске ----
+ *
+ * Библиотека помнит, сколько глав она скачала. Это память о прогоне, а
+ * не о диске: папку могли переименовать, перенести или вычистить
+ * руками. Запись при этом остаётся, и «скачано 402» продолжает говорить
+ * о книге, которой нет.
+ */
+let libShelves = {};
+
+/** Осмотреть папки показанных книг. Ничего не чинит и не трогает. */
+async function libLook(){
+  const rows = libBooks.filter(libFits);
+  if(!rows.length) return;
+
+  const button = $('lbShelf');
+  button.disabled = true;
+  $('lbShelfNote').innerHTML = '<span class="spin"></span>Смотрим папки…';
+  try{
+    const got = await call('/api/library/shelf',
+                           {keys: rows.map(one => one.key)});
+    libShelves = {...libShelves, ...(got.shelves || {})};
+    libShow();
+
+    const sum = got.total || {};
+    const bits = [`Осмотрено книг: ${ru(sum.books || 0)}`,
+                  `на диске ${weigh(sum.bytes || 0)}`,
+                  `${ru(sum.files || 0)} `
+                    + plural(sum.files || 0, 'файл', 'файла', 'файлов')];
+    if(sum.missing) bits.push(`папки нет: ${ru(sum.missing)}`);
+    if(sum.holed) bits.push(`с пропусками: ${ru(sum.holed)}`);
+    // Осмотр идёт порциями: диск — не сеть, но сотня папок на внешнем
+    // диске это всё равно минуты. Молчать об остатке нельзя: человек
+    // решит, что осмотрели всё.
+    if(got.left) bits.push(`осталось посмотреть: ${ru(got.left)}`);
+    $('lbShelfNote').textContent = bits.join(' · ') + '.';
+  }catch(err){
+    $('lbShelfNote').textContent = '';
+    showError(err.message, $('lbShelfNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
+/** Строка «что на диске» для карточки. `null` — папку не смотрели. */
+function libShelfLine(book){
+  const found = libShelves[book.key];
+  if(!found) return null;
+
+  const said = document.createElement('div');
+  said.className = 'lb-shelf';
+  if(!found.exists){
+    said.classList.add('bad');
+    said.textContent = 'На диске: ' + (found.trouble || 'папки нет на месте');
+    return said;
+  }
+
+  const bits = [`${ru(found.files)} `
+                + plural(found.files, 'файл', 'файла', 'файлов'),
+                weigh(found.bytes)];
+  if(found.first || found.last) bits.push(`главы ${found.first}–${found.last}`);
+  // Расхождение с записанным и есть то, ради чего папку смотрели.
+  if(found.said && found.files && found.said !== found.files){
+    bits.push(`записано было ${ru(found.said)}`);
+    said.classList.add('warn');
+  }
+  if(found.gaps_count){
+    bits.push(`пропущено ${ru(found.gaps_count)}: ${found.gaps.join(', ')}`);
+    said.classList.add('bad');
+  }
+  if(found.empty_count){
+    bits.push(`пустых ${ru(found.empty_count)}`);
+    said.classList.add('bad');
+  }
+  said.textContent = 'На диске: ' + bits.join(' · ') + '.';
+  return said;
+}
+
 /* ---- действия пачкой ----
  *
  * Разбирая библиотеку после ночного прогона, одно и то же делают
@@ -6515,6 +6601,11 @@ function libCard(book){
     side.append(news);
   }
 
+  // Что лежит на диске — сразу под тем, что записано: расхождение между
+  // ними и есть то, ради чего папку смотрели.
+  const shelf = libShelfLine(book);
+  if(shelf) side.append(shelf);
+
   // То, что сайт рассказал о книге. Свёрнуто: в списке на две сотни книг
   // описания превратили бы его в простыню, а нужны они по одному.
   const more = libAbout(book);
@@ -6687,6 +6778,7 @@ async function libMark(book, name, on){
 
 $('lbFilter').addEventListener('input', libShow);
 $('lbCheck').onclick = () => libCheck('lbNote', 'lbCheck');
+$('lbShelf').onclick = libLook;
 
 /* ---- разбор списка: порядок, группы, отметки ---- */
 $('lbKindToggle').onclick = () => {
