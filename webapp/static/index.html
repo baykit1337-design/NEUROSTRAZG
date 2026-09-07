@@ -1143,6 +1143,88 @@
   #lbList .lb-shelf{font-size:12px;margin-top:4px;color:var(--muted)}
   #lbList .lb-shelf.warn{color:#e0a458}
   #lbList .lb-shelf.bad{color:#ff9d9d}
+
+  /* Точка состояния. Слово «выходит» стоит в третьей строке карточки
+     мелким серым; точка видна сразу и не занимает места. */
+  .lb-dot{
+    display:inline-block;width:8px;height:8px;border-radius:50%;
+    margin-right:7px;vertical-align:1px;background:var(--stroke-soft);
+  }
+  .lb-dot.going{background:#5ec98a}
+  .lb-dot.ended{background:#8c54ff}
+  .lb-dot.fresh{background:#e0a458}
+
+  /* Полоса заполненности: сколько глав скачано из тех, что есть у
+     сайта. «400 из 402» и «40 из 402» читаются одинаково, пока это
+     цифры, и по-разному, когда это полоса. */
+  #lbList .lb-fill{
+    height:3px;border-radius:999px;background:rgba(255,255,255,.07);
+    margin-top:6px;overflow:hidden;
+  }
+  #lbList .lb-fill > i{
+    display:block;height:100%;border-radius:999px;background:var(--bar-fill);
+  }
+  #lbList .lb-fill.done > i{background:#5ec98a}
+
+  /* Заметка и теги под «…»: в списке они место занимают, а нужны
+     по одной книге. */
+  #lbList .lb-hidden{margin-top:8px}
+  #lbList .lb-dots{
+    background:none;border:0;color:var(--muted);cursor:pointer;
+    font-size:14px;line-height:1;padding:2px 8px;border-radius:6px;
+  }
+  #lbList .lb-dots:hover{color:#e9defc;background:rgba(140,84,255,.14)}
+
+  /* Плитка. Обложки рядами: две сотни книг строками — это два метра
+     прокрутки, а глазами книгу ищут по обложке. */
+  #lbList.tiles{
+    display:grid;gap:12px;
+    grid-template-columns:repeat(auto-fill, minmax(160px, 1fr));
+  }
+  #lbList.tiles .lb{flex-direction:column;align-items:stretch}
+  #lbList.tiles .lb-cover{
+    width:100%;height:210px;flex:0 0 auto;object-fit:cover;
+  }
+  #lbList.tiles .lb-side{min-width:0}
+  #lbList.tiles .lb-name{
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  /* В плитке остаётся то, по чему книгу узнают: обложка, название,
+     состояние и заполненность. Всё остальное — в карточке на весь
+     экран, куда ведёт щелчок. */
+  #lbList.tiles .lb-was,
+  #lbList.tiles .lb-path,
+  #lbList.tiles .lb-shelf,
+  #lbList.tiles .lb-note,
+  #lbList.tiles .lb-hidden,
+  #lbList.tiles .lb-deeds,
+  #lbList.tiles .lb-about,
+  #lbList.tiles .lb-chips{display:none}
+  #lbList.tiles .lb:hover{border-color:#8c54ff}
+  /* Подпись группы в плитке идёт через всю ширину, а не одной ячейкой. */
+  #lbList.tiles .lb-group{grid-column:1 / -1}
+
+  /* Карточка на весь экран. Слой один на всю библиотеку. */
+  .lb-full{
+    position:fixed;inset:0;z-index:80;display:flex;
+    align-items:flex-start;justify-content:center;
+    padding:40px 16px;overflow-y:auto;
+    background:rgba(8,6,14,.82);backdrop-filter:blur(3px);
+  }
+  .lb-full-box{
+    position:relative;width:min(860px, 100%);
+    border:1px solid var(--stroke-soft);border-radius:14px;
+    background:var(--card);padding:18px;
+  }
+  .lb-full-close{
+    position:absolute;top:10px;right:10px;
+    padding:2px 10px;font-size:18px;line-height:1.4;
+  }
+  /* Внутри слоя карточка занимает всю ширину и не притворяется строкой
+     списка: за тем её и открывают. */
+  .lb-full-box .lb{border:0;background:transparent;padding:0}
+  .lb-full-box .lb-cover{flex-basis:150px;width:150px;height:214px}
+  .lb-full-box .lb-hidden{display:block}
   #lbList .lb.ticked{
     border-color:#8c54ff;background:rgba(140,84,255,.08);
   }
@@ -4099,6 +4181,8 @@
       <label class="chk" style="flex:0 0 auto">
         <input type="checkbox" id="lbPickOn"> отмечать книги
       </label>
+      <button id="lbTiles" class="ghost" style="flex:0 0 auto"
+              title="Обложками вместо строк">Плиткой</button>
     </div>
 
     <!-- Действия пачкой. Полоса появляется, только когда есть что
@@ -4119,6 +4203,18 @@
     <div id="lbList" style="margin-top:10px"></div>
   </div>
 </section>
+
+<!-- Карточка книги на весь экран. Одна на всю библиотеку: книг бывает
+     две сотни, и держать по такому слою на каждую — это две сотни
+     невидимых слоёв в странице. Заполняется той книгой, которую
+     открыли. -->
+<div id="lbFull" class="lb-full" hidden>
+  <div class="lb-full-box">
+    <button id="lbFullClose" class="ghost lb-full-close"
+            title="Закрыть (Esc)">×</button>
+    <div id="lbFullBody"></div>
+  </div>
+</div>
 
 <!-- ====================== Оформление ====================== -->
 <section id="tab-looks" hidden>
@@ -6010,6 +6106,10 @@ let libKinds = new Set();
 let libTicked = new Set();
 
 let libSort = 'fresh', libGroup = 'none';
+
+//: Плиткой или строками. Две сотни книг строками — это два метра
+//: прокрутки, а глазами книгу ищут по обложке.
+let libTiled = false;
 let libSortMenu = null, libGroupMenu = null, libMarkMenu = null;
 
 /** Принять ответ сервера: списки меток и сводку. */
@@ -6191,6 +6291,7 @@ function libShow(){
   libFilters();
   libKindChips();
   const box = $('lbList');
+  box.classList.toggle('tiles', libTiled);
   box.innerHTML = '';
   $('lbCheck').hidden = !libBooks.length;
 
@@ -6224,6 +6325,95 @@ function libShow(){
         ? `Книг: ${libBooks.length}. Скачано: ${libState.downloaded || 0}. `
           + `С новыми главами: ${libState.updatable || 0}.`
         : `Показано ${rows.length} из ${libBooks.length}.`);
+}
+
+/* ---- как книга выглядит в списке ---- */
+
+/** Какого цвета точка у книги.
+ *
+ * Отвечает на первый вопрос, который к книге возникает: с ней сейчас
+ * что-то надо делать или нет. Новые главы важнее того, выходит книга
+ * или закончена: докачать — это работа, а «выходит» — просто сведение.
+ */
+function libDot(book){
+  if(book.fresh) return 'fresh';
+  const said = String(book.status_shown || book.status || '').toLowerCase();
+  if(said.includes('заверш') || said.includes('законч')
+     || said.includes('complet')) return 'ended';
+  if(said) return 'going';
+  return '';
+}
+
+function libDotTip(book){
+  if(book.fresh) return `Вышло новых глав: ${book.fresh}`;
+  return book.status_shown || book.status || 'состояние не записано';
+}
+
+/** Полоса «сколько скачано из того, что есть». `null` — считать не из чего. */
+function libFillBar(book){
+  const all = Number(book.chapters) || 0;
+  const done = Number(book.last) || 0;
+  if(!all || !done) return null;
+
+  const part = Math.max(0, Math.min(100, Math.round(done / all * 100)));
+  const bar = document.createElement('div');
+  bar.className = 'lb-fill' + (done >= all ? ' done' : '');
+  bar.title = `Скачано ${done} из ${all}`;
+  const fill = document.createElement('i');
+  fill.style.width = part + '%';
+  bar.append(fill);
+  return bar;
+}
+
+/* ---- своя обложка ----
+ *
+ * У книги с сайта-слива обложки нет вовсе, у переведённой бывает своя,
+ * а сайт иногда отдаёт заглушку. Картинка копируется к себе: сошлись бы
+ * мы на файл по месту — обложка пропала бы вместе с флешкой, а книга в
+ * библиотеке осталась.
+ */
+async function libCoverPick(book){
+  try{
+    const got = await call('/api/pick/file', {title: 'Обложка книги'});
+    if(!got.path) return;             // нажали «Отмена» — это не беда
+    await libCoverSet(book, got.path);
+  }catch(err){
+    showError(err.message + ' Обложку можно оставить как есть.');
+  }
+}
+
+async function libCoverSet(book, path){
+  try{
+    const got = await call('/api/library/cover', {key: book.key, path});
+    // Список держит свои копии книг: подменяем ту, что изменилась, а не
+    // перечитываем библиотеку целиком — иначе список перескочит.
+    const at = libBooks.findIndex(one => one.key === book.key);
+    if(at >= 0) libBooks[at] = got.book;
+    libShow();
+    if(!$('lbFull').hidden) libFull(got.book);
+  }catch(err){
+    showError(err.message);
+  }
+}
+
+/* ---- карточка на весь экран ----
+ *
+ * Слой один на всю библиотеку: книг бывает две сотни, и держать по
+ * такому слою на каждую — это две сотни невидимых слоёв в странице.
+ */
+function libFull(book){
+  const box = $('lbFullBody');
+  box.innerHTML = '';
+  // Ту же карточку, но целиком: скрытое под «…» здесь раскрыто, и
+  // прятать в ней нечего — за тем её и открывают.
+  const card = libCard(book, {full: true});
+  box.append(card);
+  $('lbFull').hidden = false;
+}
+
+function libFullClose(){
+  $('lbFull').hidden = true;
+  $('lbFullBody').innerHTML = '';
 }
 
 /* ---- что лежит на диске ----
@@ -6519,7 +6709,8 @@ function libDeed(book){
           strong: false, standing: false};
 }
 
-function libCard(book){
+function libCard(book, how){
+  const full = !!(how && how.full);
   const card = document.createElement('div');
   card.className = 'lb';
   card.dataset.book = book.key;
@@ -6542,12 +6733,15 @@ function libCard(book){
     card.append(tick);
   }
 
-  if(book.cover){
+  // Своя обложка сильнее той, что даёт сайт: её поставил человек, и
+  // значит, сайтовая его не устроила.
+  const picture = book.cover_shown || book.cover;
+  if(picture){
     const cover = document.createElement('img');
     cover.className = 'lb-cover';
     cover.alt = '';
     cover.loading = 'lazy';
-    cover.src = book.cover;
+    cover.src = picture;
     cover.onerror = () => cover.remove();
     card.append(cover);
   }
@@ -6557,7 +6751,13 @@ function libCard(book){
 
   const name = document.createElement('div');
   name.className = 'lb-name';
-  name.textContent = book.title || book.name || book.key;
+  // Точка состояния: «выходит» стоит мелким серым в третьей строке, а
+  // цвет виден сразу и места не занимает.
+  const dot = document.createElement('span');
+  dot.className = 'lb-dot ' + libDot(book);
+  dot.title = libDotTip(book);
+  name.append(dot, document.createTextNode(
+    book.title || book.name || book.key));
   side.append(name);
 
   // Оригинал показываем, только когда он не то же самое, что заголовок:
@@ -6606,14 +6806,29 @@ function libCard(book){
   const shelf = libShelfLine(book);
   if(shelf) side.append(shelf);
 
+  // Полоса заполненности. «400 из 402» и «40 из 402» читаются
+  // одинаково, пока это цифры, и по-разному, когда это полоса.
+  const bar = libFillBar(book);
+  if(bar) side.append(bar);
+
   // То, что сайт рассказал о книге. Свёрнуто: в списке на две сотни книг
   // описания превратили бы его в простыню, а нужны они по одному.
   const more = libAbout(book);
   if(more){
-    name.classList.add('lb-open');
-    name.title = 'Показать описание, жанры и теги';
-    name.onclick = () => { more.hidden = !more.hidden; };
     side.append(more);
+    // В плитке от карточки видно обложку с названием, а кнопок нет
+    // вовсе: щелчок по самой плитке и есть способ её открыть. Разворот
+    // описания там был бы вторым смыслом у того же щелчка.
+    if(!libTiled || full){
+      name.classList.add('lb-open');
+      name.title = 'Показать описание, жанры и теги';
+      name.onclick = () => { more.hidden = !more.hidden; };
+    }
+  }
+  if(libTiled && !full){
+    card.style.cursor = 'pointer';
+    card.title = 'Открыть книгу целиком';
+    card.onclick = () => libFull(book);
   }
 
   const chips = document.createElement('div');
@@ -6647,6 +6862,23 @@ function libCard(book){
   }
   side.append(chips);
 
+  // Своё — теги и заметка — уезжает под «…». В списке на две сотни книг
+  // два поля ввода в каждой строке съедают её целиком, а заполняют их
+  // по одной книге и редко. На весь экран карточку открывают как раз
+  // ради подробностей, и там они раскрыты сразу.
+  const own = document.createElement('div');
+  own.className = 'lb-hidden';
+  own.hidden = !full;
+
+  if(!full){
+    const dots = document.createElement('button');
+    dots.className = 'lb-dots';
+    dots.textContent = '…';
+    dots.title = 'Свои теги и заметка';
+    dots.onclick = () => { own.hidden = !own.hidden; };
+    chips.append(dots);
+  }
+
   // Поле для своих тегов. Раньше их было видно и нельзя было поставить:
   // паспорт их печатал, карточка рисовала, а записать не мог никто.
   //
@@ -6657,7 +6889,7 @@ function libCard(book){
   tagsLabel.textContent = 'свои теги';
   tagsLabel.title = 'Вписать через запятую и нажать Enter. '
     + 'Снять — нажатием на сам тег.';
-  side.append(tagsLabel);
+  own.append(tagsLabel);
 
   const tags = document.createElement('input');
   tags.className = 'lb-note';
@@ -6668,7 +6900,7 @@ function libCard(book){
     tags.value = '';
     libTags(book, [...(book.tags || []), ...added.split(',')]);
   };
-  side.append(tags);
+  own.append(tags);
 
   const note = document.createElement('input');
   note.className = 'lb-note';
@@ -6683,11 +6915,41 @@ function libCard(book){
       book.note = note.value;
     }catch(err){ showError(err.message); }
   };
-  side.append(note);
+  own.append(note);
+  side.append(own);
   card.append(side);
 
   const deeds = document.createElement('div');
   deeds.className = 'lb-deeds';
+
+  // На весь экран — оттуда, где карточка ужата: в плитке от неё видно
+  // обложку с названием, а в строке своё спрятано под «…».
+  if(!full){
+    const wide = document.createElement('button');
+    wide.className = 'ghost';
+    wide.textContent = 'Открыть';
+    wide.title = 'Показать книгу целиком, на весь экран';
+    wide.onclick = () => libFull(book);
+    deeds.append(wide);
+  }else{
+    // Своя обложка нужна там, где книгу и разглядывают. У книги с
+    // сайта-слива обложки нет вовсе, а сайт иногда отдаёт заглушку.
+    const skin = document.createElement('button');
+    skin.className = 'ghost';
+    skin.textContent = book.cover_own ? 'Сменить обложку' : 'Своя обложка';
+    skin.title = 'Взять картинку с диска';
+    skin.onclick = () => libCoverPick(book);
+    deeds.append(skin);
+
+    if(book.cover_own){
+      const back = document.createElement('button');
+      back.className = 'ghost';
+      back.textContent = 'Вернуть с сайта';
+      back.title = 'Убрать свою обложку';
+      back.onclick = () => libCoverSet(book, '');
+      deeds.append(back);
+    }
+  }
 
   if(book.source && book.address){
     const more = document.createElement('button');
@@ -6796,6 +7058,19 @@ $('lbPickAll').onclick = () => {
   libShow();
 };
 $('lbPickNone').onclick = () => { libTicked = new Set(); libShow(); };
+$('lbTiles').onclick = () => {
+  libTiled = !libTiled;
+  $('lbTiles').textContent = libTiled ? 'Строками' : 'Плиткой';
+  $('lbTiles').classList.toggle('primary', libTiled);
+  libShow();
+};
+$('lbFullClose').onclick = libFullClose;
+// Щелчок мимо карточки закрывает её: так ведут себя все такие слои, и
+// искать крестик глазами не приходится.
+$('lbFull').onclick = ev => { if(ev.target === $('lbFull')) libFullClose(); };
+document.addEventListener('keydown', ev => {
+  if(ev.key === 'Escape' && !$('lbFull').hidden) libFullClose();
+});
 $('lbMarkOn').onclick = () => libBatch('mark', 'lbMarkOn');
 $('lbMarkOff').onclick = () => libBatch('unmark', 'lbMarkOff');
 $('lbQueue').onclick = () => libBatch('queue', 'lbQueue');

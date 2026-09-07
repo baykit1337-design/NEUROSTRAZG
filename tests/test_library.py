@@ -681,7 +681,7 @@ class TestTheLibraryTab(unittest.TestCase):
         """Перерисовка на каждой букве выбрасывала бы курсор из поля."""
         card = self.block("function libCard(")
         note = card[card.index("note.onchange"):]
-        self.assertNotIn("libShow()", note[:note.index("side.append(note)")])
+        self.assertNotIn("libShow()", note[:note.index("own.append(note)")])
 
 
 if __name__ == "__main__":
@@ -1196,3 +1196,132 @@ class TestDoingOneThingToManyBooks(Base):
         self.assertEqual(said["done"], 2)
         self.assertEqual([b.key for b in library.all_books()],
                          [books[1].key])
+
+
+class TestABookGetsItsOwnCover(Base):
+    """У книги с сайта-слива обложки нет вовсе, у переведённой бывает
+    своя, а сайт иногда отдаёт заглушку."""
+
+    def setUp(self):
+        super().setUp()
+        from ops import covers
+        from webapp import app as web
+
+        kept = covers.COVER_DIR
+        covers.COVER_DIR = Path(self.dir.name) / "covers"
+        self.addCleanup(setattr, covers, "COVER_DIR", kept)
+        self.covers = covers
+
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+
+    def picture(self, name: str = "своя.png", head: bytes = b"\x89PNG\r\n\x1a\n"):
+        path = Path(self.dir.name) / name
+        path.write_bytes(head + b"0" * 500)
+        return path
+
+    def put(self, book, path):
+        return self.client.post("/api/library/cover",
+                                json={"key": book.key, "path": str(path)})
+
+    def test_a_picture_from_the_disk_becomes_the_cover(self):
+        book = self.qidian()
+        said = self.put(book, self.picture()).get_json()["book"]
+
+        self.assertTrue(said["cover_own"])
+        self.assertIn(said["cover_own"], said["cover_shown"])
+
+    def test_the_picture_is_copied_not_pointed_at(self):
+        """Сошлись бы мы на файл по месту — обложка пропала бы вместе с
+        флешкой, а книга в библиотеке осталась."""
+        book = self.qidian()
+        where = self.picture()
+        self.put(book, where)
+        where.unlink()
+
+        got = self.client.get(
+            f"/api/library/cover/{library.get(book.key).cover_own}")
+        self.assertEqual(got.status_code, 200)
+
+    def test_the_browser_is_told_the_real_kind(self):
+        """Объявишь webp там, где лежит jpeg, — картинка не покажется."""
+        book = self.qidian()
+        self.put(book, self.picture("своя.jpg", b"\xff\xd8\xff"))
+        got = self.client.get(
+            f"/api/library/cover/{library.get(book.key).cover_own}")
+        self.assertEqual(got.headers["Content-Type"], "image/jpeg")
+
+    def test_a_text_file_is_not_a_cover(self):
+        """«.jpg» на текстовом файле — по-прежнему текстовый файл, и
+        браузер покажет сломанный значок, промолчав о причине."""
+        book = self.qidian()
+        wrong = Path(self.dir.name) / "текст.jpg"
+        wrong.write_text("никакая это не картинка", encoding="utf-8")
+
+        res = self.put(book, wrong)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("не картинка", res.get_json()["error"])
+        self.assertEqual(library.get(book.key).cover_own, "")
+
+    def test_a_file_that_is_not_there(self):
+        """Причина должна быть названа: «файл не прочитать» на файле,
+        которого нет, отправило бы человека искать права и диск."""
+        book = self.qidian()
+        res = self.put(book, Path(self.dir.name) / "нет такого.png")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("файла нет", res.get_json()["error"])
+
+    def test_a_file_too_big_to_be_a_cover(self):
+        """Обложка — картинка в пару сотен пикселей. Всё, что заметно
+        больше, обложкой не бывает, а память при показе съест."""
+        book = self.qidian()
+        was = self.covers.MAX_BYTES
+        self.covers.MAX_BYTES = 64
+        self.addCleanup(setattr, self.covers, "MAX_BYTES", was)
+
+        res = self.put(book, self.picture())
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("большой", res.get_json()["error"])
+        self.assertEqual(library.get(book.key).cover_own, "")
+
+    def test_an_unknown_book_is_a_refusal(self):
+        res = self.client.post("/api/library/cover",
+                               json={"key": "выдумка", "path": "/что-то"})
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_own_cover_can_be_taken_off(self):
+        book = self.qidian()
+        self.put(book, self.picture())
+        ident = library.get(book.key).cover_own
+
+        said = self.client.post("/api/library/cover",
+                                json={"key": book.key,
+                                      "path": ""}).get_json()["book"]
+        self.assertEqual(said["cover_own"], "")
+        # И картинка из кэша уходит: держать её там незачем, а место
+        # она занимает.
+        self.assertEqual(
+            self.client.get(f"/api/library/cover/{ident}").status_code, 404)
+
+    def test_the_site_cover_comes_back_after_that(self):
+        book = self.qidian(cover="https://x/обложка.jpg")
+        self.put(book, self.picture())
+        said = self.client.post("/api/library/cover",
+                                json={"key": book.key,
+                                      "path": ""}).get_json()["book"]
+        self.assertEqual(said["cover_shown"], "https://x/обложка.jpg")
+
+    def test_a_run_does_not_wipe_the_own_cover(self):
+        """Проверка обновлений приносит обложку с сайта, а свою человек
+        поставил руками — и она сильнее."""
+        book = self.qidian()
+        self.put(book, self.picture())
+        library.remember(book.key, cover="https://x/другая.jpg",
+                              chapters=500)
+
+        again = library.get(book.key)
+        self.assertTrue(again.cover_own)
+
+    def test_the_cover_of_a_book_that_is_gone(self):
+        got = self.client.get("/api/library/cover/own-нетакой")
+        self.assertEqual(got.status_code, 404)

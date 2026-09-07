@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import os
@@ -950,6 +951,10 @@ def _book_out(book, rows=()) -> dict:
     data["auto_names"] = [library_op.AUTO[m] for m in book.auto
                           if m in library_op.AUTO]
     data["queued"] = _queue_state(book, rows)
+    # Обложку показываем свою, если она есть: её поставил человек, и
+    # значит, та, что даёт сайт, его не устроила.
+    data["cover_shown"] = (f"/api/library/cover/{book.cover_own}"
+                           if book.cover_own else book.cover)
     return data
 
 
@@ -1251,6 +1256,63 @@ def api_library_shelf():
         seen[book.key] = {**found.as_dict(), "said": book.last}
 
     return jsonify(shelves=seen, left=left, total=shelf_op.weigh(looked))
+
+
+def _cover_ident(key: str) -> str:
+    """Код обложки этой книги в кэше.
+
+    Ключ книги («qidian:104», а то и целый адрес) именем файла быть не
+    может: там двоеточия, косые черты и всё, что придёт с чужого сайта.
+    Берём от него короткий отпечаток — он же и постоянный, значит,
+    обложка находится по книге и после перезапуска.
+    """
+    short = hashlib.sha1(str(key or "").encode("utf-8")).hexdigest()[:16]
+    return f"own-{short}"
+
+
+@app.post("/api/library/cover")
+def api_library_cover_set():
+    """Своя обложка книге — картинкой с диска.
+
+    У книги с сайта-слива обложки нет вовсе, у переведённой бывает своя,
+    а бывает, что сайт отдаёт заглушку. Файл копируется к себе: сошлись
+    мы на него по месту — обложка пропала бы вместе с флешкой.
+    """
+    payload = request.json or {}
+    key = (payload.get("key") or "").strip()
+    book = library_op.get(key)
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+
+    path = (payload.get("path") or "").strip()
+    ident = _cover_ident(key)
+    if not path:
+        # Пустой путь — «убрать свою обложку»: книга вернётся к той, что
+        # даёт сайт. Картинку из кэша при этом убираем: держать её там
+        # незачем, а место она занимает.
+        covers.forget(ident)
+        library_op.set_cover(key, "")
+        return jsonify(book=_book_out(library_op.get(key)))
+
+    why = covers.adopt(ident, path)
+    if why:
+        return jsonify(error=f"Обложку не взять: {why}"), 400
+    library_op.set_cover(key, ident)
+    return jsonify(book=_book_out(library_op.get(key)))
+
+
+@app.get("/api/library/cover/<ident>")
+def api_library_cover_show(ident: str):
+    """Отдаёт свою обложку книги из кэша."""
+    if not covers.safe_id(ident) or not covers.have(ident):
+        return jsonify(error="Такой обложки нет"), 404
+    path = covers.path_for(ident)
+    # Тип определяем по самим байтам: расширение у нас одно на все, а
+    # объявленный не тот формат браузер просто не покажет.
+    #
+    # Кэш короткий, в отличие от рейтинга: свою обложку человек меняет
+    # руками и ждёт, что она сменится на глазах, а не завтра.
+    return send_file(path, mimetype=covers.mimetype_of(path), max_age=0)
 
 
 @app.post("/api/library/passport")

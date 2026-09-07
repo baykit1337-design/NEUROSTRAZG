@@ -112,6 +112,11 @@ class Book:
     name_ru: str = ""
     author: str = ""
     cover: str = ""
+    #: Своя обложка: код картинки в нашем кэше. У книги с сайта-слива
+    #: обложки нет вовсе, а у переведённой бывает своя — и затирать её
+    #: адресом с сайта при очередной проверке обновлений нельзя, поэтому
+    #: она лежит отдельным полем, а не поверх `cover`.
+    cover_own: str = ""
 
     #: Где книгу нашли: ключ сайта рейтинга и код в нём.
     found_site: str = ""
@@ -225,6 +230,7 @@ class Book:
         data = {
             "key": self.key, "name": self.name, "name_ru": self.name_ru,
             "author": self.author, "cover": self.cover,
+            "cover_own": self.cover_own,
             "found_site": self.found_site, "found_id": self.found_id,
             "found_link": self.found_link,
             "source": self.source, "address": self.address,
@@ -268,6 +274,7 @@ class Book:
             name_ru=str(data.get("name_ru") or ""),
             author=str(data.get("author") or ""),
             cover=str(data.get("cover") or ""),
+            cover_own=str(data.get("cover_own") or ""),
             found_site=str(data.get("found_site") or ""),
             found_id=str(data.get("found_id") or ""),
             found_link=str(data.get("found_link") or ""),
@@ -537,6 +544,23 @@ def remember(key: str = "", **fields) -> Book:
         return book
 
 
+def set_cover(key: str, ident: str) -> Book | None:
+    """Запомнить, что у книги есть своя обложка.
+
+    Хранится не картинка и не путь к ней, а код в кэше обложек: файл
+    оттуда можно отдать браузеру, а путь на диске — нельзя, да и флешку
+    с ним однажды вынут.
+    """
+    with _LOCK:
+        books = _load()
+        book = books.get(str(key or ""))
+        if book is None:
+            return None
+        book.cover_own = str(ident or "")
+        _save(books)
+        return book
+
+
 def touch(key: str) -> Book | None:
     """Отметить, что книгу только что качали."""
     return remember(key, last_run=datetime.now().strftime(STAMP)) \
@@ -746,4 +770,5 @@ def state() -> dict:
 
 __all__ = ["AUTO", "Book", "LIBRARY_FILE", "MARKS", "PASSPORT", "all_books",
            "clear", "forget", "get", "key_of", "mark", "passport", "remember",
-           "save_passport", "set_note", "stamp", "state", "touch"]
+           "save_passport", "set_cover", "set_note", "set_tags", "stamp",
+           "state", "touch"]

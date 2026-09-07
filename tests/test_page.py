@@ -2926,3 +2926,173 @@ class TestWhatIsReallyOnDisk(PageTestCase):
         self.assertFalse(said["bad"])
         self.assertFalse(said["warn"])
         self.quiet()
+
+
+class TestHowTheLibraryLooks(PageTestCase):
+    """Две сотни книг строками — два метра прокрутки, а книгу ищут
+    глазами по обложке."""
+
+    def show(self, books, **more):
+        return self.page.evaluate(
+            """([books, more]) => {
+                 libBooks = books;
+                 libState = {};
+                 libPick = '';
+                 libKinds = new Set();
+                 libTicked = new Set();
+                 libShelves = {};
+                 libSort = 'title';
+                 libGroup = more.group || 'none';
+                 libTiled = !!more.tiled;
+                 document.getElementById('lbFilter').value = '';
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+                 const box = document.getElementById('lbList');
+                 return {
+                   tiles: box.classList.contains('tiles'),
+                   dots: [...box.querySelectorAll('.lb-dot')]
+                          .map(one => one.className),
+                   fills: [...box.querySelectorAll('.lb-fill > i')]
+                          .map(one => one.style.width),
+                   hidden: [...box.querySelectorAll('.lb-hidden')]
+                          .map(one => one.hidden),
+                 };
+               }""", [books, more])
+
+    def book(self, key="к", **fields):
+        row = {"key": key, "title": key, "name": key, "author": "",
+               "folder": "/книги/" + key, "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 0, "last": 0, "fresh": 0, "status_shown": ""}
+        row.update(fields)
+        return row
+
+    def test_the_tiles_are_a_grid(self):
+        said = self.show([self.book()], tiled=True)
+        self.assertTrue(said["tiles"])
+        self.quiet()
+
+    def test_rows_are_the_usual_way(self):
+        self.assertFalse(self.show([self.book()])["tiles"])
+        self.quiet()
+
+    def test_new_chapters_beat_the_state_of_the_book(self):
+        """Докачать — это работа, а «выходит» — просто сведение."""
+        said = self.show([self.book(fresh=5, status_shown="выходит")])
+        self.assertIn("fresh", said["dots"][0])
+        self.quiet()
+
+    def test_a_finished_book_and_a_running_one_differ(self):
+        said = self.show([self.book("А", status_shown="выходит"),
+                          self.book("Б", status_shown="завершена")])
+        self.assertNotEqual(said["dots"][0], said["dots"][1])
+        self.quiet()
+
+    def test_a_book_with_nothing_written_down_gets_a_plain_dot(self):
+        said = self.show([self.book()])
+        self.assertEqual(said["dots"][0].strip(), "lb-dot")
+        self.quiet()
+
+    def test_the_bar_shows_how_much_is_downloaded(self):
+        said = self.show([self.book(chapters=200, last=50)])
+        self.assertEqual(said["fills"], ["25%"])
+        self.quiet()
+
+    def test_a_book_nobody_downloaded_has_no_bar(self):
+        """Полоса в ноль процентов говорит «скачано ноль», а на деле
+        книгу просто не качали."""
+        said = self.show([self.book(chapters=200, last=0)])
+        self.assertEqual(said["fills"], [])
+        self.quiet()
+
+    def test_a_book_whose_chapters_are_unknown_has_no_bar(self):
+        said = self.show([self.book(chapters=0, last=50)])
+        self.assertEqual(said["fills"], [])
+        self.quiet()
+
+    def test_the_note_and_tags_hide_under_the_dots(self):
+        """Два поля ввода в каждой строке съедают её целиком, а
+        заполняют их по одной книге и редко."""
+        said = self.show([self.book()])
+        self.assertEqual(said["hidden"], [True])
+        self.quiet()
+
+    def full(self, book):
+        return self.page.evaluate(
+            """(book) => {
+                 libBooks = [book];
+                 libShelves = {};
+                 libFull(book);
+                 const box = document.getElementById('lbFull');
+                 return {
+                   shown: !box.hidden,
+                   text: box.innerText,
+                   hidden: [...box.querySelectorAll('.lb-hidden')]
+                           .map(one => one.hidden),
+                 };
+               }""", book)
+
+    def test_the_full_card_opens(self):
+        said = self.full(self.book("Книга"))
+        self.assertTrue(said["shown"])
+        self.assertIn("Книга", said["text"])
+        self.quiet()
+
+    def test_nothing_is_hidden_in_the_full_card(self):
+        """За подробностями её и открывают."""
+        self.assertEqual(self.full(self.book())["hidden"], [False])
+        self.quiet()
+
+    def test_escape_closes_it(self):
+        self.full(self.book())
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.page.evaluate(
+            "() => document.getElementById('lbFull').hidden"))
+        self.quiet()
+
+    def test_a_click_past_the_card_closes_it(self):
+        """Так ведут себя все такие слои, и крестик искать не приходится."""
+        self.full(self.book())
+        self.page.evaluate(
+            """() => document.getElementById('lbFull').click()""")
+        self.assertTrue(self.page.evaluate(
+            "() => document.getElementById('lbFull').hidden"))
+        self.quiet()
+
+    def test_the_own_cover_beats_the_one_from_the_site(self):
+        """Её поставил человек — значит, сайтовая его не устроила."""
+        got = self.page.evaluate(
+            """() => {
+                 const card = libCard({key: 'к', title: 'Книга',
+                   marks: [], auto: [], mark_names: [], auto_names: [],
+                   tags: [], cover: 'https://сайт/обложка.jpg',
+                   cover_shown: '/api/library/cover/own-1'});
+                 const img = card.querySelector('.lb-cover');
+                 return img ? img.getAttribute('src') : '';
+               }""")
+        self.assertEqual(got, "/api/library/cover/own-1")
+        self.quiet()
+
+    def test_a_tile_opens_the_book_by_a_click(self):
+        """В плитке кнопок нет вовсе: щелчок по самой плитке и есть
+        способ её открыть."""
+        self.show([self.book("Книга")], tiled=True)
+        self.page.evaluate(
+            "() => document.querySelector('#lbList .lb').click()")
+        said = self.page.evaluate(
+            """() => ({shown: !document.getElementById('lbFull').hidden,
+                       text: document.getElementById('lbFull').innerText})""")
+        self.assertTrue(said["shown"])
+        self.assertIn("Книга", said["text"])
+        self.quiet()
+
+    def test_a_row_does_not_open_by_a_stray_click(self):
+        """В строке для этого есть кнопка, а щелчок по названию
+        разворачивает описание."""
+        self.show([self.book("Книга")])
+        self.page.evaluate(
+            "() => document.querySelector('#lbList .lb').click()")
+        self.assertTrue(self.page.evaluate(
+            "() => document.getElementById('lbFull').hidden"))
+        self.quiet()

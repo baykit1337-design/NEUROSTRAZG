@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from pathlib import Path
 
 from .history import DATA_DIR
 
@@ -103,6 +104,55 @@ SIGNATURES = (
     (b"GIF87a", "image/gif"),
     (b"GIF89a", "image/gif"),
 )
+
+
+def looks_like_picture(data: bytes) -> bool:
+    """Картинка ли это по первым байтам.
+
+    Расширение не спрашиваем: человек кладёт в обложку что попало, а
+    «.jpg» на текстовом файле — это по-прежнему текстовый файл, который
+    браузер покажет сломанным значком и промолчит о причине.
+    """
+    head = bytes(data or b"")[:16]
+    if any(head.startswith(signature) for signature, _ in SIGNATURES):
+        return True
+    return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+
+
+def adopt(book_id, path) -> str:
+    """Взять картинку с диска в кэш обложек. Вернёт причину отказа.
+
+    Обложка с сайта у книги не всегда та, что нужна: у книги с
+    сайта-слива её не бывает вовсе, а у переведённой бывает своя. Файл
+    **копируется**: сошлись мы на него по месту — обложка пропала бы
+    вместе с флешкой, а книга в библиотеке осталась.
+    """
+    where = path_for(book_id)
+    if where is None:
+        return "код книги никуда не годится"
+
+    source = Path(str(path or "").strip()).expanduser()
+    if not str(path or "").strip() or not source.is_file():
+        return f"файла нет: {path}"
+    try:
+        if source.stat().st_size > MAX_BYTES:
+            return "файл слишком большой для обложки"
+        data = source.read_bytes()
+    except OSError as exc:
+        return f"файл не прочитать: {exc}"
+
+    if not looks_like_picture(data):
+        return "это не картинка"
+
+    with _LOCK:
+        try:
+            COVER_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = where.with_suffix(SUFFIX + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(where)
+        except OSError as exc:
+            return f"обложку не записать: {exc}"
+    return ""
 
 
 def mimetype_of(path) -> str:
