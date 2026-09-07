@@ -1772,3 +1772,307 @@ class TestWhyTheCountStandsStill(unittest.TestCase):
     def test_a_finished_queue_says_nothing(self):
         """Конечные этапы не ждут — им нечего объяснять."""
         self.assertEqual(self.why([{"stage": "done"}, {"stage": "error"}]), "")
+
+
+class TestPuttingABookAside(Base):
+    """Между «качать» и «убрать» не было ничего.
+
+    А середина эта — самая частая: книга в очереди нужна, но не сегодня.
+    Выбросишь строку — потеряешь папку, источник, границы глав и
+    вставленную ссылку, а собирать это заново дороже самой книги.
+    """
+
+    def test_an_aside_book_is_still_in_the_queue(self):
+        item = self.book()
+        downloads.skip(item.id)
+
+        rows = downloads.all_items()
+        self.assertEqual([one.id for one in rows], [item.id])
+        self.assertEqual(rows[0].state, downloads.SKIPPED)
+
+    def test_the_row_says_why_it_stands(self):
+        """Строка без подписи читается как «ждёт и не дожидается»."""
+        item = self.book()
+        downloads.skip(item.id)
+        self.assertTrue(downloads.get(item.id).message.strip())
+
+    def test_putting_it_back_removes_that_note(self):
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.skip(item.id, False)
+        self.assertEqual(downloads.get(item.id).message, "")
+
+    def test_queueing_it_again_by_hand_brings_it_back(self):
+        """На кнопку «В очередь» нажали сами — значит, передумали."""
+        item = self.book()
+        downloads.skip(item.id)
+        again = self.book()
+
+        self.assertEqual(again.id, item.id)
+        self.assertEqual(downloads.get(item.id).state, downloads.WAITING)
+
+    def test_it_keeps_everything_the_row_knew(self):
+        item = self.book(first=100, last=200)
+        downloads.skip(item.id)
+
+        kept = downloads.all_items()[0]
+        self.assertEqual((kept.source, kept.address), (item.source,
+                                                       item.address))
+        self.assertEqual((kept.base, kept.folder), (item.base, item.folder))
+        self.assertEqual((kept.first, kept.last), (100, 200))
+
+    def test_the_run_walks_past_it(self):
+        one = self.book(folder="Первая")
+        two = self.book(folder="Вторая")
+        downloads.skip(one.id)
+
+        taken = []
+        downloads.run(lambda item: taken.append(item.folder) or "ок")
+        self.assertEqual(taken, ["Вторая"])
+        self.assertEqual(downloads.get(two.id).state, downloads.DONE)
+
+    def test_walking_past_is_not_a_failure(self):
+        """«Не вышло: 1» обвиняло бы сайт в том, что сделал человек."""
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.run(lambda one: "ок")
+
+        self.assertEqual(downloads.get(item.id).state, downloads.SKIPPED)
+        self.assertEqual(downloads.state()["failed"], 0)
+
+    def test_a_new_run_does_not_wake_it(self):
+        """«Пропустить» значит «не в этот прогон», а не «до первой кнопки»."""
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.reset()
+
+        self.assertEqual(downloads.get(item.id).state, downloads.SKIPPED)
+
+    def test_it_comes_back_when_asked(self):
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.skip(item.id, False)
+
+        back = downloads.get(item.id)
+        self.assertEqual(back.state, downloads.WAITING)
+        self.assertEqual(back.message, "")
+
+    def test_a_row_that_has_nothing_to_download_comes_back_waiting_a_link(self):
+        """Вернуть — не значит выдумать источник, которого нет."""
+        item = self.book(source="", address="")
+        downloads.skip(item.id)
+        downloads.skip(item.id, False)
+
+        self.assertEqual(downloads.get(item.id).state, downloads.NEEDS_LINK)
+
+    def test_editing_the_chapters_does_not_wake_it(self):
+        """Поправить границы — подготовка, а не отмена решения."""
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.update(item.id, first=50)
+
+        again = downloads.get(item.id)
+        self.assertEqual(again.state, downloads.SKIPPED)
+        self.assertEqual(again.first, 50)
+
+    def test_the_summary_counts_it(self):
+        item = self.book()
+        downloads.skip(item.id)
+        self.assertEqual(downloads.state()["skipped"], 1)
+
+    def test_an_unknown_row_is_not_a_crash(self):
+        self.assertIsNone(downloads.skip("нет такой"))
+
+
+class TestRepeatingWhatFailed(Base):
+    """Отказ книги — обычно не её вина: сайт закрылся, прокси умер."""
+
+    def failed(self, folder: str):
+        item = self.book(folder=folder)
+        rows = downloads.all_items()
+        for one in rows:
+            if one.id == item.id:
+                one.state = downloads.FAILED
+                one.message = "сайт не ответил"
+        downloads._save(rows)
+        return item
+
+    def test_all_of_them_come_back_at_once(self):
+        one, two = self.failed("Первая"), self.failed("Вторая")
+        self.assertEqual(downloads.retry(), 2)
+
+        for item in (one, two):
+            with self.subTest(folder=item.folder):
+                self.assertEqual(downloads.get(item.id).state,
+                                 downloads.WAITING)
+
+    def test_the_reason_of_the_failure_is_wiped(self):
+        """Иначе строка ждёт, а под ней написано, почему она не вышла."""
+        item = self.failed("Первая")
+        downloads.retry()
+        self.assertEqual(downloads.get(item.id).message, "")
+
+    def test_the_downloaded_are_left_alone(self):
+        item = self.book()
+        rows = downloads.all_items()
+        rows[0].state = downloads.DONE
+        downloads._save(rows)
+
+        self.assertEqual(downloads.retry(), 0)
+        self.assertEqual(downloads.get(item.id).state, downloads.DONE)
+
+    def test_the_ones_waiting_for_a_link_are_left_alone(self):
+        """У них не «не вышло», а «нечем качать»: повтор не поможет."""
+        item = self.book(source="", address="")
+        downloads.retry()
+        self.assertEqual(downloads.get(item.id).state, downloads.NEEDS_LINK)
+
+    def test_the_aside_stay_aside(self):
+        item = self.book()
+        downloads.skip(item.id)
+        downloads.retry()
+        self.assertEqual(downloads.get(item.id).state, downloads.SKIPPED)
+
+
+class TestDraggingRowsAbout(Base):
+    """Перетаскивание — это не «на одну вверх» девять раз."""
+
+    def three(self):
+        return [self.book(folder=name) for name in ("Раз", "Два", "Три")]
+
+    def names(self):
+        return [one.folder for one in downloads.all_items()]
+
+    def test_the_whole_order_arrives_at_once(self):
+        one, two, three = self.three()
+        self.assertTrue(downloads.order([three.id, one.id, two.id]))
+        self.assertEqual(self.names(), ["Три", "Раз", "Два"])
+
+    def test_unnamed_rows_do_not_move(self):
+        """Список у человека отфильтрован: он видит три строки из
+        пятидесяти и переставляет их между собой. Остальные при этом
+        обязаны остаться там, где стояли."""
+        one, two, three = self.three()
+        four = self.book(folder="Четыре")
+
+        # Названы первая и третья — они и меняются местами. Вторая и
+        # четвёртая стоят там же, где стояли.
+        downloads.order([three.id, one.id])
+        self.assertEqual(self.names(), ["Три", "Два", "Раз", "Четыре"])
+        del two, four
+
+    def test_an_unknown_id_is_ignored(self):
+        one, two, three = self.three()
+        downloads.order([three.id, "выдумка", one.id])
+        self.assertEqual(self.names(), ["Три", "Два", "Раз"])
+
+    def test_the_same_order_changes_nothing(self):
+        one, two, three = self.three()
+        self.assertFalse(downloads.order([one.id, two.id, three.id]))
+
+    def test_an_empty_list_changes_nothing(self):
+        self.three()
+        self.assertFalse(downloads.order([]))
+        self.assertEqual(self.names(), ["Раз", "Два", "Три"])
+
+    def test_a_row_named_twice_is_taken_once(self):
+        one, two, three = self.three()
+        downloads.order([three.id, three.id, one.id])
+        self.assertEqual(self.names(), ["Три", "Два", "Раз"])
+
+
+class TestQueueDeedsOverHttp(WebBase):
+    """Отложить, повторить и переставить — через маршруты."""
+
+    def ids(self, said):
+        return [one["folder"] for one in said["items"]]
+
+    def test_a_book_is_put_aside_and_brought_back(self):
+        item = self.put().get_json()["item"]
+
+        said = self.client.post("/api/downloads/skip",
+                                json={"id": item["id"]}).get_json()
+        self.assertEqual(said["items"][0]["state"], downloads.SKIPPED)
+        self.assertEqual(said["state"]["skipped"], 1)
+
+        said = self.client.post("/api/downloads/skip",
+                                json={"id": item["id"],
+                                      "on": False}).get_json()
+        self.assertEqual(said["items"][0]["state"], downloads.WAITING)
+
+    def test_the_state_has_a_russian_name(self):
+        """Иначе в строке стояло бы «skipped»."""
+        item = self.put().get_json()["item"]
+        said = self.client.post("/api/downloads/skip",
+                                json={"id": item["id"]}).get_json()
+        names = {one["key"]: one["name"] for one in said["states"]}
+        self.assertEqual(names[downloads.SKIPPED], "Отложена")
+
+    def test_putting_aside_a_book_that_is_not_there(self):
+        res = self.client.post("/api/downloads/skip", json={"id": "нет"})
+        self.assertEqual(res.status_code, 404)
+
+    def test_the_failed_come_back_together(self):
+        self.put(folder="Одна")
+        self.put(folder="Вторая")
+        rows = downloads.all_items()
+        for one in rows:
+            one.state = downloads.FAILED
+        downloads._save(rows)
+
+        said = self.client.post("/api/downloads/retry", json={}).get_json()
+        self.assertEqual(said["woken"], 2)
+        self.assertEqual(said["state"]["waiting"], 2)
+
+    def test_the_order_arrives_whole(self):
+        one = self.put(folder="Раз").get_json()["item"]
+        self.put(folder="Два")
+        three = self.put(folder="Три").get_json()["item"]
+
+        said = self.client.post(
+            "/api/downloads/order",
+            json={"ids": [three["id"], one["id"]]}).get_json()
+        self.assertEqual(self.ids(said), ["Три", "Два", "Раз"])
+
+    def test_an_order_of_nothing_is_a_refusal(self):
+        res = self.client.post("/api/downloads/order", json={"ids": []})
+        self.assertEqual(res.status_code, 400)
+
+
+class TestTheLibraryAnswersWhenABookIsQueued(WebBase):
+    """Ставя книгу в очередь, человек не помнит, качал ли он её.
+
+    Библиотека помнит. Молчать об этом — значит дать ему качать заново
+    то, что уже лежит на диске. Но и запрещать не за что: докачать
+    недостающие главы — обычное дело, и очередь ровно этим и занята.
+    """
+
+    def test_a_book_already_downloaded_is_named(self):
+        self.library.remember(found_site="qidian", found_id="104",
+                              name="Книга", folder="/книги/Книга",
+                              chapters=402, last=400)
+        said = self.put(folder="Книга").get_json()
+
+        self.assertEqual(said["known"]["last"], 400)
+        self.assertEqual(said["known"]["fresh"], 2)
+
+    def test_the_book_still_goes_into_the_queue(self):
+        """Это ответ, а не запрет."""
+        self.library.remember(found_site="qidian", found_id="104",
+                              name="Книга", folder="/книги/Книга",
+                              chapters=402, last=400)
+        said = self.put(folder="Книга").get_json()
+        self.assertEqual(len(said["items"]), 1)
+
+    def test_a_book_nobody_downloaded_gets_no_answer(self):
+        said = self.put(folder="Книга").get_json()
+        self.assertIsNone(said["known"])
+
+    def test_it_is_found_by_where_it_was_found_too(self):
+        """Папку человек мог назвать иначе, а книга та же самая."""
+        self.library.remember(found_site="qidian", found_id="104",
+                              name="Книга", folder="/книги/Старая",
+                              chapters=402, last=400)
+        said = self.put(folder="Новая",
+                        origin={"site": "qidian", "book_id": "104"}).get_json()
+        self.assertEqual(said["known"]["folder"], "/книги/Старая")

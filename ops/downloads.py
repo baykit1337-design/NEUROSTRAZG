@@ -179,6 +179,11 @@ def _settle(item: Item) -> Item:
 
     «Ждёт» на строке, которую никогда не начнут, — это обещание, которое
     некому исполнить: очередь дошла бы до неё и молча прошла мимо.
+
+    Отложенных здесь нет нарочно: решение «не в этот прогон» принимает
+    человек, и оберегают его те, кто это решение может отменить, —
+    `reset` и `update`. Поставленная заново книга через `add` сюда
+    приходит уже ждущей, и это правильно: на кнопку нажали сами.
     """
     if item.state in (RUNNING, DONE, FAILED):
         return item
@@ -246,9 +251,12 @@ def update(item_id: str, **fields) -> Item | None:
                     continue
             setattr(item, name, value)
         # Вставили ссылку — строка перестаёт ждать и встаёт в общий ряд.
-        item.message = ""
-        item.state = WAITING
-        _settle(item)
+        # Отложенную не будим: её отложили нарочно, и поправить в ней
+        # границы глав — это подготовка, а не отмена решения.
+        if item.state != SKIPPED:
+            item.message = ""
+            item.state = WAITING
+            _settle(item)
         _save(rows)
         return item
 
@@ -260,6 +268,93 @@ def remove(item_id: str) -> bool:
         if len(left) == len(rows):
             return False
         _save(left)
+    return True
+
+
+def skip(item_id: str, on: bool = True) -> Item | None:
+    """Отложить книгу, не выбрасывая её из очереди.
+
+    Между «качать» и «убрать» не было ничего. А середина эта — самая
+    частая: книга в очереди нужна, но не сегодня — сайт лежит, ключей
+    жаль, глав вышло две. Выбросишь строку — потеряешь и папку, и
+    источник, и границы глав, и вставленную ссылку; собирать всё это
+    заново дороже, чем сама книга.
+
+    Отложенная строка остаётся на своём месте в очереди: порядок здесь
+    и есть смысл, и всплыви она наверх при возвращении, человек искал бы
+    её глазами по всему списку.
+    """
+    with _LOCK:
+        rows = _load()
+        item = next((x for x in rows if x.id == str(item_id or "")), None)
+        if item is None:
+            return None
+        if on:
+            item.state = SKIPPED
+            item.message = "Отложена: очередь её обойдёт"
+        else:
+            item.state = WAITING
+            item.message = ""
+            _settle(item)
+        _save(rows)
+        return item
+
+
+def retry() -> int:
+    """Вернуть в очередь всё, что не вышло.
+
+    Отказ книги — обычно не её вина: сайт закрылся, прокси умер, связь
+    пропала. Возвращать такие строки по одной, ткнув в каждую, — работа
+    ни о чём, а после ночного прогона их бывает десяток.
+
+    Ждущих ссылку не трогаем: у них не «не вышло», а «нечем качать», и
+    повтор ничего не изменит, пока ссылки нет.
+    """
+    with _LOCK:
+        rows = _load()
+        woken = [one for one in rows if one.state == FAILED]
+        for one in woken:
+            one.state = WAITING
+            one.message = ""
+            _settle(one)
+        if woken:
+            _save(rows)
+        return len(woken)
+
+
+def order(ids) -> bool:
+    """Порядок строк целиком — как их перетащили.
+
+    Отдельно от `move`, потому что перетаскивание не «на одну вверх»: за
+    один раз строка уезжает через полсписка, и слать столько же нажатий
+    «выше» значило бы столько же записей на диск.
+
+    Названные строки занимают те же **места**, что и занимали, — только
+    в новом порядке между собой. Неназванные не двигаются вовсе.
+
+    Так это и должно работать, когда список отфильтрован: человек видит
+    три строки из пятидесяти и переставляет их между собой. Сложи мы
+    названных наверх, а остальных за ними, эти трое уехали бы в начало
+    очереди, а сорок семь невидимых — вниз, и всё это молча.
+    """
+    named = [str(x) for x in (ids or []) if str(x)]
+    if not named:
+        return False
+    with _LOCK:
+        rows = _load()
+        known = {one.id: one for one in rows}
+        fresh = [known[one] for one in dict.fromkeys(named) if one in known]
+        if not fresh:
+            return False
+
+        taken = {one.id for one in fresh}
+        spots = [n for n, one in enumerate(rows) if one.id in taken]
+        out = list(rows)
+        for spot, one in zip(spots, fresh):
+            out[spot] = one
+        if [one.id for one in out] == [one.id for one in rows]:
+            return False
+        _save(out)
     return True
 
 
@@ -314,10 +409,16 @@ def recover() -> list[Item]:
 
 
 def reset() -> list[Item]:
-    """Приготовить очередь к новому запуску, не трогая ждущих ссылку."""
+    """Приготовить очередь к новому запуску, не трогая ждущих ссылку.
+
+    И не трогая отложенных: «пропустить» значит «не в этот прогон», а не
+    «до первой кнопки „Запустить“».
+    """
     with _LOCK:
         rows = _load()
         for item in rows:
+            if item.state == SKIPPED:
+                continue
             item.done = 0
             item.message = ""
             item.state = WAITING
@@ -334,6 +435,7 @@ def state() -> dict:
         "waiting": sum(1 for x in rows if x.state == WAITING),
         "done": sum(1 for x in rows if x.state == DONE),
         "failed": sum(1 for x in rows if x.state == FAILED),
+        "skipped": sum(1 for x in rows if x.state == SKIPPED),
         "needs_link": sum(1 for x in rows if x.state == NEEDS_LINK),
         "chapters": sum(x.done for x in rows),
     }
@@ -407,7 +509,9 @@ def run(perform, on_change=None, cancel=None,
     разом.
     """
     rows = reset()
-    ready = [one for one in rows if one.ready]
+    # Отложенную книгу обходим молча: её отложил человек, и напоминать
+    # ему об этом отказом («не вышло: 1») незачем.
+    ready = [one for one in rows if one.ready and one.state != SKIPPED]
     workers = max(1, min(int(workers or 1), MAX_AT_ONCE, len(ready) or 1))
 
     # Список общий на все потоки: и правки строк, и запись на диск, и
@@ -485,5 +589,6 @@ def _save_locked(rows: list[Item]) -> None:
 
 __all__ = ["AUTO", "BOOKS_AT_ONCE", "DONE", "FAILED", "Item", "KEEP",
            "MAX_AT_ONCE", "NEEDS_LINK", "QUEUE_FILE", "RUNNING", "SKIPPED",
-           "WAITING", "add", "all_items", "clear", "get", "move", "recover",
-           "remove", "reset", "run", "spread", "state", "update"]
+           "WAITING", "add", "all_items", "clear", "get", "move", "order",
+           "recover", "remove", "reset", "retry", "run", "skip", "spread",
+           "state", "update"]

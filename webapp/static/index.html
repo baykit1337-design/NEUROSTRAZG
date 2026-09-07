@@ -1035,6 +1035,24 @@
   #dqList .q-deeds{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap}
   #dqList .q-deeds button{padding:5px 10px;font-size:12px}
   #dqList .q-move{padding:5px 9px;font-size:12px;line-height:1}
+  /* Отложенная: на месте, но видно, что её обойдут. */
+  #dqList .q.aside{opacity:.5;border-style:dashed}
+  /* Границы глав правятся прямо в строке: ради двух чисел возвращаться
+     в форму, терять там найденную книгу и искать её заново — дорого. */
+  #dqList .q-range{display:flex;align-items:center;gap:6px;margin-top:8px}
+  #dqList .q-range input{width:76px;padding:5px 8px;font-size:12px}
+  #dqList .q-range .hint{font-size:11px}
+  /* Ручка перетаскивания. Тянуть за всю строку нельзя: в ней поля,
+     которые надо выделять мышью, и выделение стало бы перетаскиванием. */
+  #dqList .q-grab{
+    flex:0 0 auto;align-self:stretch;display:flex;align-items:center;
+    padding:0 4px;color:var(--muted);cursor:grab;user-select:none;
+    font-size:15px;line-height:1;
+  }
+  #dqList .q-grab:active{cursor:grabbing}
+  #dqList .q.dragging{opacity:.4}
+  /* Куда строка встанет, если отпустить. */
+  #dqList .q.over{border-color:#8c54ff;box-shadow:0 -2px 0 0 #8c54ff inset}
 
   /* Библиотека. Карточка книги шире строки истории: здесь показывают
      не «чем докачать», а всё, что про книгу известно. */
@@ -1709,8 +1727,19 @@
              style="flex:0 0 auto;width:110px">
       <span class="hint" id="dqPlanNote" style="flex:1"></span>
     </div>
+    <!-- Список на полсотни строк глазами не читается: после ночного
+         прогона в нём три книги, которые не вышли, и сорок семь
+         скачанных. Отбор оставляет те, с которыми ещё есть дело. -->
+    <div class="row" id="dqPickRow" hidden style="margin-top:8px;gap:8px">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="dqOnly"> только те, с которыми есть дело
+      </label>
+      <span class="hint" id="dqHidden" style="flex:1"></span>
+    </div>
     <div id="dqList" hidden style="margin-top:10px"></div>
     <div class="row" id="dqSweep" hidden style="margin-top:8px">
+      <button id="dqRetry" class="ghost" style="flex:1" hidden
+              title="Вернуть в очередь все книги, которые не вышли">Повторить неудавшиеся</button>
       <button id="dqDone" class="ghost" style="flex:1">Убрать скачанные</button>
       <button id="dqClear" class="ghost" style="flex:1">Очистить очередь</button>
     </div>
@@ -6317,11 +6346,13 @@ function dqShow(){
   count.hidden = !dqItems.length;
   $('dqStart').hidden = !(dqState.waiting || 0);
   $('dqSweep').hidden = !dqItems.length;
+  $('dqRetry').hidden = !(dqState.failed || 0);
 
   const bits = [];
   if(dqState.waiting) bits.push(`ждут ${dqState.waiting}`);
   if(dqState.done) bits.push(`скачано ${dqState.done}`);
   if(dqState.failed) bits.push(`не вышло ${dqState.failed}`);
+  if(dqState.skipped) bits.push(`отложено ${dqState.skipped}`);
   if(dqState.needs_link) bits.push(`ждут ссылку ${dqState.needs_link}`);
   $('dqNote').textContent = !dqItems.length
     ? 'Пусто. Найдите книгу и нажмите «В очередь» — она скачается, когда '
@@ -6330,17 +6361,48 @@ function dqShow(){
   if(!$('dqList').hidden) dqRender();
 }
 
+/** Строки, с которыми ещё есть дело: ждут, не вышли, нужна ссылка.
+ *
+ * Скачанное и отложенное из списка убирается: после ночного прогона в
+ * нём три книги, которые не вышли, и сорок семь готовых — и первые три
+ * приходится искать глазами.
+ */
+const DQ_LEFT = ['waiting', 'running', 'failed', 'needs_link'];
+
+function dqShown(){
+  return $('dqOnly').checked
+    ? dqItems.filter(one => DQ_LEFT.includes(one.state)) : dqItems;
+}
+
 function dqRender(){
   const box = $('dqList');
   box.innerHTML = '';
-  for(const item of dqItems) box.append(dqRow(item));
+  const shown = dqShown();
+  for(const item of shown) box.append(dqRow(item));
+
+  $('dqPickRow').hidden = !dqItems.length;
+  const away = dqItems.length - shown.length;
+  $('dqHidden').textContent = away ? `скрыто: ${ru(away)}` : '';
 }
 
 function dqRow(item){
   const row = document.createElement('div');
   row.className = 'q' + (item.state === 'running' ? ' on' : '')
-                      + (item.state === 'done' ? ' off' : '');
+                      + (item.state === 'done' ? ' off' : '')
+                      + (item.state === 'skipped' ? ' aside' : '');
   row.dataset.item = item.id;
+
+  const grab = document.createElement('div');
+  grab.className = 'q-grab';
+  grab.textContent = '⠿';
+  grab.title = 'Тянуть, чтобы переставить';
+  grab.draggable = true;
+  grab.ondragstart = ev => dqDragStart(ev, row);
+  grab.ondragend = () => dqDragEnd(row);
+  row.append(grab);
+  row.ondragover = ev => dqDragOver(ev, row);
+  row.ondragleave = () => row.classList.remove('over');
+  row.ondrop = ev => dqDrop(ev, row);
 
   if(item.cover){
     const cover = document.createElement('img');
@@ -6399,6 +6461,37 @@ function dqRow(item){
     };
     side.append(link);
   }
+
+  // Границы глав правятся здесь же. Ради двух чисел возвращаться в
+  // форму, терять там найденную книгу и искать её заново — дорого, а
+  // «качать с 300-й, а не с первой» решают, уже глядя на очередь.
+  const range = document.createElement('div');
+  range.className = 'q-range';
+  const said = document.createElement('span');
+  said.className = 'hint';
+  said.textContent = 'главы';
+  range.append(said);
+  const bounds = {};
+  for(const [name, hint] of [['first', 'с какой'], ['last', 'по какую']]){
+    const box = document.createElement('input');
+    box.type = 'number';
+    box.min = '0';
+    box.placeholder = hint;
+    box.title = hint + ' главу качать. Пусто — сама разберётся';
+    box.value = item[name] ? String(item[name]) : '';
+    bounds[name] = box;
+    box.onchange = async () => {
+      try{
+        dqTook(await call('/api/downloads/update', {
+          id: item.id,
+          first: Number(bounds.first.value) || 0,
+          last: Number(bounds.last.value) || 0,
+        }));
+      }catch(err){ showError(err.message); }
+    };
+    range.append(box);
+  }
+  side.append(range);
   row.append(side);
 
   const deeds = document.createElement('div');
@@ -6415,6 +6508,22 @@ function dqRow(item){
     };
     deeds.append(move);
   }
+
+  // Отложить — середина между «качать» и «убрать». Выбросишь строку —
+  // потеряешь папку, источник, границы глав и вставленную ссылку.
+  const aside = document.createElement('button');
+  aside.className = 'ghost';
+  aside.textContent = item.state === 'skipped' ? 'Вернуть' : 'Отложить';
+  aside.title = item.state === 'skipped'
+    ? 'Снова качать эту книгу'
+    : 'Оставить в очереди, но обойти в этот прогон';
+  aside.onclick = async () => {
+    try{
+      dqTook(await call('/api/downloads/skip',
+                       {id: item.id, on: item.state !== 'skipped'}));
+    }catch(err){ showError(err.message); }
+  };
+  deeds.append(aside);
 
   const form = document.createElement('button');
   form.className = 'ghost';
@@ -6434,6 +6543,60 @@ function dqRow(item){
   deeds.append(drop);
   row.append(deeds);
   return row;
+}
+
+/* ---- перетаскивание строк ----
+ *
+ * Кнопки «выше» и «ниже» остаются: на десятой строке их надо нажать
+ * девять раз, но мышью попасть в маленькую цель бывает труднее, чем
+ * ткнуть. Перетаскивание — для дальних переездов, кнопки — для соседних.
+ *
+ * Порядок уезжает на сервер одним списком: слать девять «выше» значило
+ * бы девять записей на диск ради одного переезда.
+ */
+let dqDragged = null;
+
+function dqDragStart(ev, row){
+  dqDragged = row;
+  row.classList.add('dragging');
+  ev.dataTransfer.effectAllowed = 'move';
+  // Без этого Firefox не начинает перетаскивание вовсе.
+  ev.dataTransfer.setData('text/plain', row.dataset.item);
+}
+
+function dqDragEnd(row){
+  row.classList.remove('dragging');
+  dqDragged = null;
+  for(const one of $('dqList').children) one.classList.remove('over');
+}
+
+function dqDragOver(ev, row){
+  if(!dqDragged || dqDragged === row) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  row.classList.add('over');
+}
+
+async function dqDrop(ev, row){
+  ev.preventDefault();
+  row.classList.remove('over');
+  if(!dqDragged || dqDragged === row) return;
+
+  // Роняем перед той строкой, на которую целились, если тянули сверху
+  // вниз — то после неё: так это делают везде, и иначе строка вставала
+  // бы не туда, куда её вели.
+  const box = $('dqList');
+  const rows = [...box.children];
+  const from = rows.indexOf(dqDragged), to = rows.indexOf(row);
+  box.insertBefore(dqDragged, from < to ? row.nextSibling : row);
+
+  const ids = [...box.children].map(one => one.dataset.item);
+  try{
+    dqTook(await call('/api/downloads/order', {ids}));
+  }catch(err){
+    showError(err.message);
+    dqRender();
+  }
 }
 
 /** Строка очереди — обратно в форму: там есть выбор источника и поиск. */
@@ -6471,7 +6634,7 @@ async function dqAdd(){
 
   $('toQueue').disabled = true;
   try{
-    dqTook(await call('/api/downloads/add', {
+    const got = await call('/api/downloads/add', {
       // Название и обложка — только чтобы строку было видно глазами.
       name: (novel && novel.name) || origin.name || '',
       name_ru: origin.name_ru || '',
@@ -6483,16 +6646,31 @@ async function dqAdd(){
       base: basePath, folder,
       first: asked.first, last: asked.last,
       origin,
-    }));
+    });
+    dqTook(got);
     $('dqList').hidden = false;
     dqRender();
     $('dqNote').textContent = `«${$('folder').value.trim()}» — в очереди. `
-      + $('dqNote').textContent;
+      + dqKnown(got.known) + $('dqNote').textContent;
   }catch(err){
     showError(err.message, $('toQueue'));
   }finally{
     $('toQueue').disabled = false;
   }
+}
+
+/** Что библиотека уже знает про поставленную книгу.
+ *
+ * Ставя книгу в очередь, человек не помнит наизусть, качал ли он её
+ * полгода назад: библиотека помнит. Это не запрет — докачать
+ * недостающие главы обычное дело, — а ответ, чтобы он не качал заново
+ * то, что уже лежит на диске.
+ */
+function dqKnown(known){
+  if(!known || !known.last) return '';
+  const bits = [`Она уже в библиотеке: скачано глав ${ru(known.last)}`];
+  if(known.fresh) bits.push(`новых ${ru(known.fresh)}`);
+  return bits.join(', ') + '. ';
 }
 
 async function dqFill(){
@@ -6598,7 +6776,9 @@ async function dqStart(){
 $('dqToggle').onclick = () => {
   const box = $('dqList');
   box.hidden = !box.hidden;
-  if(!box.hidden) dqRender();
+  // Отбор живёт при списке: свёрнут список — незачем и он.
+  if(box.hidden) $('dqPickRow').hidden = true;
+  else dqRender();
 };
 $('toQueue').onclick = dqAdd;
 $('dqFill').onclick = dqFill;
@@ -6614,6 +6794,17 @@ $('dqClear').onclick = async () => {
   try{ dqTook(await call('/api/downloads/clear', {})); }
   catch(err){ showError(err.message); }
 };
+// Отказ книги — обычно не её вина: сайт закрылся, прокси умер, связь
+// пропала. После ночного прогона таких строк бывает десяток.
+$('dqRetry').onclick = async () => {
+  try{
+    const got = await call('/api/downloads/retry', {});
+    dqTook(got);
+    $('dqNote').textContent = (got.woken
+      ? `Снова в очереди: ${ru(got.woken)}. ` : '') + $('dqNote').textContent;
+  }catch(err){ showError(err.message); }
+};
+$('dqOnly').onchange = () => { $('dqList').hidden = false; dqRender(); };
 document.addEventListener('DOMContentLoaded', dqLoad);
 
 $('hold').onclick = hold;

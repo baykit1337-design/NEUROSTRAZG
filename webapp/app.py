@@ -1197,6 +1197,7 @@ QUEUE_STATES = {
     downloads_op.RUNNING: "Качается",
     downloads_op.DONE: "Скачана",
     downloads_op.FAILED: "Не вышло",
+    downloads_op.SKIPPED: "Отложена",
     downloads_op.NEEDS_LINK: "Нужна ссылка",
 }
 
@@ -1228,6 +1229,7 @@ def api_downloads_add():
         return jsonify(error="Выберите папку и её имя: очередь работает "
                              "сама, спросить будет некого"), 400
 
+    known = _known_book(base, folder, payload.get("origin") or {})
     item = downloads_op.add(
         name=(payload.get("name") or "").strip(),
         name_ru=(payload.get("name_ru") or "").strip(),
@@ -1238,7 +1240,33 @@ def api_downloads_add():
         first=payload.get("first") or 0, last=payload.get("last") or 0,
         origin=payload.get("origin") or {},
     )
-    return jsonify(item=item.as_dict(), **_queue_out())
+    return jsonify(item=item.as_dict(), known=known, **_queue_out())
+
+
+def _known_book(base: str, folder: str, origin: dict) -> dict | None:
+    """Что библиотека уже знает об этой книге. `None` — не знает ничего.
+
+    Ставя книгу в очередь, человек не помнит наизусть, качал ли он её
+    полгода назад: библиотека помнит. Молчать об этом — значит дать ему
+    качать заново то, что уже лежит на диске.
+
+    Отказывать не за чем: докачать недостающие главы — обычное дело, и
+    ровно этим очередь и занимается. Поэтому это не запрет, а ответ.
+
+    Ищем сперва по папке, потом по происхождению: книгу находят на одном
+    сайте, а качают с другого, и одна папка бывает у двух записей.
+    """
+    book = library_op.by_folder(str(Path(base) / folder)) if folder else None
+    if book is None:
+        site, code = (origin or {}).get("site"), (origin or {}).get("book_id")
+        if site and code:
+            book = next((one for one in library_op.all_books()
+                         if one.found_site == site
+                         and str(one.found_id) == str(code)), None)
+    if book is None:
+        return None
+    return {"key": book.key, "title": book.title, "folder": book.folder,
+            "last": book.last, "chapters": book.chapters, "fresh": book.fresh}
 
 
 @app.post("/api/downloads/fill")
@@ -1325,6 +1353,45 @@ def api_downloads_remove():
     payload = request.json or {}
     gone = downloads_op.remove((payload.get("id") or "").strip())
     return jsonify(gone=gone, **_queue_out())
+
+
+@app.post("/api/downloads/skip")
+def api_downloads_skip():
+    """Отложить книгу или вернуть её в очередь.
+
+    Середина между «качать» и «убрать»: строка нужна, но не сегодня.
+    Выбросишь её — потеряешь папку, источник, границы глав и вставленную
+    ссылку, а собирать это заново дороже самой книги.
+    """
+    payload = request.json or {}
+    on = payload.get("on")
+    item = downloads_op.skip((payload.get("id") or "").strip(),
+                             True if on is None else bool(on))
+    if item is None:
+        return jsonify(error="Такой книги в очереди нет"), 404
+    return jsonify(item=item.as_dict(), **_queue_out())
+
+
+@app.post("/api/downloads/retry")
+def api_downloads_retry():
+    """Вернуть в очередь всё, что не вышло.
+
+    Отказ книги — обычно не её вина: сайт закрылся, прокси умер, связь
+    пропала. После ночного прогона таких строк бывает десяток, и тыкать
+    в каждую — работа ни о чём.
+    """
+    return jsonify(woken=downloads_op.retry(), **_queue_out())
+
+
+@app.post("/api/downloads/order")
+def api_downloads_order():
+    """Порядок строк целиком — как их перетащили."""
+    payload = request.json or {}
+    ids = [str(x) for x in (payload.get("ids") or []) if str(x)]
+    if not ids:
+        return jsonify(error="Не сказано, в каком порядке"), 400
+    downloads_op.order(ids)
+    return jsonify(**_queue_out())
 
 
 @app.post("/api/downloads/move")

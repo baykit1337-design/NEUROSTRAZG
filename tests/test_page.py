@@ -2432,3 +2432,122 @@ class TestWhereTheCutBookLanded(PageTestCase):
                            "was": 2, "now": 4, "output": "/куда/книга.md"}])
         self.assertNotIn("книга.md →", said)
         self.quiet()
+
+
+class TestManagingTheQueueByHand(PageTestCase):
+    """Строка очереди: отложить, поправить главы, переставить, отобрать."""
+
+    def show(self, items, only=False):
+        """Рисуем очередь так, как её отдал бы сервер."""
+        return self.page.evaluate(
+            """([items, only]) => {
+                 dqItems = items;
+                 dqState = {books: items.length};
+                 document.getElementById('dqOnly').checked = only;
+                 document.getElementById('dqList').hidden = false;
+                 dqRender();
+                 return document.getElementById('dqList').innerText;
+               }""", [items, only])
+
+    def book(self, **fields):
+        row = {"id": "к1", "title": "Книга", "state": "waiting",
+               "source": "mvl", "base": "/книги", "folder": "Книга",
+               "first": 0, "last": 0, "ready": True, "origin": {}}
+        row.update(fields)
+        return row
+
+    def test_a_waiting_book_can_be_put_aside(self):
+        self.show([self.book()])
+        self.assertIn("Отложить", self.page.locator("#dqList").inner_text())
+        self.quiet()
+
+    def test_an_aside_book_is_offered_back(self):
+        self.show([self.book(state="skipped")])
+        said = self.page.locator("#dqList").inner_text()
+        self.assertIn("Вернуть", said)
+        self.assertNotIn("Отложить", said)
+        self.quiet()
+
+    def test_an_aside_row_is_seen_to_be_aside(self):
+        """Подписи мало: строка должна отличаться собой."""
+        self.show([self.book(state="skipped")])
+        self.assertTrue(self.page.evaluate(
+            """() => document.querySelector('#dqList .q')
+                             .classList.contains('aside')"""))
+        self.quiet()
+
+    def test_the_chapters_are_edited_in_the_row(self):
+        """Ради двух чисел возвращаться в форму и терять там книгу дорого."""
+        self.show([self.book(first=100, last=200)])
+        got = self.page.evaluate(
+            """() => [...document.querySelectorAll('#dqList .q-range input')]
+                     .map(one => one.value)""")
+        self.assertEqual(got, ["100", "200"])
+        self.quiet()
+
+    def test_the_chapters_are_empty_when_the_row_decides_for_itself(self):
+        """Ноль в поле читался бы как «качать с нулевой главы»."""
+        self.show([self.book()])
+        got = self.page.evaluate(
+            """() => [...document.querySelectorAll('#dqList .q-range input')]
+                     .map(one => one.value)""")
+        self.assertEqual(got, ["", ""])
+        self.quiet()
+
+    def test_every_row_can_be_dragged(self):
+        self.show([self.book(id="к1"), self.book(id="к2", folder="Вторая")])
+        self.assertEqual(self.page.evaluate(
+            """() => [...document.querySelectorAll('#dqList .q-grab')]
+                     .filter(one => one.draggable).length"""), 2)
+        self.quiet()
+
+    def test_the_filter_leaves_what_still_needs_doing(self):
+        """После ночи в списке три книги, которые не вышли, и сорок семь
+        готовых — и первые три приходится искать глазами."""
+        said = self.show([self.book(id="к1", folder="Готовая", state="done"),
+                          self.book(id="к2", folder="Ждущая"),
+                          self.book(id="к3", folder="Битая", state="failed"),
+                          self.book(id="к4", folder="Отложенная",
+                                    state="skipped")], only=True)
+        self.assertIn("Ждущая", said)
+        self.assertIn("Битая", said)
+        self.assertNotIn("Готовая", said)
+        self.assertNotIn("Отложенная", said)
+        self.quiet()
+
+    def test_it_says_how_many_it_hid(self):
+        """Молча спрятать половину списка — худшее, что тут можно."""
+        self.show([self.book(id="к1", state="done"),
+                   self.book(id="к2")], only=True)
+        self.assertIn("1", self.page.locator("#dqHidden").inner_text())
+        self.quiet()
+
+    def test_without_the_filter_everything_is_shown(self):
+        said = self.show([self.book(id="к1", folder="Готовая", state="done"),
+                          self.book(id="к2", folder="Ждущая")])
+        self.assertIn("Готовая", said)
+        self.assertEqual(self.page.locator("#dqHidden").inner_text(), "")
+        self.quiet()
+
+
+class TestTheLibraryWarnsWhenQueueing(PageTestCase):
+    """Ставя книгу в очередь, человек не помнит, качал ли он её."""
+
+    def said(self, known):
+        return self.page.evaluate("(known) => dqKnown(known)", known)
+
+    def test_it_says_how_much_is_already_downloaded(self):
+        said = self.said({"last": 400, "chapters": 402, "fresh": 2})
+        self.assertIn("400", said)
+        self.assertIn("2", said)
+        self.quiet()
+
+    def test_an_unknown_book_says_nothing(self):
+        self.assertEqual(self.said(None), "")
+        self.quiet()
+
+    def test_a_book_nobody_finished_downloading_says_nothing(self):
+        """Запись есть, а глав на диске нет: говорить не о чем."""
+        self.assertEqual(self.said({"last": 0, "chapters": 402, "fresh": 0}),
+                         "")
+        self.quiet()
