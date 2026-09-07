@@ -1146,3 +1146,51 @@ class TestTheDenseLook(Base):
         """Плотный вид — вкус, а не починка."""
         block = self.settings[self.settings.index("key: 'dense'"):]
         self.assertIn("on: false", block[:block.index("},")])
+
+
+class TestTheLibraryLinksAndLife(Base):
+    """Б-E: из карточки книги — в работу, и новая книга видна."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.arrive = (CSS / "book-arrive.css").read_text(encoding="utf-8")
+        cls.lift = (CSS / "shelf-lift.css").read_text(encoding="utf-8")
+
+    def test_the_card_leads_to_formatting(self):
+        """Собрать книгу из глав — работа на соседней вкладке, а папку
+        туда носили руками через проводник."""
+        self.assertIn("CHOSEN.fmList = [book.folder]", self.html)
+
+    def test_the_card_opens_the_folder(self):
+        self.assertIn("'/api/open', {path: book.folder}", self.html)
+
+    def test_a_book_taken_by_code_has_no_link_to_nowhere(self):
+        """Ссылка есть не у всякой книги, и кнопка без неё обещала бы
+        то, чего нет."""
+        self.assertIn("book.found_link && /^https?:/.test(book.found_link)",
+                      self.html)
+
+    def test_only_a_new_book_flies_in(self):
+        """Иначе въезжал бы весь список на каждую перерисовку."""
+        self.assertIn("fresh-book", self.html)
+        self.assertIn("libSeen", self.html)
+        self.assertIn(".lb.fresh-book", self.arrive)
+
+    def test_nothing_flies_in_on_the_first_draw(self):
+        """До первой отрисовки новыми были бы все книги разом."""
+        self.assertIn("let libSeen = null;", self.html)
+        self.assertIn("if(known){", self.html)
+
+    def test_the_new_book_is_seen_without_motion_too(self):
+        outside = self.arrive.split("prefers-reduced-motion")[0] \
+            + self.arrive.split("@media")[-1]
+        self.assertIn(".lb.fresh-book", outside)
+
+    def test_the_cover_lifts_under_the_cursor(self):
+        self.assertIn("#lbList .lb:hover .lb-cover", self.lift)
+
+    def test_the_tile_cover_lifts_less(self):
+        """Обложка там крупная и занимает почти всю клетку: подъём
+        побольше вылезал бы на соседнюю."""
+        self.assertIn("#lbList.tiles .lb:hover .lb-cover", self.lift)

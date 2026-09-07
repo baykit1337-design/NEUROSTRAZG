@@ -3221,3 +3221,134 @@ class TestWhatTheFullCardTells(PageTestCase):
         books = [self.book("А"), self.book("Б")]
         self.assertEqual(self.twins(books, None), ["А", "Б"])
         self.quiet()
+
+
+class TestNothingSticksOutOfTheLibrary(PageTestCase):
+    """Вкладка поехала: поле отбора сжалось в «фильтр п», кнопка
+    «Плиткой» уехала за край карточки, а в плитке название книги легло
+    поверх соседней.
+
+    Проверяем не вид, а то, что его держит: ничто не вылезает за свою
+    карточку, а плитка — за свою клетку.
+    """
+
+    def book(self, key, title):
+        return {"key": key, "title": title, "name": title, "author": "Klotz",
+                "folder": "C:/Книги/" + title, "marks": [], "auto": [],
+                "mark_names": [], "auto_names": [], "tags": [],
+                "genres_shown": ["фэнтези"], "site_tags_shown": [],
+                "chapters": 794, "last": 789, "fresh": 5, "runs": [],
+                "source": "mvlempyr", "last_run": "2026-09-05 21:37"}
+
+    def show(self, tiled=False, wide=1280):
+        self.page.set_viewport_size({"width": wide, "height": 900})
+        self.page.evaluate("() => goTab('library')")
+        return self.page.evaluate(
+            """([books, tiled]) => {
+                 libBooks = books; libState = {}; libPick = '';
+                 libKinds = new Set(); libTicked = new Set();
+                 libShelves = {}; libTwins = null; libTiled = tiled;
+                 libSort = 'title'; libGroup = 'none';
+                 document.getElementById('lbFilter').value = '';
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+
+                 const card = document.querySelector('#tab-library .card')
+                                      .getBoundingClientRect();
+                 const out = {outside: [], filter: 0, wider: []};
+                 for(const el of document.querySelectorAll(
+                        '#tab-library .card button, #tab-library .card input,'
+                        + ' #tab-library .card .dropdown')){
+                   const box = el.getBoundingClientRect();
+                   if(box.width && box.right > card.right + 1){
+                     out.outside.push(el.id || el.textContent.slice(0, 20));
+                   }
+                 }
+                 out.filter = Math.round(
+                   document.getElementById('lbFilter').getBoundingClientRect().width);
+                 // Плитка: содержимое не шире своей клетки.
+                 for(const one of document.querySelectorAll('#lbList .lb')){
+                   const cell = one.getBoundingClientRect();
+                   for(const kid of one.children){
+                     const box = kid.getBoundingClientRect();
+                     if(box.width > cell.width + 1) out.wider.push(kid.className);
+                   }
+                 }
+                 return out;
+               }""",
+            [[self.book("к1", "SSS Talent: From Trash to Tyrant"),
+              self.book("к2", "Cultivation: From Poor Peasant to Celestial Lord")],
+             tiled])
+
+    def test_nothing_hangs_out_of_the_card_in_rows(self):
+        self.assertEqual(self.show()["outside"], [])
+        self.quiet()
+
+    def test_nothing_hangs_out_of_the_card_in_tiles(self):
+        self.assertEqual(self.show(tiled=True)["outside"], [])
+        self.quiet()
+
+    def test_a_narrow_window_does_not_squeeze_the_field_out(self):
+        """«фильтр п» — это не поле, а обещание поля."""
+        said = self.show(wide=1000)
+        self.assertGreater(said["filter"], 150)
+        self.assertEqual(said["outside"], [])
+        self.quiet()
+
+    def test_a_tile_keeps_its_book_inside(self):
+        """Название длинное и неразрывное: без ширины оно ложится на
+        соседнюю плитку."""
+        self.assertEqual(self.show(tiled=True)["wider"], [])
+        self.quiet()
+
+
+class TestANewBookIsSeenToBeNew(PageTestCase):
+    """Книги попадают в библиотеку сами, и появлялись они молча —
+    посреди списка, отсортированного по своему правилу."""
+
+    def book(self, key):
+        return {"key": key, "title": key, "name": key, "author": "",
+                "folder": "/книги/" + key, "marks": [], "auto": [],
+                "mark_names": [], "auto_names": [], "tags": [],
+                "genres_shown": [], "site_tags_shown": [],
+                "chapters": 0, "last": 0, "fresh": 0, "runs": []}
+
+    def draw(self, keys, first=False, word=""):
+        return self.page.evaluate(
+            """([books, first, word]) => {
+                 if(first) libSeen = null;
+                 libBooks = books; libState = {}; libPick = '';
+                 libKinds = new Set(); libTicked = new Set();
+                 libShelves = {}; libTwins = null; libTiled = false;
+                 libSort = 'title'; libGroup = 'none';
+                 document.getElementById('lbFilter').value = word;
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+                 return [...document.querySelectorAll('#lbList .lb.fresh-book')]
+                        .map(one => one.dataset.book);
+               }""",
+            [[self.book(one) for one in keys], first, word])
+
+    def test_the_first_draw_flies_nothing_in(self):
+        """Иначе въезжала бы вся библиотека при открытии вкладки."""
+        self.assertEqual(self.draw(["А", "Б"], first=True), [])
+        self.quiet()
+
+    def test_a_book_that_was_not_there_flies_in(self):
+        self.draw(["А", "Б"], first=True)
+        self.assertEqual(self.draw(["А", "Б", "В"]), ["В"])
+        self.quiet()
+
+    def test_the_old_ones_stay_put(self):
+        self.draw(["А", "Б"], first=True)
+        said = self.draw(["А", "Б", "В"])
+        self.assertNotIn("А", said)
+        self.quiet()
+
+    def test_a_book_coming_back_from_a_filter_is_not_new(self):
+        """Считаем по всей библиотеке, а не по показанному: книга,
+        спрятанная отбором и вернувшаяся, в библиотеку не приходила."""
+        self.draw(["Астра", "Небо"], first=True)
+        self.draw(["Астра", "Небо"], word="астра")   # «Небо» ушло из виду
+        self.assertEqual(self.draw(["Астра", "Небо"]), [])
+        self.quiet()
