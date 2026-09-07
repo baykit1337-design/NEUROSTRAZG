@@ -622,6 +622,57 @@
 
   .row{display:flex;gap:10px}
   .row > input{flex:1}
+
+  /* Ряд настроек, которых много.
+
+     Ряд из четырёх полей в карточке шириной в шестьсот пикселей сжимал
+     каждое до полутора сантиметров, а подписи вроде «взять не больше»
+     ломались на две строки — и ряды переставали быть рядами. Сетка
+     переносит сама и держит поле не уже двухсот: там, где четыре не
+     влезают, встают два и два. */
+  .knobs{
+    display:grid;gap:12px 14px;
+    grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));
+  }
+  /* Ползунок вместо поля — там, где у числа есть потолок и «ноль»
+     значит «как настроено». Разница видна на глаз: сколько потоков из
+     возможных тридцати двух, а не просто «12». Само число рядом: без
+     него ползунок отвечает «примерно столько», а платят по квоте за
+     точное. */
+  .knob-row{display:flex;align-items:center;gap:10px}
+  .knob-row input[type=range]{
+    flex:1;min-width:0;height:22px;padding:0;margin:0;
+    background:transparent;border:0;appearance:none;-webkit-appearance:none;
+  }
+  .knob-row input[type=range]::-webkit-slider-runnable-track{
+    height:4px;border-radius:999px;background:rgba(255,255,255,.10);
+  }
+  .knob-row input[type=range]::-moz-range-track{
+    height:4px;border-radius:999px;background:rgba(255,255,255,.10);
+  }
+  .knob-row input[type=range]::-webkit-slider-thumb{
+    appearance:none;-webkit-appearance:none;
+    width:14px;height:14px;margin-top:-5px;border-radius:50%;
+    background:#c9b6ff;border:1px solid #8c54ff;
+    box-shadow:0 0 8px rgba(140,84,255,.55);cursor:pointer;
+  }
+  .knob-row input[type=range]::-moz-range-thumb{
+    width:14px;height:14px;border-radius:50%;
+    background:#c9b6ff;border:1px solid #8c54ff;
+    box-shadow:0 0 8px rgba(140,84,255,.55);cursor:pointer;
+  }
+  /* Значение занимает место под самую длинную свою подпись: без этого
+     ползунок дёргается туда-сюда, пока его тянут. */
+  /* Ширина твёрдая, а не «не меньше»: у «как настроено» она своя, и на
+     полпикселя больше — ползунок уже дёргается под пальцем. */
+  .knob-value{
+    flex:0 0 auto;width:112px;text-align:right;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;
+    font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;
+  }
+  /* Своё число — не то же самое, что «как настроено»: по цвету видно,
+     что здесь настройку переводчика перебили. */
+  .knob-value.own{color:#e9defc}
   .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 
   .book-name{font-size:18px;font-weight:600;color:#fff}
@@ -4089,31 +4140,37 @@
          командами `providers` и `models`, и они всегда те же, что у него
          в окне. Свой перечень разошёлся бы с его настройками в первый же
          раз, когда он добавит себе провайдера. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
+    <div class="knobs" style="margin-top:12px">
+      <div>
         <label>сервис<i class="hint-icon" data-tip="Из настроенных у вас в переводчике. Не выбран — берётся тот, что сохранён у него.">?</i></label>
         <div class="dropdown" id="tlProvider" data-options='[["","как настроено"]]'></div>
       </div>
-      <div style="flex:1">
+      <div>
         <label>модель<i class="hint-icon" data-tip="Модели выбранного сервиса, с его же квотами: сколько запросов в минуту и в сутки она отдаёт.">?</i></label>
         <div class="dropdown" id="tlModel" data-options='[["","как настроено"]]'></div>
       </div>
-      <div style="flex:0 0 auto;align-self:flex-end">
-        <button id="tlLoad" class="ghost">Обновить списки</button>
+      <div style="align-self:end">
+        <button id="tlLoad" class="ghost" style="width:100%">Обновить списки</button>
       </div>
     </div>
     <p class="hint" id="tlPickNote"></p>
 
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
+    <div class="knobs" style="margin-top:12px">
+      <div class="knob">
         <label for="tlWorkers">потоков<i class="hint-icon" data-tip="Пусто или 0 — сколько настроено у самого переводчика. Своё число перебивает его настройку только на этот запуск.">?</i></label>
-        <input id="tlWorkers" type="number" min="0" max="32" value="0">
+        <div class="knob-row">
+          <input id="tlWorkers" type="range" min="0" max="32" step="1" value="0">
+          <output class="knob-value" for="tlWorkers"></output>
+        </div>
       </div>
-      <div style="flex:1">
+      <div class="knob">
         <label for="tlRpm">запросов в минуту<i class="hint-icon" data-tip="0 — как настроено у переводчика. Больше, чем позволяет модель, ставить бессмысленно: упрётся в её квоту.">?</i></label>
-        <input id="tlRpm" type="number" min="0" max="600" value="0">
+        <div class="knob-row">
+          <input id="tlRpm" type="range" min="0" max="600" step="10" value="0">
+          <output class="knob-value" for="tlRpm"></output>
+        </div>
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlTemp">температура<i class="hint-icon" data-tip="Пусто — как настроено у переводчика. Ниже — суше и ближе к тексту, выше — вольнее.">?</i></label>
         <input id="tlTemp" type="text" placeholder="как настроено" autocomplete="off">
       </div>
@@ -4122,20 +4179,20 @@
     <!-- Отбор глав поверх «все / непереведённые / переведённые». Нужен
          затем же, зачем и план: взять десять глав на пробу, а не книгу
          целиком. Имена — фильтры самого переводчика, повторяемые. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:2">
+    <div class="knobs" style="margin-top:12px">
+      <div style="grid-column:span 2">
         <label for="tlPick">только эти главы<i class="hint-icon" data-tip="Куски имён файлов глав через запятую: «0012, 0013» или «Глава 5». Пусто — все, что попали под отбор выше.">?</i></label>
         <input id="tlPick" type="text" placeholder="пусто — все под отбором" autocomplete="off">
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlOffset">пропустить<i class="hint-icon" data-tip="Сколько глав пропустить с начала отбора. 0 — не пропускать.">?</i></label>
-        <input id="tlOffset" type="number" min="0" value="0">
+        <input id="tlOffset" type="number" min="0" value="0" autocomplete="off">
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlLimit">взять не больше<i class="hint-icon" data-tip="Предел глав за один запуск. 0 — без предела. Десяток на пробу дешевле, чем вся книга.">?</i></label>
-        <input id="tlLimit" type="number" min="0" value="0">
+        <input id="tlLimit" type="number" min="0" value="0" autocomplete="off">
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlSuffix">какие файлы<i class="hint-icon" data-tip="Окончание имени переведённых файлов, например «_validated.html». Пусто — как выбирает сам переводчик. Пригождается, когда одну книгу переводили дважды. Действует на сверку, поиск остатков и сборку.">?</i></label>
         <input id="tlSuffix" type="text" placeholder="сам выберет" autocomplete="off">
       </div>
@@ -4150,20 +4207,23 @@
     <!-- Ручки одного только перевода: чем отдавать главу модели. Слова
          его же; «как настроено» означает его собственную настройку, и
          наш ноль не должен решать за его окно. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
+    <div class="knobs" style="margin-top:12px">
+      <div>
         <label>отдавать главу<i class="hint-icon" data-tip="Целиком — один запрос на главу. Пачкой — несколько глав в запросе, дешевле по квоте. Кусками — длинную главу по частям. Цепочкой — подряд, с оглядкой на предыдущий ответ.">?</i></label>
         <div class="dropdown" id="tlWayRun" data-options='[["","как настроено"],["single","целиком"],["batch","пачкой"],["chunk","кусками"],["sequential","цепочкой"]]'></div>
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlTaskSize">знаков в задаче<i class="hint-icon" data-tip="Предел знаков на один запрос при пачке и кусках. 0 — как настроено у переводчика.">?</i></label>
         <input id="tlTaskSize" type="number" min="0" max="500000" value="0">
       </div>
-      <div style="flex:1">
+      <div class="knob">
         <label for="tlSplits">звеньев цепочки<i class="hint-icon" data-tip="На сколько запросов подряд делить главу в режиме «цепочкой». 0 — как настроено.">?</i></label>
-        <input id="tlSplits" type="number" min="0" max="20" value="0">
+        <div class="knob-row">
+          <input id="tlSplits" type="range" min="0" max="20" step="1" value="0">
+          <output class="knob-value" for="tlSplits"></output>
+        </div>
       </div>
-      <div style="flex:1">
+      <div>
         <label for="tlSeconds">оборвать через, с<i class="hint-icon" data-tip="Сколько секунд работать, потом остановиться самому. 0 — без срока. Полезно, когда квота считается по суткам.">?</i></label>
         <input id="tlSeconds" type="number" min="0" max="86400" value="0">
       </div>
@@ -4180,36 +4240,45 @@
 
     <!-- Ручки одного только глоссария. Слияние — его слова и его же
          подписи: «Дополнение», «Обновление», «Накопление». -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
+    <div class="knobs" style="margin-top:12px">
+      <div>
         <label>глоссарий сливать<i class="hint-icon" data-tip="Дополнить — не трогать уже собранное. Обновить — перезаписать расхождения новым. Копить — держать все варианты рядом.">?</i></label>
         <div class="dropdown" id="tlMerge" data-options='[["","как настроено"],["supplement","дополнить"],["update","обновить"],["accumulate","копить варианты"]]'></div>
       </div>
-      <div style="flex:1">
+      <div class="knob">
         <label for="tlBatch">глав в пачке<i class="hint-icon" data-tip="Сколько глав уходит модели одной задачей при сборе глоссария. 0 — как настроено (у него по умолчанию одна).">?</i></label>
-        <input id="tlBatch" type="number" min="0" max="50" value="0">
+        <div class="knob-row">
+          <input id="tlBatch" type="range" min="0" max="50" step="1" value="0">
+          <output class="knob-value" for="tlBatch"></output>
+        </div>
       </div>
-      <div style="flex:1">
+      <div class="knob">
         <label for="tlNewTerms">новых слов за пачку<i class="hint-icon" data-tip="Предел новых терминов из одной пачки глав. 0 — без предела. Помогает, когда модель тащит в глоссарий всё подряд.">?</i></label>
-        <input id="tlNewTerms" type="number" min="0" max="500" value="0">
+        <div class="knob-row">
+          <input id="tlNewTerms" type="range" min="0" max="500" step="10" value="0">
+          <output class="knob-value" for="tlNewTerms"></output>
+        </div>
       </div>
     </div>
 
     <!-- Ручки одной только сверки. Что делать с находками — тремя
          ступенями, а не двумя галками: «переписать» без «чинить» у
          переводчика не делает ровно ничего, и притом молча. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
+    <div class="knobs" style="margin-top:12px">
+      <div>
         <label>как сверять<i class="hint-icon" data-tip="Быстрая ловит опечатки, метакомментарии модели и путаницу в роде. Глубокая — ещё и расхождения в именах, логике и сюжете; она дороже по квоте.">?</i></label>
         <div class="dropdown" id="tlWay" data-options='[["","как настроено"],["fast_proofread_3_1","быстрая вычитка"],["deep_consistency","глубокая сверка"]]'></div>
       </div>
-      <div style="flex:1">
+      <div>
         <label>с находками<i class="hint-icon" data-tip="«Внести правки» переписывает готовые главы — это единственное необратимое действие здесь.">?</i></label>
         <div class="dropdown" id="tlDeed" data-options='[["look","только показать"],["offer","предложить правки"],["apply","внести правки в файлы"]]'></div>
       </div>
-      <div style="flex:1">
+      <div class="knob">
         <label for="tlChunk">глав в запросе<i class="hint-icon" data-tip="Сколько глав уходит модели одним куском. 0 — как настроено у переводчика. Больше — дешевле по квоте, но хуже видно детали.">?</i></label>
-        <input id="tlChunk" type="number" min="0" max="50" value="0">
+        <div class="knob-row">
+          <input id="tlChunk" type="range" min="0" max="50" step="1" value="0">
+          <output class="knob-value" for="tlChunk"></output>
+        </div>
       </div>
     </div>
 

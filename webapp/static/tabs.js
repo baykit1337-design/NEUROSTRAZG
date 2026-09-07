@@ -5245,6 +5245,28 @@ $('tlCheck').onclick = tlCheck;
 $('tlPath').onchange = tlSave;
 tlLoad();
 
+/* ------------------------------------------------- ползунки настроек
+ *
+ * Число с потолком читается ползунком лучше, чем полем: видно, сколько
+ * взято из возможного. Но само число всё равно нужно — платят по квоте
+ * за точное, а не за «примерно столько».
+ *
+ * Ноль у всех этих ручек значит «как настроено у переводчика», и так и
+ * написано: «0» на экране читалось бы как «ни одного потока».
+ */
+function knobSay(box){
+  const said = box.parentElement.querySelector('.knob-value');
+  if(!said) return;
+  const value = Number(box.value) || 0;
+  said.textContent = value ? String(value) : 'как настроено';
+  said.classList.toggle('own', !!value);
+}
+
+for(const box of document.querySelectorAll('.knob-row input[type=range]')){
+  box.addEventListener('input', () => knobSay(box));
+  knobSay(box);
+}
+
 /* ------------------------------------------- книга из библиотеки
  *
  * Перевод начинается там, где кончается качалка: книга уже скачана, и

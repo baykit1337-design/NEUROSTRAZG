@@ -145,10 +145,21 @@ class TestWhatTheyDo(ScriptsBase):
     def test_the_browser_is_not_opened_twice(self):
         """Программа открывает его сама, через секунду после старта —
         когда сервер уже отвечает. Второе открытие дало бы лишнюю
-        вкладку с ошибкой соединения."""
+        вкладку с ошибкой соединения.
+
+        Запрет — про запуск. Когда программа уже работает, запускать
+        нечего и открывать браузер некому: там это единственный способ
+        показать окно, ради которого человек и нажал.
+        """
         self.assertNotIn("start \"\" http", self.bat)
         self.assertNotIn("open http", self.command)
-        self.assertNotIn("webbrowser", self.start)
+
+        serve = self.start[self.start.index("def serve("):]
+        self.assertNotIn("webbrowser", serve[:serve.index("\ndef ")])
+
+    def test_the_browser_is_opened_when_there_is_nothing_to_start(self):
+        already = self.start[self.start.index("def already("):]
+        self.assertIn("webbrowser", already[:already.index("\ndef ")])
 
 
 class TestReadme(unittest.TestCase):

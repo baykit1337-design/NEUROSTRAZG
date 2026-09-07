@@ -39,11 +39,13 @@
    Прогон, в котором ничего не прибавилось, и строка «на диске» с бедой
    остаются как есть по той же причине: у них свой цвет и свой смысл —
    «книга встала», «папки нет». Разгорись они наравне с остальным,
-   разница пропала бы ровно тогда, когда на неё смотрят. */
+   разница пропала бы ровно тогда, когда на неё смотрят. Своё число у
+   ползунка — тот же случай: оно и написано ярче общего, потому что
+   перебивает настройку переводчика. */
 .fx-static-cards .card :is(
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
   .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip,
-  .lb-run, .lb-shelf,
+  .lb-run, .lb-shelf, .knob-value,
   .q-where, .q-path, .gl-was, .glname
 ),
 .fx-static-cards .card > label{
@@ -55,6 +57,7 @@
   .hist-where:not(.hist-new):not(.hist-lost), .hist-path,
   .lb-was, .lb-where:not(.lb-new), .lb-path,
   .lb-run:not(.idle), .lb-shelf:not(.warn):not(.bad),
+  .knob-value:not(.own),
   .lbchip:not(.on):not(.auto):not(:hover),
   .q-where, .q-path,
   .gl-was, .glname:not(.on):not(:hover)

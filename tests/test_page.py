@@ -3471,3 +3471,138 @@ class TestTheBookComesFromTheLibrary(PageTestCase):
                }""")
         self.assertEqual(said, ["к1"])
         self.quiet()
+
+
+class TestTheTranslateCardIsReadable(PageTestCase):
+    """Ряд из четырёх полей в карточке шириной в шестьсот пикселей
+    сжимал каждое до полутора сантиметров, а подписи вроде «взять не
+    больше» ломались на две строки — и ряды переставали быть рядами."""
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="translate"]')
+        self.page.wait_for_timeout(200)
+
+    def look(self, wide=1280):
+        self.page.set_viewport_size({"width": wide, "height": 900})
+        return self.page.evaluate(
+            """() => {
+                 const card = document.getElementById('tlWorkCard')
+                                      .getBoundingClientRect();
+                 const out = {outside: [], tall: [], narrow: []};
+                 for(const el of document.querySelectorAll(
+                        '#tlWorkCard input, #tlWorkCard .dropdown')){
+                   const box = el.getBoundingClientRect();
+                   if(!box.width) continue;
+                   if(box.right > card.right + 1 || box.left < card.left - 1){
+                     out.outside.push(el.id || 'без имени');
+                   }
+                   // Галочки узкие по своей природе — они и должны
+                   // быть маленькими; речь о полях, куда что-то вводят.
+                   if(el.type !== 'checkbox' && box.width < 80){
+                     out.narrow.push(el.id || 'без имени');
+                   }
+                 }
+                 for(const el of document.querySelectorAll('#tlWorkCard label')){
+                   // Подпись в две строки — верный знак, что поле сжали.
+                   if(el.getBoundingClientRect().height > 26){
+                     out.tall.push(el.textContent.trim().slice(0, 24));
+                   }
+                 }
+                 return out;
+               }""")
+
+    def test_nothing_hangs_out_of_the_card(self):
+        self.assertEqual(self.look()["outside"], [])
+        self.quiet()
+
+    def test_no_label_breaks_in_two(self):
+        self.assertEqual(self.look()["tall"], [])
+        self.quiet()
+
+    def test_a_narrow_window_wraps_instead_of_squeezing(self):
+        """Там, где четыре поля не влезают, встают два и два."""
+        said = self.look(wide=900)
+        self.assertEqual(said["narrow"], [])
+        self.assertEqual(said["outside"], [])
+        self.quiet()
+
+
+class TestTheKnobsSayTheirValue(PageTestCase):
+    """Число с потолком читается ползунком лучше, чем полем: видно,
+    сколько взято из возможного. Но само число нужно — платят по квоте
+    за точное, а не за «примерно столько»."""
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="translate"]')
+        self.page.wait_for_timeout(200)
+
+    def said(self, ident):
+        return self.page.evaluate(
+            """(ident) => {
+                 const box = document.getElementById(ident);
+                 const said = box.parentElement.querySelector('.knob-value');
+                 return {text: said.textContent,
+                         own: said.classList.contains('own'),
+                         value: box.value};
+               }""", ident)
+
+    def move(self, ident, value):
+        self.page.evaluate(
+            """([ident, value]) => {
+                 const box = document.getElementById(ident);
+                 box.value = value;
+                 box.dispatchEvent(new Event('input'));
+               }""", [ident, value])
+
+    def test_zero_says_what_zero_means(self):
+        """«0» на экране читалось бы как «ни одного потока»."""
+        self.assertEqual(self.said("tlWorkers")["text"], "как настроено")
+        self.quiet()
+
+    def test_a_moved_knob_shows_its_number(self):
+        self.move("tlWorkers", 8)
+        self.assertEqual(self.said("tlWorkers")["text"], "8")
+        self.quiet()
+
+    def test_a_number_of_ones_own_is_seen_to_be_ones_own(self):
+        """По цвету видно, что настройку переводчика здесь перебили."""
+        self.move("tlRpm", 60)
+        self.assertTrue(self.said("tlRpm")["own"])
+        self.quiet()
+
+    def test_back_to_zero_says_it_again(self):
+        self.move("tlBatch", 10)
+        self.move("tlBatch", 0)
+        said = self.said("tlBatch")
+        self.assertEqual(said["text"], "как настроено")
+        self.assertFalse(said["own"])
+        self.quiet()
+
+    def test_the_value_still_reaches_the_request(self):
+        """Ползунок сменил вид поля, а не его смысл: работа читает
+        `value` тем же кодом, что и раньше."""
+        self.move("tlWorkers", 12)
+        self.assertEqual(self.said("tlWorkers")["value"], "12")
+        self.quiet()
+
+    def test_every_knob_has_its_readout(self):
+        got = self.page.evaluate(
+            """() => [...document.querySelectorAll('#tlWorkCard .knob')]
+                     .filter(one => !one.querySelector('.knob-value')).length""")
+        self.assertEqual(got, 0)
+        self.quiet()
+
+    def test_the_slider_does_not_jump_while_being_dragged(self):
+        """«как настроено» шире, чем «8», и без своей ширины подпись
+        двигала бы ползунок прямо под пальцем."""
+        wide = self.page.evaluate(
+            """() => document.getElementById('tlWorkers')
+                            .getBoundingClientRect().width""")
+        self.move("tlWorkers", 8)
+        after = self.page.evaluate(
+            """() => document.getElementById('tlWorkers')
+                            .getBoundingClientRect().width""")
+        self.assertEqual(round(wide), round(after))
+        self.quiet()

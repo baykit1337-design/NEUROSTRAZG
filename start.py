@@ -35,8 +35,36 @@ def say(text: str = "") -> None:
     print(f"  {text}" if text else "")
 
 
+#: Без чего программа не поднимется вовсе. Остальное в
+#: `requirements.txt` помечено «необязательно»: без морфологии не будет
+#: проверки орфографии, но качать книги это не мешает.
+#:
+#: Имена — те, которыми пакеты **ввозятся**, а не те, под которыми они
+#: лежат в pip: `beautifulsoup4` ввозится как `bs4`.
+MUST = ("curl_cffi", "bs4", "lxml", "flask", "docx")
+
+#: Сколько ждать установку. Без границы `pip` без сети висит минутами,
+#: перебирая зеркала, и со стороны это выглядит как «программа не
+#: запускается»: окно открылось и молчит.
+DEPS_WAIT = 300
+
+
+def _here(name: str) -> bool:
+    """Есть ли пакет. Ввоз, а не `pip show`: спрашиваем то же, что и код."""
+    from importlib.util import find_spec
+
+    try:
+        return find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def deps() -> None:
-    """Доставляет зависимости.
+    """Доставляет зависимости, если их и правда нет.
+
+    Раньше `pip` звался при каждом запуске. На готовой машине это лишние
+    секунды, а без сети — минуты: `pip` перебирает зеркала, окно молчит,
+    и человек видит «программа не запускается».
 
     Молча: два десятка строк «уже установлено» при каждом запуске прячут
     единственную строку, которую стоило прочесть. Неудача установки — не
@@ -46,14 +74,53 @@ def deps() -> None:
     need = ROOT / "requirements.txt"
     if not need.is_file():
         return
+    if all(_here(one) for one in MUST):
+        return
 
-    say("Проверяю зависимости...")
-    done = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", str(need),
-         "--quiet", "--disable-pip-version-check"],
-        cwd=ROOT, check=False)
+    say("Первый запуск: доставляю зависимости, это займёт минуту...")
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(need),
+             "--quiet", "--disable-pip-version-check"],
+            cwd=ROOT, check=False, timeout=DEPS_WAIT)
+    except subprocess.TimeoutExpired:
+        say("Установка идёт слишком долго — похоже, нет сети. "
+            "Пробую запустить как есть.")
+        return
     if done.returncode:
         say("Зависимости доставить не вышло — пробую запустить как есть.")
+        # Права на папку Python — самая частая причина: когда он стоит в
+        # Program Files, ставить туда пакеты обычному пользователю
+        # нельзя. Это и есть та разница, из-за которой «от имени
+        # администратора работает, а так нет».
+        say("Если это повторяется: pip не может писать в папку Python. "
+            f"Поставьте зависимости один раз командой "
+            f"«{Path(sys.executable).name} -m pip install --user -r "
+            f"requirements.txt».")
+
+
+def writable() -> bool:
+    """Может ли программа писать рядом с собой.
+
+    Она держит здесь настройки, список прокси, журнал, библиотеку и
+    очередь. Папка только для чтения — и всё это молча не работает, а
+    запуск от имени администратора «чинит» ровно это. Чинить так не
+    надо: место программы — там, куда человек пишет и без прав.
+    """
+    probe = ROOT / ".проба-записи"
+    try:
+        probe.write_text("проба", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError as exc:
+        say("Папке программы нужна запись, а её нет:")
+        say(f"  {ROOT}")
+        say(f"  ({exc})")
+        say("Перенесите папку туда, куда пишете обычно — в «Документы» "
+            "или «Загрузки». Запуск от имени администратора это тоже "
+            "обходит, но так делать не надо: программа будет писать файлы,"
+            " до которых вы потом не дотянетесь.")
+        return False
 
 
 def proxies() -> None:
@@ -108,7 +175,45 @@ def network() -> None:
         say(f"  Сеть: разобраться не вышло ({trouble})")
 
 
+#: Где программа слушает. То же, что по умолчанию у `webapp/app.py`:
+#: спрашиваем ровно тот адрес, который она потом займёт.
+HOST, PORT = "127.0.0.1", 8765
+
+
+def already() -> bool:
+    """Не запущена ли программа уже.
+
+    Тот же порт занять нельзя, и вторая попытка падает с чужой на вид
+    ошибкой про адрес. А случается это чаще, чем кажется: окно браузера
+    закрыли, программа осталась работать, и человек запускает её снова.
+    """
+    import socket
+
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        try:
+            probe.connect((HOST, PORT))
+        except OSError:
+            return False
+
+    url = f"http://{HOST}:{PORT}"
+    say(f"NEUROSTRAZH уже работает — открываю {url}")
+    say("Второй раз запускать не надо: окно браузера можно закрывать, "
+        "программа от этого не останавливается.")
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception as trouble:  # noqa: BLE001 — браузер не повод падать
+        say(f"Браузер сам не открылся ({trouble}) — откройте {url} руками.")
+    return True
+
+
 def main() -> int:
+    if already():
+        return 0
+    if not writable():
+        return 1
     deps()
     proxies()
     network()
