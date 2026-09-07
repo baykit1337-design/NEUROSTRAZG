@@ -3963,21 +3963,7 @@ async function fmCutRun(){
       line.append(name, count);
       table.append(line);
     }
-    // Книги, которые не поддались, показываем тут же: молча пропустить
-    // половину выбранного — худшее, что тут можно сделать.
-    for(const bad of got.failed || []){
-      const line = document.createElement('div');
-      line.className = 'tr';
-      const name = document.createElement('span');
-      name.className = 'grow';
-      name.textContent = bad.file;
-      const why = document.createElement('span');
-      why.className = 'hint';
-      why.style.flex = '2';
-      why.textContent = bad.error;
-      line.append(name, why);
-      table.append(line);
-    }
+    fmCutFailed(got.failed);
     table.hidden = !table.children.length;
 
     const bits = [`Книг: ${ru((got.files || []).length)}`,
@@ -3988,9 +3974,36 @@ async function fmCutRun(){
     $('fmCutNote').textContent = bits.join(', ') + '.';
   }catch(err){
     $('fmCutNote').textContent = '';
+    // Причины приезжают и с отказом. Раньше они пропадали вместе с ним,
+    // и на экране оставалось «Ни одну книгу поделить не вышло» — правда,
+    // по которой чинить нечего.
+    $('fmCutTable').innerHTML = '';
+    fmCutFailed(err.failed);
+    $('fmCutTable').hidden = !$('fmCutTable').children.length;
     showError(err.message, $('fmCutNote'));
   }finally{
     button.disabled = false;
+  }
+}
+
+/** Книги, которые не поддались, — строками в ту же таблицу.
+ *
+ * Молча пропустить половину выбранного — худшее, что тут можно сделать.
+ */
+function fmCutFailed(failed){
+  const table = $('fmCutTable');
+  for(const bad of failed || []){
+    const line = document.createElement('div');
+    line.className = 'tr';
+    const name = document.createElement('span');
+    name.className = 'grow';
+    name.textContent = bad.file;
+    const why = document.createElement('span');
+    why.className = 'hint';
+    why.style.flex = '2';
+    why.textContent = bad.error;
+    line.append(name, why);
+    table.append(line);
   }
 }
 

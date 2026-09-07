@@ -16,6 +16,12 @@
   быть заполнена хотя бы пробелом: иначе полей окажется меньше, и сайт
   прочитает том как платность.
 
+Книга приходит сюда и в обычном виде — с заголовками «# Глава 5», без
+скобок и полей: так её пишет наш же конвертер и так она выходит из
+переводчика. Работы, которым поля загрузчика не нужны — поделить главы
+на части, осмотреть нумерацию, убрать мусор, — умеют обе: читает такую
+книгу `read_any`, а вид заголовков сохраняется тот, что был.
+
 Главная забота модуля — **не трогать ничего, кроме названия**. Когда
 переписываются заголовки уже готовой книги, остаток строки сохраняется
 дословно, вместе с пробелами: у сайта эти поля значат цену и том, и
@@ -38,6 +44,19 @@ MARK = ":|:"
 #: отступом в начале строки, то с пробелом в конце, — а нам эту строку
 #: собирать обратно символ в символ.
 HEAD_RE = re.compile(r"^(\s*#\s*\[)(.*)(\]\s*)$")
+
+#: Обычный заголовок markdown: «# Глава 5», «## Глава 5 — Название».
+#:
+#: Так пишет книгу наш же конвертер и так приходит книга из переводчика:
+#: скобок и полей загрузчика в ней нет вовсе. Поделить главы в такой
+#: книге просят ровно так же, как в книге для загрузчика, — а раньше на
+#: это отвечали «нет заголовков вида «# [Название :|: …]»», и человек
+#: оставался ни с чем.
+#:
+#: Пробел после решёток обязателен: «#хэштег» — не заголовок. Строка
+#: разбирается на те же три куска, что и заголовок загрузчика, и потому
+#: собирается обратно символ в символ — вместе с числом решёток.
+PLAIN_RE = re.compile(r"^(\s*#{1,6}\s+)(.*?)(\s*)$")
 
 #: Платность: как её понимает сайт.
 FREE, PAID = "0", "1"
@@ -74,6 +93,11 @@ class Head:
     #: это — начало заголовка, написанного с нуля.
     opening: str = " # ["
     closing: str = "]"
+    #: Заголовок без скобок и полей — обычный «# Глава 5». Полей у него
+    #: нет вовсе, и новые части такой главы должны выйти такими же:
+    #: собери мы им заголовок загрузчика, книга поехала бы наполовину в
+    #: одном виде, наполовину в другом.
+    plain: bool = False
 
     @property
     def fields(self) -> list[str]:
@@ -104,7 +128,8 @@ class Head:
     def with_title(self, title: str) -> Head:
         """Тот же заголовок с другим названием. Остальное — как было."""
         return Head(title=title, gap=self.gap, tail=self.tail,
-                    opening=self.opening, closing=self.closing)
+                    opening=self.opening, closing=self.closing,
+                    plain=self.plain)
 
     def as_dict(self) -> dict:
         return {"title": self.title, "order": self.order, "paid": self.paid,
@@ -125,6 +150,26 @@ def parse_head(line: str) -> Head | None:
                 gap=left[len(left.rstrip()):],
                 tail=inside[at:],
                 opening=opening, closing=closing)
+
+
+def parse_plain_head(line: str) -> Head | None:
+    """Обычный заголовок markdown из строки. `None` — строка обычная.
+
+    Полей загрузчика у такого заголовка нет, поэтому весь остаток строки
+    — это название. Решётки и пробелы вокруг них сохраняются дословно: у
+    книги свой уровень заголовка, и менять его мы не подряжались.
+    """
+    found = PLAIN_RE.match(line or "")
+    if not found:
+        return None
+    opening, title, closing = found.groups()
+    # Пустой заголовок заголовком не считаем: голая решётка в тексте —
+    # это разделитель, а не начало главы, и книга развалилась бы по нему
+    # на куски без названий.
+    if not title.strip():
+        return None
+    return Head(title=title.strip(), opening=opening, closing=closing,
+                plain=True)
 
 
 def _slot(value: str) -> str:
@@ -155,19 +200,15 @@ def make_head(title: str, order: str = "", paid: str = "",
                      f" {MARK}{_slot(volume) or ' '}")
 
 
-def read_book(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:
-    """Преамбула и главы книги.
-
-    Преамбулу сайт выбрасывает, а мы её храним: человек мог написать там
-    что-то для себя, и терять это при перезаписи заголовков незачем.
-    """
+def _read(text: str, parse) -> tuple[str, list[tuple[Head, list[str]]]]:
+    """Преамбула и главы книги. `parse` решает, что считать заголовком."""
     lead: list[str] = []
     chapters: list[tuple[Head, list[str]]] = []
     head: Head | None = None
     body: list[str] = []
 
     for line in (text or "").splitlines():
-        found = parse_head(line)
+        found = parse(line)
         if found is not None:
             if head is not None:
                 chapters.append((head, body))
@@ -180,6 +221,68 @@ def read_book(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:
     if head is not None:
         chapters.append((head, body))
     return "\n".join(lead), chapters
+
+
+def read_book(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:
+    """Преамбула и главы книги для загрузчика.
+
+    Преамбулу сайт выбрасывает, а мы её храним: человек мог написать там
+    что-то для себя, и терять это при перезаписи заголовков незачем.
+    """
+    return _read(text, parse_head)
+
+
+def _chapter_level(lines) -> int:
+    """Каким уровнем заголовка размечены главы. Ноль — заголовков нет.
+
+    Книга часто начинается своим названием — «# Название», — а главы под
+    ним идут вторым уровнем. Считай мы главой всякую решётку, название
+    книги стало бы первой главой, а при делении на части — двумя
+    половинами названия.
+
+    Уровень выбираем по большинству: глав в книге много, а названий у
+    неё одно. Поровну — берём внешний: заголовок пониже уровнем скорее
+    подпись внутри главы, чем сама глава.
+    """
+    tally: dict[int, int] = {}
+    for line in lines:
+        head = parse_plain_head(line)
+        if head is not None:
+            level = head.opening.count("#")
+            tally[level] = tally.get(level, 0) + 1
+    if not tally:
+        return 0
+    return max(tally, key=lambda level: (tally[level], -level))
+
+
+def read_plain(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:
+    """То же, но для книги с обычными заголовками markdown."""
+    lines = (text or "").splitlines()
+    level = _chapter_level(lines)
+
+    def chapter(line: str) -> Head | None:
+        head = parse_plain_head(line)
+        if head is None or head.opening.count("#") != level:
+            return None
+        return head
+
+    return _read(text, chapter)
+
+
+def read_any(text: str) -> tuple[str, list[tuple[Head, list[str]]]]:
+    """Книга в любом из двух видов: для загрузчика или обычная.
+
+    Сначала ищем заголовки загрузчика: они строже, и в книге для сайта
+    других быть не должно. Не нашлось ни одного — книга обычная, и её
+    заголовки читаются по решёткам.
+
+    Порядок важен. Заголовок загрузчика — тоже строка с решёткой, и
+    начни мы с решёток, «# [Глава 5 :|: 12 :|: 1 :|: ]» стала бы главой
+    с названием «[Глава 5 :|: 12 :|: 1 :|: ]», а порядок, платность и том
+    — частью имени.
+    """
+    lead, chapters = read_book(text)
+    return (lead, chapters) if chapters else read_plain(text)
 
 
 def write_book(chapters, lead: str = "") -> str:
@@ -535,6 +638,21 @@ def to_standard(chapters) -> list[tuple[Head, list[str]]]:
     return out
 
 
+def _next_part(head: Head, title: str) -> Head:
+    """Заголовок части, кроме первой.
+
+    Порядок не пишем: сайт нумерует подряд от последнего заданного, и
+    поставь мы всем частям один номер — они встали бы одна на другую.
+
+    У обычной книги полей загрузчика нет вовсе, и заголовок ей нужен
+    такой же обычный: собери мы `# [Глава 5.2 :|: :|: :|: ]`, первая
+    часть осталась бы «# Глава 5.1», а вторая уехала бы в другом виде.
+    """
+    if head.plain:
+        return head.with_title(title)
+    return make_head(title, "", head.paid, head.volume)
+
+
 def cut_into_parts(head: Head, body: list[str], count: int,
                    style: TitleStyle | None = None,
                    number=None, name: str = "") -> list[tuple[Head, list[str]]]:
@@ -560,10 +678,8 @@ def cut_into_parts(head: Head, body: list[str], count: int,
     for index, piece in enumerate(pieces, 1):
         title = style.build(number, name, part=index) if number is not None \
             else f"{head.title} — часть {index}"
-        # Порядок пишем только первой части: остальным сайт назначит свои
-        # номера подряд, и они не столкнутся с уже занятыми.
         spare = head.with_title(title) if index == 1 else \
-            make_head(title, "", head.paid, head.volume)
+            _next_part(head, title)
         out.append((spare, lines_of(piece)))
     return out
 
@@ -648,9 +764,11 @@ def from_chapters(chapters, style: TitleStyle | None = None,
 
 __all__ = ["DEFAULT_SEPARATOR", "DROP", "FREE", "HEAD_RE", "Head", "KEEP",
            "MARK", "PAID",
-           "PAYMENT", "SEPARATORS", "TitleStyle", "cut_all", "cut_into_parts",
+           "PAYMENT", "PLAIN_RE", "SEPARATORS", "TitleStyle", "cut_all",
+           "cut_into_parts",
            "from_chapters", "inspect", "lines_of", "looks_translated",
            "make_head", "number_parts",
-           "paragraphs_of", "parse_head", "read_book", "split_title",
+           "paragraphs_of", "parse_head", "parse_plain_head", "read_any",
+           "read_book", "read_plain", "split_title",
            "to_standard",
            "write_book"]

@@ -3260,11 +3260,16 @@ def _read_md(payload: dict) -> tuple[Path, str, list]:
     path = Path(targets[0]).expanduser()
     if not path.is_file():
         raise ValueError(f"Файл не найден: {path}")
-    lead, chapters = mdbook.read_book(
+    # Оба вида: и книга для загрузчика, и обычная — с заголовками
+    # «# Глава 5». Такую приносит переводчик, и осмотреть её, посчитать
+    # объём глав или убрать из неё мусор нужно ровно так же. Вид
+    # заголовков при записи сохраняется тот, что был.
+    lead, chapters = mdbook.read_any(
         path.read_text(encoding="utf-8", errors="replace"))
     if not chapters:
-        raise ValueError("В файле нет заголовков вида «# [Название :|: …]» — "
-                         "похоже, это не книга для загрузчика.")
+        raise ValueError("В файле не нашлось заголовков глав — ни "
+                         "«# [Название :|: …]», ни «# Глава 5». "
+                         "Похоже, это не книга.")
     return path, lead, chapters
 
 
@@ -3447,6 +3452,23 @@ def _md_files(payload: dict) -> list[Path]:
     return found
 
 
+def _halve_why(failed: list) -> str:
+    """Почему не поделилась ни одна книга.
+
+    «Ни одну книгу поделить не вышло» — правда, но не ответ: по ней
+    чинить нечего, и человек видит на экране отказ без причины. Причина
+    у каждой книги своя и лежит рядом, в `failed`; первая из них говорит
+    больше, чем общий итог.
+    """
+    if not failed:
+        return "Ни одну книгу поделить не вышло"
+    first = failed[0]
+    said = f"«{first['file']}» — {first['error']}"
+    if len(failed) > 1:
+        said += f"; и ещё книг: {len(failed) - 1}"
+    return f"Поделить не вышло: {said}"
+
+
 @app.post("/api/format/halve")
 def api_format_halve():
     """Поделить главы внутри книг на части. Больше ничего не трогаем.
@@ -3471,7 +3493,16 @@ def api_format_halve():
                 "кладутся в другую папку.")
         folder = Path(base).expanduser()
         if not folder.is_dir():
-            raise ValueError(f"Папка не найдена: {folder}")
+            # Папку заводим сами: имя ей подставляет интерфейс — «рядом с
+            # книгой, папка „поделено“», — и требовать, чтобы человек
+            # создал её руками, значит отказать ему в том, что сами же и
+            # предложили.
+            #
+            # Но только последнее имя. Нет и родителя — путь набран не
+            # туда, и целую ветку папок мы наплодим зря.
+            if not folder.parent.is_dir():
+                raise ValueError(f"Папка не найдена: {folder}")
+            folder.mkdir()
     except (ValueError, OSError) as exc:
         return jsonify(error=str(exc)), 400
 
@@ -3487,10 +3518,16 @@ def api_format_halve():
                            "error": "исходник и вывод — один файл"})
             continue
         try:
-            lead, book = mdbook.read_book(
+            # Читаем оба вида: и книгу для загрузчика, и обычную, с
+            # заголовками «# Глава 5». Поля загрузчика тут не нужны — мы
+            # двигаем только границы глав, — а книга из переводчика
+            # приходит именно обычной, и отказывать ей было не за что.
+            lead, book = mdbook.read_any(
                 path.read_text(encoding="utf-8", errors="replace"))
             if not book:
-                raise ValueError("нет заголовков вида «# [Название :|: …]»")
+                raise ValueError(
+                    "не нашлось заголовков глав — ни «# [Название :|: …]», "
+                    "ни «# Глава 5»")
             cut = mdbook.cut_all(book, parts, style)
             output.write_text(mdbook.write_book(cut, lead), encoding="utf-8")
         except (ValueError, OSError) as exc:
@@ -3503,8 +3540,7 @@ def api_format_halve():
                      "output": str(output)})
 
     if not rows:
-        return jsonify(error="Ни одну книгу поделить не вышло",
-                       failed=failed), 400
+        return jsonify(error=_halve_why(failed), failed=failed), 400
     return jsonify(files=rows, failed=failed, chapters=chapters,
                    made=made, parts=parts, output=str(folder))
 

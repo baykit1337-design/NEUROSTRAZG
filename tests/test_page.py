@@ -2351,3 +2351,57 @@ class TestWhereTheHalvedBooksGo(PageTestCase):
 
     def test_nothing_chosen_fills_nothing(self):
         self.assertEqual(self.fill([]), "")
+
+
+class TestWhyTheHalvingFailed(PageTestCase):
+    """Отказ без причины читается как «не работает».
+
+    Сервер называет причину по каждой книге, но когда не поделилась ни
+    одна, ответ приезжает отказом — и весь этот список пропадал вместе с
+    ним. На экране оставалось «Ни одну книгу поделить не вышло»: правда,
+    по которой чинить нечего.
+    """
+
+    def refuse(self, failed, message="Поделить не вышло"):
+        """Прогоняем деление, где сервер отвечает отказом с причинами."""
+        return self.page.evaluate(
+            """async ([failed, message]) => {
+                 window.call = async () => {
+                   const err = new Error(message);
+                   err.failed = failed;
+                   throw err;
+                 };
+                 await fmCutRun();
+                 const table = document.getElementById('fmCutTable');
+                 return {shown: !table.hidden, text: table.innerText,
+                         note: document.getElementById('fmCutNote').innerText};
+               }""", [failed, message])
+
+    def test_the_reason_is_on_the_screen(self):
+        said = self.refuse([{"file": "книга.md", "error": "нет заголовков"}])
+        self.assertTrue(said["shown"])
+        self.assertIn("книга.md", said["text"])
+        self.assertIn("нет заголовков", said["text"])
+        self.quiet()
+
+    def test_every_book_is_named(self):
+        said = self.refuse([{"file": "одна.md", "error": "нет заголовков"},
+                            {"file": "вторая.md", "error": "не читается"}])
+        self.assertIn("одна.md", said["text"])
+        self.assertIn("вторая.md", said["text"])
+        self.quiet()
+
+    def test_an_old_answer_is_not_left_on_the_screen(self):
+        """Строки прошлого прогона рядом с новым отказом — вранье."""
+        self.page.evaluate(
+            """() => { const table = document.getElementById('fmCutTable');
+                       table.innerHTML = '<div class="tr">старое</div>';
+                       table.hidden = false; }""")
+        said = self.refuse([{"file": "книга.md", "error": "нет заголовков"}])
+        self.assertNotIn("старое", said["text"])
+        self.quiet()
+
+    def test_a_refusal_without_details_shows_no_empty_table(self):
+        said = self.refuse([])
+        self.assertFalse(said["shown"])
+        self.quiet()

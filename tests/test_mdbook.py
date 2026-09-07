@@ -1545,12 +1545,29 @@ class TestCuttingOverHttp(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn("Выберите", res.get_json()["error"])
 
-    def test_a_missing_output_folder_is_a_refusal(self):
-        book = self.write("книга.md")
-        res = self.cut(targets=[str(book)], base=str(self.tmp / "нет-такой"))
+    def test_the_output_folder_is_made_when_it_is_only_a_new_name(self):
+        """Имя папки подставляет интерфейс — заводить её должны мы.
 
+        Поле «куда сохранить» заполняется само: «рядом с книгой, папка
+        „поделено“». Требовать после этого, чтобы человек создал её
+        руками, значит отказать ему в том, что сами же и предложили.
+        """
+        book = self.write("книга.md")
+        fresh = self.tmp / "поделено"
+
+        got = self.cut(targets=[str(book)], base=str(fresh)).get_json()
+        self.assertTrue((fresh / "книга.md").is_file())
+        self.assertEqual(got["output"], str(fresh))
+
+    def test_a_path_into_nowhere_is_still_a_refusal(self):
+        """Нет и родителя — путь набран не туда, ветку папок не плодим."""
+        book = self.write("книга.md")
+        away = self.tmp / "нет" / "такой" / "папки"
+
+        res = self.cut(targets=[str(book)], base=str(away))
         self.assertEqual(res.status_code, 400)
         self.assertIn("Папка не найдена", res.get_json()["error"])
+        self.assertFalse((self.tmp / "нет").exists())
 
     def test_the_number_of_parts_reaches_the_work(self):
         book = self.write("книга.md", chapters=1)
@@ -1566,3 +1583,239 @@ class TestCuttingOverHttp(unittest.TestCase):
                                   parts=0).get_json()["parts"], 2)
         self.assertLessEqual(self.cut(targets=[str(book)],
                                       parts=999).get_json()["parts"], 10)
+
+
+class TestPlainHeadings(unittest.TestCase):
+    """Обычная книга markdown: «# Глава 5», без скобок и полей.
+
+    Так пишет книгу наш же конвертер и так она выходит из переводчика.
+    Поделить в ней главы просят ровно так же, как в книге для
+    загрузчика, — а в ответ приходило «нет заголовков вида
+    «# [Название :|: …]»», и человек оставался ни с чем.
+    """
+
+    def test_a_plain_heading_comes_apart(self):
+        head = mdbook.parse_plain_head("## Глава 5 — Название")
+        self.assertIsNotNone(head)
+        self.assertEqual(head.title, "Глава 5 — Название")
+        self.assertTrue(head.plain)
+
+    def test_the_line_is_put_back_together_letter_for_letter(self):
+        """Уровень заголовка и отступы — не наши, и менять их незачем."""
+        for line in ("# Глава 1", "### Глава 2 — Имя", "  ## Глава 3  "):
+            with self.subTest(line=line):
+                self.assertEqual(mdbook.parse_plain_head(line).line(), line)
+
+    def test_a_hashtag_is_not_a_heading(self):
+        """Пробел после решётки обязателен: «#хэштег» — обычный текст."""
+        self.assertIsNone(mdbook.parse_plain_head("#хэштег в тексте"))
+
+    def test_a_bare_hash_is_not_a_heading(self):
+        """Голая решётка — разделитель, и главы без названия из неё не выйдет."""
+        for line in ("#", "###", "##   "):
+            with self.subTest(line=line):
+                self.assertIsNone(mdbook.parse_plain_head(line))
+
+    def test_a_plain_line_is_not_a_heading(self):
+        self.assertIsNone(mdbook.parse_plain_head("Просто абзац."))
+
+    def test_a_loader_heading_is_read_as_a_loader_heading(self):
+        """Заголовок загрузчика — тоже строка с решёткой.
+
+        Начни разбор с решёток, и порядок с платностью уехали бы в
+        название главы, а книга потеряла бы цену.
+        """
+        lead, book = mdbook.read_any(
+            "# [Глава 5 :|: 12 :|: 1 :|: Том 2]\nтекст")
+        self.assertEqual(len(book), 1)
+        head = book[0][0]
+        self.assertEqual(head.title, "Глава 5")
+        self.assertEqual((head.order, head.paid, head.volume),
+                         ("12", "1", "Том 2"))
+        self.assertFalse(head.plain)
+
+    def test_a_plain_book_is_read_when_there_are_no_loader_headings(self):
+        lead, book = mdbook.read_any(
+            "# Глава 1\nраз\n# Глава 2\nдва")
+        self.assertEqual([head.title for head, _ in book],
+                         ["Глава 1", "Глава 2"])
+        self.assertEqual([body for _, body in book], [["раз"], ["два"]])
+
+    def test_the_book_title_stays_out_of_the_chapters(self):
+        """Название книги — заголовок первого уровня, главы под ним вторым.
+
+        Считай мы главой всякую решётку, название книги стало бы первой
+        главой, а при делении на части — двумя половинами названия.
+        """
+        lead, book = mdbook.read_any(
+            "# Название книги\n\n## Глава 1\nраз\n## Глава 2\nдва")
+        self.assertEqual([head.title for head, _ in book],
+                         ["Глава 1", "Глава 2"])
+        self.assertIn("Название книги", lead)
+
+    def test_the_level_is_taken_by_the_majority(self):
+        """Глав в книге много, а названий у неё одно."""
+        text = "\n".join(["## подпись", "# Глава 1", "раз",
+                          "# Глава 2", "два", "# Глава 3", "три"])
+        _, book = mdbook.read_any(text)
+        self.assertEqual([head.title for head, _ in book],
+                         ["Глава 1", "Глава 2", "Глава 3"])
+
+    def test_a_tie_goes_to_the_outer_level(self):
+        """Заголовок пониже уровнем скорее подпись внутри главы."""
+        _, book = mdbook.read_any("# Глава 1\nраз\n## Врезка\nдва")
+        self.assertEqual([head.title for head, _ in book], ["Глава 1"])
+
+    def test_a_book_without_headings_at_all_is_no_book(self):
+        _, book = mdbook.read_any("Просто текст.\nБез заголовков.")
+        self.assertEqual(book, [])
+
+    def test_read_book_still_knows_only_the_loader(self):
+        """Строгое чтение осталось строгим: на нём держатся остальные работы."""
+        _, book = mdbook.read_book("# Глава 1\nраз")
+        self.assertEqual(book, [])
+
+    def test_the_parts_of_a_plain_chapter_stay_plain(self):
+        """Иначе первая часть осталась бы «# Глава 5.1», а вторая уехала бы
+        заголовком загрузчика — книга наполовину в одном виде, наполовину
+        в другом."""
+        _, book = mdbook.read_any(
+            "## Глава 5 — Имя\nраз\nдва\nтри\nчетыре")
+        cut = mdbook.cut_all(book, 2)
+
+        self.assertEqual(len(cut), 2)
+        for head, _ in cut:
+            with self.subTest(title=head.title):
+                self.assertTrue(head.plain)
+                self.assertNotIn(mdbook.MARK, head.line())
+                self.assertTrue(head.line().startswith("## "))
+
+    def test_the_parts_of_a_loader_chapter_stay_loader(self):
+        """Проверка обратная: разбор обычных книг не переделал старое."""
+        _, book = mdbook.read_any(
+            "# [Глава 5 :|: 12 :|: 1 :|: Том 2]\nраз\nдва\nтри\nчетыре")
+        cut = mdbook.cut_all(book, 2)
+
+        self.assertEqual(len(cut), 2)
+        for head, _ in cut:
+            with self.subTest(title=head.title):
+                self.assertFalse(head.plain)
+                self.assertIn(mdbook.MARK, head.line())
+        # Платность и том у второй части те же, а порядок ей не пишем:
+        # сайт назначит свой, и части не встанут одна на другую.
+        self.assertEqual(cut[1][0].paid, "1")
+        self.assertEqual(cut[1][0].volume, "Том 2")
+        self.assertEqual(cut[1][0].order, "")
+
+    def test_a_plain_book_reads_back_after_the_cut(self):
+        """Проверка сквозная: записали поделённое — и прочли обратно."""
+        text = "# Глава 1 — Имя\nраз\nдва\nтри\nчетыре\n"
+        lead, book = mdbook.read_any(text)
+        cut = mdbook.cut_all(book, 2)
+
+        again_lead, again = mdbook.read_any(mdbook.write_book(cut, lead))
+        self.assertEqual([head.title for head, _ in again],
+                         ["Глава 1.1 — Имя", "Глава 1.2 — Имя"])
+
+    def test_the_style_reaches_the_plain_parts(self):
+        """Приставка и разделитель — те же, что и у остальной вкладки."""
+        _, book = mdbook.read_any("# Глава 7 — Имя\nраз\nдва\nтри\nчетыре")
+        cut = mdbook.cut_all(book, 2,
+                             mdbook.TitleStyle(prefix="Часть", separator=". "))
+        self.assertEqual(cut[0][0].title, "Часть 7.1. Имя")
+
+
+class TestCuttingPlainBooksOverHttp(unittest.TestCase):
+    """Тот же маршрут, но книга обычная — как её приносит переводчик."""
+
+    def setUp(self):
+        from tempfile import TemporaryDirectory
+
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.app = web.app.test_client()
+
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.tmp = Path(self._dir.name)
+        self.out = self.tmp / "готово"
+        self.out.mkdir()
+
+    def write(self, name: str, chapters: int = 2) -> Path:
+        lines = []
+        for number in range(1, chapters + 1):
+            lines.append(f"# Глава {number} — Название")
+            for at in range(6):
+                lines.append(f"Абзац {at + 1} главы {number}.")
+        path = self.tmp / name
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
+    def cut(self, **more):
+        body = {"base": str(self.out), "parts": 2}
+        body.update(more)
+        return self.app.post("/api/format/halve", json=body)
+
+    def test_a_translated_book_is_cut(self):
+        """То, на чём это и сломалось: книга из переводчика, .md, 400."""
+        book = self.write("ПРОСТО НУМЕРАЦИЯ - ПЕРЕВОД.md", chapters=3)
+        res = self.cut(targets=[str(book)])
+
+        self.assertEqual(res.status_code, 200)
+        got = res.get_json()
+        self.assertEqual(got["chapters"], 3)
+        self.assertEqual(got["made"], 6)
+
+    def test_the_written_book_keeps_its_own_look(self):
+        book = self.write("книга.md", chapters=1)
+        self.cut(targets=[str(book)])
+
+        made = (self.out / "книга.md").read_text(encoding="utf-8")
+        self.assertIn("# Глава 1.1 — Название", made)
+        self.assertIn("# Глава 1.2 — Название", made)
+        self.assertNotIn(mdbook.MARK, made)
+
+    def test_a_refusal_names_the_book_and_the_reason(self):
+        """«Ни одну книгу поделить не вышло» — правда, но чинить по ней нечего."""
+        bad = self.tmp / "чужая.md"
+        bad.write_text("Просто текст без заголовков.", encoding="utf-8")
+
+        res = self.cut(targets=[str(bad)])
+        self.assertEqual(res.status_code, 400)
+        got = res.get_json()
+        self.assertIn("чужая.md", got["error"])
+        self.assertIn("заголовк", got["error"])
+        self.assertEqual([one["file"] for one in got["failed"]], ["чужая.md"])
+
+    def test_a_refusal_says_how_many_more_there_were(self):
+        for name in ("одна.md", "вторая.md", "третья.md"):
+            (self.tmp / name).write_text("без заголовков", encoding="utf-8")
+        res = self.cut(targets=[str(self.tmp / "одна.md"),
+                                str(self.tmp / "вторая.md"),
+                                str(self.tmp / "третья.md")])
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("2", res.get_json()["error"])
+        self.assertEqual(len(res.get_json()["failed"]), 3)
+
+    def test_the_look_at_the_book_reads_a_plain_one_too(self):
+        """Осмотр, объём и мусор смотрят в тот же файл, что и деление."""
+        book = self.write("книга.md", chapters=2)
+        got = self.app.post("/api/format/book",
+                            json={"targets": [str(book)]}).get_json()
+        self.assertEqual(got["total"], 2)
+
+    def test_junk_is_looked_for_in_a_plain_book_too(self):
+        book = self.write("книга.md", chapters=2)
+        res = self.app.post("/api/format/junk",
+                            json={"targets": [str(book)]})
+        self.assertEqual(res.status_code, 200)
+
+    def test_a_file_that_is_no_book_at_all_is_still_refused(self):
+        other = self.tmp / "заметка.md"
+        other.write_text("Просто текст.\nБез заголовков.", encoding="utf-8")
+        res = self.app.post("/api/format/book",
+                            json={"targets": [str(other)]})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("заголовк", res.get_json()["error"])
