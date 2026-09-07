@@ -997,3 +997,152 @@ class TestKeySpark(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheQueueShowsItselfWithoutReading(Base):
+    """К-F: кто идёт, кто встал и кто уже кончил — видно, а не читается.
+
+    Тринадцать строк с подписями мелким шрифтом справа: чтобы найти ту
+    одну, где «Ошибка», их приходилось читать подряд.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.live = (CSS / "queue-live.css").read_text(encoding="utf-8")
+        cls.colour = (CSS / "queue-colour.css").read_text(encoding="utf-8")
+        cls.fold = (CSS / "queue-fold.css").read_text(encoding="utf-8")
+
+    def test_the_stage_reaches_the_row_itself(self):
+        """Из русской подписи правил не напишешь."""
+        self.assertIn("row.dataset.stage", self.html)
+
+    def test_only_the_one_downloading_breathes(self):
+        """«Ищем книгу» и «Ждём связь» — тоже «не кончила», а работы
+        за ними никакой, и пульс обещал бы движение, которого нет."""
+        self.assertIn("one.stage === 'download'", self.html)
+        self.assertIn(".pb.live", self.live)
+
+    def test_the_breathing_row_is_marked_without_motion_too(self):
+        """У кого в системе «уменьшить движение» — тоже должен видеть, кто идёт."""
+        outside = self.live.split("prefers-reduced-motion")[0] \
+            + self.live.split("@media")[-1]
+        self.assertIn(".pb.live", outside)
+
+    def test_every_state_has_its_colour(self):
+        for stage in ("download", "done", "error", "paused", "offline",
+                      "queued", "cancelled", "blocked"):
+            with self.subTest(stage=stage):
+                self.assertIn(f'data-stage="{stage}"', self.colour)
+
+    def test_trouble_and_success_are_not_the_same_colour(self):
+        """Иначе цвет не отвечает ни на один вопрос."""
+        done = self.colour[self.colour.index('data-stage="done"'):][:120]
+        bad = self.colour[self.colour.index('data-stage="error"'):][:200]
+        self.assertNotEqual(re.search(r"#[0-9a-f]{3,6}", done).group(),
+                            re.search(r"#[0-9a-f]{3,6}", bad).group())
+
+    def test_the_finished_fold_up(self):
+        self.assertIn(".pb.off", self.fold)
+        self.assertIn("display:none", self.fold)
+
+    def test_a_book_that_failed_is_not_folded(self):
+        """Её цифры — это и есть то, ради чего в список смотрят."""
+        for rule in self.fold.splitlines():
+            if ".pb.off" in rule:
+                with self.subTest(rule=rule):
+                    self.assertIn(':not([data-stage="error"])', rule)
+
+    def test_what_it_ended_with_stays_visible(self):
+        """Свернуть — не значит спрятать итог."""
+        self.assertIn(".pb-msg", self.fold)
+        folded = self.fold[self.fold.index(".pb-msg"):]
+        self.assertIn("display:inline", folded)
+
+
+class TestTheSpeedIsALine(Base):
+    """«12 глав/мин» — это сейчас. Быстрее ли, чем полминуты назад, —
+    из одного числа не узнать, а решают по этому."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "speed-spark.css").read_text(encoding="utf-8")
+
+    def test_the_measurements_are_kept(self):
+        self.assertIn("PB_SPEED", self.html)
+        self.assertIn("SPEED_KEEP", self.html)
+
+    def test_old_measurements_are_dropped(self):
+        """Иначе за ночь список замеров вырастет в тысячи чисел."""
+        self.assertIn("seen.splice(0, seen.length - SPEED_KEEP)", self.html)
+
+    def test_a_finished_book_stops_being_measured(self):
+        """Её нули дорисовали бы падение, которого не было."""
+        self.assertIn("TERMINAL.includes(one.stage)", self.html)
+
+    def test_a_stall_is_seen_by_colour(self):
+        """Ноль на конце — тот случай, ради которого на линию и смотрят."""
+        self.assertIn("stalled", self.html)
+        self.assertIn(".pb-spark.stalled", self.css)
+
+    def test_the_line_is_hidden_without_the_tick(self):
+        """Цифры при этом остаются: они сведения, а линия — украшение."""
+        self.assertIn(".pb-spark{display:none}", self.html)
+
+
+class TestTellingTheSystemItIsDone(Base):
+    """Мигание заголовка видит только тот, у кого окно браузера на виду."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.js = (JS / "notify.js").read_text(encoding="utf-8")
+
+    def test_it_is_off_by_default(self):
+        """Спрашивать разрешения без спроса — невежливо."""
+        block = self.settings[self.settings.index("key: 'system-note'"):]
+        self.assertIn("on: false", block[:block.index("},")])
+
+    def test_permission_is_asked_from_a_click(self):
+        """Браузеры отказывают в этом вопросе, заданном сам по себе."""
+        self.assertIn("addEventListener('click', fxNoteAsk", self.js)
+
+    def test_it_is_asked_once(self):
+        """Отказ переспрашивать нельзя, согласие — незачем."""
+        self.assertIn("fxNoteAsked", self.js)
+
+    def test_nothing_is_shown_while_the_tab_is_watched(self):
+        """Сообщение поверх вкладки сказало бы то, что человек читает."""
+        show = self.js[self.js.index("function fxNoteShow"):]
+        show = show[:show.index("\n}")]
+        self.assertIn("document.hidden", show)
+
+    def test_a_browser_without_notifications_is_not_a_crash(self):
+        self.assertIn("typeof Notification !== 'undefined'", self.js)
+
+    def test_it_watches_the_same_mark_as_the_other_signals(self):
+        """Свои крючки в обработчиках устарели бы на первой новой вкладке."""
+        self.assertIn("result-block", self.js)
+
+
+class TestTheDenseLook(Base):
+    """Тридцать книг не должны занимать три экрана."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.css = (CSS / "dense.css").read_text(encoding="utf-8")
+
+    def test_both_lists_get_tighter(self):
+        self.assertIn("#pbList", self.css)
+        self.assertIn("#dqList", self.css)
+
+    def test_it_hides_nothing(self):
+        """Иначе это не «плотнее», а «меньше сведений»."""
+        self.assertNotIn("display:none", self.css)
+
+    def test_it_is_off_by_default(self):
+        """Плотный вид — вкус, а не починка."""
+        block = self.settings[self.settings.index("key: 'dense'"):]
+        self.assertIn("on: false", block[:block.index("},")])

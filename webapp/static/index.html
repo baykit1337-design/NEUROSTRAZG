@@ -701,6 +701,9 @@
   #pbList .pb-foot{font-size:12px;color:var(--muted)}
   #pbList .pb-msg{font-size:12px;margin-top:4px}
   #pbList .pb-msg.bad{color:#ff9d9d}
+  /* Искра скорости — украшение поверх цифр, и по умолчанию её нет:
+     показывает её галочка «Искра скорости» в оформлении. */
+  .pb-spark{display:none}
 
   .bar > i{
     display:block;
@@ -4893,8 +4896,76 @@ const TERMINAL = ['done','error','cancelled','blocked'];
  */
 let PB_ROWS = [];
 
+/* ---- искра скорости ----
+ *
+ * «12 глав/мин» — это сейчас. А быстрее или медленнее, чем пять минут
+ * назад, — по одному числу не сказать, и именно на этот вопрос смотрят,
+ * когда решают, менять ли прокси и ждать ли ещё.
+ *
+ * Замеры держим в памяти страницы: это не сведения о книге, а картинка
+ * одного прогона, и переживать перезагрузку ей незачем.
+ */
+const PB_SPEED = {};
+
+//: Сколько замеров помнить. Опрос идёт раз в 700 мс, тридцать замеров —
+//: это примерно полминуты работы: столько и надо, чтобы увидеть провал.
+const SPEED_KEEP = 30;
+
+//: Размеры искры в пикселях. Она стоит в строке рядом с цифрами и
+//: спорить с ними за место не должна.
+const SPARK_W = 54, SPARK_H = 14;
+
+function pbSpeedSeen(rows){
+  for(const one of rows || []){
+    const key = one.title || '';
+    // Стоящая книга — тоже замер, и притом самый важный: провал до нуля
+    // и есть то, ради чего искру рисуют. Но только пока книга идёт: у
+    // кончившей нули дорисовали бы ей падение, которого не было.
+    if(!key || TERMINAL.includes(one.stage)) continue;
+    const seen = PB_SPEED[key] || (PB_SPEED[key] = []);
+    seen.push(Math.max(0, Number(one.speed) || 0));
+    if(seen.length > SPEED_KEEP) seen.splice(0, seen.length - SPEED_KEEP);
+  }
+}
+
+/** Искра по замерам книги. `null` — рисовать нечего.
+ *
+ * Двух замеров мало: линия из одной точки — это точка, а из двух —
+ * отрезок, который покажет «рост» там, где просто моргнули цифры.
+ */
+function pbSpark(key){
+  const seen = PB_SPEED[key] || [];
+  if(seen.length < 3) return null;
+
+  const high = Math.max(...seen);
+  const step = SPARK_W / (seen.length - 1);
+  // Всё по нулям — рисуем прямую по низу, а не делим на ноль.
+  const dots = seen.map((value, at) => {
+    const y = high > 0 ? SPARK_H - 1 - (value / high) * (SPARK_H - 2)
+                       : SPARK_H - 1;
+    return `${(at * step).toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const spark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  spark.setAttribute('class', 'pb-spark');
+  spark.setAttribute('viewBox', `0 0 ${SPARK_W} ${SPARK_H}`);
+  spark.setAttribute('width', SPARK_W);
+  spark.setAttribute('height', SPARK_H);
+  const line = document.createElementNS('http://www.w3.org/2000/svg',
+                                        'polyline');
+  line.setAttribute('points', dots.join(' '));
+  spark.append(line);
+  // Ноль на конце — это «встали», и молчать об этом нельзя.
+  if(!seen[seen.length - 1]) spark.classList.add('stalled');
+  spark.setAttribute('title', `наибольшая скорость: ${high} глав/мин`);
+  return spark;
+}
+
 function pbDraw(rows){
   const box = $('pbList');
+  // Замер берём только у свежих сведений: перерисовка ради выбора книги
+  // в журнале записала бы те же цифры ещё раз и растянула бы искру.
+  if(rows) pbSpeedSeen(rows);
   rows = rows || PB_ROWS;
   PB_ROWS = rows;
   box.hidden = rows.length < 2;
@@ -4908,6 +4979,14 @@ function pbRow(one){
   const busy = !TERMINAL.includes(one.stage);
   row.className = 'pb' + (busy ? '' : ' off')
     + (DG_ONLY === one.title ? ' picked' : '');
+  // Этап — на самой строке: по нему её красят и по нему же решают,
+  // сворачивать ли. Читать его из подписи нельзя — подпись русская, а
+  // правил на «Качаем главы» не напишешь.
+  row.dataset.stage = one.stage || '';
+  // Та, что качается прямо сейчас, — не то же самое, что «не кончила».
+  // Ищущая книгу, ждущая связи и стоящая на паузе тоже «не кончили», а
+  // работы за ними никакой.
+  if(one.stage === 'download') row.classList.add('live');
   // Щелчок оставляет в журнале одну книгу. Очередь из тринадцати пишет
   // вперемешку, и «чья это беда» по такой каше не понять.
   row.style.cursor = 'pointer';
@@ -4964,6 +5043,13 @@ function pbRow(one){
   const foot = document.createElement('div');
   foot.className = 'pb-foot';
   foot.textContent = bits.join(' · ');
+
+  // «12 глав/мин» — это сейчас. Быстрее или медленнее, чем пять минут
+  // назад, видно только по линии.
+  if(busy){
+    const spark = pbSpark(one.title || '');
+    if(spark) foot.append(document.createTextNode(' '), spark);
+  }
 
   // Адрес — свой у каждой книги, и наверху его показать нельзя: там он
   // принадлежал бы той, что отчиталась последней. Смены и повторы держим
@@ -6852,6 +6938,11 @@ $('again').onclick = reset;
 <link rel="stylesheet" href="/static/css/effects/proxy-dots.css">
 <link rel="stylesheet" href="/static/css/effects/request-pulse.css">
 <link rel="stylesheet" href="/static/css/effects/traffic-line.css">
+<link rel="stylesheet" href="/static/css/effects/queue-live.css">
+<link rel="stylesheet" href="/static/css/effects/queue-colour.css">
+<link rel="stylesheet" href="/static/css/effects/queue-fold.css">
+<link rel="stylesheet" href="/static/css/effects/speed-spark.css">
+<link rel="stylesheet" href="/static/css/effects/dense.css">
 <script src="/static/tabs.js"></script>
 <script src="/static/js/effects/settings.js"></script>
 <script src="/static/js/effects/feedback.js"></script>
@@ -6870,5 +6961,6 @@ $('again').onclick = reset;
      стали, а сдача колоды двигает их прямо во время замера. -->
 <script src="/static/js/effects/ranklook.js"></script>
 <script src="/static/js/effects/net.js"></script>
+<script src="/static/js/effects/notify.js"></script>
 </body>
 </html>

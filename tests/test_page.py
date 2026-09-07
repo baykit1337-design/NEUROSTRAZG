@@ -2551,3 +2551,92 @@ class TestTheLibraryWarnsWhenQueueing(PageTestCase):
         self.assertEqual(self.said({"last": 0, "chapters": 402, "fresh": 0}),
                          "")
         self.quiet()
+
+
+class TestTheQueueRowsSpeakForThemselves(PageTestCase):
+    """К-F на живой странице: этап на строке и линия скорости."""
+
+    def draw(self, rows):
+        self.page.evaluate("(rows) => pbDraw(rows)", rows)
+
+    def book(self, **fields):
+        row = {"id": "к", "title": "Книга", "stage": "download",
+               "total": 10, "done": 4}
+        row.update(fields)
+        return row
+
+    def stages(self):
+        return self.page.evaluate(
+            """() => [...document.querySelectorAll('#pbList .pb')]
+                     .map(one => one.dataset.stage)""")
+
+    def test_the_stage_is_on_the_row(self):
+        self.draw([self.book(title="А", stage="download"),
+                   self.book(title="Б", stage="error")])
+        self.assertEqual(self.stages(), ["download", "error"])
+        self.quiet()
+
+    def test_only_the_downloading_one_is_alive(self):
+        """«Ищем книгу» — тоже не кончила, а работы за ней никакой."""
+        self.draw([self.book(title="А", stage="download"),
+                   self.book(title="Б", stage="search"),
+                   self.book(title="В", stage="done")])
+        got = self.page.evaluate(
+            """() => [...document.querySelectorAll('#pbList .pb')]
+                     .map(one => one.classList.contains('live'))""")
+        self.assertEqual(got, [True, False, False])
+        self.quiet()
+
+    def sparks(self):
+        return self.page.locator("#pbList .pb-spark").count()
+
+    def test_one_measurement_draws_nothing(self):
+        """Линия из одной точки — это точка."""
+        self.draw([self.book(title="А", speed=5), self.book(title="Б")])
+        self.assertEqual(self.sparks(), 0)
+        self.quiet()
+
+    def test_the_line_appears_once_there_is_something_to_draw(self):
+        for speed in (5, 7, 6, 9):
+            self.draw([self.book(title="А", speed=speed),
+                       self.book(title="Б", speed=speed)])
+        self.assertEqual(self.sparks(), 2)
+        self.quiet()
+
+    def test_a_stall_is_marked(self):
+        for speed in (9, 7, 5, 0):
+            self.draw([self.book(title="А", speed=speed),
+                       self.book(title="Б", speed=speed)])
+        self.assertEqual(
+            self.page.locator("#pbList .pb-spark.stalled").count(), 2)
+        self.quiet()
+
+    def test_a_finished_book_gets_no_line(self):
+        """У кончившей рисовать нечего: она кончила."""
+        for speed in (5, 7, 6):
+            self.draw([self.book(title="А", speed=speed),
+                       self.book(title="Б", speed=speed)])
+        self.draw([self.book(title="А", stage="done"),
+                   self.book(title="Б", stage="done")])
+        self.assertEqual(self.sparks(), 0)
+        self.quiet()
+
+    def test_a_finished_book_stops_being_measured(self):
+        """Её нули дорисовали бы падение, которого не было: книга не
+        встала, а кончилась. Запустят ту же — линия начнётся с провала."""
+        for speed in (5, 7, 6):
+            self.draw([self.book(title="А", speed=speed)])
+        for _ in range(4):
+            self.draw([self.book(title="А", stage="done")])
+
+        self.assertEqual(
+            self.page.evaluate("() => PB_SPEED['А'].length"), 3)
+        self.quiet()
+
+    def test_redrawing_does_not_add_measurements(self):
+        """Щелчок по строке перерисовывает список — и записал бы те же
+        цифры ещё раз, растянув линию из ничего."""
+        self.draw([self.book(title="А", speed=5), self.book(title="Б")])
+        self.page.evaluate("() => { pbDraw(); pbDraw(); pbDraw(); }")
+        self.assertEqual(self.sparks(), 0)
+        self.quiet()

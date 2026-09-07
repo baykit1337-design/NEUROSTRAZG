@@ -1,0 +1,27 @@
+/* К-F. Плотный вид: те же сведения, но на экран влезает вдвое больше.
+ *
+ * Очередь на тридцать книг и список полос на тринадцать не помещаются
+ * никуда: чтобы увидеть последнюю строку, надо прокрутить три экрана, а
+ * сравнить первую с последней нельзя вовсе.
+ *
+ * Убираем только воздух — отступы, поля, зазоры. Ни одна строка текста
+ * при этом не пропадает: плотный вид не должен ничего скрывать, иначе
+ * это уже не «плотнее», а «меньше сведений».
+ */
+
+.fx-dense #pbList{gap:6px}
+.fx-dense #pbList .pb{padding:5px 8px}
+.fx-dense #pbList .pb .bar{margin:5px 0 4px}
+.fx-dense #pbList .pb-name{font-size:12px}
+.fx-dense #pbList .pb-foot,
+.fx-dense #pbList .pb-state,
+.fx-dense #pbList .pb-msg{font-size:11px}
+
+.fx-dense #dqList .q{padding:6px 8px;gap:8px;margin-bottom:5px}
+.fx-dense #dqList .q-cover{flex-basis:30px;width:30px;height:42px}
+.fx-dense #dqList .q-name{font-size:13px}
+.fx-dense #dqList .q-where,
+.fx-dense #dqList .q-path{font-size:10px;margin-top:2px}
+.fx-dense #dqList .q-range{margin-top:5px}
+.fx-dense #dqList .q-deeds button{padding:3px 8px;font-size:11px}
+.fx-dense #dqList .q-link{margin-top:5px;padding:4px 8px}

@@ -1,0 +1,54 @@
+/* К-F. Цвет строки по её состоянию.
+ *
+ * Состояние книги написано словами справа, мелким шрифтом. При
+ * тринадцати строках это тринадцать подписей, которые надо прочесть
+ * подряд, чтобы найти ту одну, где «Ошибка».
+ *
+ * Красим полосу слева, а не всю строку: строка и так несёт название,
+ * цифры и полосу прогресса, и заливать её целиком значило бы спорить
+ * со всем этим разом. Полоса же читается боковым зрением.
+ *
+ * Цвета взяты те же, что уже приняты на странице: фиолетовый — работа,
+ * зелёный — вышло, красный — не вышло, янтарный — ждём.
+ */
+
+.fx-queue-colour #pbList .pb{
+  border-left-width:3px;
+  border-left-style:solid;
+  border-left-color:transparent;
+}
+
+/* Идёт работа. */
+.fx-queue-colour #pbList .pb[data-stage="download"],
+.fx-queue-colour #pbList .pb[data-stage="toc"],
+.fx-queue-colour #pbList .pb[data-stage="search"]{
+  border-left-color:#8c54ff;
+}
+
+/* Ждёт своей очереди — цвет спокойный: это не работа и не беда. */
+.fx-queue-colour #pbList .pb[data-stage="queued"]{
+  border-left-color:rgba(255,255,255,.25);
+}
+
+/* Стоим и ждём: паузы и обрыва связи. */
+.fx-queue-colour #pbList .pb[data-stage="paused"],
+.fx-queue-colour #pbList .pb[data-stage="offline"]{
+  border-left-color:#e0a458;
+}
+
+.fx-queue-colour #pbList .pb[data-stage="done"]{border-left-color:#5ec98a}
+
+.fx-queue-colour #pbList .pb[data-stage="error"],
+.fx-queue-colour #pbList .pb[data-stage="blocked"]{
+  border-left-color:#ff6b6b;
+}
+
+/* Остановленная руками — не беда: человек так и хотел. */
+.fx-queue-colour #pbList .pb[data-stage="cancelled"]{
+  border-left-color:rgba(255,255,255,.35);
+}
+
+/* Кончившая книга гаснет целиком, и её цвет вместе с ней. Но настолько,
+   чтобы «не вышло» осталось видно: за этим в список и смотрят. */
+.fx-queue-colour #pbList .pb.off[data-stage="error"],
+.fx-queue-colour #pbList .pb.off[data-stage="blocked"]{opacity:.85}
