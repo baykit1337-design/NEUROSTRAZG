@@ -1471,3 +1471,71 @@ class TestOneWorkWrittenDownTwice(Base):
 
     def test_an_empty_library_has_no_twins(self):
         self.assertEqual(library.look_alikes(), [])
+
+
+class TestTakingABookToTheTranslator(Base):
+    """Переводчику нужен один .epub, а в библиотеке записана папка с
+    главами. Между ними стоит сборка, и вопрос «а собран ли он?»
+    человек иначе решает походом в проводник."""
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+
+        web.app.config["TESTING"] = True
+        self.client = web.app.test_client()
+        self.folder = Path(self.dir.name) / "Гостиница"
+        self.folder.mkdir()
+
+    def book(self, **more):
+        return self.qidian(folder=str(self.folder), chapters=10, last=10,
+                           **more)
+
+    def ask(self, key):
+        return self.client.post("/api/library/epub", json={"key": key})
+
+    def epub(self, name: str, where: Path | None = None):
+        path = (where or self.folder) / name
+        path.write_bytes(b"PK\x03\x04")
+        return path
+
+    def test_the_epub_inside_the_folder_is_found(self):
+        book = self.book()
+        made = self.epub("Гостиница.epub")
+        said = self.ask(book.key).get_json()
+        self.assertEqual(said["files"], [str(made)])
+
+    def test_the_epub_beside_the_folder_is_found_too(self):
+        """Собранную книгу кладут то внутрь, то рядом, а спрашивают об
+        одном и том же."""
+        book = self.book()
+        made = self.epub("Гостиница.epub", Path(self.dir.name))
+        self.assertEqual(self.ask(book.key).get_json()["files"], [str(made)])
+
+    def test_other_files_are_not_offered(self):
+        book = self.book()
+        (self.folder / "0001 - Глава.txt").write_text("текст", encoding="utf-8")
+        self.assertEqual(self.ask(book.key).get_json()["files"], [])
+
+    def test_the_project_folder_is_named_next_to_the_book(self):
+        """Туда переводчик кладёт главы, и человеку её потом искать."""
+        book = self.book()
+        said = self.ask(book.key).get_json()
+        self.assertIn("перевод", said["project"])
+        self.assertIn("Гостиница", said["project"])
+
+    def test_a_book_without_a_folder_is_a_refusal(self):
+        book = self.qidian(found_id="7", name="Только в рейтинге")
+        res = self.ask(book.key)
+        self.assertEqual(res.status_code, 400)
+
+    def test_an_unknown_book_is_a_refusal(self):
+        self.assertEqual(self.ask("выдумка").status_code, 404)
+
+    def test_a_folder_that_is_gone_is_not_a_crash(self):
+        """Папку могли унести вместе с флешкой — это не поломка."""
+        book = self.qidian(found_id="8", folder="/нет/такой/папки",
+                           chapters=10, last=10)
+        said = self.ask(book.key)
+        self.assertEqual(said.status_code, 200)
+        self.assertEqual(said.get_json()["files"], [])

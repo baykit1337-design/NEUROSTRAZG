@@ -213,6 +213,46 @@ class TestWhatTheToolsTabShows(PageTestCase):
         self.assertIn("вес", said)
         self.assertRegex(said, r"\d+(\.\d+)? (Б|КБ|МБ|ГБ)")
 
+    def test_the_update_card_offers_one_button(self):
+        """Одна кнопка на всё: две заставляли человека делать работу
+        программы."""
+        self.assertTrue(self.page.locator("#upGo").is_visible())
+        self.assertEqual(self.page.locator("#upLook").count(), 0)
+        self.assertEqual(self.page.locator("#upApply").count(), 0)
+
+
+
+class TestTheTranslateTab(PageTestCase):
+    """Переводчик переехал из «Инструментов» на свою вкладку.
+
+    Перевод — работа над книгой, а не настройка программы: он идёт
+    часами, стоит ключей и начинается там же, где кончается качалка, —
+    в библиотеке.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="translate"]')
+        self.page.wait_for_timeout(200)
+
+    def test_the_tab_has_a_button_and_a_section(self):
+        self.assertTrue(self.page.locator(
+            '.tabs button[data-tab="translate"]').count())
+        self.assertFalse(self.page.locator("#tab-translate").is_hidden())
+        self.quiet()
+
+    def test_the_translator_cards_came_along(self):
+        """Иначе вкладка есть, а переводить на ней нечем."""
+        for one in ("#tlCard", "#tlPlanCard", "#tlWorkCard"):
+            with self.subTest(one):
+                self.assertTrue(self.page.locator(one).is_visible())
+        self.quiet()
+
+    def test_the_tools_tab_no_longer_holds_them(self):
+        """Две копии одной карточки разошлись бы на первой же правке."""
+        self.assertEqual(self.page.locator("#tab-tools #tlCard").count(), 0)
+        self.quiet()
+
     def test_the_translator_card_says_where_it_is_not(self):
         """Карточка связи с переводчиком — и молчащая консоль при отказе.
 
@@ -260,14 +300,6 @@ class TestWhatTheToolsTabShows(PageTestCase):
                 items = self.page.locator(f"{box} .dropdown-item")
                 self.assertEqual(items.count(), 1)
                 self.assertIn("как настроено", items.first.inner_text())
-
-    def test_the_update_card_offers_one_button(self):
-        """Одна кнопка на всё: две заставляли человека делать работу
-        программы."""
-        self.assertTrue(self.page.locator("#upGo").is_visible())
-        self.assertEqual(self.page.locator("#upLook").count(), 0)
-        self.assertEqual(self.page.locator("#upApply").count(), 0)
-
 
 class TestSplittingABookPastedFromASite(PageTestCase):
     """Книга без заголовков, поделённая по разметке, — прямо на вкладке.
@@ -3351,4 +3383,91 @@ class TestANewBookIsSeenToBeNew(PageTestCase):
         self.draw(["Астра", "Небо"], first=True)
         self.draw(["Астра", "Небо"], word="астра")   # «Небо» ушло из виду
         self.assertEqual(self.draw(["Астра", "Небо"]), [])
+        self.quiet()
+
+
+class TestTheBookComesFromTheLibrary(PageTestCase):
+    """Перевод начинается там, где кончается качалка: книга уже
+    скачана, и путь к ней записан. Носить его руками через проводник —
+    то же самое, только дольше и с опечатками."""
+
+    def setUp(self):
+        super().setUp()
+        self.page.click('.tabs button[data-tab="translate"]')
+        self.page.wait_for_timeout(200)
+
+    def take(self, files, books=None):
+        """Подставляем книгу, отвечая за сервер: диска у нас тут нет."""
+        return self.page.evaluate(
+            """([files, books]) => {
+                 tnBooks = books;
+                 tnMenu = {value: books.length ? books[0].key : ''};
+                 window.call = async (url) => {
+                   if(url === '/api/library/epub'){
+                     return {files, project: '/книги/Гостиница — перевод'};
+                   }
+                   return {};
+                 };
+                 return tnTake().then(() => ({
+                   epub: document.getElementById('tlEpub').value,
+                   project: document.getElementById('tlProject').value,
+                   note: document.getElementById('tnNote').innerText,
+                   list: !document.getElementById('tnFiles').hidden,
+                 }));
+               }""",
+            [files, books if books is not None
+             else [{"key": "к1", "title": "Гостиница",
+                    "folder": "/книги/Гостиница", "last": 10}]])
+
+    def test_one_epub_is_filled_in(self):
+        said = self.take(["/книги/Гостиница/книга.epub"])
+        self.assertEqual(said["epub"], "/книги/Гостиница/книга.epub")
+        self.assertIn("перевод", said["project"])
+        self.quiet()
+
+    def test_two_epubs_are_offered_not_guessed(self):
+        """Выбрать за человека из двух — значит однажды перевести не ту."""
+        said = self.take(["/книги/Гостиница/один.epub",
+                          "/книги/Гостиница/второй.epub"])
+        self.assertEqual(said["epub"], "")
+        self.assertTrue(said["list"])
+        self.assertIn("2", said["note"])
+        self.quiet()
+
+    def test_no_epub_says_what_to_do(self):
+        """«Нет .epub» без ответа «и что теперь» — половина ответа."""
+        said = self.take([])
+        self.assertEqual(said["epub"], "")
+        self.assertIn("Конвертация", said["note"])
+        self.quiet()
+
+    def test_the_project_folder_is_filled_even_without_a_book(self):
+        """Она новая, и её всё равно заводить."""
+        self.assertIn("перевод", self.take([])["project"])
+        self.quiet()
+
+    def test_nothing_picked_is_said_out_loud(self):
+        said = self.page.evaluate(
+            """() => {
+                 tnBooks = []; tnMenu = {value: ''};
+                 return tnTake().then(() => 
+                   document.getElementById('tnNote').innerText);
+               }""")
+        self.assertIn("выберите книгу", said.lower())
+        self.quiet()
+
+    def test_only_downloaded_books_are_offered(self):
+        """У остальных папки нет вовсе, и подставлять из них нечего."""
+        said = self.page.evaluate(
+            """() => {
+                 tnMenu = null;
+                 window.call = async () => ({books: [
+                   {key: 'к1', title: 'Скачана', folder: '/книги/А', last: 10},
+                   {key: 'к2', title: 'Только в рейтинге', folder: '', last: 0},
+                   {key: 'к3', title: 'Папка есть, глав нет',
+                    folder: '/книги/В', last: 0},
+                 ]});
+                 return tnFill().then(() => tnBooks.map(one => one.key));
+               }""")
+        self.assertEqual(said, ["к1"])
         self.quiet()

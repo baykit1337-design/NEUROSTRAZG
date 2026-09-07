@@ -1258,6 +1258,45 @@ def api_library_shelf():
     return jsonify(shelves=seen, left=left, total=shelf_op.weigh(looked))
 
 
+@app.post("/api/library/epub")
+def api_library_epub():
+    """Какие `.epub` лежат в папке книги.
+
+    Переводчику нужен один файл книги, а в библиотеке записана папка с
+    главами. Между ними стоит сборка `.epub` — и вопрос «а собран ли
+    он?» человек иначе решает походом в проводник.
+
+    Ищем и внутри папки, и рядом с ней: собранную книгу кладут то туда,
+    то туда, а спрашивают об одном и том же.
+    """
+    payload = request.json or {}
+    book = library_op.get((payload.get("key") or "").strip())
+    if book is None:
+        return jsonify(error="Такой книги в библиотеке нет"), 404
+    if not book.folder:
+        return jsonify(error="У книги не записана папка"), 400
+
+    where = Path(book.folder).expanduser()
+    found: list[str] = []
+    try:
+        places = [where, where.parent] if where.parent != where else [where]
+        for place in places:
+            if not place.is_dir():
+                continue
+            for item in sorted(place.iterdir()):
+                if item.is_file() and item.suffix.lower() == ".epub":
+                    name = str(item)
+                    if name not in found:
+                        found.append(name)
+    except OSError as exc:
+        return jsonify(error=f"Папку не прочитать: {exc}"), 400
+
+    # Папка проекта — рядом с книгой и с понятным именем: туда
+    # переводчик кладёт главы, и человеку её потом искать.
+    return jsonify(files=found, folder=str(where),
+                   project=str(where.parent / f"{where.name} — перевод"))
+
+
 @app.get("/api/library/twins")
 def api_library_twins():
     """Книги, которые похожи на одну и ту же работу.

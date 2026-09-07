@@ -1392,6 +1392,16 @@
         <path d="m16 6.2 3.9 1 -3 12 -3.9-1 3-12Z" stroke="#8c54ff"
               stroke-width="1.6" stroke-linejoin="round"/>
       </svg>Библиотека</button>
+    <button data-tab="translate">
+      <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+        <path d="M3.5 6h8M7.5 6v1.5c0 3.6-1.7 6.6-4 8.5" stroke="#c084fc"
+              stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M5 12.5c1.6 2.2 3.6 3.6 5.5 4.3" stroke="#c084fc"
+              stroke-width="1.6" stroke-linecap="round"/>
+        <path d="m12.5 20 4-10 4 10M14 16.5h5" stroke="#8c54ff"
+              stroke-width="1.6" stroke-linecap="round"
+              stroke-linejoin="round"/>
+      </svg>Перевести</button>
     <button data-tab="split">
       <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
         <circle cx="6" cy="18" r="2.6" stroke="#c084fc" stroke-width="1.6"/>
@@ -3606,276 +3616,6 @@
               style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px"></textarea>
   </div>
 
-  <!-- Связь с переводчиком EPUB. Он остаётся отдельной программой: у
-       него своё окружение на гигабайт (PyQt6, playwright, звук), своя
-       папка проекта с глоссарием и главами, свои промпты и ключи в
-       ~/.epub_translator. Мы храним только путь и зовём его команды —
-       так же, как зовём окно выбора файлов. -->
-  <div class="card" id="tlCard">
-    <label>Переводчик EPUB</label>
-    <p class="hint">Отдельная программа, стоящая рядом. Глоссарий, главы и
-       промпты остаются у неё: мы помним только, где она лежит.</p>
-    <div class="row" style="margin-top:10px">
-      <!-- Обычное поле пути, а не `pickpath`: тот класс — про список
-           выбранных файлов и требует своего контейнера, а здесь одна
-           папка, как «куда сохранить» на других вкладках. -->
-      <input id="tlPath" type="text"
-             placeholder="Папка переводчика — та, где лежит run.bat"
-             autocomplete="off">
-      <button class="ghost browse" data-target="tlPath" data-kind="folder">Обзор…</button>
-    </div>
-    <div class="row" style="margin-top:10px;flex-wrap:wrap">
-      <button id="tlCheck" class="ghost">Проверить связь</button>
-    </div>
-    <p class="hint" id="tlNote"></p>
-    <div class="table" id="tlList" hidden style="margin-top:10px;max-height:220px"></div>
-  </div>
-
-  <!-- Что именно будет переведено — до того, как за это заплатят.
-       Цена тут не в деньгах, а в квоте ключей, и промахнуться дороже
-       всего: узнать, что взялась вся книга вместо десяти глав, посреди
-       прогона поздно. План в сеть не ходит вовсе, поэтому нажимать его
-       можно сколько угодно. -->
-  <div class="card" id="tlPlanCard">
-    <label>Что будет переведено<i class="hint-icon" data-tip="Считает главы, задачи и знаки, не трогая ни сети, ни ключей. То же самое, что «показать до и после» в форматировании, только для перевода.">?</i></label>
-    <p class="hint">Провайдер, модель и ключи берутся те, что настроены в
-       самом переводчике: держать им второе место у себя значит однажды
-       разойтись с ним в настройках.</p>
-
-    <div class="row" style="margin-top:10px">
-      <input id="tlEpub" type="text" placeholder="Какой .epub переводить"
-             autocomplete="off">
-      <button class="ghost browse" data-target="tlEpub" data-kind="file">Обзор…</button>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <input id="tlProject" type="text"
-             placeholder="Папка проекта — туда переводчик кладёт главы"
-             autocomplete="off" data-keep>
-      <button class="ghost browse" data-target="tlProject" data-kind="folder">Обзор…</button>
-    </div>
-
-    <div style="margin-top:12px">
-      <label for="tlScope">какие главы брать<i class="hint-icon" data-tip="«Ещё не переведённые» — обычный случай: продолжить с того места, где остановились. «Все подряд» переводит книгу заново, поверх готового.">?</i></label>
-      <div class="dropdown" id="tlScope"
-           data-options='[["pending","ещё не переведённые"],["all","все подряд, заново"],["translated","только уже переведённые"]]'></div>
-    </div>
-
-    <div class="row" style="margin-top:14px">
-      <button id="tlPlan" class="ghost" style="flex:1">Посчитать план</button>
-    </div>
-    <p class="hint" id="tlPlanNote"></p>
-    <div class="table" id="tlPlanRows" hidden style="margin-top:10px;max-height:320px"></div>
-  </div>
-
-  <!-- Сама работа. Четыре команды переводчика в том порядке, в каком их
-       и делают: глоссарий, перевод, сверка, сборка. Каждая идёт часами,
-       поэтому обычной задачей — с журналом и кнопкой «Остановить». -->
-  <div class="card" id="tlWorkCard">
-    <label>Перевести<i class="hint-icon" data-tip="Книга, папка проекта и отбор глав берутся из карточки выше. Провайдер, модель и ключи — из настроек самого переводчика.">?</i></label>
-    <p class="hint">Порядок обычный: собрать глоссарий, перевести, сверить,
-       собрать EPUB. Каждая кнопка — часы работы; остановка срабатывает на
-       границе главы, и сделанное остаётся.</p>
-
-    <!-- Сервис и модель. Списки не свои: их отдаёт сам переводчик
-         командами `providers` и `models`, и они всегда те же, что у него
-         в окне. Свой перечень разошёлся бы с его настройками в первый же
-         раз, когда он добавит себе провайдера. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
-        <label>сервис<i class="hint-icon" data-tip="Из настроенных у вас в переводчике. Не выбран — берётся тот, что сохранён у него.">?</i></label>
-        <div class="dropdown" id="tlProvider" data-options='[["","как настроено"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label>модель<i class="hint-icon" data-tip="Модели выбранного сервиса, с его же квотами: сколько запросов в минуту и в сутки она отдаёт.">?</i></label>
-        <div class="dropdown" id="tlModel" data-options='[["","как настроено"]]'></div>
-      </div>
-      <div style="flex:0 0 auto;align-self:flex-end">
-        <button id="tlLoad" class="ghost">Обновить списки</button>
-      </div>
-    </div>
-    <p class="hint" id="tlPickNote"></p>
-
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
-        <label for="tlWorkers">потоков<i class="hint-icon" data-tip="Пусто или 0 — сколько настроено у самого переводчика. Своё число перебивает его настройку только на этот запуск.">?</i></label>
-        <input id="tlWorkers" type="number" min="0" max="32" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlRpm">запросов в минуту<i class="hint-icon" data-tip="0 — как настроено у переводчика. Больше, чем позволяет модель, ставить бессмысленно: упрётся в её квоту.">?</i></label>
-        <input id="tlRpm" type="number" min="0" max="600" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlTemp">температура<i class="hint-icon" data-tip="Пусто — как настроено у переводчика. Ниже — суше и ближе к тексту, выше — вольнее.">?</i></label>
-        <input id="tlTemp" type="text" placeholder="как настроено" autocomplete="off">
-      </div>
-    </div>
-
-    <!-- Отбор глав поверх «все / непереведённые / переведённые». Нужен
-         затем же, зачем и план: взять десять глав на пробу, а не книгу
-         целиком. Имена — фильтры самого переводчика, повторяемые. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:2">
-        <label for="tlPick">только эти главы<i class="hint-icon" data-tip="Куски имён файлов глав через запятую: «0012, 0013» или «Глава 5». Пусто — все, что попали под отбор выше.">?</i></label>
-        <input id="tlPick" type="text" placeholder="пусто — все под отбором" autocomplete="off">
-      </div>
-      <div style="flex:1">
-        <label for="tlOffset">пропустить<i class="hint-icon" data-tip="Сколько глав пропустить с начала отбора. 0 — не пропускать.">?</i></label>
-        <input id="tlOffset" type="number" min="0" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlLimit">взять не больше<i class="hint-icon" data-tip="Предел глав за один запуск. 0 — без предела. Десяток на пробу дешевле, чем вся книга.">?</i></label>
-        <input id="tlLimit" type="number" min="0" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlSuffix">какие файлы<i class="hint-icon" data-tip="Окончание имени переведённых файлов, например «_validated.html». Пусто — как выбирает сам переводчик. Пригождается, когда одну книгу переводили дважды. Действует на сверку, поиск остатков и сборку.">?</i></label>
-        <input id="tlSuffix" type="text" placeholder="сам выберет" autocomplete="off">
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:14px;flex-wrap:wrap">
-      <button id="tlGlossary" class="ghost">Собрать глоссарий</button>
-      <button id="tlTranslate" class="primary">Перевести</button>
-      <button id="tlConsistency" class="ghost">Сверить перевод</button>
-    </div>
-
-    <!-- Ручки одного только перевода: чем отдавать главу модели. Слова
-         его же; «как настроено» означает его собственную настройку, и
-         наш ноль не должен решать за его окно. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
-        <label>отдавать главу<i class="hint-icon" data-tip="Целиком — один запрос на главу. Пачкой — несколько глав в запросе, дешевле по квоте. Кусками — длинную главу по частям. Цепочкой — подряд, с оглядкой на предыдущий ответ.">?</i></label>
-        <div class="dropdown" id="tlWayRun" data-options='[["","как настроено"],["single","целиком"],["batch","пачкой"],["chunk","кусками"],["sequential","цепочкой"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label for="tlTaskSize">знаков в задаче<i class="hint-icon" data-tip="Предел знаков на один запрос при пачке и кусках. 0 — как настроено у переводчика.">?</i></label>
-        <input id="tlTaskSize" type="number" min="0" max="500000" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlSplits">звеньев цепочки<i class="hint-icon" data-tip="На сколько запросов подряд делить главу в режиме «цепочкой». 0 — как настроено.">?</i></label>
-        <input id="tlSplits" type="number" min="0" max="20" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlSeconds">оборвать через, с<i class="hint-icon" data-tip="Сколько секунд работать, потом остановиться самому. 0 — без срока. Полезно, когда квота считается по суткам.">?</i></label>
-        <input id="tlSeconds" type="number" min="0" max="86400" value="0">
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
-      <label class="chk" style="flex:0 0 auto">
-        <input type="checkbox" id="tlForce"> принимать ответ без проверки разметки
-        <i class="hint-icon" data-tip="Переводчик отбраковывает ответы с поломанным HTML. С этой галкой берёт как есть — выручает, когда модель упорно отдаёт «неправильную» вёрстку.">?</i></label>
-      <label class="chk" style="flex:0 0 auto">
-        <input type="checkbox" id="tlJson"> передавать главы JSON-ом
-        <i class="hint-icon" data-tip="Другой способ упаковки главы для модели. Иногда держит разметку лучше обычного.">?</i></label>
-    </div>
-
-    <!-- Ручки одного только глоссария. Слияние — его слова и его же
-         подписи: «Дополнение», «Обновление», «Накопление». -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
-        <label>глоссарий сливать<i class="hint-icon" data-tip="Дополнить — не трогать уже собранное. Обновить — перезаписать расхождения новым. Копить — держать все варианты рядом.">?</i></label>
-        <div class="dropdown" id="tlMerge" data-options='[["","как настроено"],["supplement","дополнить"],["update","обновить"],["accumulate","копить варианты"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label for="tlBatch">глав в пачке<i class="hint-icon" data-tip="Сколько глав уходит модели одной задачей при сборе глоссария. 0 — как настроено (у него по умолчанию одна).">?</i></label>
-        <input id="tlBatch" type="number" min="0" max="50" value="0">
-      </div>
-      <div style="flex:1">
-        <label for="tlNewTerms">новых слов за пачку<i class="hint-icon" data-tip="Предел новых терминов из одной пачки глав. 0 — без предела. Помогает, когда модель тащит в глоссарий всё подряд.">?</i></label>
-        <input id="tlNewTerms" type="number" min="0" max="500" value="0">
-      </div>
-    </div>
-
-    <!-- Ручки одной только сверки. Что делать с находками — тремя
-         ступенями, а не двумя галками: «переписать» без «чинить» у
-         переводчика не делает ровно ничего, и притом молча. -->
-    <div class="row" style="margin-top:12px">
-      <div style="flex:1">
-        <label>как сверять<i class="hint-icon" data-tip="Быстрая ловит опечатки, метакомментарии модели и путаницу в роде. Глубокая — ещё и расхождения в именах, логике и сюжете; она дороже по квоте.">?</i></label>
-        <div class="dropdown" id="tlWay" data-options='[["","как настроено"],["fast_proofread_3_1","быстрая вычитка"],["deep_consistency","глубокая сверка"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label>с находками<i class="hint-icon" data-tip="«Внести правки» переписывает готовые главы — это единственное необратимое действие здесь.">?</i></label>
-        <div class="dropdown" id="tlDeed" data-options='[["look","только показать"],["offer","предложить правки"],["apply","внести правки в файлы"]]'></div>
-      </div>
-      <div style="flex:1">
-        <label for="tlChunk">глав в запросе<i class="hint-icon" data-tip="Сколько глав уходит модели одним куском. 0 — как настроено у переводчика. Больше — дешевле по квоте, но хуже видно детали.">?</i></label>
-        <input id="tlChunk" type="number" min="0" max="50" value="0">
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
-      <label class="chk" style="flex:0 0 auto">
-        <input type="checkbox" id="tlSource" checked> сверять с оригиналом
-        <i class="hint-icon" data-tip="Модель видит исходный текст рядом с переводом. Без него она судит только по переводу — дешевле, но пропусков не заметит.">?</i></label>
-      <label class="chk" style="flex:0 0 auto">
-        <input type="checkbox" id="tlGlossFirst"> сначала глоссарий
-        <i class="hint-icon" data-tip="Глубокая сверка в два прохода: сперва имена и термины, потом всё остальное. Точнее и дороже.">?</i></label>
-      <div style="flex:1;min-width:220px">
-        <label for="tlSure">чинить находки с уверенностью<i class="hint-icon" data-tip="high, medium, low через запятую. Пусто — как настроено у переводчика. Применяется только когда правки просят.">?</i></label>
-        <input id="tlSure" type="text" placeholder="пусто — как настроено" autocomplete="off">
-      </div>
-    </div>
-
-    <div class="table" id="tlCheckRows" hidden style="margin-top:10px;max-height:320px"></div>
-
-    <div class="row" style="margin-top:14px">
-      <input id="tlOut" type="text" placeholder="Куда собрать EPUB — пусто, значит в папку проекта"
-             autocomplete="off">
-      <button id="tlBuild" class="ghost" style="flex:0 0 auto">Собрать EPUB</button>
-    </div>
-    <div class="row" style="margin-top:10px;align-items:center">
-      <label class="chk" style="flex:0 0 auto">
-        <input type="checkbox" id="tlStrict"> не собирать с дырами
-        <i class="hint-icon" data-tip="Отказаться, если у какой-то отобранной главы перевода нет. Иначе она попадёт в книгу на языке оригинала, и заметите вы это только при чтении.">?</i></label>
-    </div>
-
-    <!-- Непереведённые остатки. Беда отдельная от сверки: там расходятся
-         имена и смысл, а тут прямо в готовом переводе остались чужие
-         слова — модель пропустила кусок. Ищется без ключей, чинится с
-         ключами, поэтому кнопки две и между ними просмотр. -->
-    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
-      <label>Непереведённые остатки<i class="hint-icon" data-tip="Ищет в уже переведённых главах слова, оставшиеся на языке оригинала, и смешанные — где в одном слове и кириллица, и иероглифы.">?</i></label>
-      <p class="hint">Поиск ключей не тратит: читает готовые файлы. Починка
-         тратит — сначала посмотрите находки.</p>
-
-      <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
-        <button id="tlScan" class="ghost">Найти остатки</button>
-        <button id="tlFix" class="ghost">Починить моделью</button>
-        <label class="chk" style="flex:0 0 auto">
-          <input type="checkbox" id="tlDry" checked> только показать, не переписывать
-          <i class="hint-icon" data-tip="Модель посчитает замены и покажет их, но готовые главы не тронет. Снимайте только когда находки просмотрены.">?</i></label>
-        <label class="chk" style="flex:0 0 auto">
-          <input type="checkbox" id="tlMixed" checked> смешанные слова
-          <i class="hint-icon" data-tip="Слова, где кириллица и иероглифы стоят вместе. Обычно это склейка перевода с оригиналом.">?</i></label>
-      </div>
-
-      <p class="hint" id="tlScanNote"></p>
-      <div class="table" id="tlScanRows" hidden style="margin-top:8px;max-height:320px"></div>
-    </div>
-
-    <div id="tlBox" hidden style="margin-top:14px">
-      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="tlStatus"></span></div>
-      <!-- Полоса ожидания, а не процентов: сколько глав впереди,
-           переводчик по ходу не сообщает, и делить нечего. Бегущая
-           отвечает на единственный вопрос, который тут и возникает, —
-           работает оно или подвисло. -->
-      <div class="bar waiting"><i id="tlFill"></i></div>
-      <div class="stats"><span class="timers" id="tlTimers"></span></div>
-      <div class="row" style="margin-top:12px">
-        <button id="tlStop" class="ghost" hidden>Остановить</button>
-      </div>
-      <p class="result-path" id="tlDone"></p>
-      <!-- Журнал самого переводчика: единственное место, где видно, что
-           он делает прямо сейчас. Сколько глав впереди, он не сообщает,
-           и рисовать процент наугад было бы враньём. -->
-      <details id="tlLogBox" style="margin-top:12px" hidden>
-        <summary class="hint" style="cursor:pointer">Журнал переводчика</summary>
-        <div class="joblog" id="tlLog"></div>
-      </details>
-    </div>
-  </div>
-
   <!-- Счётчик трафика. При платном пакете это первое, что хочется
        видеть, а узнать было неоткуда: главы, рейтинги, обложки, перевод
        и обновления уходили в один общий поток, о котором никто не
@@ -4245,6 +3985,304 @@
 
     <p class="hint" id="lbNote"></p>
     <div id="lbList" style="margin-top:10px"></div>
+  </div>
+</section>
+
+<!-- ====================== Перевести ======================
+     Переводчик остаётся отдельной программой: у него своё окружение на
+     гигабайт, своя папка проекта с глоссарием и главами, свои промпты и
+     ключи. Мы храним только путь и зовём его команды.
+
+     Вкладка своя, а не угол «Инструментов», потому что перевод — это
+     работа над книгой, а не настройка программы: он идёт часами, стоит
+     ключей и начинается там же, где кончается качалка, — в библиотеке.
+-->
+<section id="tab-translate" hidden>
+
+  <!-- Книга берётся из библиотеки: там она уже скачана, и путь к ней
+       записан. Носить его руками через проводник — то же самое, только
+       дольше и с опечатками. -->
+  <div class="card lit">
+    <label>Книга из библиотеки</label>
+    <p class="hint">Переводчику нужен .epub. Если его ещё нет — соберите
+       на вкладке «Конвертация» из глав книги, а потом возвращайтесь.</p>
+    <div class="row" style="margin-top:10px;gap:10px">
+      <div id="tnBook" class="dropdown" style="flex:1;min-width:240px"
+           data-options='[["","— выберите книгу —"]]'></div>
+      <button id="tnTake" class="ghost" style="flex:0 0 auto">Подставить</button>
+    </div>
+    <p class="hint" id="tnNote" style="margin-top:8px"></p>
+    <div class="table" id="tnFiles" hidden style="margin-top:8px"></div>
+  </div>
+
+  <!-- Связь с переводчиком EPUB. Он остаётся отдельной программой: у
+       него своё окружение на гигабайт (PyQt6, playwright, звук), своя
+       папка проекта с глоссарием и главами, свои промпты и ключи в
+       ~/.epub_translator. Мы храним только путь и зовём его команды —
+       так же, как зовём окно выбора файлов. -->
+  <div class="card" id="tlCard">
+    <label>Переводчик EPUB</label>
+    <p class="hint">Отдельная программа, стоящая рядом. Глоссарий, главы и
+       промпты остаются у неё: мы помним только, где она лежит.</p>
+    <div class="row" style="margin-top:10px">
+      <!-- Обычное поле пути, а не `pickpath`: тот класс — про список
+           выбранных файлов и требует своего контейнера, а здесь одна
+           папка, как «куда сохранить» на других вкладках. -->
+      <input id="tlPath" type="text"
+             placeholder="Папка переводчика — та, где лежит run.bat"
+             autocomplete="off">
+      <button class="ghost browse" data-target="tlPath" data-kind="folder">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
+      <button id="tlCheck" class="ghost">Проверить связь</button>
+    </div>
+    <p class="hint" id="tlNote"></p>
+    <div class="table" id="tlList" hidden style="margin-top:10px;max-height:220px"></div>
+  </div>
+
+  <!-- Что именно будет переведено — до того, как за это заплатят.
+       Цена тут не в деньгах, а в квоте ключей, и промахнуться дороже
+       всего: узнать, что взялась вся книга вместо десяти глав, посреди
+       прогона поздно. План в сеть не ходит вовсе, поэтому нажимать его
+       можно сколько угодно. -->
+  <div class="card" id="tlPlanCard">
+    <label>Что будет переведено<i class="hint-icon" data-tip="Считает главы, задачи и знаки, не трогая ни сети, ни ключей. То же самое, что «показать до и после» в форматировании, только для перевода.">?</i></label>
+    <p class="hint">Провайдер, модель и ключи берутся те, что настроены в
+       самом переводчике: держать им второе место у себя значит однажды
+       разойтись с ним в настройках.</p>
+
+    <div class="row" style="margin-top:10px">
+      <input id="tlEpub" type="text" placeholder="Какой .epub переводить"
+             autocomplete="off">
+      <button class="ghost browse" data-target="tlEpub" data-kind="file">Обзор…</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="tlProject" type="text"
+             placeholder="Папка проекта — туда переводчик кладёт главы"
+             autocomplete="off" data-keep>
+      <button class="ghost browse" data-target="tlProject" data-kind="folder">Обзор…</button>
+    </div>
+
+    <div style="margin-top:12px">
+      <label for="tlScope">какие главы брать<i class="hint-icon" data-tip="«Ещё не переведённые» — обычный случай: продолжить с того места, где остановились. «Все подряд» переводит книгу заново, поверх готового.">?</i></label>
+      <div class="dropdown" id="tlScope"
+           data-options='[["pending","ещё не переведённые"],["all","все подряд, заново"],["translated","только уже переведённые"]]'></div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button id="tlPlan" class="ghost" style="flex:1">Посчитать план</button>
+    </div>
+    <p class="hint" id="tlPlanNote"></p>
+    <div class="table" id="tlPlanRows" hidden style="margin-top:10px;max-height:320px"></div>
+  </div>
+
+  <!-- Сама работа. Четыре команды переводчика в том порядке, в каком их
+       и делают: глоссарий, перевод, сверка, сборка. Каждая идёт часами,
+       поэтому обычной задачей — с журналом и кнопкой «Остановить». -->
+  <div class="card" id="tlWorkCard">
+    <label>Перевести<i class="hint-icon" data-tip="Книга, папка проекта и отбор глав берутся из карточки выше. Провайдер, модель и ключи — из настроек самого переводчика.">?</i></label>
+    <p class="hint">Порядок обычный: собрать глоссарий, перевести, сверить,
+       собрать EPUB. Каждая кнопка — часы работы; остановка срабатывает на
+       границе главы, и сделанное остаётся.</p>
+
+    <!-- Сервис и модель. Списки не свои: их отдаёт сам переводчик
+         командами `providers` и `models`, и они всегда те же, что у него
+         в окне. Свой перечень разошёлся бы с его настройками в первый же
+         раз, когда он добавит себе провайдера. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>сервис<i class="hint-icon" data-tip="Из настроенных у вас в переводчике. Не выбран — берётся тот, что сохранён у него.">?</i></label>
+        <div class="dropdown" id="tlProvider" data-options='[["","как настроено"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>модель<i class="hint-icon" data-tip="Модели выбранного сервиса, с его же квотами: сколько запросов в минуту и в сутки она отдаёт.">?</i></label>
+        <div class="dropdown" id="tlModel" data-options='[["","как настроено"]]'></div>
+      </div>
+      <div style="flex:0 0 auto;align-self:flex-end">
+        <button id="tlLoad" class="ghost">Обновить списки</button>
+      </div>
+    </div>
+    <p class="hint" id="tlPickNote"></p>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label for="tlWorkers">потоков<i class="hint-icon" data-tip="Пусто или 0 — сколько настроено у самого переводчика. Своё число перебивает его настройку только на этот запуск.">?</i></label>
+        <input id="tlWorkers" type="number" min="0" max="32" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlRpm">запросов в минуту<i class="hint-icon" data-tip="0 — как настроено у переводчика. Больше, чем позволяет модель, ставить бессмысленно: упрётся в её квоту.">?</i></label>
+        <input id="tlRpm" type="number" min="0" max="600" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlTemp">температура<i class="hint-icon" data-tip="Пусто — как настроено у переводчика. Ниже — суше и ближе к тексту, выше — вольнее.">?</i></label>
+        <input id="tlTemp" type="text" placeholder="как настроено" autocomplete="off">
+      </div>
+    </div>
+
+    <!-- Отбор глав поверх «все / непереведённые / переведённые». Нужен
+         затем же, зачем и план: взять десять глав на пробу, а не книгу
+         целиком. Имена — фильтры самого переводчика, повторяемые. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:2">
+        <label for="tlPick">только эти главы<i class="hint-icon" data-tip="Куски имён файлов глав через запятую: «0012, 0013» или «Глава 5». Пусто — все, что попали под отбор выше.">?</i></label>
+        <input id="tlPick" type="text" placeholder="пусто — все под отбором" autocomplete="off">
+      </div>
+      <div style="flex:1">
+        <label for="tlOffset">пропустить<i class="hint-icon" data-tip="Сколько глав пропустить с начала отбора. 0 — не пропускать.">?</i></label>
+        <input id="tlOffset" type="number" min="0" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlLimit">взять не больше<i class="hint-icon" data-tip="Предел глав за один запуск. 0 — без предела. Десяток на пробу дешевле, чем вся книга.">?</i></label>
+        <input id="tlLimit" type="number" min="0" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlSuffix">какие файлы<i class="hint-icon" data-tip="Окончание имени переведённых файлов, например «_validated.html». Пусто — как выбирает сам переводчик. Пригождается, когда одну книгу переводили дважды. Действует на сверку, поиск остатков и сборку.">?</i></label>
+        <input id="tlSuffix" type="text" placeholder="сам выберет" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px;flex-wrap:wrap">
+      <button id="tlGlossary" class="ghost">Собрать глоссарий</button>
+      <button id="tlTranslate" class="primary">Перевести</button>
+      <button id="tlConsistency" class="ghost">Сверить перевод</button>
+    </div>
+
+    <!-- Ручки одного только перевода: чем отдавать главу модели. Слова
+         его же; «как настроено» означает его собственную настройку, и
+         наш ноль не должен решать за его окно. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>отдавать главу<i class="hint-icon" data-tip="Целиком — один запрос на главу. Пачкой — несколько глав в запросе, дешевле по квоте. Кусками — длинную главу по частям. Цепочкой — подряд, с оглядкой на предыдущий ответ.">?</i></label>
+        <div class="dropdown" id="tlWayRun" data-options='[["","как настроено"],["single","целиком"],["batch","пачкой"],["chunk","кусками"],["sequential","цепочкой"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="tlTaskSize">знаков в задаче<i class="hint-icon" data-tip="Предел знаков на один запрос при пачке и кусках. 0 — как настроено у переводчика.">?</i></label>
+        <input id="tlTaskSize" type="number" min="0" max="500000" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlSplits">звеньев цепочки<i class="hint-icon" data-tip="На сколько запросов подряд делить главу в режиме «цепочкой». 0 — как настроено.">?</i></label>
+        <input id="tlSplits" type="number" min="0" max="20" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlSeconds">оборвать через, с<i class="hint-icon" data-tip="Сколько секунд работать, потом остановиться самому. 0 — без срока. Полезно, когда квота считается по суткам.">?</i></label>
+        <input id="tlSeconds" type="number" min="0" max="86400" value="0">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlForce"> принимать ответ без проверки разметки
+        <i class="hint-icon" data-tip="Переводчик отбраковывает ответы с поломанным HTML. С этой галкой берёт как есть — выручает, когда модель упорно отдаёт «неправильную» вёрстку.">?</i></label>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlJson"> передавать главы JSON-ом
+        <i class="hint-icon" data-tip="Другой способ упаковки главы для модели. Иногда держит разметку лучше обычного.">?</i></label>
+    </div>
+
+    <!-- Ручки одного только глоссария. Слияние — его слова и его же
+         подписи: «Дополнение», «Обновление», «Накопление». -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>глоссарий сливать<i class="hint-icon" data-tip="Дополнить — не трогать уже собранное. Обновить — перезаписать расхождения новым. Копить — держать все варианты рядом.">?</i></label>
+        <div class="dropdown" id="tlMerge" data-options='[["","как настроено"],["supplement","дополнить"],["update","обновить"],["accumulate","копить варианты"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="tlBatch">глав в пачке<i class="hint-icon" data-tip="Сколько глав уходит модели одной задачей при сборе глоссария. 0 — как настроено (у него по умолчанию одна).">?</i></label>
+        <input id="tlBatch" type="number" min="0" max="50" value="0">
+      </div>
+      <div style="flex:1">
+        <label for="tlNewTerms">новых слов за пачку<i class="hint-icon" data-tip="Предел новых терминов из одной пачки глав. 0 — без предела. Помогает, когда модель тащит в глоссарий всё подряд.">?</i></label>
+        <input id="tlNewTerms" type="number" min="0" max="500" value="0">
+      </div>
+    </div>
+
+    <!-- Ручки одной только сверки. Что делать с находками — тремя
+         ступенями, а не двумя галками: «переписать» без «чинить» у
+         переводчика не делает ровно ничего, и притом молча. -->
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1">
+        <label>как сверять<i class="hint-icon" data-tip="Быстрая ловит опечатки, метакомментарии модели и путаницу в роде. Глубокая — ещё и расхождения в именах, логике и сюжете; она дороже по квоте.">?</i></label>
+        <div class="dropdown" id="tlWay" data-options='[["","как настроено"],["fast_proofread_3_1","быстрая вычитка"],["deep_consistency","глубокая сверка"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label>с находками<i class="hint-icon" data-tip="«Внести правки» переписывает готовые главы — это единственное необратимое действие здесь.">?</i></label>
+        <div class="dropdown" id="tlDeed" data-options='[["look","только показать"],["offer","предложить правки"],["apply","внести правки в файлы"]]'></div>
+      </div>
+      <div style="flex:1">
+        <label for="tlChunk">глав в запросе<i class="hint-icon" data-tip="Сколько глав уходит модели одним куском. 0 — как настроено у переводчика. Больше — дешевле по квоте, но хуже видно детали.">?</i></label>
+        <input id="tlChunk" type="number" min="0" max="50" value="0">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlSource" checked> сверять с оригиналом
+        <i class="hint-icon" data-tip="Модель видит исходный текст рядом с переводом. Без него она судит только по переводу — дешевле, но пропусков не заметит.">?</i></label>
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlGlossFirst"> сначала глоссарий
+        <i class="hint-icon" data-tip="Глубокая сверка в два прохода: сперва имена и термины, потом всё остальное. Точнее и дороже.">?</i></label>
+      <div style="flex:1;min-width:220px">
+        <label for="tlSure">чинить находки с уверенностью<i class="hint-icon" data-tip="high, medium, low через запятую. Пусто — как настроено у переводчика. Применяется только когда правки просят.">?</i></label>
+        <input id="tlSure" type="text" placeholder="пусто — как настроено" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="table" id="tlCheckRows" hidden style="margin-top:10px;max-height:320px"></div>
+
+    <div class="row" style="margin-top:14px">
+      <input id="tlOut" type="text" placeholder="Куда собрать EPUB — пусто, значит в папку проекта"
+             autocomplete="off">
+      <button id="tlBuild" class="ghost" style="flex:0 0 auto">Собрать EPUB</button>
+    </div>
+    <div class="row" style="margin-top:10px;align-items:center">
+      <label class="chk" style="flex:0 0 auto">
+        <input type="checkbox" id="tlStrict"> не собирать с дырами
+        <i class="hint-icon" data-tip="Отказаться, если у какой-то отобранной главы перевода нет. Иначе она попадёт в книгу на языке оригинала, и заметите вы это только при чтении.">?</i></label>
+    </div>
+
+    <!-- Непереведённые остатки. Беда отдельная от сверки: там расходятся
+         имена и смысл, а тут прямо в готовом переводе остались чужие
+         слова — модель пропустила кусок. Ищется без ключей, чинится с
+         ключами, поэтому кнопки две и между ними просмотр. -->
+    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
+      <label>Непереведённые остатки<i class="hint-icon" data-tip="Ищет в уже переведённых главах слова, оставшиеся на языке оригинала, и смешанные — где в одном слове и кириллица, и иероглифы.">?</i></label>
+      <p class="hint">Поиск ключей не тратит: читает готовые файлы. Починка
+         тратит — сначала посмотрите находки.</p>
+
+      <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+        <button id="tlScan" class="ghost">Найти остатки</button>
+        <button id="tlFix" class="ghost">Починить моделью</button>
+        <label class="chk" style="flex:0 0 auto">
+          <input type="checkbox" id="tlDry" checked> только показать, не переписывать
+          <i class="hint-icon" data-tip="Модель посчитает замены и покажет их, но готовые главы не тронет. Снимайте только когда находки просмотрены.">?</i></label>
+        <label class="chk" style="flex:0 0 auto">
+          <input type="checkbox" id="tlMixed" checked> смешанные слова
+          <i class="hint-icon" data-tip="Слова, где кириллица и иероглифы стоят вместе. Обычно это склейка перевода с оригиналом.">?</i></label>
+      </div>
+
+      <p class="hint" id="tlScanNote"></p>
+      <div class="table" id="tlScanRows" hidden style="margin-top:8px;max-height:320px"></div>
+    </div>
+
+    <div id="tlBox" hidden style="margin-top:14px">
+      <div class="status result-block"><span class="result-dot"></span><span class="result-text" id="tlStatus"></span></div>
+      <!-- Полоса ожидания, а не процентов: сколько глав впереди,
+           переводчик по ходу не сообщает, и делить нечего. Бегущая
+           отвечает на единственный вопрос, который тут и возникает, —
+           работает оно или подвисло. -->
+      <div class="bar waiting"><i id="tlFill"></i></div>
+      <div class="stats"><span class="timers" id="tlTimers"></span></div>
+      <div class="row" style="margin-top:12px">
+        <button id="tlStop" class="ghost" hidden>Остановить</button>
+      </div>
+      <p class="result-path" id="tlDone"></p>
+      <!-- Журнал самого переводчика: единственное место, где видно, что
+           он делает прямо сейчас. Сколько глав впереди, он не сообщает,
+           и рисовать процент наугад было бы враньём. -->
+      <details id="tlLogBox" style="margin-top:12px" hidden>
+        <summary class="hint" style="cursor:pointer">Журнал переводчика</summary>
+        <div class="joblog" id="tlLog"></div>
+      </details>
+    </div>
   </div>
 </section>
 
@@ -7224,6 +7262,22 @@ function libCard(book, how){
       libFullClose();
     };
     deeds.append(shape);
+
+    // Перевод начинается там, где кончается качалка. Книгу на вкладке
+    // выбирают из того же списка, поэтому выбираем её здесь сами.
+    const say = document.createElement('button');
+    say.className = 'ghost';
+    say.textContent = 'Перевести';
+    say.title = 'Открыть переводчик с этой книгой';
+    say.onclick = async () => {
+      goTab('translate');
+      libFullClose();
+      if(typeof tnFill === 'function'){
+        await tnFill();
+        if(tnMenu && tnMenu.set(book.key)) tnTake();
+      }
+    };
+    deeds.append(say);
 
     const where = document.createElement('button');
     where.className = 'ghost';

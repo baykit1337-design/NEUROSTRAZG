@@ -5245,6 +5245,105 @@ $('tlCheck').onclick = tlCheck;
 $('tlPath').onchange = tlSave;
 tlLoad();
 
+/* ------------------------------------------- книга из библиотеки
+ *
+ * Перевод начинается там, где кончается качалка: книга уже скачана, и
+ * путь к ней записан. Носить его руками через проводник — то же самое,
+ * только дольше и с опечатками.
+ *
+ * Список книг берём у сервера при первом открытии вкладки: держать его
+ * вторым экземпляром рядом с библиотекой значило бы однажды разойтись.
+ */
+let tnBooks = [], tnMenu = null;
+
+async function tnFill(){
+  if(tnMenu) return;                  // список уже собран
+  try{
+    const got = await call('/api/library');
+    // Переводить есть смысл то, что скачано: у остальных книг папки
+    // нет вовсе, и подставлять из них нечего.
+    tnBooks = (got.books || []).filter(one => one.folder && one.last);
+    const box = $('tnBook');
+    box.dataset.options = JSON.stringify([
+      ['', '— выберите книгу —'],
+      ...tnBooks.map(one => [one.key, one.title || one.name || one.key]),
+    ]);
+    box.innerHTML = '';
+    tnMenu = makeDropdown(box);
+    $('tnNote').textContent = tnBooks.length
+      ? '' : 'В библиотеке пока нет скачанных книг.';
+  }catch(err){
+    $('tnNote').textContent = 'Библиотека не прочиталась: ' + err.message;
+  }
+}
+
+/** Подставить выбранную книгу в поля переводчика. */
+async function tnTake(){
+  const key = tnMenu ? tnMenu.value : '';
+  const book = tnBooks.find(one => one.key === key);
+  if(!book){
+    $('tnNote').textContent = 'Сначала выберите книгу в списке.';
+    return;
+  }
+
+  $('tnTake').disabled = true;
+  $('tnFiles').hidden = true;
+  try{
+    const got = await call('/api/library/epub', {key});
+    // Папку проекта подставляем всегда: она новая, и её всё равно
+    // заводить. А книгу — только когда она одна: выбрать за человека
+    // из двух значит однажды перевести не ту.
+    $('tlProject').value = got.project || '';
+    const files = got.files || [];
+    if(files.length === 1){
+      $('tlEpub').value = files[0];
+      $('tnNote').textContent = 'Подставлено. Дальше — «Посчитать план».';
+    }else if(!files.length){
+      $('tlEpub').value = '';
+      $('tnNote').textContent = 'В папке книги нет .epub. Соберите его на '
+        + 'вкладке «Конвертация» из глав книги, потом возвращайтесь.';
+    }else{
+      $('tlEpub').value = '';
+      $('tnNote').textContent = `Файлов .epub: ${files.length}. Выберите, `
+        + 'какой переводить:';
+      tnShow(files);
+    }
+  }catch(err){
+    $('tnNote').textContent = '';
+    showError(err.message, $('tnNote'));
+  }finally{
+    $('tnTake').disabled = false;
+  }
+}
+
+/** Список найденных .epub — нажатием выбирается один. */
+function tnShow(files){
+  const table = $('tnFiles');
+  table.innerHTML = '';
+  for(const one of files){
+    const row = document.createElement('div');
+    row.className = 'tr';
+    const name = document.createElement('button');
+    name.className = 'ghost';
+    name.style.flex = '1';
+    name.style.textAlign = 'left';
+    name.textContent = one;
+    name.onclick = () => {
+      $('tlEpub').value = one;
+      $('tnNote').textContent = 'Подставлено. Дальше — «Посчитать план».';
+      table.hidden = true;
+    };
+    row.append(name);
+    table.append(row);
+  }
+  table.hidden = false;
+}
+
+$('tnTake').onclick = tnTake;
+// Открыли вкладку — читаем библиотеку: книгу могли скачать минуту назад.
+document.querySelector('.tabs button[data-tab="translate"]')
+  ?.addEventListener('click', tnFill);
+
 /* ------------------------------------- что именно будет переведено
  *
  * План — это «до и после» для перевода, и нужен он ровно затем же:
