@@ -116,7 +116,7 @@ class TestNoDoubleCounting(unittest.TestCase):
     def test_the_summary_separates_the_loader_troubles_from_the_rest(self):
         summary = junk.inspect(chapters(
             tail=["完全没有翻译的段落 {n}。"])).summary()
-        self.assertIn("мешает загрузчику", summary)
+        self.assertIn("лишнее наверняка", summary)
         self.assertIn("артефактов", summary)
 
 
@@ -382,3 +382,118 @@ class TestCommentsFromTheSite(unittest.TestCase):
         made, gone = junk.clean([("Глава 1", list(body))], ["comment"])
         self.assertEqual(made[0][1], ["Он ушёл прочь и не оглянулся."])
         self.assertEqual(gone, 1)
+
+
+#: Ключ из служебных полей сайта — такой, каким он приезжает в текст
+#: перевода. Каждый раз он другой: опознать его можно только по виду.
+TOKEN = ("eyJ1IjoiNDhlOGM4MjMiLCJ0IjoxNzg4NTkyMzM4ODY4LCJhIjoiTW96aWxsY"
+         "S81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCJ9{n}.")
+
+LINK = ("https://supabase.dreamy-translations.com/storage/v1/object/"
+        "public/chapter-illustrations/35763/chapter{n}_image0.file")
+
+
+class TestRubbishFromTheSite(unittest.TestCase):
+    """Парсер приносит в текст перевода служебные поля сайта: ключ
+    картинки и ссылку на неё.
+
+    Найти их в книге на полторы тысячи глав можно только зная, что
+    искать: знаки каждый раз другие, и поиском по строке их не соберёшь.
+    """
+
+    def book(self, *tail, count: int = 12) -> list:
+        """Книга, у которой мусор стоит в тексте, а не в шапке.
+
+        Шапку разбирают другие проверки, и попади мусор туда, он стал бы
+        «строкой почти в каждой главе» — правдой, но не той.
+        """
+        made = []
+        for number in range(1, count + 1):
+            body = [BOOK,
+                    f"Chapter {number}: Panicking Count Ashton",
+                    f"«Это…» — граф Эштон дрожал, {number}.",
+                    f"Он перечитал донесение ещё раз, {number}.",
+                    *[line.format(n=number) for line in tail]]
+            made.append((f"Chapter {number}_ Panicking Count Ashton", body))
+        return made
+
+    def test_a_random_key_is_found(self):
+        self.assertEqual(kinds(junk.inspect(self.book(TOKEN)))["token"].count,
+                         12)
+
+    def test_a_bare_link_is_found(self):
+        self.assertEqual(kinds(junk.inspect(self.book(LINK)))["link"].count,
+                         12)
+
+    def test_they_are_told_apart_from_untranslated_text(self):
+        """Непереведённый абзац человек, может, хочет перевести, а не
+        выбросить: сваливать их в одну кучу нельзя."""
+        found = kinds(junk.inspect(
+            self.book(TOKEN, "He walked away without a word, {n}.")))
+        self.assertEqual(found["token"].count, 12)
+        self.assertEqual(found["latin"].count, 12)
+
+    def test_both_are_marked_at_once(self):
+        """Ключ и ссылка — не текст книги вовсе, и разбирать их незачем."""
+        found = kinds(junk.inspect(self.book(TOKEN, LINK)))
+        self.assertTrue(found["token"].spoils)
+        self.assertTrue(found["link"].spoils)
+
+    def test_a_link_inside_a_sentence_stays(self):
+        """Там она часть текста, а не мусор."""
+        book = self.book("Он открыл {n} — https://example.com/x — и ушёл.")
+        self.assertNotIn("link", kinds(junk.inspect(book)))
+
+    def test_a_short_latin_word_is_not_a_random_key(self):
+        """Три латинские буквы — это «SSS», «OK» и половина названий."""
+        self.assertNotIn("token", kinds(junk.inspect(self.book("SSS Talent {n}"))))
+
+    def test_a_short_mixed_word_is_not_a_random_key(self):
+        """«Vol2Ch5» — это пометка тома, и в ней есть всё, что есть в
+        ключе: и цифры, и смесь регистра. Не хватает только длины — на
+        ней всё и держится."""
+        self.assertNotIn("token", kinds(junk.inspect(self.book("Vol2Ch5"))))
+
+    def test_a_long_english_word_is_not_a_random_key(self):
+        """В нём нет ни цифр, ни смеси регистра — значит, это слово.
+
+        Стоит одно, без номера главы рядом: с соседним словом проверка
+        прошла бы и без разбора самого слова, и смысла в ней не было бы.
+        """
+        book = self.book("Antidisestablishmentarianism")
+        self.assertNotIn("token", kinds(junk.inspect(book)))
+
+    def test_a_long_lowercase_slug_is_not_a_random_key(self):
+        """Название сайта, записанное слитно, — всё-таки текст.
+
+        Оно попадёт в «не переведено», и это правильно: там человек
+        решает сам. А мусор отмечается сразу, и молча выбросить из книги
+        строку, которую автор написал нарочно, нельзя.
+        """
+        found = kinds(junk.inspect(self.book("fanqienovel2024app")))
+        self.assertNotIn("token", found)
+        self.assertIn("latin", found)
+
+    def test_a_russian_line_with_a_key_glued_to_it_is_left_alone(self):
+        """Строку с настоящим текстом целиком не выбрасываем: вместе с
+        ключом ушла бы фраза."""
+        book = self.book("Она сказала это, глава {n}: " + TOKEN)
+        self.assertNotIn("token", kinds(junk.inspect(book)))
+
+    def test_the_key_goes_away_when_asked(self):
+        book = self.book(TOKEN, LINK)
+        report = junk.inspect(book)
+        keys = [f.key for f in report.finds if f.kind in ("token", "link")]
+
+        made, gone = junk.clean(book, keys)
+        self.assertEqual(gone, 24)
+        for _, body in made:
+            self.assertFalse([one for one in body if one.startswith("eyJ")])
+            self.assertFalse([one for one in body if one.startswith("http")])
+
+    def test_the_text_around_it_stays(self):
+        book = self.book(TOKEN)
+        report = junk.inspect(book)
+        made, _ = junk.clean(
+            book, [f.key for f in report.finds if f.kind == "token"])
+        self.assertTrue(any("граф Эштон" in line for line in made[0][1]))
