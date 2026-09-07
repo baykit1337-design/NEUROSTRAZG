@@ -1258,6 +1258,18 @@ def api_library_shelf():
     return jsonify(shelves=seen, left=left, total=shelf_op.weigh(looked))
 
 
+@app.get("/api/library/twins")
+def api_library_twins():
+    """Книги, которые похожи на одну и ту же работу.
+
+    Ничего не склеиваем: слить две записи — значит потерять метки одной
+    из них, и решать это человеку. Мы только показываем, где смотреть.
+    """
+    groups = library_op.look_alikes()
+    return jsonify(groups=groups,
+                   books=sorted({k for one in groups for k in one["books"]}))
+
+
 def _cover_ident(key: str) -> str:
     """Код обложки этой книги в кэше.
 
@@ -1513,6 +1525,129 @@ def api_downloads_remove():
     payload = request.json or {}
     gone = downloads_op.remove((payload.get("id") or "").strip())
     return jsonify(gone=gone, **_queue_out())
+
+
+#: Сколько ссылок принимать за раз. Каждая — это поход на сайт за
+#: карточкой книги; сотня разом означала бы четверть часа ожидания и
+#: закрытый сайт в конце.
+PASTE_AT_ONCE = 40
+
+
+def _paste_links(text: str) -> list[str]:
+    """Ссылки из вставленного куска.
+
+    Человек копирует их откуда попало: из заметок, из переписки, из
+    браузера столбиком. Поэтому режем по строкам и по пробелам, а не по
+    одному правилу, и берём только то, что похоже на ссылку.
+    """
+    found, seen = [], set()
+    for chunk in str(text or "").replace(",", " ").split():
+        one = chunk.strip().strip("<>\"'()[]")
+        if not one.lower().startswith(("http://", "https://")):
+            continue
+        if one in seen:
+            continue
+        seen.add(one)
+        found.append(one)
+    return found
+
+
+def _free_folder(base: str, folder: str, address: str, code) -> str:
+    """Имя папки, которое не занято другой книгой.
+
+    Названия у книг совпадают: «Возвращение» есть у трёх авторов сразу.
+    Очередь считает одной книгой то, что лежит в одной папке, — и две
+    разные книги слились бы в одну строку и легли бы в одну папку,
+    затирая друг друга. Это единственное место, где такое случается
+    молча: папку для одной книги человек называет сам и видит.
+
+    Разводим кодом книги: он у каждой свой и в имени папки не мешает.
+    """
+    if not folder:
+        return folder
+    for item in downloads_op.all_items():
+        same = (item.base, item.folder) == (base, folder)
+        if same and item.address != address:
+            return f"{folder} ({code})" if code else folder
+    return folder
+
+
+@app.post("/api/downloads/paste")
+def api_downloads_paste():
+    """Поставить в очередь список ссылок разом.
+
+    Двадцать книг руками — это двадцать раз «найти», «поправить папку»,
+    «в очередь». Здесь то же самое, но списком: у каждой ссылки свой
+    источник (он виден по хосту), у каждой книги своя папка, и имя ей
+    даёт сама книга, а не адрес.
+
+    Задачей, а не ответом на месте: каждая ссылка — это поход на сайт,
+    и двадцать походов не укладываются в один запрос.
+    """
+    payload = request.json or {}
+    base = (payload.get("base") or "").strip()
+    links = _paste_links(payload.get("text") or "")
+    if not base:
+        return jsonify(error="Выберите папку: очередь работает сама, "
+                             "спросить будет некого"), 400
+    if not links:
+        return jsonify(error="Ни одной ссылки не нашлось. Ссылки "
+                             "начинаются с http:// или https://"), 400
+    if len(links) > PASTE_AT_ONCE:
+        return jsonify(error=f"Больше {PASTE_AT_ONCE} ссылок за раз — это "
+                             f"{PASTE_AT_ONCE} походов на сайт подряд. "
+                             "Разбейте на части."), 400
+
+    picked = (payload.get("source") or "").strip()
+    job = Job(id=uuid.uuid4().hex[:12], kind="paste",
+              meta={"links": len(links)}, output_dir=base)
+    job.progress = {"stage": "search", "message": "Спрашиваем книги…",
+                    "done": 0, "total": len(links), "added": 0, "failed": 0}
+
+    def work(job: Job):
+        client = Client()
+        added, missed = [], []
+        try:
+            for at, link in enumerate(links, 1):
+                if job.cancel.is_set():
+                    break
+                job.progress.update(done=at - 1, message=link)
+                # Источник — по хосту ссылки: он и есть ответ на вопрос
+                # «чем качать эту книгу». Выбранный руками сильнее: у
+                # человека может быть свой резон.
+                key = picked or _source_for(link)
+                if not key:
+                    missed.append({"link": link,
+                                   "why": "не знаем, чем качать этот сайт"})
+                    continue
+                try:
+                    source = sources.get(key)
+                    novel = source.find(client, link)
+                except Exception as exc:  # noqa: BLE001 — одна ссылка не
+                    # повод бросать остальные девятнадцать.
+                    missed.append({"link": link,
+                                   "why": f"{type(exc).__name__}: {exc}"})
+                    job.progress.update(failed=len(missed))
+                    continue
+
+                folder = _free_folder(
+                    base, naming.folder_name(novel.name, code=novel.code),
+                    link, novel.code)
+                item = downloads_op.add(
+                    name=novel.name or "", cover=getattr(novel, "cover", ""),
+                    source=key, address=link, base=base, folder=folder)
+                added.append({"link": link, "title": item.title,
+                              "folder": folder})
+                job.progress.update(added=len(added))
+        finally:
+            client.close()
+
+        job.progress.update(done=len(links), stage="done",
+                            message=f"Поставлено книг: {len(added)}")
+        job.report = {"added": added, "missed": missed,
+                      "queue": [x.as_dict() for x in downloads_op.all_items()]}
+
+    return jsonify(job=start_job(job, work).snapshot())
 
 
 @app.post("/api/downloads/skip")
@@ -2257,6 +2392,11 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
             skipped=int(report.get("unavailable") or 0),
             last_run=library_op.stamp(),
         )
+        # Чем кончился прогон — отдельной строкой. «Последний прогон»
+        # отвечает только на вопрос «когда», а спрашивают обычно другое:
+        # идёт книга или встала.
+        library_op.log_run(book.key, last=book.last, chapters=book.chapters,
+                           why=str(report.get("message") or ""))
         library_op.save_passport(book)
     except Exception as exc:  # noqa: BLE001
         log.warning("Книга не записалась в библиотеку: %s", exc)

@@ -162,6 +162,12 @@ class Book:
     first_seen: str = ""
     last_run: str = ""
 
+    #: Чем кончился каждый прогон: когда, сколько глав прибавилось,
+    #: сколько стало. «Последний прогон» отвечает только на вопрос
+    #: «когда», а спрашивают обычно другое: идёт книга или встала, и
+    #: когда у неё в последний раз что-то прибавлялось.
+    runs: list = field(default_factory=list)
+
     @property
     def downloaded(self) -> bool:
         """Скачана ли хоть одна глава и лежит ли она где-то."""
@@ -245,6 +251,7 @@ class Book:
             "site_tags_ru": list(self.site_tags_ru),
             "status": self.status, "language": self.language,
             "first_seen": self.first_seen, "last_run": self.last_run,
+            "runs": [dict(one) for one in self.runs],
         }
         # Считаемые поля отдаём наружу, но не пишем в файл (см. `_save` и
         # `MADE`): сохранённое «есть новые главы» через день соврало бы, а
@@ -295,6 +302,8 @@ class Book:
             site_tags_ru=rows("site_tags_ru"),
             status=str(data.get("status") or ""),
             language=str(data.get("language") or ""),
+            runs=[dict(one) for one in (data.get("runs") or [])
+                  if isinstance(one, dict)],
             first_seen=str(data.get("first_seen") or ""),
             last_run=str(data.get("last_run") or ""),
         )
@@ -544,6 +553,91 @@ def remember(key: str = "", **fields) -> Book:
         return book
 
 
+#: Сколько прогонов помнить по книге. Двадцать — это полгода ночных
+#: обходов; дальше запись растёт, а отвечает всё на тот же вопрос.
+KEEP_RUNS = 20
+
+
+def log_run(key: str, last: int = 0, chapters: int = 0,
+            why: str = "") -> Book | None:
+    """Записать, чем кончился прогон книги.
+
+    «Последний прогон» отвечает только на вопрос «когда». А спрашивают
+    обычно другое: идёт книга или встала — то есть когда у неё в
+    последний раз что-то прибавлялось. Один этот вопрос отличает книгу,
+    которую забросил автор, от книги, которую не может взять качалка.
+    """
+    with _LOCK:
+        books = _load()
+        book = books.get(str(key or ""))
+        if book is None:
+            return None
+
+        was = int((book.runs[-1] or {}).get("last") or 0) if book.runs else 0
+        book.runs.append({
+            "at": stamp(),
+            "last": max(0, int(last or 0)),
+            "chapters": max(0, int(chapters or 0)),
+            # Сколько прибавилось за этот прогон. Отрицательного не
+            # бывает: глав в папке стало меньше — это не «минус три
+            # главы», а беда с папкой, и о ней говорит осмотр.
+            "got": max(0, int(last or 0) - was),
+            "why": str(why or ""),
+        })
+        if len(book.runs) > KEEP_RUNS:
+            del book.runs[:len(book.runs) - KEEP_RUNS]
+        _save(books)
+        return book
+
+
+def _plain(text: str) -> str:
+    """Название без всего, что бывает у него лишним.
+
+    Одну и ту же книгу заводят как «Гостиница иного мира», «Гостиница
+    Иного Мира» и «Гостиница иного мира (новелла)»: пробелы, регистр и
+    знаки различают их только на глаз машины.
+    """
+    said = str(text or "").casefold()
+    return "".join(one for one in said if one.isalnum())
+
+
+def look_alikes() -> list:
+    """Книги, которые похожи на одну и ту же работу.
+
+    Одну книгу заводят дважды: раз с рейтинга, раз по вставленной
+    ссылке, — и записи расходятся ключами, а не сутью. Совпадение папок
+    ловится при чтении (`_merge_twins`), но папка бывает разной: одну и
+    ту же работу качают в «Гостиница» и в «Гостиница иного мира».
+
+    Здесь сравниваются названия — все, какие у книги есть: своё,
+    переведённое. Совпало хоть одно после чистки — книги в одной куче.
+
+    Ничего не склеиваем. Слить две записи — значит потерять метки одной
+    из них, и решать это человеку: мы только показываем, где смотреть.
+    """
+    seen: dict[str, list] = {}
+    for book in all_books():
+        for name in {_plain(book.name), _plain(book.name_ru)}:
+            if len(name) < 3:
+                # Название в два знака совпадёт у всего подряд, а
+                # «куча из всех книг» не находка.
+                continue
+            seen.setdefault(name, [])
+            if book not in seen[name]:
+                seen[name].append(book)
+
+    groups, taken = [], set()
+    for name, books in seen.items():
+        if len(books) < 2:
+            continue
+        keys = tuple(sorted(one.key for one in books))
+        if keys in taken:
+            continue
+        taken.add(keys)
+        groups.append({"name": name, "books": list(keys)})
+    return groups
+
+
 def set_cover(key: str, ident: str) -> Book | None:
     """Запомнить, что у книги есть своя обложка.
 
@@ -768,7 +862,8 @@ def state() -> dict:
     }
 
 
-__all__ = ["AUTO", "Book", "LIBRARY_FILE", "MARKS", "PASSPORT", "all_books",
-           "clear", "forget", "get", "key_of", "mark", "passport", "remember",
+__all__ = ["AUTO", "Book", "KEEP_RUNS", "LIBRARY_FILE", "MARKS", "PASSPORT",
+           "all_books", "clear", "forget", "get", "key_of", "log_run",
+           "look_alikes", "mark", "passport", "remember",
            "save_passport", "set_cover", "set_note", "set_tags", "stamp",
            "state", "touch"]

@@ -2076,3 +2076,137 @@ class TestTheLibraryAnswersWhenABookIsQueued(WebBase):
         said = self.put(folder="Новая",
                         origin={"site": "qidian", "book_id": "104"}).get_json()
         self.assertEqual(said["known"]["folder"], "/книги/Старая")
+
+
+class TestPastingALisfOfLinks(WebBase):
+    """Двадцать книг руками — это двадцать раз «найти», «поправить
+    папку», «в очередь»."""
+
+    def setUp(self):
+        super().setUp()
+        from webapp import app as web
+        self.web = web
+
+    def test_links_are_picked_out_of_anything_pasted(self):
+        """Человек копирует их из заметок, из переписки, из браузера."""
+        from webapp.app import _paste_links
+
+        said = _paste_links("""https://a/1/, https://b/2/
+            <https://c/3/>  просто слова  https://a/1/""")
+        self.assertEqual(said, ["https://a/1/", "https://b/2/",
+                                "https://c/3/"])
+
+    def test_words_that_are_not_links_are_dropped(self):
+        from webapp.app import _paste_links
+        self.assertEqual(_paste_links("книга, вторая книга"), [])
+
+    def test_a_paste_without_a_folder_is_a_refusal(self):
+        """Очередь работает сама — спросить будет некого."""
+        res = self.client.post("/api/downloads/paste",
+                               json={"text": "https://a/1/"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_paste_without_links_is_a_refusal(self):
+        res = self.client.post("/api/downloads/paste",
+                               json={"text": "тут ссылок нет",
+                                     "base": self.dir.name})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("http", res.get_json()["error"])
+
+    def test_too_many_links_at_once_is_a_refusal(self):
+        """Каждая ссылка — поход на сайт: сотня разом это четверть часа
+        ожидания и закрытый сайт в конце."""
+        many = "\n".join(f"https://a/{n}/"
+                         for n in range(self.web.PASTE_AT_ONCE + 1))
+        res = self.client.post("/api/downloads/paste",
+                               json={"text": many, "base": self.dir.name})
+        self.assertEqual(res.status_code, 400)
+
+    def fake_source(self, found=None, blows=False):
+        """Источник, который «находит» книгу, не выходя в сеть."""
+        class Novel:
+            def __init__(self, name, code):
+                self.name, self.code = name, code
+                self.cover = ""
+
+        class Source:
+            key = "поддельный"
+
+            def find(self, client, query):
+                if blows:
+                    raise RuntimeError("сайт не ответил")
+                return Novel(found or "Книга", query.rstrip("/").rsplit("/")[-1])
+
+        was_get, was_for = self.web.sources.get, self.web._source_for
+        self.web.sources.get = lambda key: Source()
+        self.web._source_for = lambda link: "поддельный"
+        self.addCleanup(setattr, self.web.sources, "get", was_get)
+        self.addCleanup(setattr, self.web, "_source_for", was_for)
+
+    def paste(self, text):
+        said = self.client.post("/api/downloads/paste",
+                                json={"text": text, "base": self.dir.name})
+        self.assertEqual(said.status_code, 200, said.get_json())
+        job_id = said.get_json()["job"]["id"]
+        self.web.JOBS[job_id].thread.join(timeout=60)
+        return self.web.JOBS[job_id]
+
+    def test_every_link_becomes_a_row(self):
+        self.fake_source()
+        job = self.paste("https://a/1/\nhttps://a/2/")
+
+        self.assertEqual(len(job.report["added"]), 2)
+        self.assertEqual(len(downloads.all_items()), 2)
+
+    def test_the_folder_is_named_by_the_book_not_by_the_link(self):
+        """За тем программа и ходит на сайт."""
+        self.fake_source(found="Гостиница иного мира")
+        job = self.paste("https://a/566155/")
+
+        self.assertEqual(job.report["added"][0]["folder"],
+                         "Гостиница иного мира")
+        self.assertEqual(downloads.all_items()[0].folder,
+                         "Гостиница иного мира")
+
+    def test_the_source_is_written_into_the_row(self):
+        """Без него строка встанет и будет ждать ссылку, которая есть."""
+        self.fake_source()
+        self.paste("https://a/1/")
+        item = downloads.all_items()[0]
+        self.assertEqual(item.source, "поддельный")
+        self.assertTrue(item.ready)
+
+    def test_one_link_that_failed_does_not_stop_the_rest(self):
+        was = self.web._source_for
+        self.web._source_for = lambda link: "" if "2" in link else "поддельный"
+        self.addCleanup(setattr, self.web, "_source_for", was)
+        self.fake_source()
+        self.web._source_for = lambda link: "" if "2" in link else "поддельный"
+
+        job = self.paste("https://a/1/\nhttps://a/2/\nhttps://a/3/")
+        self.assertEqual(len(job.report["added"]), 2)
+        self.assertEqual(len(job.report["missed"]), 1)
+        self.assertIn("2", job.report["missed"][0]["link"])
+
+    def test_a_site_that_did_not_answer_is_named(self):
+        """Молча потерять половину вставленного нельзя."""
+        self.fake_source(blows=True)
+        job = self.paste("https://a/1/")
+
+        self.assertEqual(job.report["added"], [])
+        self.assertIn("сайт не ответил", job.report["missed"][0]["why"])
+
+    def test_the_same_link_twice_is_one_row(self):
+        self.fake_source()
+        self.paste("https://a/1/\nhttps://a/1/")
+        self.assertEqual(len(downloads.all_items()), 1)
+
+    def test_two_books_with_the_same_name_do_not_share_a_folder(self):
+        """«Возвращение» есть у трёх авторов сразу, и слипнись они в одну
+        строку — легли бы в одну папку, затирая друг друга."""
+        self.fake_source(found="Возвращение")
+        self.paste("https://a/1/\nhttps://a/2/")
+
+        folders = sorted(one.folder for one in downloads.all_items())
+        self.assertEqual(len(folders), 2)
+        self.assertNotEqual(folders[0], folders[1])

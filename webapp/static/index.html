@@ -1225,6 +1225,13 @@
   .lb-full-box .lb{border:0;background:transparent;padding:0}
   .lb-full-box .lb-cover{flex-basis:150px;width:150px;height:214px}
   .lb-full-box .lb-hidden{display:block}
+  /* История прогонов и похожие книги — только в карточке на весь
+     экран: в списке на две сотни книг это две сотни лишних списков. */
+  .lb-runs, .lb-alike{margin-top:14px}
+  .lb-run{font-size:12px;color:var(--muted);margin-top:3px}
+  /* Прогон, в котором ничего не прибавилось, гаснет: по нему и видно,
+     встала книга или идёт. */
+  .lb-run.idle{opacity:.55}
   #lbList .lb.ticked{
     border-color:#8c54ff;background:rgba(140,84,255,.08);
   }
@@ -1816,11 +1823,31 @@
       <button id="dqToggle" class="ghost" style="flex:1;text-align:left">
         Очередь книг <span id="dqCount" class="tag"></span>
       </button>
+      <button id="dqPasteOpen" class="ghost"
+              title="Поставить в очередь список ссылок разом">Список ссылок</button>
       <button id="dqFill" class="ghost"
               title="Поставить в очередь все книги, у которых вышли новые главы">Докачать всё новое</button>
       <button id="dqStart" class="primary" hidden>Запустить очередь</button>
     </div>
     <p class="hint" id="dqNote" style="margin-top:8px"></p>
+
+    <!-- Ввод пачкой. Двадцать книг руками — это двадцать раз «найти»,
+         «поправить папку», «в очередь». Имя папки даёт сама книга, а не
+         адрес: за ним программа и ходит на сайт. -->
+    <div id="dqPasteBox" hidden style="margin-top:8px">
+      <label>Ссылки на книги — по одной в строке</label>
+      <textarea id="dqPasteText" rows="5"
+                placeholder="https://сайт/книга/123/&#10;https://сайт/книга/456/"></textarea>
+      <p class="hint" style="margin-top:6px">Папку каждой книге назовёт
+         сама книга, а источник виден по адресу. Всё это потом правится
+         в строке очереди.</p>
+      <div class="row" style="margin-top:8px;gap:8px">
+        <button id="dqPasteGo" class="primary" style="flex:1">Поставить все</button>
+        <button id="dqPasteStop" class="ghost" hidden>Остановить</button>
+      </div>
+      <p class="hint" id="dqPasteNote" style="margin-top:6px"></p>
+      <div class="table" id="dqPasteTable" hidden style="margin-top:6px"></div>
+    </div>
     <!-- Ночной запуск. Очередь и задумана как ночная работа: поставил
          десяток книг, ушёл спать, утром они лежат. Ночью канал и
          быстрее, и часто дешевле — а нажимать всё равно приходилось
@@ -4166,6 +4193,8 @@
               title="Спросить у сайтов, не вышли ли новые главы">Проверить обновления</button>
       <button id="lbShelf" class="ghost" style="flex:0 0 auto"
               title="Посмотреть, что у книг на самом деле лежит на диске">Осмотреть папки</button>
+      <button id="lbTwins" class="ghost" style="flex:0 0 auto"
+              title="Одна работа, записанная дважды">Найти дубли</button>
     </div>
     <p class="hint" id="lbShelfNote" style="margin-top:6px"></p>
 
@@ -6110,6 +6139,10 @@ let libSort = 'fresh', libGroup = 'none';
 //: Плиткой или строками. Две сотни книг строками — это два метра
 //: прокрутки, а глазами книгу ищут по обложке.
 let libTiled = false;
+
+//: Ключи книг, похожих на одну и ту же работу. Пусто — дублей не
+//: искали; отбор по ним включается кнопкой и ею же снимается.
+let libTwins = null;
 let libSortMenu = null, libGroupMenu = null, libMarkMenu = null;
 
 /** Принять ответ сервера: списки меток и сводку. */
@@ -6182,6 +6215,9 @@ function libKindsOf(book){
 
 /** Подходит ли книга под выбранную метку, жанры и текстовый фильтр. */
 function libFits(book){
+  // Дубли: показываем только их, пока отбор не снят.
+  if(libTwins && !libTwins.has(book.key)) return false;
+
   if(libPick && !(book.marks || []).includes(libPick)
              && !(book.auto || []).includes(libPick)) return false;
 
@@ -6396,6 +6432,137 @@ async function libCoverSet(book, path){
   }
 }
 
+/* ---- дубли ----
+ *
+ * Одну книгу заводят дважды: раз с рейтинга, раз по вставленной
+ * ссылке, — и записи расходятся ключами, а не сутью. Ничего не
+ * склеиваем: слить две записи значит потерять метки одной из них, и
+ * решать это человеку.
+ */
+async function libLookAlike(){
+  if(libTwins){                       // нажали второй раз — снимаем отбор
+    libTwins = null;
+    $('lbTwins').textContent = 'Найти дубли';
+    $('lbTwins').classList.remove('primary');
+    libShow();
+    return;
+  }
+
+  $('lbTwins').disabled = true;
+  try{
+    const got = await call('/api/library/twins');
+    const groups = got.groups || [];
+    if(!groups.length){
+      $('lbNote').textContent = 'Дублей не нашлось: у всех книг свои '
+        + 'названия.';
+      return;
+    }
+    libTwins = new Set(got.books || []);
+    $('lbTwins').textContent = 'Показать все';
+    $('lbTwins').classList.add('primary');
+    libShow();
+    $('lbNote').textContent = `Похоже, одна работа записана дважды: `
+      + `${ru(groups.length)} `
+      + plural(groups.length, 'группа', 'группы', 'групп')
+      + '. Слить их сама программа не может — метки одной из записей '
+      + 'при этом пропали бы. Лишнюю уберите кнопкой «Забыть».';
+  }catch(err){
+    showError(err.message, $('lbNote'));
+  }finally{
+    $('lbTwins').disabled = false;
+  }
+}
+
+/* ---- похожие книги ----
+ *
+ * Дочитал — и хочется такого же. Искать это в отборе по жанрам значит
+ * знать заранее, по каким именно жанрам искать, а книгу человек помнит
+ * не жанрами, а собой.
+ */
+
+//: Сколько общих жанров и тегов считать похожестью. Один общий жанр —
+//: это «тоже фэнтези», то есть половина библиотеки.
+const LB_ALIKE = 2;
+
+//: Сколько похожих показывать. Больше — это уже не «вот такие же», а
+//: второй список библиотеки внутри карточки.
+const LB_ALIKE_SHOW = 6;
+
+function libAlike(book){
+  const mine = new Set(libKindsOf(book).map(one => String(one).toLowerCase()));
+  if(mine.size < LB_ALIKE) return [];
+
+  const found = [];
+  for(const other of libBooks){
+    if(other.key === book.key) continue;
+    const theirs = libKindsOf(other).map(one => String(one).toLowerCase());
+    const same = theirs.filter(one => mine.has(one));
+    if(same.length >= LB_ALIKE) found.push({book: other, same});
+  }
+  // Чем больше общего, тем выше. При равенстве — та, у которой есть
+  // новые главы: с ней есть что делать прямо сейчас.
+  found.sort((a, b) => b.same.length - a.same.length
+                    || (b.book.fresh || 0) - (a.book.fresh || 0));
+  return found.slice(0, LB_ALIKE_SHOW);
+}
+
+function libAlikeBox(book){
+  const found = libAlike(book);
+  if(!found.length) return null;
+
+  const box = document.createElement('div');
+  box.className = 'lb-alike';
+  const said = document.createElement('div');
+  said.className = 'lb-where';
+  said.textContent = 'Похожие книги:';
+  box.append(said);
+
+  const chips = document.createElement('div');
+  chips.className = 'lb-chips';
+  for(const one of found){
+    const chip = document.createElement('button');
+    chip.className = 'lbchip';
+    chip.textContent = one.book.title || one.book.name;
+    chip.title = 'Общее: ' + one.same.join(', ');
+    chip.onclick = () => libFull(one.book);
+    chips.append(chip);
+  }
+  box.append(chips);
+  return box;
+}
+
+/** История прогонов книги. `null` — прогонов ещё не было.
+ *
+ * «Последний прогон» отвечает только на вопрос «когда». А спрашивают
+ * другое: идёт книга или встала — то есть когда у неё в последний раз
+ * что-то прибавлялось.
+ */
+function libRuns(book){
+  const runs = book.runs || [];
+  if(!runs.length) return null;
+
+  const box = document.createElement('div');
+  box.className = 'lb-runs';
+  const said = document.createElement('div');
+  said.className = 'lb-where';
+  said.textContent = 'Прогоны:';
+  box.append(said);
+
+  // Новые сверху: старое интересно только как хвост.
+  for(const one of [...runs].reverse()){
+    const line = document.createElement('div');
+    line.className = 'lb-run';
+    const bits = [one.at];
+    bits.push(one.got ? `+${ru(one.got)}` : 'без новых глав');
+    if(one.last) bits.push(`стало ${ru(one.last)}`);
+    line.textContent = bits.join(' · ');
+    if(one.why) line.title = one.why;
+    if(!one.got) line.classList.add('idle');
+    box.append(line);
+  }
+  return box;
+}
+
 /* ---- карточка на весь экран ----
  *
  * Слой один на всю библиотеку: книг бывает две сотни, и держать по
@@ -6408,6 +6575,12 @@ function libFull(book){
   // прятать в ней нечего — за тем её и открывают.
   const card = libCard(book, {full: true});
   box.append(card);
+  // История и похожие — только здесь: в списке на две сотни книг это
+  // две сотни лишних списков, а спрашивают о них по одной книге.
+  const runs = libRuns(book);
+  if(runs) box.append(runs);
+  const alike = libAlikeBox(book);
+  if(alike) box.append(alike);
   $('lbFull').hidden = false;
 }
 
@@ -7041,6 +7214,8 @@ async function libMark(book, name, on){
 $('lbFilter').addEventListener('input', libShow);
 $('lbCheck').onclick = () => libCheck('lbNote', 'lbCheck');
 $('lbShelf').onclick = libLook;
+$('lbTwins').onclick = libLookAlike;
+$('lbTwins').onclick = libLookAlike;
 
 /* ---- разбор списка: порядок, группы, отметки ---- */
 $('lbKindToggle').onclick = () => {
@@ -7441,6 +7616,108 @@ function dqKnown(known){
   return bits.join(', ') + '. ';
 }
 
+/* ---- список ссылок ----
+ *
+ * Двадцать книг руками — это двадцать раз «найти», «поправить папку»,
+ * «в очередь». Здесь то же самое списком: за каждой ссылкой программа
+ * сама сходит на сайт, чтобы узнать название и назвать им папку.
+ *
+ * Задачей, а не одним запросом: двадцать походов на сайт в один ответ
+ * не укладываются, и ждать их молча человек не должен.
+ */
+let dqPasteJob = null, dqPasteTimer = null;
+
+async function dqPasteRun(){
+  showError('');
+  const text = $('dqPasteText').value.trim();
+  if(!basePath){
+    showError('Сначала выберите папку, куда качать', $('dqPasteNote'));
+    return;
+  }
+
+  $('dqPasteGo').disabled = true;
+  $('dqPasteTable').hidden = true;
+  $('dqPasteNote').innerHTML = '<span class="spin"></span>Спрашиваем книги…';
+  try{
+    const got = await call('/api/downloads/paste',
+                           {text, base: basePath,
+                            source: srcMenu ? srcMenu.value : ''});
+    dqPasteJob = got.job.id;
+    $('dqPasteStop').hidden = false;
+    dqPasteTimer = setInterval(dqPasteTick, 700);
+    dqPasteTick();
+  }catch(err){
+    $('dqPasteNote').textContent = '';
+    showError(err.message, $('dqPasteNote'));
+    $('dqPasteGo').disabled = false;
+  }
+}
+
+async function dqPasteTick(){
+  if(!dqPasteJob) return;
+  try{
+    const {job} = await call('/api/job/' + dqPasteJob);
+    const p = job.progress || {};
+    $('dqPasteNote').textContent =
+      `Книга ${p.done || 0} из ${p.total || 0}`
+      + (p.added ? `, поставлено ${p.added}` : '')
+      + (p.failed ? `, не вышло ${p.failed}` : '')
+      + (p.message ? ' · ' + p.message : '');
+    if(!['done', 'error', 'cancelled'].includes(job.status)) return;
+
+    dqPasteDone(job);
+  }catch(err){
+    dqPasteStop();
+    showError(err.message, $('dqPasteNote'));
+  }
+}
+
+function dqPasteDone(job){
+  dqPasteStop();
+  const report = job.report || {};
+  const table = $('dqPasteTable');
+  table.innerHTML = '';
+  for(const one of report.added || []){
+    table.append(dqPasteRow(one.title || one.link, one.folder, false));
+  }
+  // Ссылки, которые не поддались, показываем тут же: молча потерять
+  // половину вставленного — худшее, что тут можно сделать.
+  for(const one of report.missed || []){
+    table.append(dqPasteRow(one.link, one.why, true));
+  }
+  table.hidden = !table.children.length;
+
+  const added = (report.added || []).length;
+  const missed = (report.missed || []).length;
+  $('dqPasteNote').textContent = `Поставлено книг: ${ru(added)}.`
+    + (missed ? ` Не вышло: ${ru(missed)}.` : '');
+  if(added) $('dqPasteText').value = '';
+  dqLoad();
+}
+
+function dqPasteRow(left, right, bad){
+  const line = document.createElement('div');
+  line.className = 'tr';
+  const name = document.createElement('span');
+  name.className = 'grow';
+  name.textContent = left;
+  const why = document.createElement('span');
+  why.className = 'hint';
+  why.style.flex = '2';
+  if(bad) why.style.color = '#ff9d9d';
+  why.textContent = right;
+  line.append(name, why);
+  return line;
+}
+
+function dqPasteStop(){
+  if(dqPasteTimer) clearInterval(dqPasteTimer);
+  dqPasteTimer = null;
+  dqPasteJob = null;
+  $('dqPasteGo').disabled = false;
+  $('dqPasteStop').hidden = true;
+}
+
 async function dqFill(){
   $('dqFill').disabled = true;
   try{
@@ -7549,6 +7826,17 @@ $('dqToggle').onclick = () => {
   else dqRender();
 };
 $('toQueue').onclick = dqAdd;
+$('dqPasteOpen').onclick = () => {
+  const box = $('dqPasteBox');
+  box.hidden = !box.hidden;
+  if(!box.hidden) $('dqPasteText').focus();
+};
+$('dqPasteGo').onclick = dqPasteRun;
+$('dqPasteStop').onclick = async () => {
+  if(!dqPasteJob) return;
+  try{ await call('/api/job/' + dqPasteJob + '/cancel', {}); }
+  catch(err){ showError(err.message); }
+};
 $('dqFill').onclick = dqFill;
 $('dqStart').onclick = dqStart;
 $('dqPlanOn').onchange = dqPlanSave;

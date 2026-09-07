@@ -34,10 +34,16 @@
    значило бы стирать смысл. Метка, стоящая на книге, и метка, которую
    ставит программа, тоже не приглушённые — приглушены как раз те, что
    не стоят. А метка под курсором разгорается сильнее общего: у неё
-   свой отклик, и перебивать его нечем. */
+   свой отклик, и перебивать его нечем.
+
+   Прогон, в котором ничего не прибавилось, и строка «на диске» с бедой
+   остаются как есть по той же причине: у них свой цвет и свой смысл —
+   «книга встала», «папки нет». Разгорись они наравне с остальным,
+   разница пропала бы ровно тогда, когда на неё смотрят. */
 .fx-static-cards .card :is(
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
   .hist-where, .hist-path, .lb-was, .lb-where, .lb-path, .lbchip,
+  .lb-run, .lb-shelf,
   .q-where, .q-path, .gl-was, .glname
 ),
 .fx-static-cards .card > label{
@@ -48,6 +54,7 @@
   .hint, .meta, .stats, .status, .crumb, .empty, .result-path, .sub,
   .hist-where:not(.hist-new):not(.hist-lost), .hist-path,
   .lb-was, .lb-where:not(.lb-new), .lb-path,
+  .lb-run:not(.idle), .lb-shelf:not(.warn):not(.bad),
   .lbchip:not(.on):not(.auto):not(:hover),
   .q-where, .q-path,
   .gl-was, .glname:not(.on):not(:hover)

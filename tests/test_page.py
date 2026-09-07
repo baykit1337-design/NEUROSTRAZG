@@ -3096,3 +3096,128 @@ class TestHowTheLibraryLooks(PageTestCase):
         self.assertTrue(self.page.evaluate(
             "() => document.getElementById('lbFull').hidden"))
         self.quiet()
+
+
+class TestWhatTheFullCardTells(PageTestCase):
+    """История прогонов и похожие книги — только в карточке на весь
+    экран: в списке это две сотни лишних списков."""
+
+    def book(self, key="к", **fields):
+        row = {"key": key, "title": key, "name": key, "author": "",
+               "folder": "/книги/" + key, "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 0, "last": 0, "fresh": 0, "runs": []}
+        row.update(fields)
+        return row
+
+    def full(self, books, at=0):
+        return self.page.evaluate(
+            """([books, at]) => {
+                 libBooks = books;
+                 libShelves = {};
+                 libFull(books[at]);
+                 const box = document.getElementById('lbFull');
+                 return {
+                   text: box.innerText,
+                   runs: box.querySelectorAll('.lb-run').length,
+                   idle: box.querySelectorAll('.lb-run.idle').length,
+                   alike: [...box.querySelectorAll('.lb-alike .lbchip')]
+                          .map(one => one.textContent),
+                 };
+               }""", [books, at])
+
+    def test_the_history_is_shown(self):
+        said = self.full([self.book(runs=[
+            {"at": "2026-09-01 03:00", "last": 100, "got": 100, "why": ""},
+            {"at": "2026-09-05 03:00", "last": 140, "got": 40, "why": ""},
+        ])])
+        self.assertEqual(said["runs"], 2)
+        self.assertIn("+40", said["text"])
+        self.quiet()
+
+    def test_the_newest_run_is_first(self):
+        said = self.full([self.book(runs=[
+            {"at": "2026-09-01 03:00", "last": 100, "got": 100},
+            {"at": "2026-09-05 03:00", "last": 140, "got": 40},
+        ])])
+        self.assertLess(said["text"].index("2026-09-05"),
+                        said["text"].index("2026-09-01"))
+        self.quiet()
+
+    def test_a_run_without_new_chapters_is_seen_to_be_idle(self):
+        """По нему и видно, встала книга или идёт."""
+        said = self.full([self.book(runs=[
+            {"at": "2026-09-05 03:00", "last": 140, "got": 0},
+        ])])
+        self.assertEqual(said["idle"], 1)
+        self.assertIn("без новых глав", said["text"])
+        self.quiet()
+
+    def test_a_book_that_never_ran_has_no_history(self):
+        self.assertEqual(self.full([self.book()])["runs"], 0)
+        self.quiet()
+
+    def test_similar_books_need_more_than_one_common_genre(self):
+        """Один общий жанр — это «тоже фэнтези», то есть полбиблиотеки."""
+        said = self.full([
+            self.book("А", genres_shown=["фэнтези", "магия"]),
+            self.book("Б", genres_shown=["фэнтези"]),
+        ])
+        self.assertEqual(said["alike"], [])
+        self.quiet()
+
+    def test_similar_books_are_found_by_what_they_share(self):
+        said = self.full([
+            self.book("А", genres_shown=["фэнтези", "магия"]),
+            self.book("Б", genres_shown=["фэнтези", "магия", "гарем"]),
+            self.book("В", genres_shown=["детектив"]),
+        ])
+        self.assertEqual(said["alike"], ["Б"])
+        self.quiet()
+
+    def test_a_book_is_not_similar_to_itself(self):
+        said = self.full([self.book("А", genres_shown=["фэнтези", "магия"]),
+                          self.book("Б", genres_shown=["фэнтези", "магия"])])
+        self.assertNotIn("А", said["alike"])
+        self.quiet()
+
+    def test_the_closest_ones_come_first(self):
+        said = self.full([
+            self.book("А", genres_shown=["фэнтези", "магия", "гарем"]),
+            self.book("Б", genres_shown=["фэнтези", "магия"]),
+            self.book("В", genres_shown=["фэнтези", "магия", "гарем"]),
+        ])
+        self.assertEqual(said["alike"], ["В", "Б"])
+        self.quiet()
+
+    def twins(self, books, keys):
+        return self.page.evaluate(
+            """([books, keys]) => {
+                 libBooks = books;
+                 libState = {};
+                 libPick = '';
+                 libKinds = new Set();
+                 libTicked = new Set();
+                 libShelves = {};
+                 libTiled = false;
+                 libSort = 'title';
+                 libGroup = 'none';
+                 libTwins = keys ? new Set(keys) : null;
+                 document.getElementById('lbFilter').value = '';
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+                 return [...document.querySelectorAll('#lbList .lb')]
+                        .map(one => one.dataset.book);
+               }""", [books, keys])
+
+    def test_the_duplicates_filter_leaves_only_them(self):
+        """Пока отбор стоит, остальные книги в списке только мешают."""
+        books = [self.book("А"), self.book("Б"), self.book("В")]
+        self.assertEqual(self.twins(books, ["А", "В"]), ["А", "В"])
+        self.quiet()
+
+    def test_without_the_filter_everything_is_back(self):
+        books = [self.book("А"), self.book("Б")]
+        self.assertEqual(self.twins(books, None), ["А", "Б"])
+        self.quiet()

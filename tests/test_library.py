@@ -353,6 +353,26 @@ class TestTheRunLandsInTheLibrary(Base):
         self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
         self.assertEqual(len(library.all_books()), 1)
 
+    def test_the_run_is_written_into_the_history(self):
+        """«Последний прогон» отвечает только на вопрос «когда», а
+        спрашивают другое: идёт книга или встала."""
+        folder = self.with_state(range(1, 11))
+        self.web._remember_book(self.novel(), "novelcms", folder, {}, {})
+        runs = library.all_books()[0].runs
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["last"], 10)
+        self.assertEqual(runs[0]["got"], 10)
+
+    def test_a_second_run_adds_a_second_line(self):
+        self.web._remember_book(self.novel(), "novelcms",
+                                self.with_state(range(1, 11)), {}, {})
+        self.web._remember_book(self.novel(), "novelcms",
+                                self.with_state(range(1, 21)), {}, {})
+        runs = library.all_books()[0].runs
+
+        self.assertEqual([one["got"] for one in runs], [10, 10])
+
     def test_how_far_it_got_comes_from_the_folder(self):
         """Не из отчёта прогона: книгу качают кусками и возвращаются к
         ней, и сложение отчётов дало бы неверный хвост."""
@@ -1325,3 +1345,129 @@ class TestABookGetsItsOwnCover(Base):
     def test_the_cover_of_a_book_that_is_gone(self):
         got = self.client.get("/api/library/cover/own-нетакой")
         self.assertEqual(got.status_code, 404)
+
+
+class TestTheHistoryOfARun(Base):
+    """«Последний прогон» отвечает только на вопрос «когда».
+
+    А спрашивают другое: идёт книга или встала — то есть когда у неё в
+    последний раз что-то прибавлялось. Один этот вопрос отличает книгу,
+    которую забросил автор, от книги, которую не может взять качалка.
+    """
+
+    def test_a_run_is_written_down(self):
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=402)
+
+        runs = library.get(book.key).runs
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["last"], 100)
+        self.assertTrue(runs[0]["at"])
+
+    def test_it_counts_what_was_added(self):
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=402)
+        library.log_run(book.key, last=140, chapters=402)
+
+        self.assertEqual([one["got"] for one in library.get(book.key).runs],
+                         [100, 40])
+
+    def test_a_run_without_new_chapters_is_written_down_too(self):
+        """Это и есть ответ «книга встала»: без записи его негде взять."""
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=100)
+        library.log_run(book.key, last=100, chapters=100)
+
+        runs = library.get(book.key).runs
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(runs[1]["got"], 0)
+
+    def test_fewer_files_than_before_is_not_minus_three_chapters(self):
+        """Глав стало меньше — это беда с папкой, а не отрицательный
+        прирост; о ней говорит осмотр, а не история."""
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=402)
+        library.log_run(book.key, last=40, chapters=402)
+        self.assertEqual(library.get(book.key).runs[1]["got"], 0)
+
+    def test_the_history_does_not_grow_forever(self):
+        book = self.qidian()
+        for at in range(library.KEEP_RUNS + 5):
+            library.log_run(book.key, last=at, chapters=500)
+
+        runs = library.get(book.key).runs
+        self.assertEqual(len(runs), library.KEEP_RUNS)
+        # Выбрасываем старое, а не новое: спрашивают про последние дни.
+        self.assertEqual(runs[-1]["last"], library.KEEP_RUNS + 4)
+
+    def test_the_history_survives_the_file(self):
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=402)
+        written = json.loads(library.LIBRARY_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(written[0]["runs"][0]["last"], 100)
+
+    def test_a_book_that_is_gone(self):
+        self.assertIsNone(library.log_run("выдумка", last=1))
+
+    def test_a_run_does_not_wipe_the_history(self):
+        """Прогон дописывает запись — историю он трогать не должен."""
+        book = self.qidian()
+        library.log_run(book.key, last=100, chapters=402)
+        library.remember(book.key, last=140, chapters=402)
+        self.assertEqual(len(library.get(book.key).runs), 1)
+
+
+class TestOneWorkWrittenDownTwice(Base):
+    """Одну книгу заводят дважды: раз с рейтинга, раз по вставленной
+    ссылке, — и записи расходятся ключами, а не сутью."""
+
+    def test_the_same_name_written_differently_is_found(self):
+        one = self.qidian(name="Гостиница иного мира")
+        two = library.remember(source="novelcms", address="https://x/1/",
+                               name="Гостиница Иного Мира!")
+        groups = library.look_alikes()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(sorted(groups[0]["books"]),
+                         sorted([one.key, two.key]))
+
+    def test_the_translated_name_counts_too(self):
+        """Одну запись перевели, другую нет — работа та же."""
+        one = self.qidian(found_id="1", name="异度旅社",
+                          name_ru="Гостиница иного мира")
+        two = library.remember(source="novelcms", address="https://x/1/",
+                               name="Гостиница иного мира")
+        self.assertEqual(sorted(library.look_alikes()[0]["books"]),
+                         sorted([one.key, two.key]))
+
+    def test_different_books_are_left_alone(self):
+        self.qidian(found_id="1", name="Первая")
+        self.qidian(found_id="2", name="Вторая")
+        self.assertEqual(library.look_alikes(), [])
+
+    def test_a_two_letter_name_does_not_make_a_group(self):
+        """«Куча из всех книг» — не находка."""
+        self.qidian(found_id="1", name="Ай")
+        self.qidian(found_id="2", name="Ай!")
+        self.assertEqual(library.look_alikes(), [])
+
+    def test_the_same_group_is_not_reported_twice(self):
+        """Совпасть могут и своё название, и перевод. Книги те же две —
+        значит, и находка одна, а не две одинаковых."""
+        self.qidian(found_id="1", name="Гостиница", name_ru="Иной мир")
+        library.remember(source="novelcms", address="https://x/1/",
+                         name="Гостиница", name_ru="Иной мир")
+        self.assertEqual(len(library.look_alikes()), 1)
+
+    def test_nothing_is_glued_together(self):
+        """Слить две записи — значит потерять метки одной из них."""
+        one = self.qidian(found_id="1", name="Книга")
+        library.remember(source="novelcms", address="https://x/1/",
+                         name="Книга")
+        library.look_alikes()
+
+        self.assertEqual(len(library.all_books()), 2)
+        self.assertIsNotNone(library.get(one.key))
+
+    def test_an_empty_library_has_no_twins(self):
+        self.assertEqual(library.look_alikes(), [])
