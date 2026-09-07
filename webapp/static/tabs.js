@@ -3955,7 +3955,10 @@ async function fmCutRun(){
       line.className = 'tr';
       const name = document.createElement('span');
       name.className = 'grow';
-      name.textContent = row.file;
+      // Имя вывода показываем, когда оно другое: книга легла рядом с
+      // исходником, и найти её надо будет по новому имени.
+      name.textContent = row.saved && row.saved !== row.file
+        ? `${row.file} → ${row.saved}` : row.file;
       name.title = row.output;
       const count = document.createElement('span');
       count.className = 'num';

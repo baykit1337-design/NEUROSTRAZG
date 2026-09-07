@@ -2405,3 +2405,30 @@ class TestWhyTheHalvingFailed(PageTestCase):
         said = self.refuse([])
         self.assertFalse(said["shown"])
         self.quiet()
+
+
+class TestWhereTheCutBookLanded(PageTestCase):
+    """Книга легла рядом с исходником — найти её надо по новому имени."""
+
+    def show(self, files):
+        return self.page.evaluate(
+            """async (files) => {
+                 window.call = async () => ({files, failed: [],
+                                             chapters: 2, made: 4, parts: 2,
+                                             output: '/куда'});
+                 await fmCutRun();
+                 return document.getElementById('fmCutTable').innerText;
+               }""", files)
+
+    def test_the_new_name_is_shown(self):
+        said = self.show([{"file": "книга.md", "saved": "книга (поделено).md",
+                           "was": 2, "now": 4, "output": "/куда/книга (поделено).md"}])
+        self.assertIn("книга (поделено).md", said)
+        self.quiet()
+
+    def test_the_same_name_is_not_repeated_twice(self):
+        """Стрелка «книга.md → книга.md» не говорит ничего."""
+        said = self.show([{"file": "книга.md", "saved": "книга.md",
+                           "was": 2, "now": 4, "output": "/куда/книга.md"}])
+        self.assertNotIn("книга.md →", said)
+        self.quiet()

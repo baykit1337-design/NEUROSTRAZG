@@ -3423,11 +3423,14 @@ HALVE_PARTS = 2
 MAX_PARTS = 10
 
 
-def _md_files(payload: dict) -> list[Path]:
+def _md_files(payload: dict, hide=None) -> list[Path]:
     """Выбранные книги `.md`: файлы и папки вперемешку.
 
     Только `.md` и только они: это книги для загрузчика, и отдать сюда
     `.txt` с главами по файлам значит получить одну «главу» на файл.
+
+    `hide` отсеивает файлы, найденные обходом папки. Выбранный руками
+    файл не отсеивается никогда: на него человек указал сам.
     """
     found: list[Path] = []
     seen: set[str] = set()
@@ -3435,7 +3438,8 @@ def _md_files(payload: dict) -> list[Path]:
         path = Path(one).expanduser()
         if path.is_dir():
             picked = sorted(p for p in path.iterdir()
-                            if p.is_file() and p.suffix.lower() == ".md")
+                            if p.is_file() and p.suffix.lower() == ".md"
+                            and not (hide and hide(p)))
         elif path.is_file():
             if path.suffix.lower() != ".md":
                 raise ValueError(f"Это не книга .md: {path.name}")
@@ -3450,6 +3454,30 @@ def _md_files(payload: dict) -> list[Path]:
     if not found:
         raise ValueError("Выберите книгу .md или папку с ними")
     return found
+
+
+#: Чем пометить поделённую книгу, если класть её больше некуда, кроме
+#: папки с исходником.
+CUT_MARK = " (поделено)"
+
+
+def _cut_output(folder: Path, path: Path) -> Path:
+    """Куда писать поделённую книгу.
+
+    Обычно — в выбранную папку под тем же именем. Но человек то и дело
+    выбирает ту самую папку, где книга и лежит: она у него открыта, и
+    другой на уме нет.
+
+    Раньше это был отказ — «исходник и вывод — один файл», — и по нему
+    выходило, что деление не работает вовсе. Отказ этот защищал
+    исходник, а не запрещал работу: писать поверх нельзя, потому что
+    работа необратима и сверять будет не с чем. Значит, и ответ должен
+    быть не «нельзя», а «положим рядом, под другим именем».
+    """
+    output = folder / path.name
+    if output.resolve() != path.resolve():
+        return output
+    return folder / f"{path.stem}{CUT_MARK}{path.suffix}"
 
 
 def _halve_why(failed: list) -> str:
@@ -3480,10 +3508,14 @@ def api_format_halve():
     заголовков, то есть ценой ключей и риска переписать всю книгу.
 
     Исходники не трогаем: пишем в выбранную папку под теми же именами.
+    Выбрали папку с самой книгой — кладём рядом, пометив имя.
     """
     payload = request.json or {}
     try:
-        files = _md_files(payload)
+        # Уже поделённое обходом папки не берём: иначе второй запуск
+        # делил бы собственный вывод и плодил «(поделено) (поделено)».
+        # Выбранный руками файл берём любой: на него указали сами.
+        files = _md_files(payload, hide=lambda p: p.stem.endswith(CUT_MARK))
         parts = max(2, min(_whole(payload, "parts", HALVE_PARTS), MAX_PARTS))
         base = (payload.get("base") or "").strip()
         if not base:
@@ -3510,13 +3542,7 @@ def api_format_halve():
     rows, chapters, made, failed = [], 0, 0, []
 
     for path in files:
-        # Писать поверх исходника нельзя: не понравится — сверять будет
-        # не с чем, а работа необратима.
-        output = folder / path.name
-        if output.resolve() == path.resolve():
-            failed.append({"file": path.name,
-                           "error": "исходник и вывод — один файл"})
-            continue
+        output = _cut_output(folder, path)
         try:
             # Читаем оба вида: и книгу для загрузчика, и обычную, с
             # заголовками «# Глава 5». Поля загрузчика тут не нужны — мы
@@ -3537,7 +3563,7 @@ def api_format_halve():
         chapters += len(book)
         made += len(cut)
         rows.append({"file": path.name, "was": len(book), "now": len(cut),
-                     "output": str(output)})
+                     "saved": output.name, "output": str(output)})
 
     if not rows:
         return jsonify(error=_halve_why(failed), failed=failed), 400

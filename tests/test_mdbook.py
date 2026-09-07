@@ -1527,8 +1527,48 @@ class TestCuttingOverHttp(unittest.TestCase):
         was = book.read_text(encoding="utf-8")
 
         res = self.cut(targets=[str(book)], base=str(self.tmp))
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 200)
         self.assertEqual(book.read_text(encoding="utf-8"), was)
+
+    def test_the_book_lands_beside_the_source_under_another_name(self):
+        """Человек выбирает папку, где книга и лежит: она у него открыта.
+
+        Раньше это был отказ «исходник и вывод — один файл», и по нему
+        выходило, что деление не работает вовсе.
+        """
+        book = self.write("книга.md", chapters=2)
+        got = self.cut(targets=[str(book)], base=str(self.tmp)).get_json()
+
+        self.assertEqual(got["made"], 4)
+        made = self.tmp / "книга (поделено).md"
+        self.assertTrue(made.is_file())
+        self.assertEqual(got["files"][0]["saved"], made.name)
+
+    def test_the_same_name_is_kept_where_there_is_no_clash(self):
+        """Своя папка — своё имя: помечать там нечего."""
+        book = self.write("книга.md")
+        got = self.cut(targets=[str(book)]).get_json()
+
+        self.assertEqual(got["files"][0]["saved"], "книга.md")
+        self.assertTrue((self.out / "книга.md").is_file())
+
+    def test_the_second_run_over_a_folder_does_not_eat_its_own_output(self):
+        """Иначе выходило бы «книга (поделено) (поделено).md»."""
+        self.write("книга.md")
+        self.cut(targets=[str(self.tmp)], base=str(self.tmp))
+
+        got = self.cut(targets=[str(self.tmp)], base=str(self.tmp)).get_json()
+        self.assertEqual([one["file"] for one in got["files"]], ["книга.md"])
+        self.assertFalse(
+            (self.tmp / "книга (поделено) (поделено).md").exists())
+
+    def test_a_split_book_chosen_by_hand_is_split_again(self):
+        """На него указали сами — значит, так и хотели."""
+        book = self.write("книга (поделено).md")
+        got = self.cut(targets=[str(book)], base=str(self.tmp)).get_json()
+
+        self.assertEqual([one["file"] for one in got["files"]],
+                         ["книга (поделено).md"])
 
     def test_a_file_that_is_not_a_loader_book_is_named_not_swallowed(self):
         """Молча пропустить половину выбранного — худшее, что тут можно."""
