@@ -1090,6 +1090,20 @@
      строку не влезают. Перенос — вместо того, чтобы выдавливать
      соседей за край карточки. */
   #dqCard .row{flex-wrap:wrap;align-items:center}
+  /* Кнопки уборки очереди. Ровные трети держались ровно до тех пор,
+     пока подпись помещалась: «Повторить неудавшиеся» в свою треть не
+     влезала, переносилась на вторую строку — и кнопка становилась в
+     полтора раза выше соседних, а ряд выглядел поехавшим.
+     Ширину теперь задаёт подпись, а не деление на три.
+     В полный рост втроём они всё равно не помещаются: карточке 618, а
+     им нужен 631. Поэтому набор здесь мельче — как и у кнопок в
+     строках очереди выше. Это не подгонка под пиксели: уборка и правда
+     второстепенна рядом с «Запустить очередь», и запас после этого
+     четыре десятка точек, а не полторы. */
+  #dqSweep{flex-wrap:wrap}
+  #dqSweep button{
+    flex:1 1 auto;white-space:nowrap;font-size:13px;padding:10px 16px;
+  }
   #dqList .q-deeds{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap}
   #dqList .q-deeds button{padding:5px 10px;font-size:12px}
   #dqList .q-move{padding:5px 9px;font-size:12px;line-height:1}
@@ -1948,10 +1962,10 @@
     </div>
     <div id="dqList" hidden style="margin-top:10px"></div>
     <div class="row" id="dqSweep" hidden style="margin-top:8px">
-      <button id="dqRetry" class="ghost" style="flex:1" hidden
+      <button id="dqRetry" class="ghost" hidden
               title="Вернуть в очередь все книги, которые не вышли">Повторить неудавшиеся</button>
-      <button id="dqDone" class="ghost" style="flex:1">Убрать скачанные</button>
-      <button id="dqClear" class="ghost" style="flex:1">Очистить очередь</button>
+      <button id="dqDone" class="ghost">Убрать скачанные</button>
+      <button id="dqClear" class="ghost">Очистить очередь</button>
     </div>
   </div>
 </section>

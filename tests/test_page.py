@@ -3606,3 +3606,46 @@ class TestTheKnobsSayTheirValue(PageTestCase):
                             .getBoundingClientRect().width""")
         self.assertEqual(round(wide), round(after))
         self.quiet()
+
+
+class TestTheQueueSweepButtonsAreOneRow(PageTestCase):
+    """Ряд уборки очереди поехал: «Повторить неудавшиеся» не влезала в
+    свою треть, переносилась на вторую строку — и была в полтора раза
+    выше соседних.
+
+    Проверяем не вид, а то, что его держит: подписи не переносятся, ряд
+    один, и ничто не вылезает за карточку.
+    """
+
+    def sweep(self):
+        return self.page.evaluate(
+            """() => {
+                 dqSweep.hidden = false; dqRetry.hidden = false;
+                 const card = document.getElementById('dqCard')
+                                      .getBoundingClientRect();
+                 return [...dqSweep.querySelectorAll('button')].map(one => {
+                   const box = one.getBoundingClientRect();
+                   return {id: one.id, top: Math.round(box.top),
+                           high: Math.round(box.height),
+                           over: box.right > card.right + 1};
+                 });
+               }""")
+
+    def test_they_all_stand_on_one_line(self):
+        rows = self.sweep()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({one["top"] for one in rows}), 1,
+                         f"кнопки разъехались по строкам: {rows}")
+        self.quiet()
+
+    def test_no_button_is_taller_than_the_others(self):
+        """Разная высота и означает перенос подписи внутри кнопки."""
+        rows = self.sweep()
+        self.assertEqual(len({one["high"] for one in rows}), 1,
+                         f"подпись перенеслась: {rows}")
+        self.quiet()
+
+    def test_nothing_sticks_out_of_the_card(self):
+        rows = self.sweep()
+        self.assertEqual([one["id"] for one in rows if one["over"]], [])
+        self.quiet()
