@@ -536,3 +536,218 @@ class TestWhatTheSiteItselfCallsRubbish(unittest.TestCase):
                             link="https://twkan.com/txt/16711/56343814"))
         self.assertEqual(title, "第815章 Глава")
         self.assertEqual(text, "Перший абзац.\n\nДругий абзац.")
+
+
+class TestTheWholeBookInOneFile(unittest.TestCase):
+    """У ixdzs8 на странице книги есть кнопка «скачать TXT»: та же книга
+    одним файлом. Восемьсот запросов против одного — разница между сорока
+    минутами и десятью секундами.
+
+    Заменить архивом оглавление нельзя: внутри главы подписаны авторской
+    нумерацией, а она начинается заново в каждом томе. Поэтому архив —
+    только ускоритель текста, а раскладываются главы по порядку и лишь
+    при совпадении заголовка с тем, что сказал сайт.
+    """
+
+    BOOK = "https://ixdzs8.com/read/454442/"
+
+    def setUp(self):
+        self.source = NovelCmsSource()
+        self.rule = rule_for(self.BOOK)
+
+    def whole(self, chapters=None) -> str:
+        """Архив изнутри: шапка, метка начала, главы с отступами."""
+        rows = chapters or [("第1章 начало", ["Первый абзац.", "Второй абзац."]),
+                            ("第2章 дальше", ["Третий абзац."])]
+        out = ["《Книга/作者:Некто》", "《状态:更新到:第2章 дальше》",
+               "《内容简介:", "  Описание книги.", "》",
+               "Сайт: https://ixdzs8.com",
+               "------章节内容开始-------"]
+        for title, body in rows:
+            out.append(title)
+            out.extend("　　" + line for line in body)
+        return "\n".join(out)
+
+    def zipped(self, text=None) -> bytes:
+        import io
+        import zipfile
+
+        box = io.BytesIO()
+        with zipfile.ZipFile(box, "w") as pack:
+            pack.writestr("454442.txt",
+                          (text if text is not None else self.whole())
+                          .encode("gb18030", "replace"))
+        return box.getvalue()
+
+    def client(self, raw=None, trouble=None):
+        source = self
+
+        class Answer:
+            def __init__(self, content):
+                self.content = content
+
+        class Client:
+            def __init__(self):
+                self.asked = []
+
+            def get(self, url, params=None, headers=None):
+                self.asked.append(url)
+                if trouble is not None:
+                    raise trouble
+                return Answer(raw if raw is not None else source.zipped())
+
+            def get_text(self, url, params=None, headers=None):
+                self.asked.append(url)
+                return ('<html><body><article class="page-content">'
+                        "<section><p>Из сети.</p></section>"
+                        "</article></body></html>")
+
+        return Client()
+
+    def ask(self, number, title, asked=100):
+        self.source._asked = asked
+        return Chapter(number=number, post_id="", ch_name=title,
+                       link=f"https://ixdzs8.com/read/454442/p{number}.html")
+
+    # ------------------------------------------------------------ разбор
+
+    def test_the_header_of_the_archive_is_not_a_chapter(self):
+        """Название, автор, описание и строка с адресом сайта — не книга."""
+        rows = novelcms.read_whole(self.whole())
+        self.assertEqual([title for title, _ in rows],
+                         ["第1章 начало", "第2章 дальше"])
+
+    def test_the_indented_lines_are_the_text(self):
+        rows = novelcms.read_whole(self.whole())
+        self.assertEqual(rows[0][1], ("Первый абзац.", "Второй абзац."))
+
+    def test_chapters_keep_the_order_they_lie_in(self):
+        """Номер в заголовке авторский и повторяется от тома к тому:
+        «第1章» встречается и в начале книги, и в середине. Разложить
+        главы по нему значит собрать кашу."""
+        rows = novelcms.read_whole(self.whole([
+            ("第1章 первая", ["А."]),
+            ("第2章 вторая", ["Б."]),
+            ("第1章 снова первая", ["В."]),
+        ]))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[2][0], "第1章 снова первая")
+        self.assertEqual(rows[2][1], ("В.",))
+
+    # ------------------------------------------------------- в работе
+
+    def test_a_chapter_comes_out_of_the_archive(self):
+        client = self.client()
+        title, text = self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertEqual(title, "第1章 начало")
+        self.assertEqual(text, "Первый абзац.\n\nВторой абзац.")
+        self.assertNotIn("Из сети", text)
+
+    def test_the_archive_is_asked_for_once_not_per_chapter(self):
+        """В этом весь смысл: один запрос вместо восьмисот."""
+        client = self.client()
+        self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.source.chapter(client, self.ask(2, "第2章 дальше"))
+        self.assertEqual(len([one for one in client.asked if ".zip" in one]), 1)
+
+    def test_it_is_read_in_the_encoding_the_site_writes_in(self):
+        rows = [("第1章 начало", ["Текст 巫师㐀 про магию."])]
+        client = self.client(raw=self.zipped(self.whole(rows)))
+        _, text = self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertIn("巫师㐀", text)
+
+    # --------------------------------------------------- когда не берём
+
+    def test_a_title_that_does_not_match_sends_us_to_the_network(self):
+        """Архив собран вчера, вышла новая глава — и весь порядок съехал
+        на единицу. Лишний запрос лучше сдвинутой книги."""
+        client = self.client()
+        _, text = self.source.chapter(
+            client, self.ask(1, "第1章 совсем другая глава"))
+        self.assertEqual(text, "Из сети.")
+
+    def test_a_chapter_the_archive_does_not_reach_comes_from_the_network(self):
+        client = self.client()
+        _, text = self.source.chapter(client, self.ask(9, "第9章 девятая"))
+        self.assertEqual(text, "Из сети.")
+
+    def test_a_short_run_does_not_pay_for_the_archive(self):
+        """Три главы из шестимегабайтного архива хуже трёх запросов."""
+        client = self.client()
+        _, text = self.source.chapter(client, self.ask(1, "第1章 начало",
+                                                       asked=3))
+        self.assertEqual(text, "Из сети.")
+        self.assertEqual([one for one in client.asked if ".zip" in one], [])
+
+    def test_an_archive_that_did_not_come_is_not_a_broken_book(self):
+        client = self.client(trouble=OSError("нет сети"))
+        _, text = self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertEqual(text, "Из сети.")
+
+    def test_something_that_is_not_an_archive_is_not_a_broken_book(self):
+        client = self.client(raw=b"<html>404</html>")
+        _, text = self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertEqual(text, "Из сети.")
+
+    def test_a_site_without_an_archive_works_as_before(self):
+        """Правка не должна была тронуть тех, у кого и так работало."""
+        self.assertIsNone(rule_for("https://sjks88.com/12345/").archive)
+
+    def test_the_run_says_how_many_chapters_it_wants(self):
+        """Без этого источник не знает, стоит ли архив своих мегабайт."""
+        listing = {"data": [{"title": f"第{n}章 Глава", "ordernum": n}
+                            for n in range(1, 41)]}
+
+        class Client:
+            def post(self, url, data=None, headers=None):
+                return type("R", (), {"json": lambda self: listing})()
+
+        novel = Novel(code=454442, name="Книга", slug=self.BOOK,
+                      total_chapters=40)
+        self.source.toc(Client(), novel, first=1, last=30)
+        self.assertEqual(self.source._asked, 30)
+
+    def test_closing_lets_the_six_megabytes_go(self):
+        client = self.client()
+        self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.source.close()
+        self.assertIsNone(self.source._whole)
+
+    def test_a_repeated_author_number_does_not_fetch_the_wrong_chapter(self):
+        """«第1章» встречается и в начале книги, и в середине тома. Ищи
+        мы главу по этому номеру — вернулась бы первая попавшаяся, и
+        книга собралась бы кашей, притом молча."""
+        text = self.whole([("第1章 первая", ["А."]),
+                           ("第2章 вторая", ["Б."]),
+                           ("第1章 снова первая", ["В."])])
+        client = self.client(raw=self.zipped(text))
+        _, got = self.source.chapter(client, self.ask(3, "第1章 снова первая"))
+        self.assertEqual(got, "В.")
+
+    def test_a_heading_quoted_inside_the_text_stays_text(self):
+        """В тексте главы герои поминают «第5章» — это абзац, а не новая
+        глава. Различает их только отступ."""
+        text = self.whole([("第1章 начало", ["第5章 — вот о чём он говорил.",
+                                             "И замолчал."]),
+                           ("第2章 дальше", ["Б."])])
+        rows = novelcms.read_whole(text)
+        self.assertEqual(len(rows), 2, [t for t, _ in rows])
+        self.assertIn("第5章 — вот о чём он говорил.", rows[0][1])
+
+    def test_the_archive_is_asked_for_at_the_address_the_site_gives(self):
+        client = self.client()
+        self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertIn("https://down7.ixdzs8.com/454442.zip", client.asked)
+
+    def test_the_book_is_found_among_the_odds_and_ends(self):
+        """Имя файла внутри архива не угадываем — берём самый тяжёлый."""
+        import io
+        import zipfile
+
+        box = io.BytesIO()
+        with zipfile.ZipFile(box, "w") as pack:
+            pack.writestr("readme.txt", "Спасибо, что скачали.".encode("gb18030"))
+            pack.writestr("kniga.txt", self.whole().encode("gb18030", "replace"))
+        client = self.client(raw=box.getvalue())
+        _, text = self.source.chapter(client, self.ask(1, "第1章 начало"))
+        self.assertEqual(text, "Первый абзац.\n\nВторой абзац.")

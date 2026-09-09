@@ -71,6 +71,43 @@ class TocApi:
 
 
 @dataclass(frozen=True)
+class Archive:
+    """Книга целиком одним файлом — кнопкой «скачать TXT».
+
+    Восемьсот запросов против одного: разница между сорока минутами и
+    десятью секундами. Ради этого стоит сходить за архивом.
+
+    Но заменить им оглавление нельзя, и вот почему. Внутри главы
+    подписаны **авторской** нумерацией, а она начинается заново в каждом
+    томе: «第18章 烈火烹油» — это восемьсот пятнадцатая глава по счёту
+    сайта, а вовсе не восемнадцатая. Номер в архиве не уникален, и
+    раскладывать главы по нему — верный способ собрать кашу.
+
+    Поэтому архив здесь только ускоритель текста. Оглавление, номера и
+    названия по-прежнему берутся у сайта, а глава из архива берётся по
+    **порядку** — и лишь тогда, когда её заголовок совпал с тем, что
+    сказал сайт. Не совпал — идём за ней в сеть, как раньше. Так
+    несовпадение архива с сайтом (вышла новая глава, архив собран вчера)
+    даёт лишний запрос, а не сдвинутую на главу книгу.
+    """
+
+    #: Где лежит. `{code}` — код книги.
+    url: str
+    #: Чем записан. Тот же gb18030, что и у страниц.
+    encoding: str = "gb18030"
+
+
+#: Заголовок главы внутри архива: с начала строки и без отступа. Абзацы
+#: текста начинаются с двух идеографических пробелов, заголовки — нет,
+#: и это единственное, чем они надёжно отличаются.
+WHOLE_HEAD = re.compile(r"^第\s*(\d+)\s*[章节節話话]\s*(.*)$")
+
+#: С каких размеров прогона архив выгоднее поглавной качки. Три главы
+#: из шестимегабайтного архива — это хуже трёх запросов.
+WHOLE_WORTH = 20
+
+
+@dataclass(frozen=True)
 class SiteRule:
     """Где у сайта что лежит.
 
@@ -146,6 +183,9 @@ class SiteRule:
     #: Оглавление приходит отдельным запросом. Заполнено — вёрстку
     #: страницы книги под список глав не смотрим вовсе.
     toc_api: TocApi | None = None
+    #: Книга целиком одним файлом. Заполнено — текст глав берём оттуда,
+    #: а в сеть ходим только за теми, которых в архиве не нашлось.
+    archive: Archive | None = None
 
 
 #: Общие запасные селекторы: если сайт перерисуют, разбор не встанет
@@ -259,6 +299,9 @@ SITES: tuple[SiteRule, ...] = (
         hosts=("ixdzs8.com", "ixdzs.hk", "ixdzs.tw"),
         toc_api=TocApi(path="/novel/clist/", code_field="bid",
                        chapter="/read/{code}/p{order}.html"),
+        # На странице книги есть кнопка «скачать TXT»: та же книга одним
+        # файлом. Восемьсот запросов против одного.
+        archive=Archive(url="https://down7.ixdzs8.com/{code}.zip"),
         # В вёрстке книги лежат только последние восемь глав. Оставлять
         # их запасным путём нельзя: восьмиглавая книга — худший исход,
         # потому что выглядит она как удача.
@@ -466,6 +509,32 @@ def _squeezed(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
+def read_whole(text: str) -> list:
+    """Главы из архива — по порядку, как они в нём лежат.
+
+    Возвращаем список, а не словарь по номеру, и это не мелочь: номер в
+    заголовке авторский и повторяется от тома к тому. Порядок — то
+    единственное, что в архиве уникально.
+
+    Всё до первого заголовка — шапка архива: название, автор, описание и
+    строка с адресом сайта. В книгу ей нельзя.
+    """
+    found: list = []
+    rows: list = []
+    for line in (text or "").splitlines():
+        # Отступ у абзаца — два идеографических пробела; у заголовка его
+        # нет. Больше их ничем не различить: «第18章 ...» встречается и
+        # в тексте.
+        if line[:1].strip() and WHOLE_HEAD.match(line):
+            rows = []
+            found.append((line.strip(), rows))
+            continue
+        words = line.strip()
+        if words and found:
+            rows.append(words)
+    return [(title, tuple(body)) for title, body in found]
+
+
 def _junk(tag) -> bool:
     """Реклама, счётчики и навигация внутри блока с текстом."""
     if tag.name in ("script", "style", "ins", "iframe", "noscript"):
@@ -492,6 +561,18 @@ class NovelCmsSource(Source):
             "Разбор подбирается по самому адресу; сейчас известны "
             + ", ".join(sorted(h for r in SITES for h in r.hosts)) + ".")
     needs_proxy = False
+
+    def __init__(self):
+        #: Разобранный архив книги: (код книги, список глав по порядку).
+        #: Держим на источнике, а не в глобальной памяти: прогон один,
+        #: книга в нём одна, и после закрытия шесть мегабайт уходят.
+        self._whole: tuple[str, list] | None = None
+        #: Сколько глав просят у этого прогона. Ради трёх глав качать
+        #: архив дороже, чем сходить за ними по одной.
+        self._asked = 0
+
+    def close(self) -> None:
+        self._whole = None
 
     # ----------------------------------------------------------- книга
 
@@ -634,6 +715,7 @@ class NovelCmsSource(Source):
                     for number, title, link in rows]
         upto = last or chapters[-1].number
         wanted = [c for c in chapters if first <= c.number <= upto]
+        self._asked = len(wanted)
         if on_progress:
             on_progress(len(wanted), len(wanted))
 
@@ -794,6 +876,68 @@ class NovelCmsSource(Source):
 
     # ------------------------------------------------------------ глава
 
+    def _archive(self, client, rule: SiteRule, code: str) -> list:
+        """Книга целиком, разобранная на главы. Пусто — не вышло.
+
+        Неудача здесь ничего не ломает: не скачался архив, не открылся,
+        оказался не тем — качаем по главам, как раньше. Поэтому и молчим
+        в журнал, а не отказом: сама книга не пострадала.
+        """
+        if self._whole is not None and self._whole[0] == code:
+            return self._whole[1]
+
+        import io
+        import zipfile
+
+        where = rule.archive.url.format(code=code)
+        found: list = []
+        try:
+            raw = client.get(where).content
+            with zipfile.ZipFile(io.BytesIO(bytes(raw))) as box:
+                # Имя файла внутри не угадываем: берём самый большой из
+                # текстовых. Книга в архиве одна, и она же самая тяжёлая.
+                inside = [one for one in box.infolist()
+                          if not one.is_dir() and one.file_size]
+                inside.sort(key=lambda one: one.file_size, reverse=True)
+                if inside:
+                    text = box.read(inside[0]).decode(
+                        rule.archive.encoding, "replace")
+                    found = read_whole(text)
+        except Exception as exc:  # noqa: BLE001 — архив это ускорение, не книга
+            log.info("Архив книги не забрать (%s): %s — качаем по главам",
+                     where, exc)
+
+        self._whole = (code, found)
+        if found:
+            log.info("Архив книги забран одним запросом (%s): глав в нём %d",
+                     where, len(found))
+        return found
+
+    def _from_whole(self, client, rule: SiteRule, chapter: Chapter,
+                    address: str):
+        """Глава из архива. `None` — берём её из сети, как раньше.
+
+        Сверяемся по заголовку, а не по номеру. Номер в архиве
+        авторский и повторяется от тома к тому, а по порядку архив может
+        разойтись с сайтом: вышла новая глава, архив собран вчера. Не
+        сошлось — лишний запрос, а не сдвинутая на главу книга.
+        """
+        if rule.archive is None or self._asked < WHOLE_WORTH:
+            return None
+        rows = self._archive(client, rule, self.code_of(address))
+        if not 0 < chapter.number <= len(rows):
+            return None
+
+        title, body = rows[chapter.number - 1]
+        said = chapter.ch_name or ""
+        if not said or _squeezed(said) != _squeezed(title):
+            log.info("Глава %d в архиве подписана иначе (%r против %r) — "
+                     "берём её из сети", chapter.number, title, said)
+            return None
+        if not body:
+            return None
+        return title, "\n\n".join(body)
+
     def chapter(self, client, chapter: Chapter) -> tuple[str, str]:
         address = chapter.link or str(chapter.post_id or "")
         if not address:
@@ -802,6 +946,10 @@ class NovelCmsSource(Source):
         rule = rule_for(address)
         if rule is None:
             raise SourceBroken(f"Адрес главы {chapter.number} не с того сайта.")
+
+        ready = self._from_whole(client, rule, chapter, address)
+        if ready is not None:
+            return ready
 
         title = ""
         pieces: list[str] = []
@@ -914,4 +1062,5 @@ class NovelCmsSource(Source):
         return following if _continues(origin, following) else ""
 
 
-__all__ = ["NovelCmsSource", "SiteRule", "SITES", "rule_for"]
+__all__ = ["Archive", "NovelCmsSource", "SiteRule", "SITES",
+           "read_whole", "rule_for"]
