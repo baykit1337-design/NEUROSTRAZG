@@ -17,6 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from flask import (Flask, Response, jsonify, request, send_file,
@@ -1499,8 +1500,11 @@ def _fill_queue(keys=()) -> tuple[int, list]:
     кнопкой на второй же правке — ровно как это уже было с запуском.
     """
     keys = {str(k) for k in (keys or []) if str(k)}
+    # Без имён — все, кому есть что докачать. Именно `behind`, а не один
+    # хвост: книга с сотней дыр посередине по хвосту выглядит
+    # законченной, и в ночной обход она не попадала никогда.
     books = [b for b in library_op.all_books()
-             if (b.key in keys if keys else b.fresh)]
+             if (b.key in keys if keys else b.behind)]
 
     added, missed = 0, []
     for book in books:
@@ -2091,7 +2095,9 @@ def _downloads_start(payload: dict):
             # «С какой главы» считается сейчас, а не при постановке в
             # очередь: за ночь вышло бы ещё три главы, а очередь качала
             # бы вчерашний остаток.
-            first = item.first or (_reached(output_dir) + 1)
+            # С первой недостающей, а не за последней: иначе дыры
+            # под ней в запрос не попадают и не докачиваются.
+            first = item.first or _on_disk(output_dir).resume
             last = item.last or novel.total_chapters or first
             if last < first:
                 said = "Новых глав нет — качать нечего"
@@ -2269,23 +2275,55 @@ def _run_settings(payload: dict) -> RunSettings:
     return RunSettings(read_timeout, connect_timeout, threads, probe, books)
 
 
-def _reached(output_dir) -> int:
-    """Докуда книга докачана — по её же `state.json`.
+class OnDisk(NamedTuple):
+    """Что лежит в папке книги — тремя числами."""
 
-    Не по отчёту прогона: он говорит, сколько глав скачано за этот раз, а
-    нужен самый большой номер, который лежит в папке. Книгу качают
-    кусками, догоняют, бросают и возвращаются — сложение отчётов дало бы
-    неверный хвост, и докачка пошла бы с середины уже готового.
+    #: Самый большой номер главы в папке.
+    last: int
+    #: Сколько номеров записано вообще. Меньше `last` — значит есть дыры.
+    have: int
+    #: С какой главы продолжать: первая, которой нет.
+    resume: int
+
+
+def _on_disk(output_dir) -> OnDisk:
+    """Докуда книга докачана, сколько глав у неё есть и с чего продолжать.
+
+    Три числа, а не одно, и каждое отвечало за свою беду.
+
+    `last` — самый большой номер в папке. Не по отчёту прогона: он
+    говорит, сколько глав скачано за **этот** раз, а книгу качают
+    кусками, догоняют, бросают и возвращаются; сложение отчётов дало бы
+    неверный хвост.
+
+    `have` — сколько номеров записано. Пока считали один `last`, книга с
+    сотней несдавшихся глав посередине выглядела целой: номер-то дошёл до
+    конца. «Скачано 800 из 800» — и докачивать библиотека не предлагала,
+    потому что по её счёту было нечего.
+
+    `resume` — первая недостающая, а не `last + 1`. Это была та же беда с
+    другой стороны: даже вели мы книгу в очередь, докачка начиналась за
+    последней главой, и сотня дыр под ней в запрос не попадала вовсе.
+    Докачать их было нельзя никаким числом нажатий.
+
+    Пропущенные главы качалка держит отдельно, в `failed`, и в
+    `downloaded` их нет — поэтому и разность, и первая дыра ловят их все.
     """
     try:
         state = downloader_mod.State(
             Path(output_dir) / downloader_mod.STATE_FILE)
     except Exception as exc:  # noqa: BLE001 — библиотека не повод ронять прогон
         log.warning("Не прочитать состояние книги в %s: %s", output_dir, exc)
-        return 0
-    numbers = [int(n) for n in (state.data.get("downloaded") or {})
-               if str(n).isdigit()]
-    return max(numbers) if numbers else 0
+        return OnDisk(0, 0, 1)
+
+    numbers = {int(n) for n in (state.data.get("downloaded") or {})
+               if str(n).isdigit()}
+    if not numbers:
+        return OnDisk(0, 0, 1)
+    last = max(numbers)
+    # Первая дыра, а её нет — сразу за последней.
+    resume = next((n for n in range(1, last + 1) if n not in numbers), last + 1)
+    return OnDisk(last, len(numbers), resume)
 
 
 def _remember_item(item) -> None:
@@ -2408,6 +2446,7 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
         # после. Ровно это и случилось, когда запись перенесли вперёд.
         where = str(address or "").strip() or novel.slug or str(novel.code)
         key = library_op.key_of(site, code, source_key, where)
+        reached = _on_disk(output_dir)
         book = library_op.remember(
             key,
             name=str(origin.get("name") or novel.name or ""),
@@ -2427,7 +2466,8 @@ def _remember_book(novel, source_key: str, output_dir, origin: dict,
             folder=str(output_dir),
             chapters=int(novel.total_chapters or 0),
             **_about_fields(novel, origin),
-            last=_reached(output_dir),
+            last=reached.last,
+            have=reached.have,
             skipped=int(report.get("unavailable") or 0),
             last_run=library_op.stamp(),
         )

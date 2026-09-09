@@ -49,7 +49,8 @@ KEEP_BOOKS = 2000
 #:
 #: Список один на запись и на чтение: разойдись они, лишнее поле тихо
 #: осело бы в файле и жило там вечно.
-MADE = ("title", "downloaded", "fresh", "auto", "about_shown",
+MADE = ("title", "downloaded", "fresh", "gaps", "behind", "auto",
+        "about_shown",
         "genres_shown", "site_tags_shown", "status_shown", "language_shown",
         "translated")
 
@@ -65,7 +66,11 @@ MARKS = {
 #: следуют из того, что программа и так знает, и врать не могут.
 AUTO = {
     "downloaded": "Скачана",
-    "updatable": "Есть новые главы",
+    "updatable": "Есть что докачать",
+    #: Дыры внутри уже пройденного: качалка дошла до конца, а часть глав
+    #: по дороге не далась. Отдельной меткой, потому что искать такие
+    #: книги приходится именно списком — по одной их не выловишь.
+    "holed": "С пропусками",
 }
 
 _LOCK = threading.Lock()
@@ -135,6 +140,21 @@ class Book:
     last: int = 0
     skipped: int = 0
 
+    #: Сколько глав **и правда** лежит в папке.
+    #:
+    #: Отдельно от `last`, и это не мелочь. `last` — самый большой номер,
+    #: до которого дошёл прогон, а не число скачанного: пропусти качалка
+    #: сотню глав посередине, номер всё равно дойдёт до конца. Книга с
+    #: сотней дыр выглядела ровно как целая — «скачано 800 из 800», —
+    #: и докачивать её библиотека не предлагала, потому что по её счёту
+    #: докачивать было нечего.
+    #:
+    #: Ноль здесь значит «не считали», а не «пусто»: у книг, записанных
+    #: до появления этого поля, его нет, и принимать их за книги без
+    #: единой главы нельзя. Поэтому дыры считаются только там, где число
+    #: и правда есть, — см. `gaps`.
+    have: int = 0
+
     #: Что сайт рассказывает о книге. Собирается один раз, при
     #: скачивании: потом спросить будет не у кого — сайт ляжет, а книга
     #: в библиотеке останется.
@@ -179,13 +199,41 @@ class Book:
         return max(0, self.chapters - self.last) if self.downloaded else 0
 
     @property
+    def gaps(self) -> int:
+        """Сколько глав не легло **внутри** уже пройденного.
+
+        Дыры: качалка дошла до восьмисотой, а сотня по дороге не далась —
+        платные, зашифрованные, оборвалась связь. Хвост (`fresh`) сюда не
+        входит, он считается отдельно.
+
+        Ноль при несчитанном `have` — намеренно. У книг, записанных до
+        появления счёта, его нет, и разность дала бы «дыр 800» на целой
+        книге. Молчать о том, чего не знаешь, лучше, чем пугать.
+        """
+        if not self.have:
+            return 0
+        return max(0, self.last - self.have)
+
+    @property
+    def behind(self) -> int:
+        """Сколько глав всего не хватает: дыры плюс хвост.
+
+        Это и есть ответ на вопрос «сколько ещё качать». Кнопка
+        «Докачать» считает по нему, а не по одному хвосту: книга с сотней
+        дыр и без новых глав по хвосту выглядит законченной.
+        """
+        return self.gaps + self.fresh
+
+    @property
     def auto(self) -> list:
         """Метки, которые следуют из самой записи."""
         found = []
         if self.downloaded:
             found.append("downloaded")
-        if self.fresh:
+        if self.behind:
             found.append("updatable")
+        if self.gaps:
+            found.append("holed")
         return found
 
     @property
@@ -242,6 +290,7 @@ class Book:
             "source": self.source, "address": self.address,
             "folder": self.folder,
             "chapters": self.chapters, "last": self.last,
+            "have": self.have,
             "skipped": self.skipped,
             "marks": list(self.marks), "tags": list(self.tags),
             "note": self.note,
@@ -258,7 +307,8 @@ class Book:
         # сохранённый словарный перевод не обновился бы от пополнения
         # словаря.
         data.update(title=self.title, downloaded=self.downloaded,
-                    fresh=self.fresh, auto=self.auto,
+                    fresh=self.fresh, gaps=self.gaps, behind=self.behind,
+                    auto=self.auto,
                     about_shown=self.about_shown,
                     genres_shown=self.genres_shown,
                     site_tags_shown=self.site_tags_shown,
@@ -290,6 +340,7 @@ class Book:
             folder=str(data.get("folder") or ""),
             chapters=int(data.get("chapters") or 0),
             last=int(data.get("last") or 0),
+            have=int(data.get("have") or 0),
             skipped=int(data.get("skipped") or 0),
             marks=rows("marks"),
             tags=rows("tags"),
@@ -856,7 +907,8 @@ def state() -> dict:
     return {
         "books": len(rows),
         "downloaded": sum(1 for b in rows if b.downloaded),
-        "updatable": sum(1 for b in rows if b.fresh),
+        "updatable": sum(1 for b in rows if b.behind),
+        "holed": sum(1 for b in rows if b.gaps),
         "marks": {name: sum(1 for b in rows if name in b.marks)
                   for name in MARKS},
     }

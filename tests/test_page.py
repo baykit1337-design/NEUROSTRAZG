@@ -3679,3 +3679,134 @@ class TestTheQueueSweepButtonsAreOneRow(PageTestCase):
         rows = self.sweep()
         self.assertEqual([one["id"] for one in rows if one["over"]], [])
         self.quiet()
+
+
+class TestSwitchingTabsShowsFreshNumbers(PageTestCase):
+    """«Поставлено в очередь» — а на вкладке «Скачать» пусто.
+
+    Строка стояла на сервере; страница о ней не знала. Переход по
+    вкладкам не перечитывал ничего, и человек видел ту картинку, что
+    была при загрузке страницы, — и решал, что докачка сломана.
+    """
+
+    def watched(self, tab, name):
+        return self.page.evaluate(
+            """([tab, name]) => {
+                 let called = 0;
+                 const was = window[name];
+                 window[name] = () => { called++; return Promise.resolve(); };
+                 goTab(tab);
+                 window[name] = was;
+                 return called;
+               }""", [tab, name])
+
+    def test_going_to_the_queue_reloads_it(self):
+        self.assertEqual(self.watched("download", "dqLoad"), 1)
+        self.quiet()
+
+    def test_going_to_the_library_reloads_it(self):
+        self.assertEqual(self.watched("library", "libLoad"), 1)
+        self.quiet()
+
+    def test_a_tab_without_its_own_numbers_is_not_disturbed(self):
+        """Перечитывать нечего — и незачем: лишний запрос на каждый
+        переход это лишняя работа сервера во время прогона."""
+        self.assertEqual(self.watched("tools", "dqLoad"), 0)
+        self.quiet()
+
+    def test_a_refusal_does_not_paint_the_page_red(self):
+        """Перечитывание — услуга. Сервер занят прогоном, ответа нет —
+        это не повод встречать человека красной полосой."""
+        got = self.page.evaluate(
+            """() => new Promise(resolve => {
+                 // Ловим и необработанный отказ промиса: он всплывает не
+                 // сразу, и без ожидания проверка его просто не увидит.
+                 const loud = [];
+                 const heard = ev => loud.push(String(ev.reason));
+                 addEventListener('unhandledrejection', heard);
+                 const was = window.dqLoad;
+                 window.dqLoad = () => Promise.reject(new Error('занят'));
+                 goTab('download');
+                 window.dqLoad = was;
+                 setTimeout(() => {
+                   removeEventListener('unhandledrejection', heard);
+                   const box = document.getElementById('error');
+                   resolve({loud, said: box ? (box.textContent || '') : ''});
+                 }, 120);
+               })""")
+        self.assertEqual(got["said"].strip(), "")
+        self.assertEqual(got["loud"], [], "отказ ушёл в консоль неприбранным")
+        self.quiet()
+
+
+class TestTheLibraryOffersToRefillTheHoles(PageTestCase):
+    """Качалка пропустила сотню глав, а библиотека писала «всё скачано»:
+    она считала по последнему номеру, а не по числу глав."""
+
+    def book(self, key, **more):
+        row = {"key": key, "title": key, "name": key, "author": "Кто-то",
+               "folder": "C:/Книги/" + key, "marks": [], "auto": [],
+               "mark_names": [], "auto_names": [], "tags": [],
+               "genres_shown": [], "site_tags_shown": [],
+               "chapters": 800, "last": 800, "have": 800,
+               "fresh": 0, "gaps": 0, "behind": 0, "runs": [],
+               "source": "mvlempyr", "queued": ""}
+        row.update(more)
+        return row
+
+    def show(self, books):
+        return self.page.evaluate(
+            """(books) => {
+                 libBooks = books; libState = {}; libShelves = {};
+                 libKinds = new Set(); libTicked = new Set();
+                 libSort = 'title'; libGroup = 'none'; libTwins = null;
+                 document.getElementById('lbFilter').value = '';
+                 document.getElementById('lbPickOn').checked = false;
+                 libShow();
+                 libRefillShow();
+                 return {hidden: document.getElementById('lbRefillRow').hidden,
+                         text: document.getElementById('lbRefill').textContent,
+                         card: document.getElementById('lbList').textContent};
+               }""", books)
+
+    def test_a_holed_book_says_how_many_are_missing(self):
+        got = self.show([self.book("Дырявая", have=697, gaps=103, behind=103)])
+        self.assertIn("глав 697 из 800", got["card"])
+        self.assertIn("нет 103", got["card"])
+        self.quiet()
+
+    def test_a_whole_book_says_nothing_about_holes(self):
+        got = self.show([self.book("Целая")])
+        self.assertIn("глав 800 из 800", got["card"])
+        self.assertNotIn("нет ", got["card"])
+        self.quiet()
+
+    def test_the_refill_button_appears_when_there_is_work(self):
+        got = self.show([self.book("Дырявая", have=697, gaps=103, behind=103)])
+        self.assertFalse(got["hidden"])
+        self.assertIn("103", got["text"])
+        self.quiet()
+
+    def test_it_stays_hidden_when_everything_is_whole(self):
+        """Кнопка без повода — обещание, которое некому исполнить."""
+        self.assertTrue(self.show([self.book("Целая")])["hidden"])
+        self.quiet()
+
+    def test_it_counts_books_and_chapters_together(self):
+        got = self.show([
+            self.book("Дырявая", have=697, gaps=103, behind=103),
+            self.book("Свежая", chapters=900, fresh=100, behind=100),
+            self.book("Целая"),
+        ])
+        self.assertIn("2", got["text"])
+        self.assertIn("203", got["text"])
+        self.quiet()
+
+    def test_a_holed_book_is_offered_a_download(self):
+        """Новых глав нет, а качать есть что — раньше кнопка молчала."""
+        said = self.page.evaluate(
+            "(b) => libDeed(b)",
+            self.book("Дырявая", have=697, gaps=103, behind=103))
+        self.assertIn("103", said["text"])
+        self.assertIn("не легло", said["tip"])
+        self.quiet()

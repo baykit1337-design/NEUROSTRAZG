@@ -4009,14 +4009,22 @@
       <input id="lbFilter" type="text"
              placeholder="фильтр по названию, автору, описанию, жанру или метке"
              autocomplete="off">
+      <!-- Одна кнопка вместо двух. Раньше их было две — «Проверить
+           обновления» (спросить сайты) и «Осмотреть папки» (посмотреть
+           диск), — и порознь они отвечали каждая на половину вопроса.
+           А вопрос у человека один: с какими книгами есть дело. -->
       <button id="lbCheck" class="ghost" style="flex:0 0 auto"
-              title="Спросить у сайтов, не вышли ли новые главы">Проверить обновления</button>
-      <button id="lbShelf" class="ghost" style="flex:0 0 auto"
-              title="Посмотреть, что у книг на самом деле лежит на диске">Осмотреть папки</button>
+              title="Спросить у сайтов про новые главы и посмотреть, что и правда лежит на диске">Проверить книги</button>
       <button id="lbTwins" class="ghost" style="flex:0 0 auto"
               title="Одна работа, записанная дважды">Найти дубли</button>
     </div>
     <p class="hint" id="lbShelfNote" style="margin-top:6px"></p>
+
+    <!-- Появляется после проверки и только когда есть что качать: до
+         проверки эта кнопка обещала бы то, чего никто не считал. -->
+    <div class="row" id="lbRefillRow" hidden style="margin-top:8px;gap:8px">
+      <button id="lbRefill" class="primary" style="flex:1"></button>
+    </div>
 
     <!-- Как разложить список. Сотня книг в порядке скачивания — это
          сотня книг в случайном порядке. -->
@@ -6036,8 +6044,35 @@ document.querySelectorAll('.tabs button').forEach(btn => {
       s.hidden = s.id !== 'tab-' + btn.dataset.tab;
     });
     showError('');
+    tabFresh(btn.dataset.tab);
   };
 });
+
+/** Что перечитать при переходе на вкладку.
+ *
+ *  Раньше не перечитывалось ничего, и это выглядело как поломка совсем
+ *  другого места. Человек находил битые главы на «Проверке», нажимал
+ *  «Скачать заново», получал «поставлено в очередь» — а на «Скачать»
+ *  видел вчерашнюю пустую очередь и решал, что не сработало. Сработало:
+ *  строка стояла на сервере, просто страница о ней не знала.
+ *
+ *  То же самое между качалкой и библиотекой: прогон дописывает книге
+ *  главы, а карточка держит цифры, снятые при загрузке страницы.
+ */
+const TAB_FRESH = {
+  download: () => dqLoad(),
+  library: () => libLoad(),
+};
+
+function tabFresh(name){
+  const again = TAB_FRESH[name];
+  if(!again) return;
+  // Молча: перечитывание — услуга, а не работа человека, и его отказ
+  // (сервер занят прогоном) не повод показывать красную полосу поверх
+  // вкладки, на которую только что перешли.
+  try{ Promise.resolve(again()).catch(() => {}); }
+  catch(err){ console.debug('вкладка не перечиталась', err); }
+}
 
 $('stop').onclick = stop;
 /* История скачиваний (пункт 7 списка).
@@ -6122,8 +6157,7 @@ function histRow(book){
   const parts = [];
   if(book.found_site) parts.push('нашли: ' + book.found_site);
   if(book.source) parts.push('качали: ' + book.source);
-  if(book.chapters) parts.push(`глав ${book.last} из ${book.chapters}`);
-  else if(book.last) parts.push(`глав ${book.last}`);
+  parts.push(...libCount(book));
   if(book.skipped) parts.push(`пропущено ${book.skipped}`);
   if(book.last_run) parts.push(book.last_run);
   where.textContent = parts.join(' · ');
@@ -6297,6 +6331,10 @@ function libTook(data){
   libState = data.state || libState;
   libMarkFill();
   libShow();
+  // Кнопка докачки — всякий раз, когда приехали свежие числа, а не
+  // только после проверки. Считать заново нечего: сколько книге не
+  // хватает, сервер уже посчитал и прислал.
+  libRefillShow();
 }
 
 /** Выпадающие списки вкладки. Заводятся один раз, при первом ответе.
@@ -6540,10 +6578,39 @@ function libDotTip(book){
   return book.status_shown || book.status || 'состояние не записано';
 }
 
+/** Сколько глав у книги **и правда** есть.
+ *
+ *  Не `last`: тот всего лишь самый большой номер в папке. Книга, у
+ *  которой качалка не взяла сотню глав посередине, читалась как «глав
+ *  800 из 800» — и поверить в это было тем легче, что цифры сходились.
+ *
+ *  У записей, сделанных до появления счёта, числа нет, и там берём
+ *  прежнее: соврать «глав 0» про целую книгу было бы хуже.
+ */
+function libHave(book){
+  return Number(book.have) || Number(book.last) || 0;
+}
+
+/** «Глав 697 из 800» и «нет 103» — одной строкой и в одном месте.
+ *
+ *  В одном, потому что мест два: карточка библиотеки и строка истории.
+ *  Разойдись они — одна показывала бы дыры, вторая молчала.
+ */
+function libCount(book){
+  const all = Number(book.chapters) || 0;
+  const have = libHave(book);
+  const gaps = Number(book.gaps) || 0;
+  const parts = [];
+  if(all) parts.push(`глав ${have} из ${all}`);
+  else if(have) parts.push(`глав ${have}`);
+  if(gaps) parts.push(`нет ${gaps}`);
+  return parts;
+}
+
 /** Полоса «сколько скачано из того, что есть». `null` — считать не из чего. */
 function libFillBar(book){
   const all = Number(book.chapters) || 0;
-  const done = Number(book.last) || 0;
+  const done = libHave(book);
   if(!all || !done) return null;
 
   const part = Math.max(0, Math.min(100, Math.round(done / all * 100)));
@@ -6754,11 +6821,11 @@ function libFullClose(){
 let libShelves = {};
 
 /** Осмотреть папки показанных книг. Ничего не чинит и не трогает. */
-async function libLook(){
+async function libLook(buttonId){
   const rows = libBooks.filter(libFits);
   if(!rows.length) return;
 
-  const button = $('lbShelf');
+  const button = $(buttonId || 'lbCheck');
   button.disabled = true;
   $('lbShelfNote').innerHTML = '<span class="spin"></span>Смотрим папки…';
   try{
@@ -6782,6 +6849,83 @@ async function libLook(){
   }catch(err){
     $('lbShelfNote').textContent = '';
     showError(err.message, $('lbShelfNote'));
+  }finally{
+    button.disabled = false;
+  }
+}
+
+/** Проверить книги: и у сайтов, и на диске — одним нажатием.
+ *
+ *  Два вопроса, но человек задаёт их вместе: «с какими книгами есть
+ *  дело». Сайт знает про новые главы, диск — про то, что не легло, и
+ *  порознь каждый ответ половинчатый. Книга с сотней несдавшихся глав
+ *  для сайта закончена, а для диска — дырявая.
+ */
+async function libCheckAll(){
+  await libCheck('lbNote', 'lbCheck');
+  await libLook('lbCheck');
+  libRefillShow();
+}
+
+/** Сколько главы книге не хватает: дыры плюс новые.
+ *
+ *  Число считает сервер, но складываем и сами: зависеть от одного
+ *  производного поля нельзя — не приехало, и докачка молча пропадает.
+ */
+function libBehindOf(book){
+  return Number(book.behind)
+    || ((Number(book.gaps) || 0) + (Number(book.fresh) || 0));
+}
+
+/** Книги, которым есть что докачать. */
+function libBehind(){
+  return libBooks.filter(one => libBehindOf(one) > 0);
+}
+
+/** Показать кнопку докачки, если после проверки есть что качать. */
+function libRefillShow(){
+  const rows = libBehind();
+  const chapters = rows.reduce((sum, one) => sum + libBehindOf(one), 0);
+  $('lbRefillRow').hidden = !rows.length;
+  if(!rows.length) return;
+  $('lbRefill').textContent =
+    `Докачать ${ru(rows.length)} `
+    + plural(rows.length, 'книгу', 'книги', 'книг')
+    + `: глав ${ru(chapters)}`;
+  $('lbRefill').title = 'Поставит эти книги в очередь и сразу запустит её';
+}
+
+/** Поставить всё недостающее в очередь и запустить её.
+ *
+ *  Именно запустить, а не «поставить и сказать, где нажать». Разделять
+ *  эти два шага было незачем: человек, нажавший «докачать», уже сказал,
+ *  чего хочет, и второе нажатие на другой вкладке ничего не решает.
+ */
+async function libRefill(){
+  const rows = libBehind();
+  if(!rows.length) return;
+
+  const button = $('lbRefill');
+  button.disabled = true;
+  try{
+    const done = await call('/api/library/batch',
+                            {deed: 'queue', keys: rows.map(one => one.key)});
+    libTook(done);
+    await dqLoad();
+    const missed = (done.missed || []).length;
+    if(missed){
+      // Часть книг поставить не вышло — обычно у них не записано, чем и
+      // откуда качали. Молчать нельзя: иначе «докачал 20», а пришло 12.
+      showError(`Не удалось поставить книг: ${missed}. `
+                + 'У них не записано, чем и откуда качали.', $('lbRefillRow'));
+    }
+    if(!done.done) return;
+    // Переходим туда, где видно прогон: он идёт часами, и смотреть на
+    // него из библиотеки было бы не на что.
+    goTab('download');
+    await dqStart();
+  }catch(err){
+    showError(err.message, $('lbRefillRow'));
   }finally{
     button.disabled = false;
   }
@@ -7017,9 +7161,22 @@ function libDeed(book){
     return {text: 'Уже в очереди', tip: 'Показать в очереди',
             strong: false, standing: true};
   }
-  if(book.fresh){
-    return {text: `Докачать ${book.fresh}`,
-            tip: `Поставить в очередь: вышло новых глав ${book.fresh}`,
+  // Считаем по «сколько всего не хватает», а не по одному хвосту. Книга,
+  // у которой качалка не взяла сотню глав посередине, по хвосту выглядит
+  // законченной — и докачать её было нельзя, потому что кнопка про эти
+  // главы не знала.
+  const gaps = Number(book.gaps) || 0;
+  const fresh = Number(book.fresh) || 0;
+  // Складываем сами, если готового числа не приехало. Зависеть от одного
+  // производного поля нельзя: не пришло — и кнопка молча перестаёт
+  // предлагать докачку, хотя качать есть что.
+  const behind = libBehindOf(book);
+  if(behind){
+    const why = [];
+    if(gaps) why.push(`не легло ${gaps}`);
+    if(fresh) why.push(`вышло новых ${fresh}`);
+    return {text: `Докачать ${behind}`,
+            tip: 'Поставить в очередь: ' + why.join(', '),
             strong: true, standing: false};
   }
   if(book.last > 0 && book.chapters && book.last < book.chapters){
@@ -7105,8 +7262,7 @@ function libCard(book, how){
   libWhere(where, 'нашли: ', book.found_site, book.found_link);
   libWhere(where, 'качали: ', book.source, book.address);
   const tail = [];
-  if(book.chapters) tail.push(`глав ${book.last} из ${book.chapters}`);
-  else if(book.last) tail.push(`глав ${book.last}`);
+  tail.push(...libCount(book));
   if(book.skipped) tail.push(`пропущено ${book.skipped}`);
   if(book.last_run) tail.push(book.last_run);
   if(tail.length){
@@ -7423,8 +7579,8 @@ async function libMark(book, name, on){
 }
 
 $('lbFilter').addEventListener('input', libShow);
-$('lbCheck').onclick = () => libCheck('lbNote', 'lbCheck');
-$('lbShelf').onclick = libLook;
+$('lbCheck').onclick = libCheckAll;
+$('lbRefill').onclick = libRefill;
 $('lbTwins').onclick = libLookAlike;
 $('lbTwins').onclick = libLookAlike;
 

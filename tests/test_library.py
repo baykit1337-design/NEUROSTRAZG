@@ -1539,3 +1539,73 @@ class TestTakingABookToTheTranslator(Base):
         said = self.ask(book.key)
         self.assertEqual(said.status_code, 200)
         self.assertEqual(said.get_json()["files"], [])
+
+
+class TestHolesAreNotCountedAsDownloaded(Base):
+    """«Скачано 800 из 800» на книге, у которой сотни глав нет.
+
+    `last` — самый большой номер в папке, а не число глав. Пропусти
+    качалка сотню посередине, номер всё равно дойдёт до конца, и книга
+    выглядела законченной. Докачать её было нельзя: по счёту библиотеки
+    качать было нечего.
+    """
+
+    def holed(self, **more):
+        fields = dict(key="дырявая", folder="C:/Книги/Дырявая",
+                      chapters=800, last=800, have=697)
+        fields.update(more)
+        return library.remember(**fields)
+
+    def test_the_holes_are_counted(self):
+        self.assertEqual(self.holed().gaps, 103)
+
+    def test_a_whole_book_has_no_holes(self):
+        self.assertEqual(self.holed(have=800).gaps, 0)
+
+    def test_holes_and_new_chapters_add_up(self):
+        """Кнопка спрашивает одно: сколько ещё качать."""
+        book = self.holed(chapters=900)
+        self.assertEqual(book.fresh, 100)
+        self.assertEqual(book.gaps, 103)
+        self.assertEqual(book.behind, 203)
+
+    def test_a_holed_book_is_offered_for_download(self):
+        """Новых глав нет, а качать есть что — и раньше это молчало."""
+        book = self.holed()
+        self.assertEqual(book.fresh, 0)
+        self.assertTrue(book.behind)
+        self.assertIn("updatable", book.auto)
+        self.assertIn("holed", book.auto)
+
+    def test_a_whole_book_is_not_offered(self):
+        book = self.holed(have=800)
+        self.assertFalse(book.behind)
+        self.assertNotIn("holed", book.auto)
+
+    def test_an_old_record_without_the_count_keeps_quiet(self):
+        """У книг, записанных до появления счёта, числа нет. Разность
+        дала бы «дыр 800» на целой книге — пугать нельзя."""
+        book = library.remember(key="старая", folder="C:/Книги/Старая",
+                                chapters=800, last=800)
+        self.assertEqual(book.have, 0)
+        self.assertEqual(book.gaps, 0)
+        self.assertEqual(book.behind, 0)
+
+    def test_the_count_survives_a_round_trip(self):
+        self.holed()
+        again = library.get("дырявая")
+        self.assertEqual(again.have, 697)
+        self.assertEqual(again.gaps, 103)
+
+    def test_the_count_goes_out_to_the_page(self):
+        data = self.holed().as_dict()
+        self.assertEqual(data["have"], 697)
+        self.assertEqual(data["gaps"], 103)
+        self.assertEqual(data["behind"], 103)
+
+    def test_the_summary_counts_holed_books(self):
+        self.holed()
+        self.holed(key="целая", folder="C:/Книги/Целая", have=800)
+        state = library.state()
+        self.assertEqual(state["holed"], 1)
+        self.assertEqual(state["updatable"], 1)

@@ -2210,3 +2210,115 @@ class TestPastingALisfOfLinks(WebBase):
         folders = sorted(one.folder for one in downloads.all_items())
         self.assertEqual(len(folders), 2)
         self.assertNotEqual(folders[0], folders[1])
+
+
+class TestWhatIsReallyInTheFolder(unittest.TestCase):
+    """Докачка шла «за последней главой», и дыры под ней в запрос не
+    попадали вовсе. Докачать их было нельзя никаким числом нажатий."""
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        from webapp import app as web
+        self.web = web
+
+    def folder(self, numbers, chapters=800):
+        where = Path(self.dir.name) / "Книга"
+        where.mkdir(exist_ok=True)
+        (where / "state.json").write_text(
+            json.dumps({"version": 1,
+                        "downloaded": {str(n): f"{n}.txt" for n in numbers}}),
+            encoding="utf-8")
+        return where
+
+    def test_a_whole_book_resumes_after_the_last_one(self):
+        got = self.web._on_disk(self.folder(range(1, 101)))
+        self.assertEqual((got.last, got.have, got.resume), (100, 100, 101))
+
+    def test_holes_are_seen_as_holes(self):
+        numbers = [n for n in range(1, 801) if n not in {4, 5, 6}]
+        got = self.web._on_disk(self.folder(numbers))
+        self.assertEqual(got.last, 800)
+        self.assertEqual(got.have, 797)
+
+    def test_it_resumes_from_the_first_hole_not_from_the_end(self):
+        """Вот это и делало докачку невозможной: качали 801-ю, а не 4-ю."""
+        numbers = [n for n in range(1, 801) if n not in {4, 5, 6}]
+        self.assertEqual(self.web._on_disk(self.folder(numbers)).resume, 4)
+
+    def test_an_empty_folder_starts_from_the_first_chapter(self):
+        where = Path(self.dir.name) / "Пустая"
+        where.mkdir()
+        got = self.web._on_disk(where)
+        self.assertEqual((got.last, got.have, got.resume), (0, 0, 1))
+
+    def test_a_folder_that_is_not_there_is_not_a_crash(self):
+        got = self.web._on_disk(Path("/нет/такой/папки"))
+        self.assertEqual(got.resume, 1)
+
+
+class TestTheNightRunPicksUpHoledBooks(unittest.TestCase):
+    """Ночной обход брал книги «у которых вышли новые главы». Книга с
+    сотней дыр посередине по хвосту выглядит законченной, и в обход она
+    не попадала никогда."""
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        was = downloads.QUEUE_FILE
+        downloads.QUEUE_FILE = Path(self.dir.name) / "downloads.json"
+        self.addCleanup(setattr, downloads, "QUEUE_FILE", was)
+
+        from ops import library
+        kept = library.LIBRARY_FILE
+        library.LIBRARY_FILE = Path(self.dir.name) / "library.json"
+        self.addCleanup(setattr, library, "LIBRARY_FILE", kept)
+        self.library = library
+        from webapp import app as web
+        self.web = web
+
+    def book(self, key, **more):
+        fields = dict(key=key, name=key, source="mvlempyr",
+                      address="кни-га", folder=str(Path(self.dir.name) / key),
+                      chapters=800, last=800, have=800)
+        fields.update(more)
+        return self.library.remember(**fields)
+
+    def test_a_holed_book_goes_into_the_queue(self):
+        self.book("Дырявая", have=697)
+        added, missed = self.web._fill_queue()
+        self.assertEqual((added, missed), (1, []))
+        self.assertEqual(len(downloads.all_items()), 1)
+
+    def test_a_whole_book_is_left_alone(self):
+        self.book("Целая")
+        self.assertEqual(self.web._fill_queue()[0], 0)
+
+    def test_a_book_with_new_chapters_still_goes(self):
+        """Правка не должна была тронуть то, что и так работало."""
+        self.book("Свежая", chapters=900)
+        self.assertEqual(self.web._fill_queue()[0], 1)
+
+    def test_the_run_writes_the_real_count_into_the_library(self):
+        """Здесь вся правка и держится: посчитали честно, а в библиотеку
+        положили старое — и она снова говорит «всё скачано»."""
+        from mvl.api import Novel
+
+        where = Path(self.dir.name) / "Дырявая"
+        where.mkdir(exist_ok=True)
+        numbers = [n for n in range(1, 801) if n not in {4, 5, 6}]
+        (where / "state.json").write_text(
+            json.dumps({"version": 1,
+                        "downloaded": {str(n): f"{n}.txt" for n in numbers}}),
+            encoding="utf-8")
+
+        self.web._remember_book(
+            Novel(code=1, name="Дырявая", slug="кни-га", total_chapters=800),
+            "mvlempyr", where, {"site": "mvlempyr", "book_id": "1"}, {})
+
+        book = self.library.get(self.library.key_of("mvlempyr", "1"))
+        self.assertIsNotNone(book)
+        self.assertEqual(book.last, 800)
+        self.assertEqual(book.have, 797)
+        self.assertEqual(book.gaps, 3)
+        self.assertTrue(book.behind)
