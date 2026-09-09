@@ -364,3 +364,175 @@ class TestAChapterFromANewSite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestABookThatLiesInAFileNotAFolder(unittest.TestCase):
+    """`/book/45540.htm` — книга лежит файлом.
+
+    Общее правило «код это последний кусок пути» отбрасывает файл вместе
+    с кодом и оставляет слово «book». Дальше по такому «коду» собирается
+    адрес `/book/`, и качалка уходит в никуда — молча, потому что
+    страница по нему у сайта есть.
+    """
+
+    def setUp(self):
+        self.source = NovelCmsSource()
+
+    def test_the_code_survives_the_extension(self):
+        self.assertEqual(
+            self.source.code_of("https://www.69shuba.com/book/45540.htm"),
+            "45540")
+        self.assertEqual(
+            self.source.code_of("https://twkan.com/book/16711.html"), "16711")
+
+    def test_the_code_is_taken_from_a_chapter_address_too(self):
+        """Человек копирует ссылку с той страницы, где читает."""
+        self.assertEqual(
+            self.source.code_of("https://www.69shuba.com/txt/45540/41064072"),
+            "45540")
+
+    def test_the_book_page_is_built_from_the_code(self):
+        rule, code, book = self.source._book_url(
+            "https://www.69shuba.com/txt/45540/41064072")
+        self.assertEqual(rule.name, "69shu")
+        self.assertEqual(code, "45540")
+        self.assertEqual(book, "https://www.69shuba.com/book/45540.htm")
+
+    def test_a_folder_site_still_keeps_the_pasted_address(self):
+        """Правка не должна была тронуть тех, у кого и так работало."""
+        _, code, book = self.source._book_url(
+            "https://www.novel543.com/0407653271/")
+        self.assertEqual(code, "0407653271")
+        self.assertEqual(book, "https://www.novel543.com/0407653271/")
+
+    def test_an_address_without_a_code_is_named(self):
+        with self.assertRaises(novelcms.SourceBroken):
+            self.source._book_url("https://twkan.com/novels/class/1_1.html")
+
+
+class TestAListThatGoesFromTheNewestChapter(unittest.TestCase):
+    """69shuba перечисляет главы от свежей к первой.
+
+    Пока номер стоит в названии каждой главы, порядок задаст он. Но
+    стоит он не у каждой — «新年快乐！» номера не имеет вовсе, — и тогда
+    порядок остаётся тот, что дал сайт. Не развернуть его значит
+    сохранить книгу задом наперёд.
+    """
+
+    def setUp(self):
+        self.source = NovelCmsSource()
+
+    def rows(self, titles):
+        items = "".join(
+            '<li><a href="/txt/45540/%d">%s</a></li>' % (900 + n, title)
+            for n, title in enumerate(titles))
+        book = ('<html><body><div class="booknav2"><h1>Книга</h1></div>'
+                '<a class="btn more-btn" href="/book/45540/">полный</a>'
+                "</body></html>")
+        listing = ('<html><body><div id="catalog"><ul>%s</ul></div>'
+                   "</body></html>" % items)
+        client = FakeClient({"/book/45540/": listing,
+                             "/book/45540.htm": book}, encoding="gb18030")
+        where = "https://www.69shuba.com/book/45540.htm"
+        return self.source._links(client, rule_for(where), where), client
+
+    def test_chapters_without_numbers_keep_the_sites_order_reversed(self):
+        rows, _ = self.rows(["С новым годом!", "Про серебряное море",
+                             "Начало"])
+        self.assertEqual([title for _, title, _ in rows],
+                         ["Начало", "Про серебряное море", "С новым годом!"])
+        self.assertEqual([number for number, _, _ in rows], [1, 2, 3])
+
+    def test_the_number_in_the_title_still_wins(self):
+        """Развернули — но если номера есть, порядок задают они."""
+        rows, _ = self.rows(["第3章 Третья", "第1章 Первая", "第2章 Вторая"])
+        self.assertEqual([number for number, _, _ in rows], [1, 2, 3])
+
+    def test_the_full_list_is_asked_for_by_the_sites_own_link(self):
+        """На странице книги висят последние пять глав."""
+        _, client = self.rows(["Один", "Два"])
+        self.assertTrue(any("/book/45540/" in url for url in client.asked))
+
+
+class TestAListTheSiteFetchesForItself(unittest.TestCase):
+    """У twkan страница оглавления показывает начало списка и кнопку
+    «ещё». Весь список сайт берёт отдельным куском вёрстки — и мы
+    оттуда же, иначе от книги досталась бы сотня глав с бодрым отчётом
+    об успехе."""
+
+    def setUp(self):
+        self.source = NovelCmsSource()
+
+    def test_the_whole_list_comes_from_the_sites_own_address(self):
+        whole = ("<ul>" + "".join(
+            '<li><a href="/txt/16711/%d">第%d章 Глава</a></li>' % (500 + n, n)
+            for n in range(1, 30)) + "</ul>")
+        short = ('<html><body><ul class="qustime">'
+                 '<li><a href="/txt/16711/501">第1章 Глава</a></li>'
+                 "</ul></body></html>")
+        client = FakeClient({"/ajax_novels/chapterlist/16711.html": whole,
+                             "/book/16711": short})
+        book = "https://twkan.com/book/16711.html"
+        rows = self.source._links(client, rule_for(book), book)
+        self.assertEqual(len(rows), 29)
+        self.assertTrue(any("/ajax_novels/chapterlist/16711.html" in url
+                            for url in client.asked))
+
+
+class TestWhatTheSiteItselfCallsRubbish(unittest.TestCase):
+    """Внутри блока с текстом у этих сайтов стоит строка с числом
+    прочтений и столбец сбоку. Абзацами они не выглядят, но абзацами
+    разбираются — и уезжают в книгу наравне с текстом."""
+
+    def setUp(self):
+        self.source = NovelCmsSource()
+
+    def test_the_named_rubbish_does_not_reach_the_book(self):
+        page = """<html><body><div class="txtnav">
+            <h1>第815章 Глава</h1>
+            <div class="txtinfo hide720"><span>прочтений: 1234</span></div>
+            <div id="txtright"><p>реклама сбоку</p></div>
+            <p>Первый абзац.</p>
+            <p>Второй абзац.</p>
+            <div class="bottom-ad"><p>реклама снизу</p></div>
+          </div></body></html>"""
+        client = FakeClient({"/txt/45540/": page}, encoding="gb18030")
+        title, text = self.source.chapter(
+            client, Chapter(number=815, post_id="", ch_name="",
+                            link="https://www.69shuba.com/txt/45540/41064072"))
+        self.assertEqual(title, "第815章 Глава")
+        self.assertEqual(text, "Первый абзац.\n\nВторой абзац.")
+
+    def test_the_page_is_read_in_the_encoding_the_site_writes_in(self):
+        """Сайт объявляет gbk, а пишет в gb18030.
+
+        Проверяем знаком, который есть в gb18030 и которого нет в gbk:
+        на общей их части ошибка не видна вовсе, а редкий иероглиф на
+        gbk превращается в вопросительный знак — молча и навсегда.
+        """
+        page = ('<html><body><div class="txtnav"><h1>Глава</h1>'
+                "<p>Текст 巫师㐀 про магию.</p></div></body></html>")
+        client = FakeClient({"/txt/45540/": page}, encoding="gb18030")
+        _, text = self.source.chapter(
+            client, Chapter(number=1, post_id="", ch_name="",
+                            link="https://www.69shuba.com/txt/45540/1"))
+        self.assertIn("巫师㐀", text)
+
+    def test_the_twkan_chapter_text_is_found_where_it_lies(self):
+        """У соседа по движку блок с текстом называется иначе, и общие
+        запасные селекторы до него не достают."""
+        page = """<html><body><div class="mybox"><div class="txtnav">
+            <h1>第815章 Глава</h1>
+            <div class="txtinfo"><span>прочтений: 12</span></div>
+            <div id="txtcontent0">
+              <p>Перший абзац.</p>
+              <p>Другий абзац.</p>
+            </div>
+            <div class="txtcenter"><p>реклама</p></div>
+          </div></div></body></html>"""
+        client = FakeClient({"/txt/16711/": page})
+        title, text = self.source.chapter(
+            client, Chapter(number=815, post_id="", ch_name="",
+                            link="https://twkan.com/txt/16711/56343814"))
+        self.assertEqual(title, "第815章 Глава")
+        self.assertEqual(text, "Перший абзац.\n\nДругий абзац.")

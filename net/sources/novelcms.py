@@ -90,10 +90,41 @@ class SiteRule:
     #: Глава может быть разложена по страницам.
     paged: bool = False
 
+    #: Где в адресе лежит код книги — выражением с одной скобкой. Пусто —
+    #: код это последний кусок пути.
+    #:
+    #: Последний кусок годится, пока книга лежит папкой: `/book/45540/`.
+    #: Но у части сайтов она лежит файлом — `/book/45540.htm`, — и общее
+    #: правило отбрасывает файл вместе с кодом, оставляя слово «book».
+    #: Дальше по такому «коду» собирается адрес, который ведёт в никуда.
+    code_re: str = ""
+    #: Как из кода собрать адрес страницы книги. Пусто — берём тот, что
+    #: вставил человек, обрезав до папки.
+    #:
+    #: Нужно там же, где и `code_re`: вставленный адрес главы обрезается
+    #: до `/txt/45540/`, а книга лежит по `/book/45540.htm`. Собрать её
+    #: адрес из кода — единственный способ прийти на страницу книги, с
+    #: какой бы страницы сайта человек ни копировал ссылку.
+    book_url: str = ""
+
     #: Где лежит полный список глав относительно страницы книги.
     #: Пусто — прямо на ней. У части сайтов это отдельная страница
     #: `/{код}/dir`, у части — своя, на которую ведёт ссылка (см. ниже).
     toc_page: str = ""
+    #: Готовый адрес списка глав по коду книги — сильнее всего
+    #: остального. У части сайтов страница оглавления показывает первую
+    #: сотню и кнопку «ещё», а весь список лежит отдельным куском
+    #: вёрстки, за которым сайт ходит сам.
+    toc_url: str = ""
+    #: Список идёт от новых к старым. Разворачиваем до нумерации: если
+    #: номер главы стоит в её названии, порядок задаст он, но стоит он
+    #: не у каждой — «新年快乐！» номера не имеет вовсе. Одна такая глава,
+    #: и книга сохранится задом наперёд.
+    toc_reverse: bool = False
+    #: Что выкинуть из блока с текстом у этого сайта. Общий список
+    #: `JUNK_CLASSES` знает рекламу и навигацию; сюда идёт то, что назвал
+    #: сам сайт, — вроде строки с числом прочтений над главой.
+    junk: tuple[str, ...] = ()
     #: Ссылка на страницу оглавления, если её адрес не угадать. Сильнее
     #: `toc_page`: раз сайт сам сказал, куда идти, гадать незачем.
     toc_link: tuple[str, ...] = ()
@@ -236,6 +267,49 @@ SITES: tuple[SiteRule, ...] = (
         title=("h1.page-d-name", "article.page-content h3"),
         author=("a.bauthor",),
         cover=(".n-img img",),
+    ),
+    SiteRule(
+        name="69shu",
+        # У WebToEpub правило записано по куску имени: любой хост, где
+        # встречается «69shu». Так здесь не сделано намеренно — под ту же
+        # мерку попадает `69shuba.tw`, а он свёрстан иначе, и разбор взял
+        # бы не те селекторы молча. Названо то, что видели своими
+        # глазами; соседний адрес добавится строкой, когда будет с чем
+        # сверить.
+        hosts=("69shuba.com",),
+        # Книга лежит файлом, а не папкой: `/book/45540.htm`.
+        code_re=r"/(?:book|txt)/(\d+)",
+        book_url="/book/{code}.htm",
+        # Полный список — по ссылке «完整目录» со страницы книги: в самой
+        # странице висят только последние пять глав.
+        toc_link=("a.more-btn",),
+        toc_lists=("#catalog ul",),
+        # Список идёт от новой главы к первой.
+        toc_reverse=True,
+        content=("div.txtnav",),
+        title=(".txtnav h1",),
+        author=(".booknav2 a[href*=author]",),
+        cover=(".bookimg2 img",),
+        junk=(".txtinfo", "#txtright", ".bottom-ad"),
+        # Сайт объявляет gbk, но пишет в gb18030 — это надмножество, и
+        # редкие знаки в gbk не помещаются. Так же у WebToEpub.
+        encoding="gb18030",
+    ),
+    SiteRule(
+        name="twkan",
+        hosts=("twkan.com",),
+        code_re=r"/(?:book|txt)/(\d+)",
+        book_url="/book/{code}.html",
+        # Страница оглавления показывает начало списка и кнопку «ещё».
+        # Весь список сайт берёт вот отсюда — и мы оттуда же, иначе от
+        # книги досталась бы сотня глав с бодрым отчётом об успехе.
+        toc_url="/ajax_novels/chapterlist/{code}.html",
+        toc_lists=("ul",),
+        content=("#txtcontent0",),
+        title=(".txtnav h1",),
+        author=(".booknav2 p a[href*='/author/']",),
+        cover=(".bookimg2 img",),
+        junk=(".txtinfo", "#txtright", ".bottom-ad", ".txtcenter"),
     ),
     SiteRule(
         name="sjks88",
@@ -428,10 +502,22 @@ class NovelCmsSource(Source):
         лежит в корне (`/0407653271/`), у других в подпапке
         (`/book/12345/`), и «первый кусок» во втором случае давал слово
         «book» вместо кода.
+
+        Но и последний кусок годится не везде: там, где книга лежит
+        файлом (`/book/45540.htm`), общее правило отбрасывает файл
+        вместе с кодом. Такие сайты называют код выражением сами.
         """
         text = (query or "").strip()
-        if rule_for(text) is None:
+        rule = rule_for(text)
+        if rule is None:
             return ""
+        if rule.code_re:
+            try:
+                path = urlparse(text).path or ""
+            except ValueError:
+                return ""
+            found = re.search(rule.code_re, path)
+            return found.group(1) if found else ""
         path = [part for part in self._book_path(text).split("/") if part]
         return path[-1] if path else ""
 
@@ -468,7 +554,14 @@ class NovelCmsSource(Source):
         # Адрес книги берём из того, что вставили, а не собираем из кода:
         # у части сайтов книга лежит в подпапке, и собранный адрес вёл бы
         # в никуда.
-        return rule, code, f"{parts.scheme}://{parts.netloc}{self._book_path(address)}"
+        #
+        # Кроме тех, кто сам сказал, как её адрес устроен. Там наоборот:
+        # обрезать вставленное нельзя — книга лежит файлом, и от неё
+        # осталась бы одна папка `/book/`. Заодно это принимает и ссылку
+        # на главу: код в ней тот же, а страница книги соберётся.
+        path = (rule.book_url.format(code=code) if rule.book_url
+                else self._book_path(address))
+        return rule, code, f"{parts.scheme}://{parts.netloc}{path}"
 
     def find(self, client, query: str) -> Novel:
         rule, code, book = self._book_url(query)
@@ -558,6 +651,13 @@ class NovelCmsSource(Source):
         вместо тысячи.
         """
         listing = book
+        if rule.toc_url:
+            # Готовый адрес сильнее всего остального: сайт сам ходит
+            # именно туда, а страница оглавления показывает начало
+            # списка и кнопку «ещё».
+            listing = urljoin(listing, rule.toc_url.format(
+                code=self.code_of(book)))
+            return listing, _soup(_fetch(client, listing, rule))
         if rule.toc_mobile:
             listing = _mobile(listing)
         elif rule.toc_page:
@@ -684,6 +784,12 @@ class NovelCmsSource(Source):
         for address in self._more_pages(page, listing, rule):
             collect(_soup(_fetch(client, address, rule)), address)
 
+        if rule.toc_reverse:
+            # Разворачиваем до нумерации, а не после: там, где номер
+            # стоит в названии каждой главы, порядок задаст он и
+            # разворот ничего не изменит. Но стоит он не у каждой — и
+            # тогда порядок остаётся тот, что дал сайт.
+            rows.reverse()
         return self._numbered(rows)
 
     # ------------------------------------------------------------ глава
@@ -733,6 +839,13 @@ class NovelCmsSource(Source):
             raise SourceBroken(
                 f"Источник изменился: в главе {chapter.number} не нашлось "
                 "блока с текстом.")
+
+        # То, что назвал сам сайт: строка с числом прочтений над главой,
+        # столбец сбоку, реклама под текстом. Выкидываем до разбора —
+        # иначе абзацы из них уедут в книгу наравне с текстом.
+        for where in rule.junk:
+            for bad in body.select(where):
+                bad.decompose()
 
         head = _pick(page, rule.title, FALLBACK_TITLE)
         # Номер страницы в заголовке — служебная пометка: «(1/2)» и

@@ -521,7 +521,7 @@ class Client:
         return self._ask(url, params=params, headers=headers, cookies=cookies,
                          timeout=timeout)
 
-    def post(self, url: str, data: dict | None = None,
+    def post(self, url: str, data: dict | str | bytes | None = None,
              headers: dict[str, str] | None = None,
              cookies: dict[str, str] | None = None) -> Any:
         """POST с теми же ретраями и той же диагностикой, что и GET.
@@ -530,13 +530,20 @@ class Client:
         странице книги висят только последние восемь глав, а полный
         список приходит отдельным запросом — и только этим способом.
         Обходиться одним GET значило бы отдавать восьмиглавую книгу.
+
+        Словарь уходит полями формы, готовая строка — телом как есть.
+        Второе нужно тем, кто ждёт JSON: полями такой сервер не примет
+        ничего, а собирать тело он должен тот, кто знает его вид, —
+        источник, а не общий клиент. Заголовок `Content-Type` в таком
+        случае идёт от источника же.
         """
         return self._ask(url, headers=headers, cookies=cookies,
                          data=data if data is not None else {})
 
     def _ask(self, url: str, params=None, headers: dict[str, str] | None = None,
              cookies: dict[str, str] | None = None,
-             data: dict | None = None, timeout: int | None = None) -> Any:
+             data: dict | str | bytes | None = None,
+             timeout: int | None = None) -> Any:
         """Один запрос со всеми повторами. `data` не пусто — это POST.
 
         `timeout` — срок именно этого запроса. Пусто — общий: страница

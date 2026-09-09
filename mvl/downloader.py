@@ -997,6 +997,15 @@ class Downloader:
         тестах спал бы по-настоящему.
         """
         low, high = client_mod.SITE_PAUSE_RANGE
+        # Источник может попросить паузу длиннее общей. Просят те, кто
+        # делает работу по запросу, а не отдаёт готовое: перевод главы
+        # машиной занимает секунды, и на частые запросы сервер отвечает
+        # пустой главой. Со стороны это рваная книга, хотя сайт просто
+        # просил не частить. Короче общей паузу не делаем: источник
+        # вправе притормозить, но не вправе разогнать.
+        floor = float(getattr(self.source, "pause", 0.0) or 0.0)
+        if floor > low:
+            low, high = floor, max(high, floor + (high - low))
         self.cancel.wait(random.uniform(low, high)
                          * max(1.0, self.pause_multiplier))
 
@@ -1354,13 +1363,16 @@ def _is_paid(error: BaseException) -> bool:
     """
     from net.sources.fanqie import ChapterEncrypted, PaidChapter
     from net.sources.webnovel import ChapterLocked, ChapterScrambled
+    from net.sources.wtrlab import ChapterNotTranslated
 
     # Беды одинаковые, а имена у сайтов свои: у Фанкью глава «платная» и
-    # «зашифрованная», у Webnovel — «закрытая» и «со своим шрифтом».
-    # Сводить их в один класс значило бы переписывать работающий разбор
-    # Фанкью ради красоты; перечислить здесь дешевле и безопаснее.
+    # «зашифрованная», у Webnovel — «закрытая» и «со своим шрифтом», у
+    # WTR-LAB — «ещё не переведённая». Сводить их в один класс значило бы
+    # переписывать работающий разбор Фанкью ради красоты; перечислить
+    # здесь дешевле и безопаснее.
     return isinstance(error, (PaidChapter, ChapterEncrypted,
-                              ChapterLocked, ChapterScrambled))
+                              ChapterLocked, ChapterScrambled,
+                              ChapterNotTranslated))
 
 
 def _is_refusal(error: BaseException) -> bool:

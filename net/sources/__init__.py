@@ -22,6 +22,7 @@ def all_sources() -> list:
     from .novelcms import NovelCmsSource
     from .ranobelib import RanobeLibSource
     from .webnovel import WebnovelSource
+    from .wtrlab import WtrlabSource
 
     # Посредник идёт последним и по умолчанию не выбран намеренно: он
     # забирает закрытые главы, но ценой чужого сервера без шифрования.
@@ -41,9 +42,14 @@ def all_sources() -> list:
     # Dreamy стоит рядом с RanobeLIB и по той же причине: оттуда книга
     # приходит уже переведённой, только на английский. Это тоже размен
     # «чужой перевод вместо своего», и делает его человек сам.
+    #
+    # WTR-LAB — последний, и не из-за качества. Там переводит машина
+    # сайта в момент запроса, поэтому между главами нужна пауза в
+    # десяток секунд: книга на восемьсот глав качается часами. Такой
+    # размен — «готовый перевод ценой ночи» — человек тоже делает сам.
     return [MvlempyrSource(), FanqieSource(), FanqieMirrorSource(),
             NovelCmsSource(), WebnovelSource(), RanobeLibSource(),
-            DreamySource()]
+            DreamySource(), WtrlabSource()]
 
 
 def get(name: str) -> Source:
