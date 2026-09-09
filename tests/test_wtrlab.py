@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mvl.api import Chapter, Novel  # noqa: E402
 from net import sources  # noqa: E402
 from net.sources.base import SourceBroken  # noqa: E402
+from net.sources import wtrlab  # noqa: E402
 from net.sources.wtrlab import ChapterNotTranslated, WtrlabSource  # noqa: E402
 
 BOOK = "https://wtr-lab.com/en/novel/8093/the-wizard-is-chasing-the-truth"
@@ -98,11 +99,11 @@ class TestItIsOfferedAsItsOwnSource(unittest.TestCase):
         """Перевод чужой — размен делает человек, а не программа."""
         self.assertNotEqual(sources.get("").key, "wtrlab")
 
-    def test_the_hint_warns_it_is_slow(self):
-        """Книга на восемьсот глав качается отсюда часами, и узнать об
-        этом лучше до запуска, а не наутро."""
+    def test_the_hint_says_which_translation_is_taken(self):
+        """Переводов у сайта три, и какой берём — не мелочь: у «AI»
+        книга идёт часами, а часть глав закрыта."""
         said = sources.get("wtrlab").hint
-        self.assertIn("пауза", said.lower())
+        self.assertIn("web", said.lower())
 
     def test_the_hint_says_the_translation_is_not_ours(self):
         self.assertIn("англ", sources.get("wtrlab").hint.lower())
@@ -110,18 +111,11 @@ class TestItIsOfferedAsItsOwnSource(unittest.TestCase):
     def test_it_needs_no_proxy(self):
         self.assertFalse(sources.get("wtrlab").needs_proxy)
 
-    def test_it_asks_for_a_longer_pause_than_the_rest(self):
-        """Сервер переводит главу в момент запроса: на общей паузе
-        главы приходят пустыми."""
-        from mvl import client as client_mod
-
-        _, high = client_mod.SITE_PAUSE_RANGE
-        self.assertGreater(sources.get("wtrlab").pause, high)
-
-    def test_the_others_keep_the_common_pause(self):
-        others = [one.key for one in sources.all_sources()
-                  if one.key != "wtrlab" and one.pause]
-        self.assertEqual(others, [])
+    def test_no_source_slows_the_run_down_before_it_is_asked_to(self):
+        """Пауза длиннее общей — плата за «AI», и брать её со всех
+        подряд нельзя."""
+        slow = [one.key for one in sources.all_sources() if one.pause]
+        self.assertEqual(slow, [])
 
 
 class TestTheAddress(unittest.TestCase):
@@ -145,6 +139,62 @@ class TestTheAddress(unittest.TestCase):
         with self.assertRaises(SourceBroken) as caught:
             self.source._demand_parts("https://example.com/book/1")
         self.assertIn("wtr-lab.com", str(caught.exception))
+
+
+class TestWhichTranslationIsTaken(unittest.TestCase):
+    """Переводов у сайта три: «Web», «Web+» и «AI». Берём обычный «Web» —
+    он лежит готовым у каждой главы. Выбор живёт в самом адресе: сайт
+    пишет его туда сам, и человек копирует ссылку с той страницы, где
+    читает."""
+
+    def setUp(self):
+        self.source = WtrlabSource()
+
+    def test_a_plain_address_means_the_plain_translation(self):
+        self.assertEqual(self.source._service(BOOK), "web")
+
+    def test_the_address_can_ask_for_another_one(self):
+        self.assertEqual(self.source._service(BOOK + "?service=ai"), "ai")
+        self.assertEqual(
+            self.source._service(BOOK + "/chapter-827?service=web_plus"),
+            "web_plus")
+
+    def test_the_plain_translation_needs_no_extra_pause(self):
+        """Текст у «Web» уже лежит — торопить нечего."""
+        self.source._remember(BOOK)
+        self.assertEqual(self.source.pause, 0.0)
+
+    def test_the_machine_translation_is_waited_out(self):
+        """А «AI» переводит главу в момент запроса."""
+        self.source._remember(BOOK + "?service=ai")
+        self.assertGreaterEqual(self.source.pause, 12.0)
+
+    def test_going_back_to_the_plain_one_drops_the_pause(self):
+        """Источник живёт дольше одной книги: за прошлую платить не надо."""
+        self.source._remember(BOOK + "?service=ai")
+        self.source._remember(BOOK)
+        self.assertEqual(self.source.pause, 0.0)
+
+    def test_the_choice_survives_into_the_book_address(self):
+        found = self.source.find(FakeClient(page=book_page()),
+                                 BOOK + "?service=ai")
+        self.assertEqual(found.slug, BOOK + "?service=ai")
+
+    def test_the_plain_choice_leaves_the_address_alone(self):
+        found = self.source.find(FakeClient(page=book_page()), BOOK)
+        self.assertEqual(found.slug, BOOK)
+
+    def test_the_choice_reaches_every_chapter(self):
+        """Главу качает отдельный вызов, которому книга уже не видна."""
+        novel = Novel(code=8093, name="Книга", slug=BOOK + "?service=ai",
+                      total_chapters=3)
+        toc = self.source.toc(FakeClient(listing=chapter_list()), novel)
+        self.assertTrue(toc.chapters[0].link.endswith("chapter-1?service=ai"))
+
+    def test_the_plain_choice_leaves_chapter_addresses_alone(self):
+        novel = Novel(code=8093, name="Книга", slug=BOOK, total_chapters=3)
+        toc = self.source.toc(FakeClient(listing=chapter_list()), novel)
+        self.assertEqual(toc.chapters[0].link, BOOK + "/chapter-1")
 
 
 class TestTheBook(unittest.TestCase):
@@ -251,8 +301,20 @@ class TestTheChapterText(unittest.TestCase):
         self.assertEqual(sent["raw_id"], "8093")
         self.assertEqual(sent["chapter_no"], "829")
         self.assertEqual(sent["language"], "en")
-        self.assertEqual(sent["translate"], "ai")
         self.assertIn("json", headers["Content-Type"])
+
+    def test_the_plain_translation_is_asked_for(self):
+        """Тем же словом сайт называет перевод и в адресе страницы."""
+        client = FakeClient(body=chapter_body(["Абзац."]))
+        self.source.chapter(client, self.chapter)
+        self.assertEqual(json.loads(client.posted[0][1])["translate"], "web")
+
+    def test_a_chapter_address_can_ask_for_another_translation(self):
+        client = FakeClient(body=chapter_body(["Абзац."]))
+        asked = Chapter(number=829, post_id=829, ch_name="Глава",
+                        link=BOOK + "/chapter-829?service=ai")
+        self.source.chapter(client, asked)
+        self.assertEqual(json.loads(client.posted[0][1])["translate"], "ai")
 
     def test_the_marks_are_replaced_by_the_names(self):
         """Не подставить имена значит положить в книгу закорючки и
@@ -331,6 +393,7 @@ class TestTheSourceCanAskToSlowDown(unittest.TestCase):
         self.was = client_mod.SITE_PAUSE_RANGE
         client_mod.SITE_PAUSE_RANGE = (2.0, 4.0)
         self.addCleanup(setattr, client_mod, "SITE_PAUSE_RANGE", self.was)
+        self.slow = wtrlab.PAUSE_AI
 
     def waited(self, asked, multiplier=1.0):
         import types
@@ -342,8 +405,8 @@ class TestTheSourceCanAskToSlowDown(unittest.TestCase):
         return cancel.waited[0]
 
     def test_a_slow_source_is_waited_out(self):
-        self.assertGreaterEqual(self.waited(WtrlabSource.pause),
-                                WtrlabSource.pause)
+        self.assertGreaterEqual(self.waited(self.slow),
+                                self.slow)
 
     def test_a_source_cannot_make_the_pause_shorter(self):
         """Источник вправе притормозить, но не вправе разогнать."""
@@ -356,8 +419,8 @@ class TestTheSourceCanAskToSlowDown(unittest.TestCase):
 
     def test_the_429_multiplier_still_applies_on_top(self):
         """После серии отказов пауза растёт — и у медленного тоже."""
-        self.assertGreaterEqual(self.waited(WtrlabSource.pause, multiplier=2.0),
-                                WtrlabSource.pause * 2)
+        self.assertGreaterEqual(self.waited(self.slow, multiplier=2.0),
+                                self.slow * 2)
 
 
 if __name__ == "__main__":
