@@ -3594,17 +3594,47 @@ class TestTheKnobsSayTheirValue(PageTestCase):
         self.assertEqual(got, 0)
         self.quiet()
 
+    #: Насколько ползунку позволено дрогнуть. Страница у браузера может
+    #: оказаться слегка отмасштабированной, и ширины приходят дробными —
+    #: полпикселя тут ничего не значат. А настоящая беда крупная: без
+    #: своей ширины у подписи ползунок уезжает на восемьдесят точек,
+    #: измерено. Порог посередине, и обе стороны от него далеко.
+    KNOB_DRIFT = 2
+
+    def widths(self, low=0, high=8):
+        """Ширины ползунка и подписи при двух значениях — одним замером.
+
+        Одним, а не двумя: между отдельными замерами страница успевает
+        пережить перерасчёт, и под нагрузкой разница в полпикселя
+        приходила от него, а не от подписи.
+        """
+        return self.page.evaluate(
+            """([low, high]) => {
+                 const box = document.getElementById('tlWorkers');
+                 const said = box.parentElement.querySelector('.knob-value');
+                 const at = value => {
+                   box.value = String(value);
+                   box.dispatchEvent(new Event('input', {bubbles: true}));
+                   return [box.getBoundingClientRect().width,
+                           said.getBoundingClientRect().width];
+                 };
+                 return {low: at(low), high: at(high)};
+               }""", [low, high])
+
     def test_the_slider_does_not_jump_while_being_dragged(self):
         """«как настроено» шире, чем «8», и без своей ширины подпись
         двигала бы ползунок прямо под пальцем."""
-        wide = self.page.evaluate(
-            """() => document.getElementById('tlWorkers')
-                            .getBoundingClientRect().width""")
-        self.move("tlWorkers", 8)
-        after = self.page.evaluate(
-            """() => document.getElementById('tlWorkers')
-                            .getBoundingClientRect().width""")
-        self.assertEqual(round(wide), round(after))
+        got = self.widths()
+        self.assertLess(abs(got["low"][0] - got["high"][0]), self.KNOB_DRIFT,
+                        f"ползунок уехал: {got}")
+        self.quiet()
+
+    def test_the_readout_keeps_its_width_whatever_it_says(self):
+        """Причина ровно здесь: ширина подписи не должна зависеть от
+        того, что в ней написано."""
+        got = self.widths()
+        self.assertLess(abs(got["low"][1] - got["high"][1]), self.KNOB_DRIFT,
+                        f"подпись меняет ширину: {got}")
         self.quiet()
 
 

@@ -188,6 +188,42 @@ class TestReaders(FormatTestCase):
         (self.tmp / "a.txt").write_bytes("\n\n".join(PARAGRAPHS).encode("cp1251"))
         self.assertEqual(self.read("a.txt")[0].paragraphs, PARAGRAPHS)
 
+    #: Китайская книга приходит в GBK — так её отдают и сайты, и архивы
+    #: с кнопки «скачать TXT». Строки свои, не из книги. Отступ из двух
+    #: идеографических пробелов настоящий: с него начинается там каждый
+    #: абзац, и чтение его снимает — это разметка, а не текст.
+    CHINESE = [
+        "白色的海鸥群，迎着海浪的起伏，在黑暗来临之际高飞天际。",
+        "下方，一条巨大的蒸汽动力船破开汹涌的海浪，驶入深沉的海域。",
+        "更多的海兽簇拥而至，前来吞噬这片猩红。",
+    ]
+
+    def test_txt_gbk(self):
+        """Китайский текст в cp1251 раскодируется без единой ошибки — и
+        превращается в кириллическую кашу «ЎєОЧК¦». Тихая подмена букв
+        хуже отказа: заметить её можно только глазами."""
+        (self.tmp / "a.txt").write_bytes(
+            "\n\n".join("　　" + one for one in self.CHINESE)
+            .encode("gb18030"))
+        self.assertEqual(self.read("a.txt")[0].paragraphs, self.CHINESE)
+
+    def test_a_russian_text_is_not_taken_for_chinese(self):
+        """Проба gb18030 идёт раньше cp1251 — и не должна забрать себе
+        то, что ей не принадлежит."""
+        (self.tmp / "a.txt").write_bytes("\n\n".join(PARAGRAPHS).encode("cp1251"))
+        self.assertEqual(self.read("a.txt")[0].paragraphs, PARAGRAPHS)
+
+    def test_a_short_russian_line_is_not_taken_for_chinese(self):
+        """Короткая строка может случайно оказаться годной
+        многобайтовой последовательностью, и одного «не упало» мало."""
+        (self.tmp / "a.txt").write_bytes("Да".encode("cp1251"))
+        self.assertEqual(self.read("a.txt")[0].paragraphs, ["Да"])
+
+    def test_utf8_still_wins_over_everything(self):
+        """Обычный путь править было нельзя: он и так работал."""
+        (self.tmp / "a.txt").write_text("\n\n".join(PARAGRAPHS), encoding="utf-8")
+        self.assertEqual(self.read("a.txt")[0].paragraphs, PARAGRAPHS)
+
     def test_md(self):
         (self.tmp / "a.md").write_text("\n\n".join(PARAGRAPHS), encoding="utf-8")
         self.assertEqual(self.read("a.md")[0].paragraphs, PARAGRAPHS)
